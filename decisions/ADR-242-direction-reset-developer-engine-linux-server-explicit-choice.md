@@ -2,7 +2,8 @@
 
 **Status:** Proposed (2026-10-20) — project-owner direction, drafted from a whole-system design review
 (§1.2). Red-team round 1 (2026-10-20): **rejected** (2 FATAL, 6 MAJOR, 9 MINOR); round 2: **not ready**
-(1 FATAL, 5 MAJOR, 4 MINOR); this revision folds both in (§10). **Binds nothing until the project owner marks it Judged**; on Judged, the
+(1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); this revision folds all
+three in (§10). **Binds nothing until the project owner marks it Judged**; on Judged, the
 amendments in §8 are applied in one change, and the follow-on ADRs in §6 carry the mechanisms.
 
 **Supersedes in part:**
@@ -88,11 +89,32 @@ resource the engine manages:
 2. **Nothing is implicit.** No option is selected by linkage, by platform, or because a probe passed.
    If the developer chooses nothing for a resource the application needs, startup fails closed with a
    named error that lists the options.
-3. **Choosing is accepting the risk.** This is ADR-070's Delegated Decision Seam applied to every
-   resource: explicit, audited, fails closed when unset, never mints authority, host code never model
-   output. The engine's duty is to say honestly what each option enforces and what it leaves to the
-   developer, in §3a's table. The developer's duty is to cover the "you manage" column or accept it.
+3. **Choosing is accepting the risk of that option.** The engine's duty is to say honestly what each
+   option enforces and what it leaves to the developer, in §3a's table. The developer's duty is to
+   cover the "you manage" column or accept it. A choice follows ADR-070's properties 1, 3, 4 and 5
+   (explicit, never mints or widens authority, host code never model output, audited). Property 2 ("an
+   unset seam reproduces today's behaviour") is **strengthened**: unset is a named startup error, not
+   today's behaviour.
 4. **Each resource has one documented seam** for a custom option the engine does not ship.
+5. **Invariants are not options.** A developer chooses *which* backend, *what* budget value, *where*
+   authority comes from; never the *absence* of a boundary check, a budget or an authority. "Own risk"
+   covers the residuals each option discloses in §3a; it never relaxes I1–I8 themselves, which ADR-070
+   §3 rejected and this ADR does not reopen. The weakest options (`none`, ADR-071 native providers)
+   are honest options because their row says so, not exceptions to I2: they still run only with an
+   explicit, audited choice.
+
+**Today's implicit, permissive choices are defects under this section** (each verified on main
+@ 6c62e611; each is fixed in §6 step 1b):
+
+| Implicit today | Where | Becomes |
+|---|---|---|
+| Sandbox mounts are checked only if a `SandboxMount` grant exists; every current call site passes none | `sandbox/sandbox.hpp:208-213` (`authorize_spec`) | Mount authorization is unconditional: a mount with no covering grant is refused |
+| Session authority is optional (`require_authority` off unless set), so construction-time capabilities apply to every caller | `rt/agent_session_core.hpp:311`, `:521`; `agent_session_core.cpp:144` | The developer chooses the authority source: per-request (`require_authority`) or an explicit, named single-trusted-caller mode |
+| `McpServer` falls back to its construction-time capability set | `protocol/mcp/server.hpp:198-207` | Per-request grant required, or the same explicit single-trusted-caller mode |
+| No token budget unless one is set (`nullopt` = no budget) | `core/effect_context.hpp:200-202` | A budget value is required |
+| `native-jail` (and `wasm`) registered by platform | `default_sandbox_registry.cpp:39-50` | Only chosen backends are registered (R2) |
+| `KataBackend` defaults to `docker.io/library/busybox:latest`, a tag pulled from the network | `kata_backend.hpp:460` | No image default; a digest is required (G-R10) |
+| A provider client builds a private Runtime when none is passed | `protocol/openai/chat_client.hpp:473-478` | The Runtime is required (R6) |
 
 **Presets** are optional named bundles of choices (for example "server with Kata"). Picking a preset is
 an explicit choice of every row it bundles; a preset never activates itself.
@@ -152,7 +174,8 @@ line budget; this ADR requires that the budget exists and CI measures it (G-R6).
   same process. The engine's **supported** deployment for an internet-facing server with Kata is an
   **unprivileged** engine process plus a narrow privileged helper reached over IPC, which accepts only
   typed sandbox operations (G-R11). One parser bug in the server must not be host root across every
-  tenant. Running the engine itself as root stays possible, as an explicit choice listed in §3a.
+  tenant. Running the engine itself as root stays possible, as an explicit choice (the "Deployment
+  privilege" row in §3a).
 - **Vetted vs unvetted.** A backend is marked *vetted* in §3a once it passes G-R3, G-R4 and G-R8, not
   because it is hardware-backed. The developer may still choose an unvetted one, at their own risk:
   ADR-084 Design A's `named_only` registration stays the way to do that. `KataBackend` is the first
@@ -162,17 +185,20 @@ line budget; this ADR requires that the budget exists and CI measures it (G-R6).
   This is disclosed, not hidden behind "native-jail is the fallback".
 - `cold_start_class` gains a `seconds` value; Kata stops claiming `milliseconds`.
 - **Resource limits under `microvm` are listed, not assumed** (I8): enforced today are `wall_ms`, the
-  output cap, `pids`, `disk_bytes` (rootfs upper layer) and `net_bytes` (slice 11 cases of
+  output cap, `disk_bytes` (rootfs upper layer) and `net_bytes` (slice 11 enforcement cases of
   `test_kata_backend_slice9_10_linux`, passing live 2026-10-20; the header comment at
-  `kata_backend.hpp:44-47` still lists them as gaps and is stale); `cpu_ms` is a named gap (a CFS quota
+  `kata_backend.hpp:44-47` still lists them as gaps and is stale). `pids` is accepted but not proven: its
+  case is a smoke test (`test_kata_backend_slice9_10_linux.cpp:195-201`) and the fork bomb is a
+  documented absence (`test_kata_backend_abuse_corpus_linux.cpp:271`); `memory_bytes` is passed through
+  but OOM is never classified (`kata_backend.hpp:121`, `:370`); `fds` is unverified (`:379-382`); `cpu_ms` is a named gap (a CFS quota
   is a rate, not a budget) and `MountSpec::quota_bytes` is not enforced (`kata_backend.hpp:30`). A
   grant carrying a limit the backend cannot enforce fails closed at `create()` (R3). Under `microvm`,
   010 §3 item 3's CPU bound is met by a rate (vCPU count and CFS quota) plus `wall_ms`; an explicit
   `cpu_ms` request fails closed. §8 amends item 3 to say so (closes round-2 N8).
 
-### R3 — The shell by default, the CodeAct interpreter by provider; CPython wherever it runs
+### R3 — The shell and the CodeAct interpreter are two tiers, each chosen; CPython wherever it runs
 
-**Two tiers, and only the first is on by default (owner direction, 2026-10-20: "`execute_code` must be
+**Two tiers, each attached explicitly; neither exists unless chosen (owner direction, 2026-10-20: "`execute_code` must be
 coming from a context provider, not by default. Kata can already have code interpreter (python in
 shell). Code interpreter will go with CodeAct, will have stronger feature set.")**
 
@@ -227,9 +253,12 @@ answers it rather than ignoring it:
    - **same principal, identical capability set, new expiry** (the common case, since request tokens
      expire): the VM's binding is updated to the new expiry; no rebuild;
    - **anything else** (different principal, any change in the capability set): the VM is destroyed and
-     rebuilt before the run proceeds. Files survive in the worktree (D4). The shell's cwd and env are
-     carried over host-side from the last run's recorded state (this is data that only sets up the next
-     guest, never authority, I3). Interpreter memory does not survive, and this is disclosed (§7).
+     rebuilt before the run proceeds. Files survive in the worktree (D4). **On a principal change, only
+     the worktree carries over**: the guest-written env (which can hold `LD_PRELOAD`, `BASH_ENV`,
+     `PROMPT_COMMAND`) would otherwise run inside the next principal's VM under its mounts and egress.
+     On a capability change under the same principal, the cwd and an allowlist of env *names* carry
+     over host-side (data that only sets up the next guest, never authority, I3). Interpreter memory
+     does not survive, and this is disclosed (§7).
    - **Expiry during a run:** a run admitted under live authority runs to its end under it, bounded by
      its budgets. That is the engine's existing per-run authority model, not a new one, and is
      disclosed (§7).
@@ -257,8 +286,13 @@ answers it rather than ignoring it:
      **the host never mounts a filesystem image the guest wrote.** A full volume stops that sandbox,
      not its neighbours (I8).
    - Host tools never read the staging volume. They see only the worktree.
-   - **Harvest** copies from staging into the worktree **at the end of every exec**, so the next model
-     turn and every host tool see one state. It accepts regular files only: no symlinks, hard links
+   - **Copy-in** writes the worktree's granted paths into staging when the VM is created and, with the
+     VM paused, before any exec that follows a host-side worktree change.
+   - **Harvest** copies from staging into the worktree **at the end of every exec, with the VM paused**
+     (a running guest could swap a file between check and copy), so the next model turn and every host
+     tool see one state. The host mounts staging `nosuid,nodev,noexec`, opens every path with
+     `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` and checks type and size with `fstat` on the opened
+     descriptor, never on the name. It accepts regular files only: no symlinks, hard links
      with `nlink > 1`, devices or FIFOs, and no path containing `..`, an absolute path, or a name that
      collides with another after case or Unicode normalisation. Paths are checked against the grant's
      `path_prefix`; sizes (apparent, so sparse files count in full) and counts against the grant.
@@ -272,8 +306,9 @@ answers it rather than ignoring it:
      arrive when no exec is in flight, are refused.
    - Authority comes from the host's current `EffectContext`, never from a field in the frame.
    - A shim call goes through the session's **normal** tool pipeline (approval, budgets, audit),
-     attributed to the exec, and may reach only the tools the session exposes to `agent.tools`, the
-     same `bridged_tools` list the native-jail worker is generated from today (`src/backends/native_jail/agent_tools_codegen.hpp:292-305`).
+     attributed to the exec, and may reach only an explicit allowlist of bridged tools the developer sets
+     when attaching the provider (the native-jail worker's equivalent today is its `bridged_tools`
+     input; the step-3 ADR specifies the allowlist itself).
    - The host parses bytes from a root guest, so the parser carries a fuzz gate (G-R8).
    - A tool's result returned to the guest is visible to the guest; tools must not return secrets
      (the same rule as for model-visible output today).
@@ -322,27 +357,38 @@ doing so: the developer passes the Runtime (an owned Runtime becomes an explicit
 Tenant-scoped identity, authority, secrets and budgets are managed resources under §2. The mechanisms
 (collapsing `Principal`/`SessionCaller`/`RequestAuthority`/`mcp::CapabilityGrant`, a host policy hook
 mapping tenant and role to a `CapabilitySet`, tenant-scoped secret refs, a tenant-keyed budget layer)
-are follow-on ADRs. This ADR only removes the assumption of one trusted tenant per process that
+are follow-on ADRs. **The identity-to-authority policy is host root authority** (it reaches
+`CapabilitySet::grant_root()`), so it is *not* an ADR-070 Delegated Decision Seam, which may never mint
+authority (ADR-070 §4a); it is the developer's root of trust and is documented as such. A custom budget
+option may only tighten a budget. This ADR only removes the assumption of one trusted tenant per process that
 `native-jail`'s 008 §3 wording ("trusted-tenant deployments — the default") encodes.
 
-### 3a. Options and responsibilities (as of 2026-10-20)
+### 3a. Options and responsibilities (as of 2026-10-20, main @ 6c62e611)
 
 What each option enforces **today**, and what the developer must manage until the engine has a
-solution. "Engine enforces" lists only what a test in this repository shows. Rows move from "you
-manage" to "engine enforces" as §6's work lands, each with its proving test (G-R12).
+solution. "Engine enforces" lists only what an enforcement test in this repository shows (a smoke test
+that only proves a setting is accepted does not count). Rows move from "you manage" to "engine
+enforces" only under G-R12. Every row is also subject to §2's defect list until §6 step 1b lands.
 
 **Execution environment**
 
 | Option | Status today | Engine enforces | You manage until the engine solves it | Engine solution (planned) |
 |---|---|---|---|---|
-| `microvm`: Kata (Linux + KVM) | `SandboxBackend` works; live-verified 2026-10-20. Not yet wired to the shell or CodeAct tools | Hardware VM boundary; only granted mounts; egress allowlist and `net_bytes` at the host bridge (ADR-240, Proposed); `pids`, `disk_bytes` (rootfs), `wall_ms`, output cap | Installing Kata, containerd, CNI and KVM; the host firewall (`FORWARD` policy on the bridge, see `docs/guides/thnak-server-runbook.md`); the engine runs as root; a guest image with `bash` and `python3` (the default is `busybox`); CPU time (no `cpu_ms`); workspace size (`quota_bytes` not enforced); VM count and memory (no admission cap; ~170 MB idle to 2 GiB busy per VM); destroying idle VMs and cleaning up after a crash (no reaper; stale netns were found on 2026-10-20); ~6 s cold start; shell state is not kept between calls | §6 step 3 (persistent shell, staging volume, pause between runs, guest image), privileged helper (G-R11), recycling ADR |
-| `native-jail`, Windows | Works. The CodeAct interpreter exists but is wired only in the dev CLI | AppContainer, Job Object (memory, pids), restricted token; mediated CPython with per-`open()` capability checks and import gating (ADR-003, ADR-004) | Wiring `execute_code` yourself until the library provider exists; CPU time (the Job Object CPU cap fired in 3 of 11 runs, 021; rely on `wall_ms`) | §6 step 3 (library CodeAct provider) |
-| `native-jail`, Linux | Backend works | Namespaces, `pivot_root`, seccomp-BPF, cgroups v2, `no_new_privs` (ADR-083) | No Python interpreter (commands only); a same-kernel boundary, not hardware | §6 step 3b |
+| `microvm`: Kata (Linux + KVM) | `SandboxBackend` works; live-verified 2026-10-20. Not yet wired to the shell or CodeAct tools | Hardware VM boundary; mounts are those the `SandboxSpec` lists, checked against `cap::SandboxMount` **only if** one is granted (`sandbox.hpp:208-213`); egress allowlist and `net_bytes` at the host bridge (ADR-240, Proposed); `disk_bytes` (rootfs upper layer), `wall_ms` (exec and destroy only), output cap | **Mounts:** pass `SandboxMount` grants, or nothing checks what you mount; a read-write mount is a live `rbind` with no `nosuid`/`nodev` (`kata_backend_detail.hpp:444`), so whatever a root guest writes (symlinks, setuid files) lands in your host directory. **Limits:** `pids` and `fds` are not proven; OOM is never reported; no CPU-time limit; `quota_bytes` not enforced; `wall_ms` does not bound `create()` (`kata_backend.hpp:36-41`). **Who may create a sandbox:** `cap::Exec` is enforced by no backend (`:362-366`). **Image:** the engine's default is `busybox:latest`, pulled by tag on first use (`:448-450`, `:460`); supply a pinned image with `bash`/`python3`. **Host:** install Kata, containerd, CNI and KVM; set the host firewall (`FORWARD` on the bridge, `docs/guides/thnak-server-runbook.md`); ADR-240's preconditions (a dedicated bridge, nft ≥ 1.0.9, kernel ≥ 6.3); a lost nft table is caught only at the next exec; the host's NAT-hairpin WAN address is not recognised as host-local; allowlist IPs are pinned at `create()`. **Process:** the engine runs as root; guest processes keep running between calls (`sleep infinity` task, `:401`); guest output reaches the model as tool output (data, I3). **Capacity:** no admission cap (~170 MB idle to 2 GiB busy per VM); no reaper for idle VMs or crash leftovers (stale netns were found 2026-10-20); ~6 s cold start; shell state is not kept between calls | §6 step 1b (unconditional mount check, no image default), step 3 (persistent shell, staging volume, pause between runs), privileged helper (G-R11), recycling ADR |
+| `native-jail`, Windows | Works. The CodeAct interpreter exists but is wired only in the dev CLI | AppContainer, Job Object (memory, pids), restricted token; mediated CPython with per-`open()` capability checks and import gating (ADR-003, ADR-004) | Wiring `execute_code` yourself until the library provider exists; CPU time (the Job Object CPU cap fired in 3 of 11 runs, ADR-004:286, 021; rely on `wall_ms`); the same opt-in mount check (`sandbox.hpp:208-213`) | §6 steps 1b, 3 |
+| `native-jail`, Linux | Backend works | Namespaces, `pivot_root`, seccomp-BPF, cgroups v2, `no_new_privs` (ADR-083); any egress request fails closed (`linux_native_jail_backend.cpp:279-284`) | No Python interpreter (commands only); a same-kernel boundary, not hardware; the same opt-in mount check | §6 steps 1b, 3b |
 | `remote` | Stub, no logic (`src/backends/remote/README.md`) | Nothing | Everything: bring your own cluster integration through the `SandboxBackend` seam | Not scheduled |
 | `wasm` | Works for WASI components | Capability-based WASI | No shell or Python | — |
 | Docker/containerd shell surfaces (ADR-209) | Works | ADR-209 lifetime limits (idle, age, runs) | Container hardening, resource limits and network: these surfaces "inherit none of RFC 008's guarantees" (`execution_surface.hpp:29`) | §6 step 3 (one execution surface) |
 | ADR-071 native providers (`NativeBashProvider`, `NativePythonProvider`, ...) | Works, explicit opt-in | The opt-in and its audit only | Everything: code runs on the host as the engine's user | — (by design) |
 | `none` | Works | Refuses T2/T3 code (007 §6) | No boundary at all; first-party code only | — (by design) |
+
+**Agent-facing tiers** (R3; each is attached explicitly, on top of one execution option above)
+
+| Tier | Status today | Engine enforces | You manage until the engine solves it | Engine solution (planned) |
+|---|---|---|---|---|
+| Shell `ContextProvider` | `LiveShellSandboxProvider` (Docker/containerd) and `NativeShellSessionProvider` exist; nothing over Kata | What its execution option enforces, plus ADR-209 lifetimes | Over Kata: a shell provider of your own until step 3 | §6 step 3 |
+| CodeAct `ContextProvider` (`execute_code`) | Exists only in the dev CLI over Windows native-jail | Over native-jail: per-call mediation of `agent.*` | Everything over Kata or Linux; until step 3, wire it yourself | §6 steps 3, 3b |
 
 **Other resources**
 
@@ -350,11 +396,14 @@ manage" to "engine enforces" as §6's work lands, each with its proving test (G-
 |---|---|---|---|
 | Runtime and threads | `rt::Runtime` | Pass one shared Runtime; a provider client builds a private one if you do not (~20 threads per client on a large host). Streaming calls and MCP background tasks each use a detached thread, so bound concurrency yourself | R6, finish ADR-237 |
 | Inbound transport and server | Typed MCP/A2A/AG-UI dispatchers that take already-parsed requests | The socket, HTTP, TLS, authentication, and the wire binding (A2A has no wire dispatch at all) | R4 server module |
-| Identity to authority | Capability checks against the authority it is given | **Always pass per-request authority**: session admission is skipped when no caller or authority is set (`agent_session_core.cpp:144`), and `McpServer` falls back to its construction-time capability set when no per-request grant is passed. Mapping users and tenants to capabilities is yours (there is no policy engine, 007 §5) | R4 server mode, R7 |
-| Secrets | Env and file sources | Per-tenant scoping (the namespace is flat) and vault integration (through the `SecretSource` seam); note the env prefix defaults to `QUARK_SECRET_` | R7 |
-| Budgets and quotas | Egress admission per run, per principal and global (8 / 32 / 64) | Tenant-level quotas and model spend | R7 |
+| Identity to authority | Capability checks against the authority given; `set_require_authority(true)` makes a missing or expired per-request authority fail closed (`agent_session_core.hpp:521`, `agent_session_core.cpp:950-958`) | **Turning `require_authority` on**: it is off unless set, and then the session's construction-time capabilities apply to every caller and admission is skipped when no caller is named (`agent_session_core.cpp:144`). **Always passing a per-request grant to `McpServer`**, which otherwise uses its construction-time set. Mapping users and tenants to capabilities (no policy engine, 007 §5); this is your root of trust (R7) | §6 step 1b, R4 server mode, R7 |
+| Secrets | Env and file sources | Per-tenant scoping (the namespace is flat) and vault integration (through the `SecretSource` seam); the env prefix defaults to `QUARK_SECRET_` | R7 |
+| Budgets and quotas | Per-run token budget (ADR-193) when set; the host egress proxy's concurrent-connection caps per run, per principal and global (8 / 32 / 64, `net_egress_proxy.hpp:221-223`; Kata egress does not pass through this proxy) | **Setting a token budget** (`nullopt` means none, `effect_context.hpp:200-202`); tenant-level quotas; model spend | §6 step 1b, R7 |
 | Task stores | MCP and A2A task stores | The A2A store never evicts; bound it or recycle the process | R4 server module |
 | Sandbox lifetime | ADR-209 limits for Docker/containerd and native shells | Kata VMs are never reaped or recycled; destroy them yourself | Recycling ADR (the 2026-10-19 proposal) |
+| Persistence | `rt::SessionStore`, `rt::AppendLogStore` with `FileAppendLogStore` (spec §7) | A corrupt record mid-file loses what follows it (spec §7, ADR-195); backups and replication | — |
+| Audit and telemetry | Run events (`core/run_event.hpp`), sandbox resolution audit hook (`SandboxBackendResolutionAuditHook`) | Exporting, retaining and alerting on them | 016 |
+| Deployment privilege | — | Kata requires the engine process to run as root today (`losetup`, `mount`, `nft`, `ip netns`, `ctr`); internet-facing use without the privileged helper is your choice and risk | R2 privileged helper, G-R11 |
 
 ## 4. Alternatives considered
 
@@ -388,7 +437,8 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 | **G-R9** | Authority-bound VM; nothing runs between runs | First assert the guest is uid 0. Run 1 under grant A (mount M, destination D) starts a `setsid` background process and a ptrace injection into the persistent shell, both trying to connect to D after run 1 ends: no packet reaches D between runs (observed host-side), and the VM's vCPUs are paused (observed at the VMM). Run 2 under a narrowed grant without M and D: the VM was rebuilt, M and D are unreachable, and cwd/env carried over. Positive controls: run 2 under the same grant with only a new expiry reuses the VM (no rebuild) and still reaches M and D; an opted-in keep-running VM does deliver the between-runs connect |
 | **G-R10** | Guest image, guest CPython and host Kata stack are pinned | The image is referenced by digest, and a tag-only reference fails CI; the guest CPython and the embedded CPython (where built) each match one pinned version constant, and a mismatch fails CI; the host-side Kata shim, VMM and virtiofsd versions match a pinned set (they parse guest bytes and are part of the TCB) |
 | **G-R11** | The server process is unprivileged | In the supported internet-facing Kata deployment, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
-| **G-R12** | §3a's table is true | Every "engine enforces" cell cites a passing test; a CI check fails when a cell has none, and such a cell is moved to "you manage"; positive control: removing a cited test fails the check |
+| **G-R12** | §3a's table is true | Every "engine enforces" cell cites a tagged enforcement assertion that has both a containment check and a positive control; a CI check fails if a cited test is missing, is only a smoke test, or did not run on its leg within 14 days (self-hosted Kata runners included); such a cell is moved to "you manage". Positive control: a planted cell citing a smoke test is rejected. Today no cell cites a tagged test, so this gate fails until §6 adds them; that is intended |
+| **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail |
 
 G-R4 depends on ADR-240 reaching Judged. A Kata CI runner needs KVM; the self-hosted path is
 `docs/planning/kata-backend-ci-runner-setup.md` (the server in `docs/guides/thnak-server-runbook.md`
@@ -397,12 +447,16 @@ qualifies).
 ## 6. Consequences and order of work
 
 1. **This ADR** → Judged → apply §8.
+   1b. **Close §2's implicit permissive choices**: unconditional mount authorization; an explicit
+   authority source (per-request or a named single-trusted-caller mode) for sessions and `McpServer`;
+   a required token budget; no backend registered by platform; no `KataBackend` image default; a
+   required Runtime. Each is a behaviour change with its own regression test.
 2. **Layer and API redesign ADR**: the public C++ surface, the layer map (session and workflow out of
    `rt/`, worktree and ledger out of `core/`), type-erased chat client and session, the line budget.
 3. **Unified execution surface**: collapse `SandboxBackend` / `ExecutionSurface` /
    `PersistentShellSurface` / `Runner` into one capability-taking surface; library `execute_code` and
    shell tools on it, with `execute_code` as an opt-in CodeAct `ContextProvider`; Kata guest image (pinned, bash + python3) and `agent.*` guest shim; persistent
-   guest shell; authority-bound VM and per-run process cleanup (R3 rules 1–2); quota'd workspace with
+   guest shell; authority-bound VM and between-run VMM pause (R3 rules 1–2); quota'd workspace with
    copy-in/copy-out (rule 4); lifetime and recycling above the surface (the 2026-10-19 recycling
    proposal).
    3b. **A Linux native-jail Python worker**, so a Linux host without KVM has a local `execute_code`.
@@ -478,6 +532,8 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
   reading of I2 or a quiet weakening of it, and whether rules 1–7 really close every path out.
 - Whether R3 rule 1's "rebuild on any authority change" is affordable for a multi-user server, or
   forces a hot-grant design sooner than §7 admits.
+- Whether §2 rule 5 ("invariants are not options") is drawn in the right place: a required token
+  budget and authority source may feel like defaults the owner said not to have.
 - Whether "nothing implicit" (§2) makes a developer's first run fail in a way that pushes them to
   pick the weakest option (`none`, ADR-071 providers) just to get started, and whether §3a's table is
   enough to stop that.
@@ -521,4 +577,22 @@ Owner direction folded in during round 2 (2026-10-20): `execute_code` comes only
 CodeAct `ContextProvider`; the default is the shell with `python3` as an ordinary program (R3).
 Owner direction folded in after round 2 (2026-10-20): nothing is default, the developer chooses and
 owns the risk (§2, R2), with a table of every option and what the developer must manage (§3a, G-R12).
-A third round on this revision is recommended before the Judge.
+Round 3 (2026-10-20, a fresh independent agent, read-only): **not ready** (table errors; 6 MAJOR;
+MINORs). The author re-checked against the code: the opt-in mount check (`sandbox.hpp:208-213`), the
+`pids` smoke test and fork-bomb absence, `require_authority` (`agent_session_core.hpp:311`, `:521`), the
+unset token budget (`effect_context.hpp:200-202`), the egress proxy caps (`net_egress_proxy.hpp:221-223`),
+the `busybox:latest` default, `cap::Exec` unenforced, `fds` unverified, `wall_ms` not bounding `create()`,
+`sleep infinity`, OOM unclassified, and Linux native-jail's egress refusal. All held.
+
+| Finding | Disposition |
+|---|---|
+| Table: "only granted mounts" false; `pids` unproven; missing Kata items; Linux native-jail egress; identity row missed `require_authority`; budgets row described connection caps as budgets; no persistence, audit or tier rows | §3a rewritten; R2 limit list |
+| §2 rule 3 is not ADR-070's seam (property 2; minting) | §2 rule 3 reworded; R7: authority policy is host root authority, not a seam |
+| "Own risk" would let invariants become options | §2 rule 5; §2 defect list; §6 step 1b |
+| G-R3 covered only execution backends | G-R13 |
+| Rule 1 carried guest-written env across a principal change | Rule 1: worktree only on principal change; env-name allowlist otherwise |
+| Harvest TOCTOU; copy-in unspecified | Rule 4: harvest with VM paused, `openat2` + `fstat`, staging `nosuid,nodev,noexec`; copy-in specified |
+| G-R12 could not fail on a false claim | G-R12: tagged enforcement assertions, recency, smoke tests rejected |
+| MINOR: leftover "default" wording; §6 "process cleanup"; image default vs G-R10; rule 5 cite; root "listed as a choice" | R3 title and text; §6; §2 defect list; rule 5; §3a "Deployment privilege" |
+
+A fourth round is recommended only on §2 and §3a, the parts changed most.
