@@ -1,10 +1,10 @@
 # ADR-242 — Direction reset: does AgentEngine stay a Windows-first SDK with one in-process Python and no networking, or become a Linux-server-first engine that developers build multi-user agent applications on, with a microVM as a first-class execution option, nothing chosen implicitly, and every managed piece replaceable?
 
-**Status:** Proposed (2026-10-20) — project-owner direction, drafted from a whole-system design review
+**Status:** Judged (2026-10-20, project-owner sign-off on PR #209) — project-owner direction, drafted from a whole-system design review
 (§1.2). Red-team round 1 (2026-10-20): **rejected** (2 FATAL, 6 MAJOR, 9 MINOR); round 2: **not ready**
 (1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); round 4 (§2/§3a only): **not ready** (7 errors);
 round 5 (R8 only): **not ready** (1 FATAL, 5 MAJOR); this revision folds all five in, plus the owner's three
-decisions of 2026-10-20 (§10). No owner decision is open. **Binds nothing until the project owner marks it Judged**; on Judged, the
+decisions of 2026-10-20 (§10). No owner decision is open. **Judged: it binds.** The
 amendments in §8 are applied in one change, and the follow-on ADRs in §6 carry the mechanisms.
 
 **Supersedes in part:**
