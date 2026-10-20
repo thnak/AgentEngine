@@ -243,7 +243,6 @@ int main(int argc, char** argv) {
     };
     auto const cancel_probe = [&](std::string const& tag) {
         std::stop_source ss;
-        std::atomic<bool> done{false};
         Clock::time_point t_stop{};
         std::jthread canceller([&] {
             std::this_thread::sleep_for(100ms);
