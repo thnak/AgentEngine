@@ -1,8 +1,9 @@
 #pragma once
 // Implements rfcs/004-Model-Provider-Plane.md §3 (chat_stream) -- ADR-206 (#120 S6), ADR-019 (decode as the bytes
 // arrive), ADR-017 (the stop token). The streaming exchange shared by the OpenAI and Anthropic ChatClient
-// backends' detached stream workers (src/protocol/{openai,anthropic}/chat_client.cpp), which had carried two
-// identical copies of it. Each worker builds its own vendor request and then hands it to pump_sse_stream(); the
+// backends' stream workers (src/protocol/{openai,anthropic}/chat_client.cpp), which had carried two
+// identical copies of it. Since ADR-237 step 34 the workers run `pump_sse_stream_async` (below) on the reactor;
+// the blocking pump_sse_stream() is kept uninstantiated as its documented twin. Each worker builds its own vendor request and then hands it to the pump; the
 // vendor's wire format stays in its StreamingUpdateAccumulator, the template parameter here.
 //
 // Private to src/protocol: not installed, not included by any header.

@@ -172,11 +172,11 @@ namespace detail {
 // ADR-037 (second pass): `classify_http_status_stream_error` -- the streaming path's own separate,
 // coarser status classifier -- is GONE. It existed only because `quark::error::detail` was a
 // non-owning `std::string_view`, and this classifier fed `producer.fail()` sites running on a
-// DETACHED background thread whose stack (including any parsed error-body string) is gone the instant
-// the function returns, while a `stream<T>` consumer may read `fail_error()` well after that --
+// producer whose stack (including any parsed error-body string) is gone by the time a `stream<T>` consumer
+// reads `fail_error()` (then a detached thread, now the owned `run_stream_worker_async` root) --
 // reusing `map_http_status_error`'s dynamic, body-derived message there would have been a real
 // dangling-view read. `agentengine::error::message` OWNS its text, so that hazard no longer exists:
-// `run_stream_worker` below calls `map_http_status_error(status, {})` directly (an empty body, since
+// `run_stream_worker_async` below calls `map_http_status_error(status, {})` directly (an empty body, since
 // the streaming path's error document was never captured as a separate buffer -- see that call site's
 // own comment), getting the exact SAME status-code-driven retryable/policy/contract split `chat()`'s
 // own non-streaming path already uses, from ONE function instead of two that could drift.
@@ -228,7 +228,7 @@ namespace detail {
 // per-provider decode duplicated here and in protocol/anthropic/chat_client.hpp was retired rather than
 // kept as a second, now-redundant decode step: running it twice on an already-dechunked JSON body
 // misparses the JSON as chunk framing and fails closed (found the hard way, fixed same day). The
-// STREAMING path (`chat_stream()` / `run_stream_worker` below) is unaffected -- it uses the separate
+// STREAMING path (`chat_stream()` / `run_stream_worker_async` below) is unaffected -- it uses the separate
 // incremental `sandbox::ChunkedBodyDecoder` (`StreamingUpdateAccumulator`), which the transport-layer
 // fix deliberately does not touch (see that function's own comment for why).
 
@@ -488,7 +488,7 @@ public:
     [[nodiscard]] ChatClientCapabilities capabilities() const { return capabilities_; }
 
     // Gap-audit finding 20 / 003 §8 Q2: identifies THIS bound instance, "vendor:model", the same
-    // runtime string `parse_chat_completion_response`/`run_stream_worker` below stamp onto any real
+    // runtime string `parse_chat_completion_response`/`run_stream_worker_async` below stamp onto any real
     // `Reasoning` item this backend produces (issue #49: a vanilla Chat Completions response never
     // has one, but OpenRouter's own extension `reasoning`/`reasoning_content` field does) -- so
     // `AgentSession`'s cross-provider exclusion correctly recognizes and excludes an Anthropic-origin

@@ -7,10 +7,9 @@
 // `D:\GitSrc\openai-dotnet`), not paraphrased from documentation.
 //
 // Structurally mirrors protocol/openai/chat_client.hpp (same detail-namespace-of-pure-functions
-// shape, same DETACHED background thread for chat_stream(), same injectable resolver/CA-bundle
-// testability seam over Phase C's perform_provider_https_exchange, same "perform_provider_https_
-// exchange is a synchronous blocking call, freely callable from inside chat()'s coroutine body,
-// matching Phase B4a's own already-established position" reasoning) -- differences below are
+// shape, same reactor-suspending coroutine for chat() and chat_stream() (ADR-237 §5.1: originally a detached
+// background thread over the blocking perform_provider_https_exchange, since replaced), same injectable
+// resolver/CA-bundle testability seam) -- differences below are
 // Anthropic's own wire shape, not a second design.
 //
 // Anthropic-specific translation decisions, named rather than silently assumed:
@@ -305,7 +304,8 @@ void accumulate_message_delta_usage(AnthropicUsageSnapshot& snapshot, json::Valu
 // `resp->body` below is already plain by the time `chat()` sees it. Running the old per-provider decode
 // a second time on an already-dechunked JSON body misparses it as chunk framing and fails closed
 // (found the hard way, fixed same day as protocol/openai's identical retirement). The STREAMING path
-// (`chat_stream()` / `run_stream_worker` below, `sandbox::perform_provider_streaming_exchange`) is
+// (`chat_stream()` / `run_stream_worker_async` below, which reads the body on `rt::http_stream` and decodes it
+// incrementally) is
 // unaffected -- it uses the separate incremental `sandbox::ChunkedBodyDecoder`, which the
 // transport-layer fix deliberately does not touch.
 
@@ -433,9 +433,9 @@ private:
 [[nodiscard]] result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
     std::string_view raw_body, bool is_chunked, std::string const& producer_chat_client_id = {});
 
-// ADR-237 §5.1 (step 34): the reactor twin of `run_stream_worker` -- a plain function (chat_client.cpp, where
-// the coroutine pump lives) that builds the same request and starts `pump_sse_stream_async` on `reactor.runtime`
-// via `rt::Runtime::spawn`. `reactor.runtime` must be non-null.
+// ADR-237 §5.1 (step 34): the stream producer's entry point (it replaced the detached-thread `run_stream_worker`)
+// -- a plain function (chat_client.cpp, where the coroutine pump lives) that builds the request and starts
+// `pump_sse_stream_async` on `reactor.runtime` via `rt::Runtime::spawn`. `reactor.runtime` must be non-null.
 void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
                              std::string api_version, std::string model, ChatClientCapabilities caps,
                              ChatRequest request, stream_producer<ChatResponseUpdate> producer,

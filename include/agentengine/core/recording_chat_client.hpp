@@ -170,9 +170,9 @@ public:
 
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
 
-        // Every capture is by value/move -- no reference back to `*this` (mirrors
-        // protocol/openai/chat_client.hpp's run_stream_worker precisely: a `RecordingChatClient`
-        // instance may be destroyed, reused, or have another concurrent `chat_stream()` call started
+        // Every capture is by value/move -- no reference back to `*this` (the same discipline the provider
+        // clients' `run_stream_worker_async` keeps for the producer root it starts on its Runtime: a
+        // `RecordingChatClient` instance may be destroyed, reused, or have another concurrent `chat_stream()` call started
         // against it long before this thread finishes).
         std::thread(
             [inner_stream = std::move(inner_stream), producer = std::move(pair.producer),
