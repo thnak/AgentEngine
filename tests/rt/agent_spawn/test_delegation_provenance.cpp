@@ -166,6 +166,15 @@ Message assistant_call(std::string id, std::string tool, std::string args) {
     return m;
 }
 
+// #196: C's second model call parks (a run suspended mid-flight) when g_chain_park_c is set -- the grandchild-drop test.
+bool g_chain_park_c = false;
+bool g_chain_parked = false;
+struct ChainParkAwaiter {
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
+    void await_suspend(std::coroutine_handle<>) const noexcept { g_chain_parked = true; }
+    void await_resume() const noexcept {}
+};
+
 // A relays its own tainted memory and an injection into B's input; B relays what it was given to C; C calls danger.
 class ChainClient {
 public:
@@ -197,6 +206,7 @@ public:
                                    u};
         }
         if (label == "C" && n == 0) co_return ChatResponse{assistant_call("c1", "danger", R"({"what":"x"})"), u};
+        if (label == "C" && n == 1 && g_chain_park_c) co_await ChainParkAwaiter{};
         co_return ChatResponse{assistant_text(label + "-final"), u};
     }
     agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
@@ -725,6 +735,122 @@ struct DirectSpawn {
         SpawnQuota const         q{quota};
         Ref const                caller_ref{"session:direct", ""};
         return rt::block_on(rt::perform_agent_spawn(args, ctx, registry, *pump, q, tracker, caller_ref, "/caller"));
+    }
+};
+
+// ---- #196 fixtures -----------------------------------------------------------------------------------------------
+// perform_agent_spawn() stepped by hand and dropped, over a child that parks (ParkClient) or fails. Every argument the
+// lazy task borrows is a member, so it outlives the task.
+struct DropSpawn {
+    InMemoryAppendLogStore store;
+    SpawnCostBudget pool;
+    std::unique_ptr<SpawnPump<InMemoryAppendLogStore>> pump;
+    SpawnTargetRegistry registry;
+    SpawnQuotaTracker tracker;
+    CapabilitySet held = CapabilitySet::grant_root({cap::AgentCall{"X", trust::SpawnBudget::mint_root(5)}});
+    std::string last_child_id;
+    bool fail_child = false;
+    EffectContext ctx;
+    rt::AgentSpawnArgs args{"X", "task"};
+    SpawnQuota quota{1};
+    Ref caller_ref{"session:drop", ""};
+    std::string mount = "/caller";
+    int charges = 0;
+    Usage charged{};
+    std::uint64_t discarded = 0;
+    DropSpawn() {
+        pool.initialize(100);
+        pump = std::make_unique<SpawnPump<InMemoryAppendLogStore>>(pool, store);
+        SpawnTargetDescriptor d;
+        d.worktree_mode = sharing_mode::scratch;
+        d.run_child = [this](std::string id, ChildSpawnRequest req) -> rt::task<result<rt::AgentResponse>> {
+            last_child_id = id;
+            if (fail_child) co_return std::unexpected(error{failure_class::fatal, "child failed", "test.child_failed"});
+            co_return co_await run_child_agent_session<ParkClient>(std::move(id), std::move(req), [](ParkClient&) {});
+        };
+        (void)registry.register_target("X", std::move(d));
+        ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
+        ctx.principal = Principal{"p-drop", "t"};
+        ctx.charge_delegated_usage = [this](Usage const& u, std::uint64_t d) {
+            ++charges;
+            charged.input_tokens += u.input_tokens;
+            charged.output_tokens += u.output_tokens;
+            discarded += d;
+        };
+    }
+    [[nodiscard]] rt::task<result<rt::AgentSpawnReply>> start() {
+        return rt::perform_agent_spawn(args, ctx, registry, *pump, quota, tracker, caller_ref, mount);
+    }
+    [[nodiscard]] bool worktree_exists() {
+        auto r = rt::block_on(read_ref(store, agent_spawn_worktree_detail::spawn_mount_id(caller_ref, last_child_id)));
+        return r.has_value() && r->has_value();
+    }
+};
+
+// A workflow-node client that streams: its first stream dies after partial text (a discarded attempt, charged as an
+// ESTIMATE against the budget only), its second asks for `park_tool` (whose run suspends), and then it answers.
+struct ParkToolArgs {
+    int unused = 0;
+};
+AE_JSON_SCHEMA(ParkToolArgs, unused)
+struct ParkToolReply {
+    bool done = false;
+};
+AE_JSON_SCHEMA(ParkToolReply, done)
+struct ParkTool : Tool<ParkTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    static constexpr std::string_view name = "park_tool";
+    static constexpr std::string_view description = "a tool whose run suspends";
+    using Args = ParkToolArgs;
+    using Reply = ParkToolReply;
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
+        if (g_park_enabled) co_await ParkAwaiter{};
+        co_return Reply{true};
+    }
+};
+class ParkToolProvider {
+public:
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
+        ContextContribution c;
+        c.messages.assign(sc.history.begin(), sc.history.end());
+        ToolTable const table = ToolTable::from(ParkTool{});
+        for (auto const& t : table.descriptors()) c.tools.push_back(t);
+        co_return c;
+    }
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+class DiscardStreamClient {
+public:
+    std::size_t calls = 0;
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        co_return std::unexpected(error{failure_class::contract, "chat() is not scripted", "test.no_chat"});
+    }
+    agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) {
+        agentengine::stream_config<ChatResponseUpdate> cfg;
+        cfg.capacity = 16;
+        auto pair = agentengine::make_stream<ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        auto delta = [](decltype(ContentItem::value) v, bool fin, std::optional<Usage> u) {
+            ChatResponseUpdate upd;
+            upd.delta.origin = content_origin::assistant;
+            upd.delta.value = std::move(v);
+            upd.is_final = fin;
+            upd.usage = u;
+            return upd;
+        };
+        std::size_t const n = calls++;
+        if (n == 0) {
+            (void)pair.producer.push(delta(Text{"a fairly long partial answer delivered before the stream died"}, false, {}));
+            pair.producer.fail(error{failure_class::transient, "stream died", "net.connect_failed"});
+        } else if (n == 1) {
+            ToolCall c{"pk1", "park_tool", R"({"unused":0})", content_origin::assistant,
+                       call_provenance::vendor_structured};
+            (void)pair.producer.push(delta(c, true, Usage{5, 7, 0, 0, 0.0}));
+            pair.producer.close();
+        } else {
+            (void)pair.producer.push(delta(Text{"done"}, true, Usage{5, 7, 0, 0, 0.0}));
+            pair.producer.close();
+        }
+        return std::move(pair.consumer);
     }
 };
 
@@ -1406,6 +1532,177 @@ int main() {
                   "R4-D5: a workflow agent-node run that completes normally is charged once, through its outcome "
                   "(200 tokens), never also through the hook");
         }
+    }
+    // ---- #196: the residuals after the ChargeOnUnwind fix --------------------------------------------------------
+    {
+        // S: agent.spawn's PARENT dropped while its child is parked, through perform_agent_spawn itself. The child's
+        // spend is charged once (R4-D1's rule, one level up). What the spawn consumed BEFORE the child ran -- the
+        // per-principal quota slot, the non-refundable SpawnCostBudget token (ADR-031) and the minted worktree -- stays
+        // consumed, exactly as it does after a child that FAILS (the control below): a drop is a failed child, and
+        // agent_spawn.hpp documents it as an accepted residual rather than refunding on one path only.
+        DropSpawn dropped;
+        g_park_enabled = true;
+        g_parked = false;
+        {
+            auto t = dropped.start();
+            t.resume();
+            check(g_parked && !t.done() && dropped.charges == 0 && dropped.pool.remaining() == 99,
+                  "R5-S0: setup -- the spawn parent is suspended inside the child run, one cost token taken, nothing "
+                  "charged yet");
+        }
+        auto const again = rt::block_on(dropped.start());
+        check(dropped.charges == 1 && dropped.charged.input_tokens == 50 && dropped.charged.output_tokens == 50 &&
+                  dropped.discarded == 0,
+              "R5-S1: agent.spawn dropped while its child is parked, through perform_agent_spawn: the child's 100 "
+              "tokens are charged to the caller exactly once");
+        check(!again && again.error().code == "agent_spawn.quota_exhausted" && dropped.pool.remaining() == 99 &&
+                  dropped.worktree_exists(),
+              "R5-S2: the dropped spawn's quota slot, cost token and worktree stay consumed (accepted residual, pinned)");
+
+        DropSpawn failed;
+        failed.fail_child = true;
+        auto const fr = rt::block_on(failed.start());
+        auto const fagain = rt::block_on(failed.start());
+        check(!fr && !fagain && fagain.error().code == "agent_spawn.quota_exhausted" && failed.pool.remaining() == 99 &&
+                  failed.worktree_exists(),
+              "R5-S3: control -- a child that FAILS leaves the identical state (quota slot, cost token, worktree), "
+              "which is why a drop is not refunded either");
+
+        DropSpawn normal;
+        g_park_enabled = false;
+        auto const nr = rt::block_on(normal.start());
+        check(nr.has_value() && normal.charges == 1 && normal.charged.input_tokens == 100 &&
+                  normal.charged.output_tokens == 100 && normal.pool.remaining() == 99,
+              "R5-S4: control -- a spawn that completes is charged exactly once (200 tokens), one cost token");
+        g_park_enabled = true;
+    }
+    {
+        // N: A spawns B spawns C; A's run is dropped while C is parked. Each level is charged exactly once, into the
+        // right ledger: C's spend into B's run, B's whole run (its own call and C's, folded) into A's. `to_b` and
+        // `to_a` record what each child runner's `charge_usage` is called with. C is made to report 777 estimated
+        // discarded tokens, which must survive both hops (B has not folded them yet when it is dropped).
+        struct Ledger {
+            int calls = 0;
+            std::uint64_t tokens = 0;
+            std::uint64_t discarded = 0;
+        };
+        Ledger to_b;
+        Ledger to_a;
+        auto record = [](Ledger& l, ChildSpawnRequest& req, std::uint64_t extra) {
+            auto orig = req.charge_usage;
+            req.charge_usage = [&l, orig, extra](Usage const& u, std::uint64_t d) {
+                ++l.calls;
+                l.tokens += u.input_tokens + u.output_tokens;
+                l.discarded += d + extra;
+                if (orig) orig(u, d + extra);
+            };
+        };
+        g_recs.clear();
+        g_danger_runs = 0;
+        g_chain_park_c = true;
+        g_chain_parked = false;
+        InMemoryAppendLogStore store;
+        SpawnCostBudget pool;
+        pool.initialize(100);
+        SpawnPump<InMemoryAppendLogStore> pump(pool, store);
+        SpawnTargetRegistry registry;
+        SpawnQuotaTracker tracker;
+        g_quota = SpawnQuota{10};
+        g_pump = &pump;
+        g_registry = &registry;
+        g_tracker = &tracker;
+        SpawnTargetDescriptor b;
+        b.metadata = AgentMetadata{};
+        b.metadata.capability_ceiling = {cap::AgentCall{"C", trust::SpawnBudget::mint_root(2)}};
+        b.worktree_mode = sharing_mode::scratch;
+        b.run_child = [&to_a, record](std::string id, ChildSpawnRequest req) {
+            record(to_a, req, 0);
+            return run_child_agent_session<ChainClient, NoSessionState, ChainProvider<1>>(
+                std::move(id), std::move(req), [](ChainClient& c) {
+                    c.label = "B";
+                    c.per_call_tokens = 5000;
+                });
+        };
+        SpawnTargetDescriptor cdesc;
+        cdesc.metadata = AgentMetadata{};
+        cdesc.worktree_mode = sharing_mode::scratch;
+        cdesc.run_child = [&to_b, record](std::string id, ChildSpawnRequest req) {
+            record(to_b, req, 777);
+            return run_child_agent_session<ChainClient, NoSessionState, ChainProvider<2>>(
+                std::move(id), std::move(req), [](ChainClient& c) {
+                    c.label = "C";
+                    c.per_call_tokens = 5000;
+                });
+        };
+        (void)registry.register_target("B", std::move(b));
+        (void)registry.register_target("C", std::move(cdesc));
+        AgentSession<ChainClient, NoSessionState, ChainProvider<0>> a;
+        a.initialize("session-A", Principal{"p-A", "tenant-1"}, std::uint64_t{10'000'000});
+        a.emplace_chat_client().label = "A";
+        CapabilitySet const held = CapabilitySet::grant_root({cap::AgentCall{"B", trust::SpawnBudget::mint_root(3)},
+                                                              cap::AgentCall{"C", trust::SpawnBudget::mint_root(3)}});
+        a.set_capabilities(&held);
+        (void)a.disable_system_channel_fence("op-A");
+        (void)a.set_unattended_approvals("op-A");
+        Message const in = r3_user("go");
+        {
+            auto t = a.start_run(StartRun{in});
+            t.resume();
+            check(g_chain_parked && !t.done() && to_a.calls == 0 && to_b.calls == 0,
+                  "R5-N0: setup -- A is suspended inside B inside C's second model call, nothing charged yet");
+        }  // A's run is dropped
+        check(to_b.calls == 1 && to_b.tokens == 10'000,
+              "R5-N1: C's spend (10000) is charged exactly once, into B's run");
+        check(to_a.calls == 1 && to_a.tokens == 20'000,
+              "R5-N2: B's whole run -- its own call and C's, folded -- is charged exactly once, into A's run (20000)");
+        check(to_b.discarded == 777 && to_a.discarded == 777,
+              "R5-N3: C's estimated discarded tokens (777) survive the drop through B to A (B had not folded them)");
+        check(r3_tokens(a.run_usage()) == 20'002,
+              "R5-N4: A's own ledger holds its own call (2) plus the whole delegated tree (20000)");
+        g_chain_park_c = false;
+    }
+    {
+        // W: a workflow agent node dropped mid-run, after a discarded stream attempt: the estimate reaches the caller
+        // (discarded_tokens_estimate on the drop path), and the session -- whose run frame was destroyed -- runs again.
+        Usage charged{};
+        std::uint64_t discarded = 0;
+        int charges = 0;
+        g_park_enabled = true;
+        g_parked = false;
+        AgentSession<DiscardStreamClient, NoSessionState, ParkToolProvider> node;
+        node.initialize("r5-w-node", Principal{"p-r5", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.set_stream_model_calls(true);
+        node.set_stream_retries(1);
+        CapabilitySet const held = CapabilitySet::grant_root({});
+        node.set_capabilities(&held);
+        rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
+        EffectContext ctx;
+        ctx.charge_delegated_usage = [&](Usage const& u, std::uint64_t d) {
+            ++charges;
+            charged.input_tokens += u.input_tokens;
+            charged.output_tokens += u.output_tokens;
+            discarded += d;
+        };
+        {
+            agentengine::Message const input = r3_user("go");
+            auto t = body(input, ctx);
+            t.resume();
+            check(g_parked && !t.done() && charges == 0,
+                  "R5-W0: setup -- the streaming node is parked inside its tool call, after one discarded attempt");
+        }
+        check(charges == 1 && charged.input_tokens == 5 && charged.output_tokens == 7 && discarded > 0,
+              "R5-W1: a dropped node run charges its usage (12) AND its discarded-attempt estimate (> 0) to the caller");
+        // Session reuse: the dropped run left no run-in-progress / pending state behind.
+        g_park_enabled = false;
+        std::uint64_t const est_before = node.discarded_tokens_estimate();
+        auto const reuse = rt::block_on(node.start_run(StartRun{r3_user("again")}));
+        check(reuse.has_value() && agentengine::text_of(reuse->message) == "done" && !node.has_open_interactions(),
+              "R5-W2: a session whose run frame was destroyed mid-run runs again to completion (no stuck run state)");
+        (void)est_before;
+        charges = 0;
+        auto const via_body = rt::block_on(body(r3_user("a third"), ctx));
+        check(via_body.has_value() && charges == 0,
+              "R5-W3: ... and runs again through the workflow adapter, charged through its outcome, not the hook");
     }
     {
         // L1 (X6): the host-line label is cut on a character boundary and carries no line/bidi controls.

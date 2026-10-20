@@ -79,6 +79,11 @@ agentengine::Usage AgentSessionCore::run_usage() const {
     return u;
 }
 
+std::uint64_t AgentSessionCore::discarded_tokens_estimate() const {
+    std::lock_guard<std::mutex> lock(delegated_charges_->mutex);
+    return discarded_tokens_estimate_ + delegated_charges_->extra_tokens;
+}
+
 // agent_session.hpp:1040
 std::vector<std::string> AgentSessionCore::expired_interaction_ids(std::int64_t now_ns) const {
     std::vector<std::string> ids;
