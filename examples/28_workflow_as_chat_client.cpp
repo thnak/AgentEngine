@@ -99,25 +99,25 @@ int main() {
     std::vector<ExecutorBody> bodies = {
         // "greet" decodes the history envelope this adapter builds from ChatRequest.messages --
         // proving the message-flattening design round 4/9 settled on, not a stub.
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             if (in.content.size() != 1) {
-                return std::unexpected(error{failure_class::contract, "expected one envelope item",
-                                              "example.bad_envelope"});
+                co_return std::unexpected(error{failure_class::contract, "expected one envelope item",
+                                                 "example.bad_envelope"});
             }
             auto const* custom = std::get_if<Custom>(&in.content[0].value);
             if (custom == nullptr || custom->type_id != "agentengine.workflow_chat_client_history") {
-                return std::unexpected(error{failure_class::contract, "expected the history envelope",
-                                              "example.bad_envelope_type"});
+                co_return std::unexpected(error{failure_class::contract, "expected the history envelope",
+                                                 "example.bad_envelope_type"});
             }
             auto parsed = json::parse(custom->payload_json);
             std::size_t const count = (parsed && parsed->is_array()) ? parsed->as_array().size() : 0;
             std::printf("[greet] decoded %zu message(s) from the caller's own history\n", count);
-            return ExecutorOutcome{text_message("What's your favorite color?", role::assistant)};
+            co_return ExecutorOutcome{text_message("What's your favorite color?", role::assistant)};
         },
         // "ask" itself is never invoked -- reaching a request_port node IS the event.
-        [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-            return std::unexpected(error{failure_class::fatal, "a request_port node must never be invoked",
-                                          "example.port_body_invoked"});
+        [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return std::unexpected(error{failure_class::fatal, "a request_port node must never be invoked",
+                                             "example.port_body_invoked"});
         },
     };
 

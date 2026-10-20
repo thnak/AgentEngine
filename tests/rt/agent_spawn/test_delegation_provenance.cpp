@@ -105,9 +105,9 @@ struct DangerTool : Tool<DangerTool, Capabilities<>, EffectClass<effect_class::p
     static constexpr std::string_view description = "dangerous action";
     using Args = DangerArgs;
     using Reply = DangerReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         ++g_danger_runs;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -226,7 +226,7 @@ public:
         // Named, not a temporary: `descriptors()` returns a reference into the table, and a range-for over a
         // temporary's member only keeps it alive under C++23's P2718, which clang-cl did not apply (PR #103 CI:
         // C saw "unknown tool: danger", and the run crashed in the next scenario).
-        ToolTable const danger_table = ToolTable::from_tools<DangerTool>();
+        ToolTable const danger_table = ToolTable::from(DangerTool{});
         for (auto const& t : danger_table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -489,7 +489,7 @@ public:
         if (sp) {
             for (auto& t : sp->tools) c.tools.push_back(std::move(t));
         }
-        ToolTable const danger_table = ToolTable::from_tools<DangerTool>();
+        ToolTable const danger_table = ToolTable::from(DangerTool{});
         for (auto const& t : danger_table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -580,10 +580,10 @@ struct ParProbeTool : Tool<ParProbeTool, Capabilities<>, EffectClass<effect_clas
     static constexpr std::string_view description = "records its remaining budget";
     using Args = NoArgs2;
     using Reply = DangerReply;
-    static result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext& ctx) const {
         std::lock_guard<std::mutex> lock(g_par_mutex);
         g_par_seen.push_back(ctx.remaining_token_budget);
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 class ParClient {
@@ -609,7 +609,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        ToolTable const table = ToolTable::from_tools<ParProbeTool>();
+        ToolTable const table = ToolTable::from(ParProbeTool{});
         for (auto const& t : table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -662,7 +662,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        ToolTable const table = ToolTable::from_tools<DangerTool>();
+        ToolTable const table = ToolTable::from(DangerTool{});
         for (auto const& t : table.descriptors()) c.tools.push_back(t);
         co_return c;
     }
@@ -897,7 +897,7 @@ int main() {
         EffectContext ctx;
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
-        (void)body(assistant_text("upstream agent said: " + kInjection), ctx);
+        (void)rt::block_on(body(assistant_text("upstream agent said: " + kInjection), ctx));
         Message const* u = nullptr;
         if (!seen.empty()) {
             for (auto const& m : seen.front().messages) {
@@ -925,7 +925,7 @@ int main() {
         ui.origin = content_origin::user;
         ui.value = Text{"the workflow's input"};
         user_in.content.push_back(ui);
-        (void)body2(user_in, ctx);
+        (void)rt::block_on(body2(user_in, ctx));
         bool passthrough = false;
         if (!seen2.empty()) {
             for (auto const& m : seen2.front().messages) {
@@ -1005,7 +1005,7 @@ int main() {
         agent_item.origin = content_origin::assistant;
         agent_item.value = Text{"agent said: " + kInjection};
         merged.content.push_back(agent_item);
-        (void)body(merged, ctx);
+        (void)rt::block_on(body(merged, ctx));
         Message const* u = seen.empty() ? nullptr : first_user_in(seen.front());
         bool w3 = false;
         // Round 2 order: the host's items, then the host line, then the agent's -- the host line says everything after
@@ -1029,7 +1029,7 @@ int main() {
         // Round 2: the node's fence is OFF (a target's `fence_disabled_by`), so text left in the system channel would be
         // sent as system instructions. The merge must come out as a user-role delegated message instead.
         (void)node.disable_system_channel_fence("op-wf");
-        (void)body(sys_merge, ctx);
+        (void)rt::block_on(body(sys_merge, ctx));
         bool agent_text_in_system = false;
         bool agent_text_delegated = false;
         bool host_marker_plain = false;
@@ -1060,7 +1060,7 @@ int main() {
         cu.origin = content_origin::assistant;
         cu.value = Custom{"app/structured", R"({"k":1})"};
         custom_reply.content.push_back(cu);
-        (void)body(custom_reply, ctx);
+        (void)rt::block_on(body(custom_reply, ctx));
         bool custom_kept = false;
         if (!seen.empty()) {
             for (auto const& m : seen.front().messages) {
@@ -1347,8 +1347,8 @@ int main() {
         wf.bound.max_rounds = 4;
         std::vector<rt::ExecutorBody> bodies;
         bodies.push_back(rt::agent_session_as_executor_body(node));
-        bodies.push_back([](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
-            return rt::ExecutorOutcome{in};
+        bodies.push_back([](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<rt::ExecutorOutcome>> {
+            co_return rt::ExecutorOutcome{in};
         });
         sup.initialize(wf, std::move(bodies));
         auto const r = rt::block_on(sup.run_workflow(rt::RunWorkflow{r3_user("go")}));
@@ -1379,7 +1379,7 @@ int main() {
         };
         bool threw = false;
         try {
-            (void)body(r3_user("go"), ctx);
+            (void)rt::block_on(body(r3_user("go"), ctx));
         } catch (std::runtime_error const&) {
             threw = true;
         }

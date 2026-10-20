@@ -180,10 +180,10 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
         "the tool the using-the-code-interpreter skill teaches idioms for.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         execute_code_called_log() = true;
         observed_code_arg_log() = a.code;
-        return Reply{fake_execute(a.code)};
+        co_return Reply{fake_execute(a.code)};
     }
 };
 
@@ -198,7 +198,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
         ContextContribution contribution;
         contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
-        contribution.tools = ToolTable::from_tools<ExecuteCodeTool>().descriptors();
+        contribution.tools = ToolTable::from(ExecuteCodeTool{}).descriptors();
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

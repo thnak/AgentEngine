@@ -45,10 +45,10 @@ struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>>
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
         g_last_observed_capabilities_was_null = (ctx.capabilities == nullptr);
         g_last_observed_capabilities           = ctx.capabilities;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -59,11 +59,11 @@ struct GatedBackgroundableTool
     static constexpr std::string_view description = "Requires cap::Entropy, runs backgrounded.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
         g_last_observed_capabilities_was_null = (ctx.capabilities == nullptr);
         g_last_observed_capabilities           = ctx.capabilities;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -87,7 +87,7 @@ mcp::JsonRpcRequest tools_call_as_task(std::string id, std::string tool_name) {
 }  // namespace
 
 int main() {
-    auto const table = ae::ToolTable::from_tools<GatedTool, GatedBackgroundableTool>();
+    auto const table = ae::ToolTable::from(GatedTool{}, GatedBackgroundableTool{});
     // held_ grants NOTHING -- every claim below distinguishes "authorized via held_" from "authorized
     // via grant" by construction: held_ alone could never pass gated_tool's own capability_ceiling.
     ae::CapabilitySet const held;

@@ -94,15 +94,15 @@ T drive(agentengine::rt::task<T> t) {
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name, std::shared_ptr<int> calls = nullptr) {
-    return [name = std::move(name), calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    return [name = std::move(name), calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (calls) ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
 [[nodiscard]] ExecutorBody failing() {
-    return [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-        return std::unexpected(error{failure_class::fatal, "injected", "test.injected"});
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(error{failure_class::fatal, "injected", "test.injected"});
     };
 }
 
@@ -722,7 +722,7 @@ spec:
         check(body.has_value(), "C18 setup: the adapter itself constructs");
         if (body) {
             EffectContext ctx;
-            auto out = (*body)(text_message("x"), ctx);
+            auto out = drive((*body)(text_message("x"), ctx));
             check(!out.has_value(), "C18: workflow_as_executor_body refuses a batch-enabled inner");
         }
         check(enabled->pending_batches().empty(), "C18: and nothing was submitted through it");

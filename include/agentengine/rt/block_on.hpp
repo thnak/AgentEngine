@@ -2,9 +2,10 @@
 // Implements ADR-102 Phase 4 (identity-native sandbox/worktree design) -- `agentengine::rt::
 // block_on<T>()`, a synchronous driver for `agentengine::rt::task<T>` that is CORRECT under genuine
 // cross-thread `AsyncMutex` contention, unlike the naive "while (!t.done()) t.resume();" loop this
-// codebase otherwise uses everywhere (`rt/agent_workflow_executor.hpp`'s own `agent_executor_detail::
-// drive()`, every `tests/test_rt_agent_session*.cpp` file's local `drive<T>()`, and this file's own
-// first version of `mandatory_sandbox_provider.hpp`'s local driver).
+// codebase still uses in every `tests/test_rt_agent_session*.cpp` file's local `drive<T>()` and in
+// this file's own first version of `mandatory_sandbox_provider.hpp`'s local driver. (The engine's
+// third such helper, `agent_executor_detail::drive()`, was deleted along with the executor body's own
+// drive loop in ADR-237 §5.1 Phase G -- see rt/agent_workflow_executor.hpp.)
 //
 // WHY THIS FILE EXISTS, A REAL FINDING NOT ANTICIPATED AT DESIGN TIME: an independent red-team pass
 // on `sandbox/mandatory_sandbox_provider.hpp` (2026-08-28) found, and EMPIRICALLY PROVED with a
@@ -57,7 +58,7 @@
 // never inside another thread's `unlock()` trampoline (where a nested `block_on` relock livelocked,
 // ADR-175 round 1 finding 2). The wait sleeps on a condition variable once a home exists; a task that never
 // parked through a homing awaiter falls back to the original yield loop. Every synchronous driver in `rt::`
-// now goes through here -- the five resume-until-done `drive()` loops, `drive_leaf_task()`,
+// now goes through here -- the five resume-until-done `drive()` loops, `drive_leaf_task()` (since deleted, #175),
 // `ThreadPool::run_job()` and `Bundle::ask()` each mishandled a task that suspends in its own way.
 //
 // HOLDER. A nested call (a tool closure inside a round that is itself being driven) is a synchronous part

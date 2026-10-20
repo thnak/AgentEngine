@@ -331,6 +331,27 @@
 // `create()`). Fixed with a `KataBackend`-private `std::mutex` serializing just the
 // `fallocate`/`mkfs.ext4`/`losetup -f`/loop-mount sequence, not `create()` as a whole.
 //
+// SLICE 13 (2026-10-19, decisions/ADR-240-kata-egress-policy-enforcement-point.md; GitHub #194) -- the
+// SLICE 10/11 netns `ae_netpolicy` table never saw a microVM guest's traffic (live finding 2: Kata joins the tap
+// and the veth with tc mirred, so the netns's netfilter hooks are bypassed). Reachable-and-wrong until now:
+// `allowlist` enforced nothing, `net_bytes` counted ~0, and the guest could reach host services, other guests and
+// IPv6 link-local. ADR-093 §3/§4 and ADR-095 §3 (net_bytes) are WRONG for a microVM guest as shipped; ADR-240 is
+// the correction. The netns nft block is removed. The policy now lives on the host end of the sandbox's veth, a
+// port of the CNI bridge in the HOST namespace (egress_policy.hpp has the three layers: native port hardening,
+// a tc allowlist, one shared nftables bridge table). `create()` installs it after `cnitool add` and before the
+// guest boots and fails closed (full reverse cleanup) if any step fails; `exec()` re-verifies it and kills the
+// guest on mismatch; `destroy()` removes it only after the veth is gone. Each allowlist entry resolves ONCE at
+// create to up to 8 validated A records (all allowed, the first pinned in /etc/hosts); an entry resolving to a
+// host-local address is rejected. `deny_all=true` with a non-empty allowlist enables networking (the allowlist
+// is authoritative, unchanged). Operator preconditions the backend does NOT change: internet egress on a host
+// whose FORWARD policy is DROP needs an operator FORWARD accept for the Kata bridge (the backend only adds
+// drops and never edits iptables/ufw/Docker/sysctls); the CNI bridge must be dedicated to this backend (frames
+// of unregistered ports on it are dropped); `nft` >= 1.0.9, kernel >= 6.3, `tc` with cls_flower, `bridge`.
+// `net_bytes` contract: delivered L3 bytes never exceed N, the crossing packet (possibly a 64 KiB GSO packet)
+// is dropped whole, failure is a silent stall; the quota dies with the table, so a lost table kills the
+// sandbox instead of reinstalling with a fresh budget. No background timer: a guest idle between backend calls
+// stays under the tc layer (without quota) until the next call.
+//
 // Still NOT done, named honestly rather than silently assumed:
 //
 //   - `ExecRequest::source` is treated as a shell command line (`/bin/sh -c <source>`) the caller is
@@ -365,10 +386,8 @@
 //     disclosed posture as every prior slice's own `ctr` CLI assumptions. The exact `nft` argv
 //     tokenization (each clause as a separate argv entry rather than one shell-joined string) is
 //     assumed, not empirically confirmed.
-//   - The nftables allowlist targets the netns's own default output chain (not a named interface) --
-//     correct as long as the CNI network attaches exactly one non-loopback interface per netns
-//     (true for a single `cnitool add` call, this backend's only usage), but would need revisiting if
-//     a future change ever attaches more than one.
+//   - SLICE 13 supersedes the netns-local nftables allowlist this bullet used to describe (it never saw guest
+//     traffic, see the SLICE 13 block above and ADR-240). Residuals of the replacement are listed in ADR-240 §8.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
@@ -400,12 +419,14 @@
 // cgroup-delegation precondition on the native-jail Linux side.
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
+#include "backends/kata/egress_policy.hpp"
 
 namespace agentengine::kata {
 
@@ -513,6 +534,11 @@ private:
         bool net_created = false;     // SLICE 10: true iff create() ran the ip-netns/cnitool/nft
                                        // sequence for this instance -- destroy() only reverses it
                                        // when this is set (deny_all instances never touch it).
+        std::optional<egress::InstalledPolicy> egress;  // SLICE 13 (ADR-240): what install() proved and
+                                       // snapshotted for this sandbox's bridge port; exec() re-verifies
+                                       // against it and destroy() removes it AFTER the port is gone.
+        bool egress_failed = false;    // SLICE 13: exec()'s verification failed and the guest was killed;
+                                       // every later exec() refuses (destroy() still works).
     };
 
     std::string runtime_type_;
@@ -521,6 +547,11 @@ private:
     std::string cni_plugin_dir_;
     std::string cni_conf_dir_;
     std::unordered_map<std::string, Instance> instances_;
+    // SLICE 13: guards instances_ itself (find/emplace/erase). The registry documents "tolerate concurrent
+    // create/exec/destroy calls from unrelated sessions"; the map was unguarded until the parallel egress
+    // tests exercised it. Node references stay valid across other nodes' insert/erase, so a held Instance&
+    // is used outside the lock exactly as before.
+    std::mutex instances_mutex_;
     // SLICE 11: serializes ONLY the fallocate/mkfs.ext4/losetup-f/loop-mount sequence of create()'s
     // disk-quota setup across concurrent create() calls (released before ctr run --config itself,
     // which needs no serialization) -- closes a real, if corruption-benign, TOCTOU against the

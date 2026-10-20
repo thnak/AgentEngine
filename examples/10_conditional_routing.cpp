@@ -72,16 +72,16 @@ void check(bool cond, char const* what) {
 // decided the label.
 [[nodiscard]] ExecutorBody triage(std::function<std::string(std::string const&)> classify) {
     return [classify = std::move(classify)](
-               Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text  = text_of(in);
         std::string const label = classify(text);
-        return ExecutorOutcome{text_message(text + " -> " + label), {label}};
+        co_return ExecutorOutcome{text_message(text + " -> " + label), {label}};
     };
 }
 
 [[nodiscard]] ExecutorBody handler(std::string name) {
-    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
-        return text_message(text_of(in) + " (handled by " + name + ")");
+    return [name](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + " (handled by " + name + ")")};
     };
 }
 
@@ -89,10 +89,10 @@ void check(bool cond, char const* what) {
 // `FunctionExecutor::invocations()` actor state, so this example can still measure (not just infer)
 // that exactly one branch ran.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> count) {
-    return [body = std::move(body), count](Message const& in,
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+    return [body = std::move(body),
+            count](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         count->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 

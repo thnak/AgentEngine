@@ -44,7 +44,7 @@ struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>>
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{}; }
 };
 
 trust::BearerTokenClaims make_claims(std::string sub, std::chrono::system_clock::time_point exp) {
@@ -106,7 +106,7 @@ int main() {
         auto key = trust::generate_bearer_secret_key();
         check(key.has_value(), "claim 4 setup: generate_bearer_secret_key() succeeds");
 
-        auto const table = ae::ToolTable::from_tools<GatedTool>();
+        auto const table = ae::ToolTable::from(GatedTool{});
         ae::CapabilitySet const held;  // grants nothing -- held_ alone could never pass gated_tool
         mcp::McpServer server(table, held, ae::ApprovalDecider{}, "capability-grant-bridge-test-server");
 

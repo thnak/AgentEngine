@@ -30,7 +30,7 @@
 // a genuine `ae::task<result<...>>` coroutine (a real network call for any production `Embedder`
 // conformer). ADR-064 closes this WITHOUT widening `ToolDescriptor::invoke`'s signature (rejected as
 // Design A, 25+ call sites, its own separate cross-cutting decision): `rt::drive_leaf_task()`
-// (rt/drive_leaf_task.hpp) drives `embedder_.embed_batch()` synchronously, gated by the `Embedder`
+// (rt/drive_leaf_task.hpp, deleted by #175) drove `embedder_.embed_batch()` synchronously, gated by the `Embedder`
 // concept's REQUIRED `synchronous_leaf` trait (core/embedder.hpp) -- a conformer must declare it
 // `true` (an explicit, reviewed claim that its `embed_batch()` body never awaits anything but nested
 // `task<T>`/`task<void>`) before `recall`'s `invoke` will use this path. `OpenAIEmbedder` declares

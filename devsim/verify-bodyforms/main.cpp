@@ -53,14 +53,16 @@ Executor node_desc(char const* id, executor_kind kind = executor_kind::function)
 
 int main() {
     // ---- 1. the pass-through shape: return a Message, let it convert -------------------------
-    ExecutorBody passthrough = [](Message const& in, EffectContext&) {
-        return text_message(text_of(in) + "!");   // Message -> ExecutorOutcome, implicitly
+    ExecutorBody passthrough = [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + "!")};  // Message -> ExecutorOutcome, implicitly
     };
 
     // ---- 2. the routing shape: annotate result<ExecutorOutcome> ------------------------------
-    ExecutorBody router = [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    ExecutorBody router = [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = text_of(in);
-        return ExecutorOutcome{text_message(text), {text.find("x") != std::string::npos ? "a" : "b"}};
+        co_return ExecutorOutcome{text_message(text), {text.find("x") != std::string::npos ? "a" : "b"}};
     };
 
     Workflow wf;

@@ -181,11 +181,11 @@ struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_
         "Get the current weather for a city. Returns temperature in Celsius ONLY -- never Fahrenheit.";
     using Args = GetWeatherArgs;
     using Reply = GetWeatherReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("get_weather");
         Reply const reply{13.7, "overcast"};
         weather_returned_celsius_log() = reply.temp_c;
-        return reply;
+        co_return reply;
     }
 };
 
@@ -208,11 +208,11 @@ struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effec
         "called with the precise celsius number from a prior get_weather result, never an estimate.";
     using Args = ConvertTempArgs;
     using Reply = ConvertTempReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         called_tools_log().insert("convert_temperature");
         convert_arg_celsius_log() = a.celsius;
-        if (a.to_unit == "kelvin") return Reply{a.celsius + 273.15, "kelvin"};
-        return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
+        if (a.to_unit == "kelvin") co_return Reply{a.celsius + 273.15, "kelvin"};
+        co_return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
     }
 };
 
@@ -231,9 +231,9 @@ struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class:
     static constexpr std::string_view description = "Get the current local time for a timezone.";
     using Args = GetTimeArgs;
     using Reply = GetTimeReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("get_time");
-        return Reply{"14:32"};
+        co_return Reply{"14:32"};
     }
 };
 
@@ -251,15 +251,15 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
     static constexpr std::string_view description = "Get the current market price for a stock ticker.";
     using Args = StockPriceArgs;
     using Reply = StockPriceReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("stock_price");
-        return Reply{198.42, "USD"};
+        co_return Reply{198.42, "USD"};
     }
 };
 
 using AllToolsTable = ToolTable;
 [[nodiscard]] AllToolsTable all_tools_table() {
-    return ToolTable::from_tools<GetWeatherTool, ConvertTempTool, GetTimeTool, StockPriceTool>();
+    return ToolTable::from(GetWeatherTool{}, ConvertTempTool{}, GetTimeTool{}, StockPriceTool{});
 }
 
 // The ContextProvider fixture: same windowing behaviour as HistoryProvider<Window<0>>, plus a fixed

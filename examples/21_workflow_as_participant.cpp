@@ -74,14 +74,14 @@ void check(bool cond, char const* what) {
 // until it sees the inner workflow's own two-step signature in the transcript, then to "writer", then
 // finishes.
 [[nodiscard]] ExecutorBody moderator() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
         std::string        decision;
         if (transcript.find(">digest") == std::string::npos) decision = "researcher";
         else if (transcript.find("Writer:") == std::string::npos) decision = "writer";
         else decision = "done";
         std::printf("[moderator] %s\n", decision.c_str());
-        return ExecutorOutcome{text_message(transcript), {decision}};
+        co_return ExecutorOutcome{text_message(transcript), {decision}};
     };
 }
 
@@ -103,11 +103,11 @@ void check(bool cond, char const* what) {
 
 [[nodiscard]] std::vector<ExecutorBody> inner_research_bodies() {
     return {
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">fetch")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">fetch")};
         },
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">digest")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">digest")};
         },
     };
 }
@@ -155,11 +155,11 @@ int main() {
     std::vector<ExecutorBody> bodies = {
         moderator(),
         *researcher_body,  // <-- the whole inner Workflow, reused as an ORDINARY participant
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + "\n\nWriter: summary complete.")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + "\n\nWriter: summary complete.")};
         },
-        [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};  // the builder's synthetic "done" sink
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};  // the builder's synthetic "done" sink
         },
     };
 

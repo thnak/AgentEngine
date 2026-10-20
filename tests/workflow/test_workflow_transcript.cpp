@@ -88,21 +88,21 @@ void make(Fixture& f) {
     }
     f.graph = std::move(*built);
     f.bodies = {
-        [&f](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        [&f](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             int const n = f.step.fetch_add(1);
             std::vector<std::string> route = n % 3 == 0 ? std::vector<std::string>{"p1"}
                                              : n % 3 == 1 ? std::vector<std::string>{"p2"}
                                                           : std::vector<std::string>{"done"};
-            return ExecutorOutcome{text_message(text_of(in)), route};
+            co_return ExecutorOutcome{text_message(text_of(in)), route};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">p1")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">p1")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">p2")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">p2")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};
         },
     };
 }

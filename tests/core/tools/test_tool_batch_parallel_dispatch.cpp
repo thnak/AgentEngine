@@ -179,7 +179,7 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(ctx.history.begin(), ctx.history.end());
-        c.tools = ToolTable::from_tools<Tools...>().descriptors();
+        c.tools = ToolTable::from(Tools{}...).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -211,12 +211,12 @@ struct RendezvousToolA : agentengine::Tool<RendezvousToolA, Capabilities<>,
     static constexpr std::string_view description = "Blocks until rendezvous_b has also started.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         g_a_started.store(true, std::memory_order_release);
         if (wait_up_to(g_b_started, std::chrono::milliseconds(2000))) {
             g_a_saw_b.store(true, std::memory_order_release);
         }
-        return Reply{"a"};
+        co_return Reply{"a"};
     }
 };
 struct RendezvousToolB : agentengine::Tool<RendezvousToolB, Capabilities<>,
@@ -225,12 +225,12 @@ struct RendezvousToolB : agentengine::Tool<RendezvousToolB, Capabilities<>,
     static constexpr std::string_view description = "Blocks until rendezvous_a has also started.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         g_b_started.store(true, std::memory_order_release);
         if (wait_up_to(g_a_started, std::chrono::milliseconds(2000))) {
             g_b_saw_a.store(true, std::memory_order_release);
         }
-        return Reply{"b"};
+        co_return Reply{"b"};
     }
 };
 
@@ -244,7 +244,7 @@ struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<ef
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 1.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         int const now = g_group_concurrent.fetch_add(1, std::memory_order_acq_rel) + 1;
         int prev = g_group_max_concurrent.load(std::memory_order_relaxed);
         while (now > prev &&
@@ -252,7 +252,7 @@ struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<ef
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
         g_group_concurrent.fetch_sub(1, std::memory_order_acq_rel);
-        return Reply{"x"};
+        co_return Reply{"x"};
     }
 };
 struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<effect_class::pure>,
@@ -261,7 +261,7 @@ struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<ef
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 2.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         int const now = g_group_concurrent.fetch_add(1, std::memory_order_acq_rel) + 1;
         int prev = g_group_max_concurrent.load(std::memory_order_relaxed);
         while (now > prev &&
@@ -269,7 +269,7 @@ struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<ef
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
         g_group_concurrent.fetch_sub(1, std::memory_order_acq_rel);
-        return Reply{"y"};
+        co_return Reply{"y"};
     }
 };
 
@@ -289,11 +289,11 @@ struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<ef
             "Waits for delay_b to signal completion, then records its own completion.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         wait_up_to(g_delay_b_done, std::chrono::milliseconds(2000));
         std::lock_guard<std::mutex> lock(g_completion_mutex);
         g_completion_order.push_back("a");
-        return Reply{"a"};
+        co_return Reply{"a"};
     }
 };
 struct DelayToolB : agentengine::Tool<DelayToolB, Capabilities<>, EffectClass<effect_class::pure>,
@@ -302,13 +302,13 @@ struct DelayToolB : agentengine::Tool<DelayToolB, Capabilities<>, EffectClass<ef
     static constexpr std::string_view description = "Records completion, then signals delay_a.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         {
             std::lock_guard<std::mutex> lock(g_completion_mutex);
             g_completion_order.push_back("b");
         }
         g_delay_b_done.store(true, std::memory_order_release);
-        return Reply{"b"};
+        co_return Reply{"b"};
     }
 };
 

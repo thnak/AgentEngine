@@ -94,9 +94,9 @@ using agentengine::rt::workflow_status;
 }
 
 [[nodiscard]] ExecutorBody counting_appender(std::string name, std::shared_ptr<int> calls) {
-    return [name = std::move(name), calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    return [name = std::move(name), calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 

@@ -62,8 +62,8 @@ struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
     static constexpr std::string_view description = "Always fails as if net_egress_proxy blocked the address.";
     using Args = BlockedArgs;
     using Reply = BlockedReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
+        co_return std::unexpected(
             error{failure_class::policy, "address is in a blocked range", "net.address_blocked"});
     }
 };
@@ -215,7 +215,7 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<BlockedNetTool>();
+        bridge.bridged_tools = ToolTable::from(BlockedNetTool{});
         bridge.capabilities = {cap::Entropy{}};
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);

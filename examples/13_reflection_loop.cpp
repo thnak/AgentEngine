@@ -35,6 +35,7 @@
 using namespace agentengine;
 using namespace agentengine::workflow;
 using agentengine::rt::ExecutorBody;
+using agentengine::rt::ExecutorOutcome;
 using agentengine::rt::RunWorkflow;
 using agentengine::rt::WorkflowResult;
 using agentengine::rt::WorkflowSupervisor;
@@ -66,8 +67,8 @@ void check(bool cond, char const* what) {
 // writer producing a draft and a real critic appending feedback. What matters for this example is
 // the GRAPH shape (a bounded cycle), not what either node's body actually does.
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
-        return text_message(text_of(in) + ">" + name);
+    return [name](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return agentengine::rt::ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 

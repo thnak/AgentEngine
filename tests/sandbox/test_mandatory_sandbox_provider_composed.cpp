@@ -74,7 +74,7 @@ struct LocalTool : Tool<LocalTool> {
     static constexpr std::string_view description = "The composing provider's own always-on tool.";
     using Args = LocalToolArgs;
     using Reply = LocalToolReply;
-    [[nodiscard]] static result<Reply> invoke(Args, EffectContext&) { return Reply{}; }
+    [[nodiscard]] agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{}; }
 };
 
 // Mirrors ToolDeclaringHistoryProvider's own real shape (tools/cli_chat.cpp): one local tool this
@@ -84,7 +84,7 @@ class ComposedProvider {
 public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext& ec) {
         ContextContribution contribution;
-        contribution.tools.push_back(make_tool_descriptor<LocalTool>());
+        contribution.tools.push_back(make_tool_descriptor(LocalTool{}));
 
         auto run_command_contribution = co_await run_command_provider_.on_context(sc, ec);
         if (!run_command_contribution) co_return std::unexpected(run_command_contribution.error());

@@ -240,7 +240,7 @@ struct OneWeatherTool : agentengine::Tool<OneWeatherTool> {
     static constexpr std::string_view description = "Get the current weather for a city.";
     using Args = OneWeatherToolArgs;
     using Reply = OneWeatherToolReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{"sunny"}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{"sunny"}; }
 };
 
 class ToolDeclaringHistoryProvider {
@@ -253,7 +253,7 @@ public:
         agentengine::SessionContext& session_ctx, agentengine::EffectContext&) {
         agentengine::ContextContribution contribution;
         contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
-        contribution.tools = agentengine::ToolTable::from_tools<OneWeatherTool>().descriptors();
+        contribution.tools = agentengine::ToolTable::from(OneWeatherTool{}).descriptors();
         co_return contribution;
     }
     agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {

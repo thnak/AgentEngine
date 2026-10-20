@@ -545,6 +545,14 @@ int main() {
             auto st = runner.status(*id);
             bool code_ok = st && st->result && st->result->is_error;
             check(code_ok, "R14: the failure is delivered as an error result");
+            // #175: the throw reaches the runner's own catch (fatal, `background_job.tool_threw`), carrying the
+            // tool's message -- not `rt::drive_leaf_task`'s transient "leaf task faulted".
+            std::string msg;
+            if (code_ok && !st->result->content.empty()) {
+                if (auto const* e = std::get_if<ae::Error>(&st->result->content.front().value)) msg = e->message;
+            }
+            check(msg.find("background job tool threw: kaboom") != std::string::npos,
+                  "R14 (#175): the failure carries the tool's own exception message");
         }
         check(wait_until([&] { return reentrant_ok.load() >= 2; }), "R15: a sink calling back into the runner does not deadlock");
 

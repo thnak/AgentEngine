@@ -76,35 +76,40 @@ namespace {
 // Message converts implicitly into an ExecutorOutcome for the "just pass it downstream" case.
 // ---------------------------------------------------------------------------------------
 
-[[nodiscard]] result<Message> source(Message const& in, EffectContext&) {
-    return text_message(text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> source(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(text_of(in))};
 }
 
 // A worker: a document-processing stage, three of them in the fan-out round.
 [[nodiscard]] ExecutorBody worker(std::string name) {
-    return [name](Message const& in, EffectContext&) -> result<Message> {
-        return text_message(name + ":" + upper(text_of(in)));
+    return [name](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(name + ":" + upper(text_of(in)))};
     };
 }
 
 // The fan-in aggregator. Documented to be invoked EXACTLY ONCE per round, receiving one
 // ContentItem per contributing branch in graph-declared order -- never once per inbound edge.
-[[nodiscard]] result<Message> aggregate(Message const& in, EffectContext&) {
-    return text_message(all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(all_text_of(in))};
 }
 
 // A classifier: returns ExecutorOutcome{message, routes}, where `routes` names the ONE case
 // it selects. This is the switch_case variant's decision point.
 [[nodiscard]] ExecutorBody classifier(std::string const& needle) {
-    return [needle](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    return [needle](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text  = text_of(in);
         std::string const label = text.find(needle) != std::string::npos ? "upper" : "lower";
-        return ExecutorOutcome{text_message(text + " -> " + label), {label}};
+        co_return ExecutorOutcome{text_message(text + " -> " + label), {label}};
     };
 }
 
-[[nodiscard]] result<Message> identity_sink(Message const& in, EffectContext&) {
-    return text_message(text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> identity_sink(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(text_of(in))};
 }
 
 // Wraps a body with an invocation counter. The docs' Concurrent page uses the example-local
@@ -112,10 +117,10 @@ namespace {
 // than once per inbound edge; the docs also say a starved join finishes with output empty and
 // the aggregator invoked ZERO times, so this is how that is measured rather than assumed.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> n) {
-    return [body = std::move(body), n](Message const& in,
-                                       EffectContext& ctx) -> result<ExecutorOutcome> {
+    return [body = std::move(body), n](Message const& in, EffectContext& ctx)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         n->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 
@@ -494,9 +499,10 @@ int main() {
         wf.bound.max_rounds = 4;
 
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [](Message const& in, EffectContext&)
+                -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 // "nobody" is a label this graph never declared.
-                return ExecutorOutcome{text_message(text_of(in)), {"nobody"}};
+                co_return ExecutorOutcome{text_message(text_of(in)), {"nobody"}};
             },
             identity_sink, identity_sink};
 

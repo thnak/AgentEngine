@@ -46,21 +46,21 @@ struct AlphaTool : Tool<AlphaTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view description = "The alpha tool.";
     using Args = NoteArgs;
     using Reply = NoteReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 struct BetaTool : Tool<BetaTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view name = "beta";
     static constexpr std::string_view description = "The beta tool.";
     using Args = NoteArgs;
     using Reply = NoteReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 struct GammaTool : Tool<GammaTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view name = "gamma";
     static constexpr std::string_view description = "The gamma tool.";
     using Args = NoteArgs;
     using Reply = NoteReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 // ADR-237 §5.2: an INSTANCE-form `Tool<>` -- non-static `const task<result<Reply>> invoke`, with the
@@ -87,7 +87,7 @@ private:
 }  // namespace
 
 int main() {
-    ToolTable const universe = ToolTable::from_tools<AlphaTool, BetaTool, GammaTool>();
+    ToolTable const universe = ToolTable::from(AlphaTool{}, BetaTool{}, GammaTool{});
     check(universe.descriptors().size() == 3, "setup: the universe has all three tools");
 
     // ---- R1: scope_tools_to_mounted_skills filters to exactly the allowed names --------------------
@@ -144,7 +144,7 @@ int main() {
 
     // ---- R4: ToolTable::from_descriptors round-trips a hand-built descriptor list -------------------
     {
-        ToolTable const t = ToolTable::from_descriptors({make_tool_descriptor<AlphaTool>()});
+        ToolTable const t = ToolTable::from_descriptors({make_tool_descriptor(AlphaTool{})});
         check(t.descriptors().size() == 1 && t.find("alpha") != nullptr,
               "R4: from_descriptors builds a real, queryable table from a runtime vector");
     }

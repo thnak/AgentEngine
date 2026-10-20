@@ -113,9 +113,9 @@ struct PlainTool : agentengine::Tool<PlainTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "A capability-free tool that never needs approval.";
     using Args = PlainArgs;
     using Reply = PlainReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         plain_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -146,10 +146,10 @@ struct DangerousNeverRequireTool
     static constexpr std::string_view description = "Sends an email (real egress capability).";
     using Args = DangerousArgs;
     using Reply = DangerousReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         dangerous_tool_seen_account() = a.account;
         ++dangerous_tool_invoked_count();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -174,9 +174,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -204,9 +204,9 @@ struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabil
     static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
     using Args = PolicyGateArgs;
     using Reply = PolicyGateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         policy_gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -218,8 +218,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<PlainTool, DangerousNeverRequireTool, GatedTool,
-                                                        PolicyGatedTool>()
+        c.tools = agentengine::ToolTable::from(PlainTool{}, DangerousNeverRequireTool{}, GatedTool{}, PolicyGatedTool{})
                       .descriptors();
         co_return c;
     }
@@ -325,9 +324,9 @@ int main() {
 
         bool decider_called = false;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view, std::string const&) {
+            [&](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
                 decider_called = true;  // must NEVER fire -- a hook denial is already-decided
-                return true;
+                co_return true;
             });
 
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
@@ -434,10 +433,10 @@ int main() {
 
         std::string seen_args;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view tool_name, std::string const& args_json) {
+            [&](Principal const&, std::string_view tool_name, std::string const& args_json) -> agentengine::task<bool> {
                 check(tool_name == "send_email", "H2b: decider sees the correct tool name");
                 seen_args = args_json;
-                return false;
+                co_return false;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
@@ -472,7 +471,7 @@ int main() {
             CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
         session.set_capabilities(&held);
         session.set_approval_decider(
-            [](Principal const&, std::string_view, std::string const&) { return true; });
+            [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> { co_return true; });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
                 hctx.rewritten_arguments = *agentengine::json::parse(R"({"account":"rewritten-by-hook"})");
@@ -779,8 +778,8 @@ int main() {
         // finish_hook_processed_round()'s invoke_tool() call, this call is misclassified as
         // needs_decider and denied with no decider present. That IS the bug this test guards.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "policy_gated_tool") hctx.needs_external_dispatch = true;

@@ -131,9 +131,9 @@ struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agente
     static constexpr std::string_view description = "Sleeps 150ms, then succeeds.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -142,7 +142,7 @@ struct ForegroundOnlyTool : agentengine::Tool<ForegroundOnlyTool> {
     static constexpr std::string_view description = "Never declared Backgroundable.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 }  // namespace
@@ -161,7 +161,7 @@ int main() {
 
     auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
-    auto const table = agentengine::ToolTable::from_tools<SlowBackgroundableTool, ForegroundOnlyTool>();
+    auto const table = agentengine::ToolTable::from(SlowBackgroundableTool{}, ForegroundOnlyTool{});
 
     auto started = drive(session.start_run(StartRun{user_message("hi")}));
     check(started.has_value(), "setup: a real start_run() succeeds before any background_task call");

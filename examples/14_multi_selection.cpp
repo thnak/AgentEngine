@@ -67,25 +67,25 @@ void check(bool cond, char const* what) {
 // Picks which reviewers this change needs -- an ordinary function of the input here; a model-backed
 // classifier would fill this same slot in a real agent-kind node.
 [[nodiscard]] ExecutorBody pick_reviewers(std::vector<std::string> selected) {
-    return [selected = std::move(selected)](Message const& in,
-                                             EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ">triage"), selected};
+    return [selected = std::move(selected)](
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">triage"), selected};
     };
 }
 
 [[nodiscard]] ExecutorBody reviewer(std::string name) {
-    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
-        return text_message(text_of(in) + ">" + name);
+    return [name](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 
 // Wraps a body with an invocation tally -- the rt:: stand-in for the old harness's
 // `FunctionExecutor::invocations()` (see file banner).
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<int> tally) {
-    return [body = std::move(body), tally](Message const& in,
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+    return [body = std::move(body),
+            tally](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ++*tally;
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 

@@ -31,7 +31,7 @@ struct PlainTool : agentengine::Tool<PlainTool> {
     static constexpr std::string_view description = "Declares no concurrency policy at all.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct ParallelTool : agentengine::Tool<ParallelTool, agentengine::Parallelizable> {
@@ -39,7 +39,7 @@ struct ParallelTool : agentengine::Tool<ParallelTool, agentengine::Parallelizabl
     static constexpr std::string_view description = "Bare Parallelizable.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct ParallelToolB : agentengine::Tool<ParallelToolB, agentengine::Parallelizable> {
@@ -47,7 +47,7 @@ struct ParallelToolB : agentengine::Tool<ParallelToolB, agentengine::Paralleliza
     static constexpr std::string_view description = "Bare Parallelizable, second independent tool.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct DbWriteTool : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGroup<"db-write">> {
@@ -55,7 +55,7 @@ struct DbWriteTool : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGrou
     static constexpr std::string_view description = "ExclusivityGroup<db-write>, member 1.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct DbCompactTool : agentengine::Tool<DbCompactTool, agentengine::ExclusivityGroup<"db-write">> {
@@ -63,7 +63,7 @@ struct DbCompactTool : agentengine::Tool<DbCompactTool, agentengine::Exclusivity
     static constexpr std::string_view description = "ExclusivityGroup<db-write>, member 2.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::ExclusivityGroup<"cache-flush">> {
@@ -71,7 +71,7 @@ struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::Exclusivi
     static constexpr std::string_view description = "A DIFFERENT ExclusivityGroup, its own class.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // ADR-160 §5 MUST-FIX 1: a session-state-capturing descriptor that is ALSO (mistakenly) declared
@@ -104,12 +104,12 @@ agentengine::ToolCallRequest req(std::string call_id, std::string tool_name) {
 
 int main() {
     agentengine::ToolTable table = agentengine::ToolTable::from_descriptors({
-        agentengine::make_tool_descriptor<PlainTool>(),
-        agentengine::make_tool_descriptor<ParallelTool>(),
-        agentengine::make_tool_descriptor<ParallelToolB>(),
-        agentengine::make_tool_descriptor<DbWriteTool>(),
-        agentengine::make_tool_descriptor<DbCompactTool>(),
-        agentengine::make_tool_descriptor<CacheFlushTool>(),
+        agentengine::make_tool_descriptor(PlainTool{}),
+        agentengine::make_tool_descriptor(ParallelTool{}),
+        agentengine::make_tool_descriptor(ParallelToolB{}),
+        agentengine::make_tool_descriptor(DbWriteTool{}),
+        agentengine::make_tool_descriptor(DbCompactTool{}),
+        agentengine::make_tool_descriptor(CacheFlushTool{}),
         agentengine::make_tool_descriptor(StatefulTool{}),
     });
 

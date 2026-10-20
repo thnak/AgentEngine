@@ -60,9 +60,9 @@ struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgrounda
     static constexpr std::string_view description = "Sleeps, then succeeds.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -97,7 +97,7 @@ int main() {
     // Part 1 -- MCP: tasks/get and tasks/cancel are principal-bound (ADR-061 §7 R3).
     // ================================================================================
     {
-        auto const              table = ae::ToolTable::from_tools<SlowBackgroundableTool>();
+        auto const              table = ae::ToolTable::from(SlowBackgroundableTool{});
         ae::CapabilitySet const held  = ae::CapabilitySet::grant_root({ae::cap::Background{8}});
         mcp::McpServer          server(table, held, ae::ApprovalDecider{}, "binding-test-server");
 

@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -157,7 +158,7 @@ int main() {
     //         grant is readable but not writable (EROFS), read-write grant is writable. -------------
     {
         char const* host_dir = "/tmp/ae_kata_slice2_mount_test";
-        std::system(("rm -rf " + std::string(host_dir) + " && mkdir -p " + host_dir).c_str());
+        { std::error_code ec; std::filesystem::remove_all(host_dir, ec); std::filesystem::create_directories(host_dir, ec); }
         std::ofstream(std::string(host_dir) + "/probe.txt") << "kata_mount_probe_content";
 
         KataBackend backend;
@@ -311,7 +312,7 @@ int main() {
         }
     }
 
-    std::system("rm -rf /tmp/ae_kata_slice2_mount_test");
+    { std::error_code ec; std::filesystem::remove_all("/tmp/ae_kata_slice2_mount_test", ec); }
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_kata_backend_slice2_linux: ALL PASS\n");

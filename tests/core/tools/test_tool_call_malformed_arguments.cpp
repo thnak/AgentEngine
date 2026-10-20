@@ -69,9 +69,9 @@ struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::e
     static constexpr std::string_view description = "Counts its runs. Every argument is optional.";
     using Args = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_probe_runs;
-        return Reply{a.note.value_or("<none>")};
+        co_return Reply{a.note.value_or("<none>")};
     }
 };
 
@@ -82,9 +82,9 @@ struct BackgroundProbeTool
     static constexpr std::string_view description = "Backgroundable probe. Every argument is optional.";
     using Args = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_probe_runs;
-        return Reply{a.note.value_or("<none>")};
+        co_return Reply{a.note.value_or("<none>")};
     }
 };
 
@@ -124,7 +124,7 @@ public:
     ae::rt::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<ProbeTool>().descriptors();
+        c.tools = ae::ToolTable::from(ProbeTool{}).descriptors();
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -144,9 +144,9 @@ struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<>, ae::EffectClass<ae::e
     static constexpr std::string_view description = "Runs a command (approval required).";
     using Args = CmdArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         g_gated_cmds.push_back(a.cmd);
-        return Reply{a.cmd};
+        co_return Reply{a.cmd};
     }
 };
 
@@ -155,7 +155,7 @@ public:
     ae::rt::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<GatedTool>().descriptors();
+        c.tools = ae::ToolTable::from(GatedTool{}).descriptors();
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -174,7 +174,7 @@ ae::Message user_message(std::string text) {
 }  // namespace
 
 int main() {
-    ae::ToolTable const table = ae::ToolTable::from_tools<ProbeTool, BackgroundProbeTool>();
+    ae::ToolTable const table = ae::ToolTable::from(ProbeTool{}, BackgroundProbeTool{});
 
     // --- T1: malformed text never reaches the tool, and folds as tool.malformed_arguments ----------
     {
@@ -221,8 +221,8 @@ int main() {
     {
         g_probe_runs = 0;
         ae::CapabilitySet const held;
-        auto admitted = ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
-                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{});
+        auto admitted = agentengine::test_support::run_task_sync<agentengine::result<agentengine::AdmittedCall>>(ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
+                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{}));
         check(!admitted && admitted.error().code == "tool.malformed_arguments",
               "T5: admit_call() refuses the malformed call before binding anything");
 

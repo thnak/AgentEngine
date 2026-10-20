@@ -73,9 +73,6 @@ agentengine_add_test(test_rt_circuit_breaker LIBS agentengine::core agentengine_
 # stops being a quark::Actor.
 agentengine_add_test(test_rt_async_mutex LIBS agentengine::core agentengine_warnings)
 
-# ---- ADR-064 Design B -- agentengine::rt::drive_leaf_task<T>(), the narrow "leaf task" driver
-# VectorRagContextProvider::recall's invoke uses (include/agentengine/rt/drive_leaf_task.hpp).
-agentengine_add_test(test_rt_drive_leaf_task LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-037 -- agentengine::rt::AppendLogStore, the append-only persistence primitive both
 # rt::WorkflowSupervisor's own time-travel gap and rt::ProjectRegistry's own archived-tail gap name
@@ -194,4 +191,11 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::rt_tls agentengine::provider_http_client agentengine::core agentengine_warnings
       MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 300)
+endif()
+
+# ---- ADR-237 §9 D6 / §14.1 (#181) -- the failure_class each rt I/O result maps onto (core/rt_io_error.hpp).
+agentengine_add_test(test_rt_io_error_class LIBS agentengine::core agentengine_warnings)
+if(AGENTENGINE_WITH_HTTPS)
+  # The TLS mapping is header-only (rt/tls.hpp enums/TlsResult); the macro is not propagated by agentengine::core.
+  target_compile_definitions(test_rt_io_error_class PRIVATE AGENTENGINE_WITH_HTTPS)
 endif()

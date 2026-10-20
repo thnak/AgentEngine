@@ -132,16 +132,16 @@ void c1_c2_round_boundary_cancellation_is_deterministic_and_non_preempting() {
 
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [&](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [&](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             std::unique_lock<std::mutex> lock(cv_mutex);
             cv.wait_for(lock, std::chrono::seconds(10), [&] { return may_proceed.load(); });
-            return ExecutorOutcome{text_message(text_of(in) + ">blocker")};
+            co_return ExecutorOutcome{text_message(text_of(in) + ">blocker")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">second")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">second")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">sink")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">sink")};
         },
     };
     sup.initialize(chain_graph("c1c2"), bodies);
@@ -205,16 +205,16 @@ void c3_cooperative_mid_call_observes_cancellation() {
 
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [&](Message const&, EffectContext& ctx) -> result<ExecutorOutcome> {
+        [&](Message const&, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             std::unique_lock<std::mutex> lock(cv_mutex);
             cv.wait_for(lock, std::chrono::seconds(10), [&] { return may_proceed.load(); });
             // Checked AFTER being released -- by then the test below has already called cancel()
             // and confirmed it landed (see the assertion right after sup.cancel() below).
             bool const cancelled = ctx.cancellation.stop_requested();
-            return ExecutorOutcome{text_message(cancelled ? "observed-cancelled" : "ran-normally")};
+            co_return ExecutorOutcome{text_message(cancelled ? "observed-cancelled" : "ran-normally")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(chain_graph("c3"), bodies);
 
@@ -252,14 +252,14 @@ void c4_non_cooperative_body_completes_normally() {
 
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [&](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [&](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             // Deliberately never reads ctx.cancellation at all.
             std::unique_lock<std::mutex> lock(cv_mutex);
             cv.wait_for(lock, std::chrono::seconds(10), [&] { return may_proceed.load(); });
-            return ExecutorOutcome{text_message(text_of(in) + ">ran-to-completion")};
+            co_return ExecutorOutcome{text_message(text_of(in) + ">ran-to-completion")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(chain_graph("c4"), bodies);
 
@@ -291,14 +291,14 @@ void c4_non_cooperative_body_completes_normally() {
 void c5_unused_cancellation_is_a_no_op() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">blocker")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">blocker")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">second")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">second")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">sink")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">sink")};
         },
     };
     sup.initialize(chain_graph("c5"), bodies);
@@ -317,9 +317,9 @@ void c5_unused_cancellation_is_a_no_op() {
 void c6_cancellation_token_mirrors_cancel() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(chain_graph("c6"), bodies);
     std::stop_token const held = sup.cancellation_token();
@@ -424,9 +424,9 @@ void c7_cancel_during_agent_step_ends_cancelled() {
     auto after_calls = std::make_shared<std::atomic<int>>(0);
     WorkflowSupervisor sup;
     sup.initialize(wf, {agent_session_as_executor_body(session),
-                        [after_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                        [after_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                             after_calls->fetch_add(1);
-                            return ExecutorOutcome{in};
+                            co_return ExecutorOutcome{in};
                         }});
 
     WorkflowResult r;
@@ -449,15 +449,15 @@ void c11_cancel_observing_failure_is_not_executor_failed() {
     auto gate = std::make_shared<Gate>();
     WorkflowSupervisor sup;
     sup.initialize(chain_graph("c11"),
-                   {[gate](Message const&, EffectContext& ctx) -> result<ExecutorOutcome> {
+                   {[gate](Message const&, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                         gate->park();
                         if (ctx.cancellation.stop_requested()) {
-                            return std::unexpected(error{failure_class::canceled, "the run was canceled", "run.canceled"});
+                            co_return std::unexpected(error{failure_class::canceled, "the run was canceled", "run.canceled"});
                         }
-                        return ExecutorOutcome{text_message("not cancelled")};
+                        co_return ExecutorOutcome{text_message("not cancelled")};
                     },
-                    [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-                    [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }});
+                    [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+                    [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }});
     WorkflowResult r;
     std::thread driver([&] { r = drive(sup.run_workflow(RunWorkflow{text_message("go")})); });
     check(gate->wait_entered(), "C11 setup: the step is running");
@@ -481,12 +481,12 @@ void c11_cancel_observing_failure_is_not_executor_failed() {
     return wf;
 }
 [[nodiscard]] std::vector<ExecutorBody> port_bodies() {
-    return {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">start")};
+    return {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">start")};
             },
             {},
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">sink")};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">sink")};
             }};
 }
 
@@ -561,11 +561,11 @@ void c10_cancel_in_round_that_reaches_a_port() {
     wf.start            = "start";
     wf.bound.max_rounds = 6;
     WorkflowSupervisor sup;
-    sup.initialize(wf, {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+    sup.initialize(wf, {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
                         {},
-                        [gate](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                        [gate](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                             gate->park();
-                            return ExecutorOutcome{in};
+                            co_return ExecutorOutcome{in};
                         }});
     WorkflowResult r;
     std::thread driver([&] { r = drive(sup.run_workflow(RunWorkflow{text_message("go")})); });
@@ -592,9 +592,9 @@ void c12_cancel_closes_nested_sub_workflow() {
     outer_wf.bound.max_rounds = 6;
 
     WorkflowSupervisor outer;
-    outer.initialize(outer_wf, {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+    outer.initialize(outer_wf, {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
                                 {},
-                                [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }});
+                                [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }});
     auto inner = std::make_shared<WorkflowSupervisor>();
     inner->initialize(port_graph("c12-inner"), port_bodies());
     outer.bind_sub_workflow("sub", inner);
@@ -614,9 +614,9 @@ void c12_cancel_closes_nested_sub_workflow() {
 void c13_linked_token_reaches_the_run() {
     WorkflowSupervisor sup;
     sup.initialize(chain_graph("c13"),
-                   {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-                    [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-                    [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }});
+                   {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+                    [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+                    [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }});
     std::stop_source outside;
     outside.request_stop();
     WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go"), std::nullopt, outside.get_token()}));
@@ -632,15 +632,15 @@ void c14_cancel_reaches_nested_run_in_flight() {
     auto second_runs = std::make_shared<std::atomic<int>>(0);
     auto inner       = std::make_shared<WorkflowSupervisor>();
     inner->initialize(chain_graph("c14-inner"),
-                      {[gate](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                      {[gate](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                            gate->park();
-                           return ExecutorOutcome{in};
+                           co_return ExecutorOutcome{in};
                        },
-                       [second_runs](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                       [second_runs](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                            second_runs->fetch_add(1);
-                           return ExecutorOutcome{in};
+                           co_return ExecutorOutcome{in};
                        },
-                       [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }});
+                       [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }});
 
     Workflow wf;
     wf.id        = "c14-outer";
@@ -649,7 +649,7 @@ void c14_cancel_reaches_nested_run_in_flight() {
     wf.start            = "sub";
     wf.bound.max_rounds = 4;
     WorkflowSupervisor outer;
-    outer.initialize(wf, {{}, [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }});
+    outer.initialize(wf, {{}, [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }});
     outer.bind_sub_workflow("sub", inner);
 
     WorkflowResult r;

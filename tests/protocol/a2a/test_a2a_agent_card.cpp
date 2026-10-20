@@ -35,7 +35,7 @@ struct EchoTool : ae::Tool<EchoTool> {
     static constexpr std::string_view description = "Echoes its input back.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 struct SearchArgs { std::string query; };
@@ -48,7 +48,7 @@ struct SearchTool : ae::Tool<SearchTool> {
     static constexpr std::string_view description = "Searches for the given query.";
     using Args  = SearchArgs;
     using Reply = SearchReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{"n/a"}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{"n/a"}; }
 };
 
 struct TwoToolAgent : ae::Agent<TwoToolAgent, ae::ChatClientId<"anthropic:claude-opus-5">,

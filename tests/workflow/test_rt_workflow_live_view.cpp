@@ -92,15 +92,15 @@ using agentengine::sharing_mode;
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
 [[nodiscard]] ExecutorBody failer(std::string message) {
     return [message = std::move(message)](
-               Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(
+               Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(
             agentengine::error{agentengine::failure_class::fatal, message, "test.injected_failure"});
     };
 }

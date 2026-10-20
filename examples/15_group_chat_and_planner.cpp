@@ -71,8 +71,8 @@ void check(bool cond, char const* what) {
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name](Message const& in, EffectContext&) -> agentengine::result<Message> {
-        return text_message(text_of(in) + ">" + name);
+    return [name](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 
@@ -80,24 +80,24 @@ void check(bool cond, char const* what) {
 // participant turns have happened) and hands that count to `choose`, an ordinary function of the
 // input -- a model-backed moderator would fill this same slot in a real agent-kind node.
 [[nodiscard]] ExecutorBody moderator(std::function<std::string(std::size_t)> choose) {
-    return [choose = std::move(choose)](Message const& in,
-                                         EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [choose = std::move(choose)](
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = text_of(in);
         std::size_t       turns = 0;
         for (std::size_t i = 0; i + 1 < text.size(); ++i) {
             if (text[i] == '>' && text[i + 1] == 'm') ++turns;
         }
-        return ExecutorOutcome{text_message(text + ">mod"), {choose(turns)}};
+        co_return ExecutorOutcome{text_message(text + ">mod"), {choose(turns)}};
     };
 }
 
 // Wraps a body with an invocation tally -- the rt:: stand-in for the old harness's
 // `FunctionExecutor::invocations()` (see file banner).
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<int> tally) {
-    return [body = std::move(body), tally](Message const& in,
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+    return [body = std::move(body),
+            tally](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ++*tally;
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 

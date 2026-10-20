@@ -58,7 +58,7 @@ struct FakeTool : Tool<FakeTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view description = "A tool a test skill names via allowed-tools.";
     using Args = FakeToolArgs;
     using Reply = FakeToolReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 }  // namespace
@@ -90,7 +90,7 @@ int main() {
         check(loaded.has_value(), "R2 setup: the one-skill source resolves cleanly");
 
         MountedSkillsState mount_state;
-        ToolTable const universe = ToolTable::from_tools<FakeTool>();
+        ToolTable const universe = ToolTable::from(FakeTool{});
         CapabilitySet const held = CapabilitySet::grant_root({});
         EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(held);

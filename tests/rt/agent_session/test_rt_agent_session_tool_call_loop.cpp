@@ -93,7 +93,7 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 struct FailingArgs { bool unused = false; };  // AE_JSON_SCHEMA needs >=1 field; args are ignored
@@ -108,8 +108,8 @@ struct FailingTool : agentengine::Tool<FailingTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Always fails.";
     using Args = FailingArgs;
     using Reply = FailingReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
+        co_return std::unexpected(
             agentengine::error{agentengine::failure_class::contract, "scripted failure", "test.scripted_fail"});
     }
 };
@@ -134,9 +134,9 @@ struct WriteTool : agentengine::Tool<WriteTool, agentengine::Capabilities<agente
     static constexpr std::string_view description = "Writes to the work mount.";
     using Args = WriteArgs;
     using Reply = WriteReply;
-    static agentengine::result<Reply> invoke(WriteArgs, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(WriteArgs, EffectContext&) const {
         write_tool_invoked_log() = true;  // must never fire in R2 -- see that block's assertion
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -148,7 +148,7 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<EchoTool, FailingTool, WriteTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(EchoTool{}, FailingTool{}, WriteTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

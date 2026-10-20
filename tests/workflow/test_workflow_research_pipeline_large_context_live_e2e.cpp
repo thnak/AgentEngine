@@ -156,9 +156,9 @@ void check(bool cond, char const* what) {
 
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> tally) {
     return [body = std::move(body), tally](Message const& in,  // NOLINT(clang-analyzer-core.StackAddressEscape)
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+                                           EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         tally->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 
@@ -214,7 +214,7 @@ using RealSession = AgentSession<RealClient>;
 // ---- Bodies -------------------------------------------------------------------------------------
 
 [[nodiscard]] ExecutorBody planner_body(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const goal = text_of(in);
         auto resp = live_call(
             client, ctx,
@@ -231,11 +231,11 @@ using RealSession = AgentSession<RealClient>;
             // left no trace of WHY, only that market/technical/competitive never got dispatched.
             std::fprintf(stderr, "[planner] FAILED: %s (%s)\n", resp.error().message.c_str(),
                          resp.error().code.c_str());
-            return std::unexpected(resp.error());
+            co_return std::unexpected(resp.error());
         }
         std::string const plan = text_of(resp->message);
         std::printf("[planner] %s\n", plan.c_str());
-        return text_message("Research brief: " + plan + "\n\nOriginal question: " + goal);
+        co_return ExecutorOutcome{text_message("Research brief: " + plan + "\n\nOriginal question: " + goal)};
     };
 }
 
@@ -280,7 +280,7 @@ using RealSession = AgentSession<RealClient>;
     auto saved_brief = std::make_shared<std::string>();
     return [label, chunks = std::move(chunks), session, &ctx, turns_out,
             final_usage_out, round, saved_brief](
-               Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         session->set_capabilities(ctx.capabilities.get());
         std::size_t const i = (*round)++;
         if (i == 0) *saved_brief = text_of(in);
@@ -310,7 +310,7 @@ using RealSession = AgentSession<RealClient>;
             std::fprintf(stderr, "[%s turn %zu] FAILED after %lldms: %s (%s)\n", label.c_str(), i + 1,
                          static_cast<long long>(ms), driven.error().message.c_str(),
                          driven.error().code.c_str());
-            return std::unexpected(driven.error());
+            co_return std::unexpected(driven.error());
         }
         turns_out->fetch_add(1, std::memory_order_relaxed);
         *final_usage_out = driven->usage;
@@ -328,7 +328,7 @@ using RealSession = AgentSession<RealClient>;
         if (is_final) {
             outcome.payload = text_message(label + " findings: " + reply);
             outcome.routes  = {"finish"};
-            return outcome;
+            co_return outcome;
         }
         // Looping: this turn's own reply becomes NEXT turn's `in` -- meaningless as content (the
         // model was told to summarize unrelated filler), but its role/content shape must stay a
@@ -336,14 +336,14 @@ using RealSession = AgentSession<RealClient>;
         // "was the brief preserved" is `saved_brief`, read directly on turn 0, not threaded through.
         outcome.payload = text_message(reply);
         outcome.routes  = {"continue"};
-        return outcome;
+        co_return outcome;
     };
 }
 
 [[nodiscard]] ExecutorBody specialist_body(std::string label, std::string system_prompt,
                                             RealClient& client, EffectContext& ctx) {
     return [label, system_prompt, &client, &ctx](Message const& in,
-                                                  EffectContext&) -> agentengine::result<Message> {
+                                                  EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         auto const t0   = std::chrono::steady_clock::now();
         auto        resp = live_call(client, ctx, system_prompt, text_of(in));
         auto const  ms   = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -352,15 +352,15 @@ using RealSession = AgentSession<RealClient>;
             std::fprintf(stderr, "[%s] FAILED after %lldms: %s (%s)\n", label.c_str(),
                          static_cast<long long>(ms), resp.error().message.c_str(),
                          resp.error().code.c_str());
-            return std::unexpected(resp.error());
+            co_return std::unexpected(resp.error());
         }
         std::string const reply = text_of(resp->message);
         std::printf("[%s] (%lldms) %s\n", label.c_str(), static_cast<long long>(ms), reply.c_str());
-        return text_message(label + " findings: " + reply);
+        co_return ExecutorOutcome{text_message(label + " findings: " + reply)};
     };
 }
 
-[[nodiscard]] agentengine::result<Message> competitive_fallback_body(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> competitive_fallback_body(Message const& in, EffectContext&) {
     std::string reason = "live lookup failed";
     for (auto const& item : in.content) {
         if (auto const* e = std::get_if<Error>(&item.value)) {
@@ -369,46 +369,46 @@ using RealSession = AgentSession<RealClient>;
         }
     }
     std::printf("[competitive_fallback] recovering from: %s\n", reason.c_str());
-    return text_message(
+    co_return ExecutorOutcome{text_message(
         "competitive findings: UNAVAILABLE (" + reason + ") -- using cached baseline: no major "
-        "competitor announcements on file. Treat this section as low-confidence.");
+        "competitor announcements on file. Treat this section as low-confidence.")};
 }
 
-[[nodiscard]] agentengine::result<Message> aggregate_body(Message const& in, EffectContext&) {
-    return text_message("Aggregated findings:\n" + all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("Aggregated findings:\n" + all_text_of(in))};
 }
 
 [[nodiscard]] ExecutorBody writer_body(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         auto resp = live_call(
             client, ctx,
             "You are a report writer. Using ONLY the findings given, draft a 4-6 sentence go/no-go "
             "recommendation. If any finding is marked low-confidence or unavailable, explicitly say "
             "the recommendation carries a disclosed gap.",
             text_of(in));
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) co_return std::unexpected(resp.error());
         std::string const report = text_of(resp->message);
         std::printf("[writer] (%zu chars) %s\n", report.size(), report.c_str());
-        return text_message("REPORT:\n" + report);
+        co_return ExecutorOutcome{text_message("REPORT:\n" + report)};
     };
 }
 
-[[nodiscard]] agentengine::result<ExecutorOutcome> publish_decision_body(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> publish_decision_body(Message const& in, EffectContext&) {
     std::string const decision = text_of(in);
     bool const approved = decision.find("approved") != std::string::npos;
-    return ExecutorOutcome{in, {approved ? "approved" : "rejected"}};
+    co_return ExecutorOutcome{in, {approved ? "approved" : "rejected"}};
 }
 
-[[nodiscard]] agentengine::result<Message> publish_body(Message const& in, EffectContext&) {
-    return text_message("PUBLISHED:\n" + text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> publish_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("PUBLISHED:\n" + text_of(in))};
 }
 
-[[nodiscard]] agentengine::result<Message> abandon_body(Message const& in, EffectContext&) {
-    return text_message("ABANDONED:\n" + text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> abandon_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("ABANDONED:\n" + text_of(in))};
 }
 
-[[nodiscard]] agentengine::result<ExecutorOutcome> identity_sink(Message const& in, EffectContext&) {
-    return ExecutorOutcome{in};
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> identity_sink(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{in};
 }
 
 #if defined(_WIN32)

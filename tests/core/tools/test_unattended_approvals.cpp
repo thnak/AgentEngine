@@ -92,9 +92,9 @@ struct AlwaysGated : ae::Tool<AlwaysGated, ae::Capabilities<>, ae::EffectClass<a
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++always_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -105,9 +105,9 @@ struct Effectful : ae::Tool<Effectful, ae::Capabilities<>, ae::EffectClass<ae::e
     static constexpr std::string_view description = "Has an effect; no approval for structured calls.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++effectful_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -117,9 +117,9 @@ struct PolicyGated : ae::Tool<PolicyGated, ae::Capabilities<>, ae::EffectClass<a
     static constexpr std::string_view description = "Resolved by the host's policy.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++policy_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -130,9 +130,9 @@ struct PolicyEffectful : ae::Tool<PolicyEffectful, ae::Capabilities<>, ae::Effec
     static constexpr std::string_view description = "Resolved by the host's policy; has an effect.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++policy_effectful_calls();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -141,7 +141,7 @@ public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<AlwaysGated, Effectful, PolicyGated, PolicyEffectful>().descriptors();
+        c.tools = ae::ToolTable::from(AlwaysGated{}, Effectful{}, PolicyGated{}, PolicyEffectful{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -244,10 +244,10 @@ struct ClearingTool : ae::Tool<ClearingTool, ae::Capabilities<>, ae::EffectClass
     static constexpr std::string_view description = "Switches unattended mode off.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++clearing_calls();
         if (clear_hook()) clear_hook()();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -256,7 +256,7 @@ public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<ClearingTool, AlwaysGated>().descriptors();
+        c.tools = ae::ToolTable::from(ClearingTool{}, AlwaysGated{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -381,7 +381,7 @@ int main() {
     auto deny_policy = [](ToolSession& s) {
         unattended(s);
         s.set_policy_decider(
-            [](ae::Principal const&, ae::ToolDescriptor const&, bool) { return ae::policy_decision::auto_deny; });
+            [](ae::Principal const&, ae::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> { co_return ae::policy_decision::auto_deny; });
     };
     {
         policy_calls() = 0;
@@ -397,10 +397,10 @@ int main() {
         bool asked = false;
         (void)run_call("policy_effectful", ae::call_provenance::text_derived, [&](ToolSession& s) {
             s.set_policy_decider(
-                [](ae::Principal const&, ae::ToolDescriptor const&, bool) { return ae::policy_decision::auto_approve; });
-            s.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) {
+                [](ae::Principal const&, ae::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> { co_return ae::policy_decision::auto_approve; });
+            s.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
                 asked = true;
-                return false;
+                co_return false;
             });
         });
         check(policy_effectful_calls() == 0 && asked,
@@ -411,9 +411,9 @@ int main() {
         always_calls() = 0;
         bool host_decider_called = false;
         (void)run_call("always_gated", ae::call_provenance::vendor_structured, [&](ToolSession& s) {
-            s.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) {
+            s.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
                 host_decider_called = true;
-                return false;
+                co_return false;
             });
             unattended(s);
         });
@@ -431,7 +431,7 @@ int main() {
     {
         always_calls() = 0;
         effectful_calls() = 0;
-        auto veto = [](ae::Principal const&, std::string_view tool, std::string const&) { return tool != "always_gated"; };
+        auto veto = [](ae::Principal const&, std::string_view tool, std::string const&) -> agentengine::task<bool> { co_return tool != "always_gated"; };
         RunOutcome const o = run_script({call_msg("always_gated", ae::call_provenance::vendor_structured),
                                          call_msg("effectful", ae::call_provenance::text_derived, "c2"), done()},
                                         [&](ToolSession& s) { (void)s.set_unattended_approvals("ops-automation", veto); });
@@ -462,8 +462,8 @@ int main() {
                           call_msg("always_gated", ae::call_provenance::vendor_structured, "c3"), done()},
                          [&](ToolSession& s) {
                              s.set_approval_decider(
-                                 [n = 0](ae::Principal const&, std::string_view, std::string const&) mutable {
-                                     return n++ < 1;
+                                 [n = 0](ae::Principal const&, std::string_view, std::string const&) mutable -> agentengine::task<bool> {
+                                     co_return n++ < 1;
                                  });
                          });
         check(always_calls() == 1,
@@ -486,7 +486,7 @@ int main() {
     }
 
     // ---- round 2 ------------------------------------------------------------------------------------------------
-    auto deny_all = [](ae::Principal const&, ae::ToolDescriptor const&, bool) { return ae::policy_decision::auto_deny; };
+    auto deny_all = [](ae::Principal const&, ae::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> { co_return ae::policy_decision::auto_deny; };
     {
         always_calls() = 0;
         effectful_calls() = 0;
@@ -504,7 +504,7 @@ int main() {
     }
     {
         always_calls() = 0;
-        auto veto = [](ae::Principal const&, std::string_view tool, std::string const&) { return tool != "always_gated"; };
+        auto veto = [](ae::Principal const&, std::string_view tool, std::string const&) -> agentengine::task<bool> { co_return tool != "always_gated"; };
         RunOutcome const a = run_call("always_gated", ae::call_provenance::vendor_structured, [&](ToolSession& s) {
             (void)s.set_unattended_approvals("ops-automation", veto);
             (void)s.enable_unattended_mode("ops-automation");
@@ -541,9 +541,9 @@ int main() {
         ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         int host_asked = 0;
-        session.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) {
+        session.set_approval_decider([&](ae::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
             ++host_asked;
-            return true;
+            co_return true;
         });
         (void)session.set_unattended_approvals("ops-automation");
         clear_hook() = [&session] { session.clear_unattended_approvals(); };
@@ -555,9 +555,9 @@ int main() {
     {
         always_calls() = 0;
         ToolSession* self = nullptr;
-        auto clearing_veto = [&self](ae::Principal const&, std::string_view, std::string const&) {
+        auto clearing_veto = [&self](ae::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
             if (self != nullptr) self->clear_unattended_approvals();
-            return true;
+            co_return true;
         };
         RunOutcome const o = run_call("always_gated", ae::call_provenance::vendor_structured, [&](ToolSession& s) {
             self = &s;

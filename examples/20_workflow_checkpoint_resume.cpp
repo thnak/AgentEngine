@@ -75,8 +75,8 @@ void check(bool cond, char const* what) {
 // needs sign-off. A model-backed planner would fill this same slot -- checkpoint/resume doesn't care
 // what produced the plan.
 [[nodiscard]] ExecutorBody planner_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + " > planned")};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + " > planned")};
     };
 }
 

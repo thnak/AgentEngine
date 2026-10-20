@@ -103,14 +103,14 @@ Executor make_executor(std::string id, sharing_mode mode) {
 ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& ref_store,
                           ExecutorWorktreeGrant grant, std::string file_name, std::string content) {
     return [&obj_store, &ref_store, grant, file_name, content](
-               Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         auto current = agentengine::rt::block_on(read_sub_worktree(ref_store, grant.sub));
         if (!current || !current->has_value()) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::fatal, "writer_body: no current tree", "test.setup_failed"});
         }
         auto current_tree = agentengine::rt::block_on(obj_store.get_tree((*current)->tree_digest));
-        if (!current_tree) return std::unexpected(current_tree.error());
+        if (!current_tree) co_return std::unexpected(current_tree.error());
 
         std::vector<TreeEntry> entries;
         for (auto const& e : current_tree->entries) {
@@ -120,14 +120,14 @@ ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& 
         auto new_tree_digest = tree_of(obj_store, entries);
 
         auto written = agentengine::rt::block_on(write_sub_worktree(ref_store, grant.sub, new_tree_digest));
-        if (!written) return std::unexpected(written.error());
-        return ExecutorOutcome{in};
+        if (!written) co_return std::unexpected(written.error());
+        co_return ExecutorOutcome{in};
     };
 }
 
 ExecutorBody passthrough_body() {
-    return [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 

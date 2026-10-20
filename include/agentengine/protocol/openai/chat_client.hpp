@@ -95,7 +95,7 @@ namespace detail {
 // `WriteRawValue` passthrough for `parameters`/`schema` (it does no client-side schema validation
 // either). Issue #13: `build_request_body` calls this once per tool on EVERY `chat()`/`chat_stream()`
 // call, but the schema text is fixed for the tool's lifetime -- `t.args_schema_value_cached` (set once
-// at `make_tool_descriptor<T>()` time, `core/tool_pipeline.hpp`) skips the re-parse when available,
+// at `make_tool_descriptor(T{})` time, `core/tool_pipeline.hpp`) skips the re-parse when available,
 // falling back to parsing `args_schema_json` for any hand-built descriptor that predates the cache.
 [[nodiscard]] result<json::Value> translate_tool(ToolDescriptor const& t);
 

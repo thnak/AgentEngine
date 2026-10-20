@@ -91,16 +91,16 @@ using agentengine::workflow::validate_workflow;
 
 // Always reports stalled -- the pathological case every trip scenario below drives.
 [[nodiscard]] ExecutorBody always_stalled_body() {
-    return [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ExecutorOutcome out{text_message(text_of(in) + ".")};
         out.stalled = true;
-        return out;
+        co_return out;
     };
 }
 
 [[nodiscard]] ExecutorBody never_stalled_body() {
-    return [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ".")};
+    return [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ".")};
     };
 }
 
@@ -169,11 +169,11 @@ int main() {
 
         std::atomic<int> round_ctr{0};
         std::vector<ExecutorBody> bodies = {
-            [&round_ctr](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [&round_ctr](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 int const n = round_ctr.fetch_add(1);
                 ExecutorOutcome out{text_message(text_of(in) + ".")};
                 out.stalled = (n != 1);  // rounds (0-indexed): stall, PROGRESS, stall, stall
-                return out;
+                co_return out;
             }};
         WorkflowSupervisor sup;
         sup.initialize(wf, bodies, {}, "mgr");
@@ -304,20 +304,20 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             never_stalled_body(),  // root
-            [](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("fromA")};
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("fromA")};
             },
-            [](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("fromB")};
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("fromB")};
             },
             // mgr is dispatched TWICE in the round both srcA's and srcB's deliveries arrive --
             // once per delivery, distinguishing by its own incoming payload. Only the fromB
             // invocation reports stalled=true; the fromA invocation reports stalled=false.
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 std::string const text = text_of(in);
                 ExecutorOutcome   out{text_message(text + ".mgr")};
                 out.stalled = (text == "fromB");
-                return out;
+                co_return out;
             },
         };
         WorkflowSupervisor sup;

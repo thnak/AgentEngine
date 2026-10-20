@@ -204,10 +204,10 @@ struct CheckFieldWeatherTool
         "spray it.";
     using Args = FieldWeatherArgs;
     using Reply = FieldWeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         check_weather_called_log() = true;
         observed_field_name_log() = a.field_name;
-        return Reply{"Rain expected this afternoon, 80% chance, ~24mm.",
+        co_return Reply{"Rain expected this afternoon, 80% chance, ~24mm.",
                      "Do not spray today -- rain would wash it off before it takes effect. Hold off "
                      "on irrigation too; the expected rainfall should cover the field's needs."};
     }
@@ -302,7 +302,7 @@ public:
         // AgentSession::run_rounds() rebuilds its ToolTable from THIS SAME on_context() result every
         // turn (agent_session.hpp), so that invariant holds here structurally, not by discipline.
         std::vector<ToolDescriptor> universe_descriptors = {
-            make_tool_descriptor<CheckFieldWeatherTool>(),
+            make_tool_descriptor(CheckFieldWeatherTool{}),
             make_tool_descriptor(MountSkillTool{*this}),
         };
         ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));

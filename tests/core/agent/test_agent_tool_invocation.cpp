@@ -66,8 +66,8 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agenteng
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
@@ -92,8 +92,8 @@ struct PolicyGatedTool
     static constexpr std::string_view description = "A tool gated by PolicyDecider.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"policy_gated: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"policy_gated: " + args.message};
     }
 };
 
@@ -238,9 +238,9 @@ int main() {
 
         bool approval_decider_called = false;
         agentengine::ApprovalDecider const tripwire = [&approval_decider_called](
-            agentengine::Principal const&, std::string_view, std::string const&) {
+            agentengine::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
             approval_decider_called = true;
-            return false;  // would deny if ever reached -- proves auto_approve short-circuits it
+            co_return false;  // would deny if ever reached -- proves auto_approve short-circuits it
         };
 
         // 6a. non-delegated (top-level) caller -- require_approval, no ApprovalDecider configured ->

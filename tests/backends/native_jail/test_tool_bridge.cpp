@@ -48,7 +48,7 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agenteng
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.message}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 struct GatedTool
@@ -58,7 +58,7 @@ struct GatedTool
     static constexpr std::string_view description = "Requires approval on every call.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.message}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 struct StashArgs {
@@ -80,14 +80,14 @@ struct StashingTool
     static constexpr std::string_view description = "Stashes a copy of its own bound capability.";
     using Args = StashArgs;
     using Reply = StashReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext& ctx) const {
         int slot = ++g_call_index;
         if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) {
             agentengine::BoundCapability const& live_handle = (*ctx.bound_capabilities)[0];
             g_live_during_call[slot] = live_handle.use().has_value();
             g_stash[slot] = live_handle;
         }
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -103,7 +103,7 @@ int main() {
 
     // ---- F2-C1: capability scoping (denied without, allowed with -- positive control) -----------
     {
-        auto table = ToolTable::from_tools<EchoTool>();
+        auto table = ToolTable::from(EchoTool{});
         ToolBridgeConfig no_caps{table, {}, /*approved=*/true};
         agentengine::EffectContext ctx;
         ToolCallRequest req{"c1a", "echo_tool", *json::parse(R"({"message":"hi"})"), false};
@@ -120,7 +120,7 @@ int main() {
 
     // ---- F2-A1: bundled approval, not per-call (denied when unapproved, allowed when approved) ---
     {
-        auto table = ToolTable::from_tools<GatedTool>();
+        auto table = ToolTable::from(GatedTool{});
         ToolBridgeConfig unapproved{table, {agentengine::cap::Entropy{}}, /*approved=*/false};
         agentengine::EffectContext ctx;
         ToolCallRequest req{"a1a", "gated_tool", *json::parse(R"({"message":"hi"})"), false};
@@ -137,7 +137,7 @@ int main() {
 
     // ---- F2-T1: results re-enter as tainted data (003 §2), unconditionally -----------------------
     {
-        auto table = ToolTable::from_tools<EchoTool>();
+        auto table = ToolTable::from(EchoTool{});
         ToolBridgeConfig config{table, {agentengine::cap::Entropy{}}, /*approved=*/true};
         agentengine::EffectContext ctx;
         ToolCallRequest req{"t1", "echo_tool", *json::parse(R"({"message":"hi"})"), false};
@@ -148,7 +148,7 @@ int main() {
 
     // ---- F2-R1: capability-handle-reuse-denial, reproduced through the bridge (M2 B4's discipline)
     {
-        auto table = ToolTable::from_tools<StashingTool>();
+        auto table = ToolTable::from(StashingTool{});
         ToolBridgeConfig config{table, {agentengine::cap::Entropy{}}, /*approved=*/true};
 
         {

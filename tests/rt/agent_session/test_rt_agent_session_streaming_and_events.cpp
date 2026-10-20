@@ -127,7 +127,7 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 // ---- A tool, for L1/L3's leaked-Harmony-block promotion -------------------------------------------
@@ -144,8 +144,8 @@ struct GetWeatherTool
     static constexpr std::string_view description = "Looks up the weather for a location.";
     using Args = WeatherArgs;
     using Reply = WeatherReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
-        return Reply{"sunny in " + a.location};
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
+        co_return Reply{"sunny in " + a.location};
     }
 };
 
@@ -169,7 +169,7 @@ public:
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         if constexpr (sizeof...(ToolTs) > 0) {
-            c.tools = agentengine::ToolTable::from_tools<ToolTs...>().descriptors();
+            c.tools = agentengine::ToolTable::from(ToolTs{}...).descriptors();
         }
         co_return c;
     }

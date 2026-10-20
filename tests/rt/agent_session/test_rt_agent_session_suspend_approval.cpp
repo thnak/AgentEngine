@@ -115,9 +115,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -141,9 +141,9 @@ struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabil
     static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
     using Args = PolicyGateArgs;
     using Reply = PolicyGateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         policy_gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -155,7 +155,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool, PolicyGatedTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}, PolicyGatedTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -486,8 +486,8 @@ int main() {
         // Deliberately no set_approval_decider() -- proving the PolicyDecider alone resolves this
         // policy_driven call without ever needing a human.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));
@@ -521,8 +521,8 @@ int main() {
         session.set_capabilities(&held);
         session.set_suspend_for_approval(true);
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_deny;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_deny;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));

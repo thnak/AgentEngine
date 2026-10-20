@@ -34,8 +34,8 @@
 // `rt::AgentSession`, `agent_session.hpp`) unconditionally, before `start_run()` is ever called, so a
 // spawned child can never create a second thread of control touching itself. This is what makes the
 // "freshly constructed, referenced by nothing else, driven by exactly one thread" precondition this
-// function's own drive loop relies on -- the SAME precondition `rt/agent_workflow_executor.hpp`'s
-// `agent_executor_detail::drive<T>()` already documents for the identical pattern -- actually true
+// function's own drive loop relies on -- the same precondition the agent-node adapter documented for
+// the identical pattern before ADR-237 §5.1 (Phase G) made that body a coroutine -- actually true
 // here, not merely assumed.
 
 #include <atomic>

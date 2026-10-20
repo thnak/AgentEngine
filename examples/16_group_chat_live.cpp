@@ -42,6 +42,7 @@
 using namespace agentengine;
 using namespace agentengine::workflow;
 using agentengine::rt::ExecutorBody;
+using agentengine::rt::ExecutorOutcome;
 using agentengine::rt::RunWorkflow;
 using agentengine::rt::WorkflowResult;
 using agentengine::rt::WorkflowSupervisor;
@@ -88,8 +89,8 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 // `main()`'s stack) safely outlives every call.
 [[nodiscard]] ExecutorBody debater(std::string persona, std::string stance, RealClient& client,
                                     EffectContext& ctx) {
-    return [persona, stance, &client, &ctx](Message const& in,
-                                             EffectContext&) -> agentengine::result<Message> {
+    return [persona, stance, &client,
+            &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
 
         ChatRequest req;
@@ -106,11 +107,12 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 
         auto resp = drive(client.chat(req, ctx));
         if (!resp.has_value()) {
-            return std::unexpected(resp.error());
+            co_return std::unexpected(resp.error());
         }
         std::string const reply = text_of(resp->message);
         std::printf("[%s] %s\n", persona.c_str(), reply.c_str());
-        return text_message(transcript + "\n\n" + persona + ": " + reply);
+        co_return agentengine::rt::ExecutorOutcome{
+            text_message(transcript + "\n\n" + persona + ": " + reply)};
     };
 }
 

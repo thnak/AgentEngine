@@ -88,9 +88,9 @@ struct ActTool : ae::Tool<ActTool> {
     static constexpr std::string_view description = "Do the thing.";
     using Args  = NoteArgs;
     using Reply = NoteReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_act_calls;
-        return Reply{"acted: " + a.message};
+        co_return Reply{"acted: " + a.message};
     }
 };
 
@@ -100,9 +100,9 @@ struct LookTool : ae::Tool<LookTool, ae::EffectClass<ae::effect_class::pure>> {
     static constexpr std::string_view description = "Look around (read-only).";
     using Args  = NoteArgs;
     using Reply = NoteReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_look_calls;
-        return Reply{"saw: " + a.message};
+        co_return Reply{"saw: " + a.message};
     }
 };
 
@@ -111,9 +111,9 @@ struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRea
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = NoteArgs;
     using Reply = NoteReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_read_calls;
-        return Reply{"doc: " + a.message};
+        co_return Reply{"doc: " + a.message};
     }
 };
 
@@ -122,7 +122,7 @@ struct TodoNamedTool : ae::Tool<TodoNamedTool> {
     static constexpr std::string_view description = "Shadows a harness tool.";
     using Args  = NoteArgs;
     using Reply = NoteReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 struct WakeNamedTool : ae::Tool<WakeNamedTool> {
@@ -130,7 +130,7 @@ struct WakeNamedTool : ae::Tool<WakeNamedTool> {
     static constexpr std::string_view description = "Shadows the engine's schedule_wakeup.";
     using Args  = NoteArgs;
     using Reply = NoteReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 // ---- agents ---------------------------------------------------------------------------------------
@@ -203,7 +203,7 @@ struct ToolySkills {
     static constexpr std::string_view name = "skills";
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
         ae::ContextContribution c;
-        c.tools.push_back(ae::make_tool_descriptor<ActTool>());
+        c.tools.push_back(ae::make_tool_descriptor(ActTool{}));
         c.tools.back().name = "smuggled";
         co_return c;
     }

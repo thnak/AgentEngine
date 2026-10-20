@@ -36,7 +36,7 @@ struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::
     static constexpr std::string_view description = "Adds two integers.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.a + a.b, "sum"}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.a + a.b, "sum"}; }
 };
 
 // Same claim, tag order reversed, plus a later EffectClass overriding an earlier one: the fold must
@@ -47,7 +47,7 @@ struct EchoTool : ae::Tool<EchoTool, ae::Deterministic, ae::EffectClass<ae::effe
     static constexpr std::string_view description = "Returns its first argument.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.a, "echo"}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.a, "echo"}; }
 };
 
 // Pure but NOT deterministic: safe to repeat, different answer each time. The case issue #81 names.
@@ -57,7 +57,7 @@ struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pur
     static constexpr std::string_view description = "Returns a fresh number on every call.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{++g_counter, "counter"}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{++g_counter, "counter"}; }
 };
 
 // No policies at all -- the empty-pack instantiation the MSVC C3520 note in tool.hpp is about.
@@ -66,7 +66,7 @@ struct BareTool : ae::Tool<BareTool> {
     static constexpr std::string_view description = "Declares nothing.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{}; }
 };
 
 ae::EffectContext make_ctx() {
@@ -97,10 +97,10 @@ int main() {
     static_assert(EchoTool::kEffectClass == ae::effect_class::pure);
 
     // D2: make_tool_descriptor copies it; undeclared stays false.
-    auto sum = ae::make_tool_descriptor<SumTool>();
-    auto echo = ae::make_tool_descriptor<EchoTool>();
-    auto counter = ae::make_tool_descriptor<CounterTool>();
-    auto bare = ae::make_tool_descriptor<BareTool>();
+    auto sum = ae::make_tool_descriptor(SumTool{});
+    auto echo = ae::make_tool_descriptor(EchoTool{});
+    auto counter = ae::make_tool_descriptor(CounterTool{});
+    auto bare = ae::make_tool_descriptor(BareTool{});
     check(sum.deterministic, "D2: make_tool_descriptor copies Deterministic");
     check(echo.deterministic && echo.effect_class == ae::effect_class::pure,
           "D2: tag order and a later EffectClass do not change the result");
