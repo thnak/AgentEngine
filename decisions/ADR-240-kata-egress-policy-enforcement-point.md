@@ -1,7 +1,9 @@
-# ADR-239: Kata egress policy -- the enforcement point is the host-namespace bridge port
+# ADR-240: Kata egress policy -- the enforcement point is the host-namespace bridge port
 
 Status: **Proposed** (2026-10-19) -- designed, red-teamed and proven; awaiting the Judge. Not Judged.
-Issue: #194. Supersedes in part: ADR-093 (the `ip netns exec <id> nft ... ae_netpolicy` allowlist) and ADR-095 (the
+Renumbered from ADR-239 on 2026-10-20 when the Kata branches were merged with the Phase E branch, whose
+ADR-239 (`seams-narrowed-to-synchronous`, 2026-10-16) is older; the stage reports written before then say ADR-239.
+Issue: #194 (stays open until the owner judges this ADR and it is verified live). Supersedes in part: ADR-093 (the `ip netns exec <id> nft ... ae_netpolicy` allowlist) and ADR-095 (the
 `net_bytes` quota object in that same table). Both carry a banner pointing here.
 Records: `docs/planning/2026-10-19-kata-egress-policy-design.md`, `...-redteam.md` (revised design in its section 6).
 Invariants: I2 (no ambient authority), I3 (model output is data), I4, I8 (budgets enforced).

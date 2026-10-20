@@ -1,7 +1,7 @@
-# Kata egress policy: judgement (ADR-239, GitHub #194)
+# Kata egress policy: judgement (ADR-240, GitHub #194)
 
 Stage: JUDGE of design -> red-team -> prove -> judge. Date: 2026-10-19/20. Judge branch `kata-egress-judge`, cut from
-`kata-egress-prove`. Claim under judgement: `decisions/ADR-239-kata-egress-policy-enforcement-point.md` (status Proposed).
+`kata-egress-prove`. Claim under judgement: `decisions/ADR-240-kata-egress-policy-enforcement-point.md` (status Proposed).
 The previous stage's summary was not trusted; everything below was re-derived from the code and re-run on `thnak-server`
 (Ubuntu 26.04, kernel 7.0.0-38, nftables 1.1.6, iproute2 6.19, containerd 2.4.2, Kata 4.1.0 runtime-rs/cloud-hypervisor,
 gcc 15 Release). I changed no implementation or ADR file; all mutations lived only in the server copy of the sources and
@@ -67,7 +67,7 @@ loud, slow, leaky one (see S12).
 
 ## 2. Claim vs test audit (question 1)
 
-Method for each ADR-239 §4 row: read the test, decide whether its probe can fail and whether its control exercises the same
+Method for each ADR-240 §4 row: read the test, decide whether its probe can fail and whether its control exercises the same
 probe against the unprotected state; mutate. 16 mutants were applied to the server copy of the implementation (one at a
 time, rebuild, run `render` + the relevant live binaries under the scoped accepts, restore). Mutation numbers: `ok/FAIL`.
 
@@ -262,13 +262,13 @@ confirmed by M4 and E9. In degraded mode (table lost, before the next exec) the 
 | S4 | Host-local check is create-time only: an allowed address later assigned to the host (VPN, DHCP, a new Docker network) turns a granted tuple into a grant over host services through INPUT; NAT-hairpin WAN address undetectable (disclosed) | accepted-residual (add the "acquired later" case to the ADR) |
 | S5 | Degraded mode (table lost, before the next exec) loses: the quota (I8 `net_bytes` void), conntrack statefulness (unsolicited inbound from allowed sources possible), SYN limit, -450 fragment drop. ADR residual 1 says only "layers 1-2 contain" | must-fix as documentation; no code needed (and see §6) |
 | S6 | `resolve_and_validate_all` header says it "shares an implementation" with `resolve_and_validate`; it duplicates the filter loop (shares only `resolve_candidates`/`is_blocked_address`), and has no direct test | accepted-residual / doc fix |
-| S7 | Misleading text left behind: `kata_backend.hpp` points to "ADR-239 section 8" for residuals (they are section 6); the SLICE 10 header block (lines ~243-250) still describes the netns nft policy as current without an inline pointer; the new header lines 338 and 390 contain invalid UTF-8 bytes where `§` was written; design 6.1 describes a tc `bridge mac` match that is not implemented | doc fix |
+| S7 | Misleading text left behind: `kata_backend.hpp` points to "ADR-240 section 8" for residuals (they are section 6); the SLICE 10 header block (lines ~243-250) still describes the netns nft policy as current without an inline pointer; the new header lines 338 and 390 contain invalid UTF-8 bytes where `§` was written; design 6.1 describes a tc `bridge mac` match that is not implemented | doc fix |
 | S8 | Verify compares to the install-time snapshot; install never checks the snapshot content against the expected render | accepted-residual (should-fix: assert expected rule counts at install) |
 | S9 | Non-SYN TCP segments to the allowed tuple are unrate-limited (20000/20000 forwarded; no conntrack growth measured with tcp_loose=1); ARP to the gateway is unrate-limited and unmetered (red-team accepted it, the ADR omits it); wire bytes can exceed N by header replication (2-6%) and a GSO packet up to 64 KiB; silent stall gives the host no "budget exhausted" signal | accepted-residual (add to ADR) |
 | S10 | ICMP type 3 is passed by tc stateless; only layer 3 ties it to a flow (ADR residual 3, confirmed) | accepted-residual (disclosed) |
 | S11 | Tool names are PATH-resolved; install writes tc/nft batch files with `std::ofstream` under the 0700 dir | accepted-residual (host-owned environment) |
 | S12 | Test hygiene: egress_linux/lifecycle/scale return early on a failed precondition leaving the lab; scale left a sink holding ctest's pipe (908 s hang); lifecycle T8 leaks a CNI ipMasq rule per run (14 leaked in this session, cleaned); T11 edits `/etc/hosts` temporarily (cleaned on normal exit only); `forward_precondition_met` accepts only the `ae-prove-temp` marker, so a host whose FORWARD is already open still "fails"; the suites need `python:3.12-alpine` pre-pulled (it was absent) | must-fix (cheap) |
-| S13 | I4 ("every effect is attributable") is listed in ADR-239's header with no mechanism or test: nothing emits an audit record for install/remove/kill beyond stderr lines; chain/object names carry the backend id (state attribution only) | must-fix (reword the ADR or add an audit hook; ADR-070's "always audited" is the seam this is claiming) |
+| S13 | I4 ("every effect is attributable") is listed in ADR-240's header with no mechanism or test: nothing emits an audit record for install/remove/kill beyond stderr lines; chain/object names carry the backend id (state attribution only) | must-fix (reword the ADR or add an audit hook; ADR-070's "always audited" is the seam this is claiming) |
 
 No blocker: nothing lets a hostile guest widen its own egress, and every failure path I exercised (create faults, port
 persisting, table loss, tamper, flag reset, crash, concurrent processes) failed closed.
@@ -304,7 +304,7 @@ Cheaper and in line with ADR-070's delegated-seam shape: enumerate the degraded 
 `verify_egress(handle)` (reusing `HostEgress::verify`) so a host that wants a timer can call it. If the owner treats
 `net_bytes` as a security budget rather than a cost guard, a timer becomes required.
 
-## 7. Honesty review of ADR-239 (question 5)
+## 7. Honesty review of ADR-240 (question 5)
 
 Accurate: the problem statement; the supersede banners on ADR-093/095 (they say exactly which parts are superseded and what
 stays; the original text is kept as the record); the evidence table counts (73/119/27 and the scaling numbers reproduce); the
@@ -337,7 +337,7 @@ Overclaims or omissions:
 9. The previous stage deleted `docs/planning/2026-10-19-session-state-kata-egress-and-recycling.md` (162 lines) in the same
    change set; unrelated to the claim, but the owner should know it left the tree.
 
-## 8. What must change before the owner marks ADR-239 Judged
+## 8. What must change before the owner marks ADR-240 Judged
 
 Must (small):
 1. Add live tests with positive controls for (a) default-drop of an unregistered bridge port, and (b) layer 1 alone

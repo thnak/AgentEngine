@@ -1,5 +1,5 @@
 #pragma once
-// Shared harness for the Kata egress-policy acceptance tests (ADR-239; GitHub #194). Linux, root, a real
+// Shared harness for the Kata egress-policy acceptance tests (ADR-240; GitHub #194). Linux, root, a real
 // containerd + Kata + CNI `ae-kata-net` deployment (same precondition as test_kata_backend_linux.cpp), gated
 // behind AGENTENGINE_KATA_SANDBOX_TESTS like every other Kata test.
 //

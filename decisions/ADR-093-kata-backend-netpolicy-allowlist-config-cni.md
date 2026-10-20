@@ -3,7 +3,7 @@
 Status: Proposed (2026-08-24; implemented, red-teamed -- one BLOCKING finding, fixed and re-verified
 in the same pass -- WSL compile-verified, awaiting project-owner Judged sign-off)
 
-**Partially superseded by [ADR-239](ADR-239-kata-egress-policy-enforcement-point.md) (2026-10-19, Proposed).** The
+**Partially superseded by [ADR-240](ADR-240-kata-egress-policy-enforcement-point.md) (2026-10-19, Proposed).** The
 enforcement point this ADR chose (§3-§4: an nftables table INSIDE the sandbox netns, `ip netns exec <id> nft ...`)
 never saw a microVM guest's traffic, so `NetPolicy::allowlist` enforced nothing for a Kata guest (live finding 2,
 `docs/planning/2026-10-19-kata-live-verification-findings.md`). What stays: the `--config`/manual-CNI pipeline, the

@@ -1,6 +1,6 @@
 #pragma once
 // KataBackend egress policy: the enforcement point for NetPolicy::allowlist and ResourceLimits::net_bytes
-// of a Kata microVM guest (ADR-239; 008 §4, I2, I3, I8; design -> red-team -> prove record in
+// of a Kata microVM guest (ADR-240; 008 §4, I2, I3, I8; design -> red-team -> prove record in
 // docs/planning/2026-10-19-kata-egress-policy-{design,redteam}.md, revised design in redteam §6).
 //
 // Why here and not in the sandbox netns (ADR-093/095's `ip netns exec <id> nft ... ae_netpolicy`): Kata

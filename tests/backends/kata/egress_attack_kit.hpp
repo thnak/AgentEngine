@@ -1,5 +1,5 @@
 #pragma once
-// Hostile-guest attack batch used by the Kata egress acceptance tests (ADR-239). One guest exec sends every
+// Hostile-guest attack batch used by the Kata egress acceptance tests (ADR-240). One guest exec sends every
 // frame in kAttackBody with CAP_NET_RAW (all the backend grants a guest), while host-side sniffers on the
 // Kata bridge device (what reached the host) and on the world veth (what was forwarded out) count markers.
 // The same batch runs against a hand-wired control sandbox (no policy: the markers must show up, otherwise the

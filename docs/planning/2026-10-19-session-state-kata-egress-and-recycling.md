@@ -8,10 +8,10 @@ this session unless marked REASONED. Nothing here is pushed; `origin` is untouch
 All branches are on `origin` (no PRs opened): `adr237-phase-g-deciders` (06de4218, Phase G + merged #174/#181),
 `kata-live-verification` (this doc lives here), `kata-egress-design`, `kata-egress-redteam`,
 `kata-egress-prove`, `kata-egress-judge` (each stacked on the previous; judge tip 75fd5f1b has the code,
-ADR-239 Proposed, and all four stage reports). The state doc itself is only on `kata-live-verification`.
+ADR-240 Proposed, and all four stage reports). The state doc itself is only on `kata-live-verification`.
 **Next steps, in order:** (1) one fix agent for the judge's list (tests that fail when port flags /
 default-drop are removed, enforce or document the dedicated-bridge precondition, correct the false
-"older nft fails closed" claim, complete ADR-239 residuals incl. I4, fix `kata_backend.hpp` header cites and
+"older nft fails closed" claim, complete ADR-240 residuals incl. I4, fix `kata_backend.hpp` header cites and
 UTF-8, fix lab leaks in the three suites, add a public `verify_egress` hook); ADR stays Proposed until the
 owner marks it Judged. (2) Draft the recycling design (section 9), same loop. (3) Capacity: 200 real
 microVMs and guests under load were not tested. (4) Open PRs when the owner wants them. The server
@@ -127,7 +127,7 @@ ports; port flags `learning off`, `locked on`, `isolated on` + static FDB entry;
 allowlist on the veth host end (agent's addition, beyond the owner's stated direction)**; fail-closed
 ordering (sweep, flags, FDB, tc, nft, read-back); destroy removes the port first and keeps the policy if the
 port persists; `exec` re-verifies the policy and kills the guest on mismatch
-(`kata_backend.egress_policy_missing`). `decisions/ADR-239-kata-egress-policy-enforcement-point.md`
+(`kata_backend.egress_policy_missing`). `decisions/ADR-240-kata-egress-policy-enforcement-point.md`
 (Proposed; ADR-093/095 carry partial-supersession banners; README row added). Reported: all 19 claims held
 with positive controls; egress_linux 73/73, lifecycle_linux 119/119, scale_linux pass, existing four Kata
 suites pass; scaling flat at ~22-23 Gbit/s for N=1..200 netns guests (per-sandbox-table control: 7.99 at
@@ -158,8 +158,8 @@ closed" (only the removal script uses `destroy`; on old nft create succeeds and 
 forever). Must-fix: dedicated-bridge precondition unenforced (any bridge the CNI result names has foreign
 ports and host-originated traffic dropped); ADR residuals incomplete (what is lost between a table flush
 and the next exec: quota, conntrack statefulness, SYN limit, early fragment drop; unrated ARP; 2-6% wire
-byte undercount; create-time-only host-local check); ADR-239 claims I4 upheld with no mechanism/test;
-`kata_backend.hpp` cites "ADR-239 §8" (residuals are §6), stale SLICE 10 header text, invalid UTF-8 where
+byte undercount; create-time-only host-local check); ADR-240 claims I4 upheld with no mechanism/test;
+`kata_backend.hpp` cites "ADR-240 §8" (residuals are §6), stale SLICE 10 header text, invalid UTF-8 where
 "§" was written; three suites leak the lab on early return, lifecycle leaks one CNI ipMasq rule into the
 host nat table per run, tests need `python:3.12-alpine` pre-pulled (now pulled on the server).
 Judge probes: literal `nft flush ruleset` in a private netns (tc + port flags still contained the guest;
@@ -170,7 +170,7 @@ Exec-time-only detection acceptable if the ADR lists degraded-mode losses and a 
 is added; a watchdog only if net_bytes is treated as a security budget. Not verified: literal flush against
 a running microVM, nft<1.0.9 / kernel<6.3 / other kernels / br_netfilter, 200 real microVMs, E6 fragment
 mutation and A-record cap constants, real multi-A DNS, NAT-hairpin WAN address, the 0-byte first download.
-Open: owner decides which listed changes to make before marking ADR-239 Judged.
+Open: owner decides which listed changes to make before marking ADR-240 Judged.
 
 ## 7. Measurements (idle busybox guests, shipped default 1 vCPU / 2 GiB)
 

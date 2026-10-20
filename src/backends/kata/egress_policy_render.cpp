@@ -1,5 +1,5 @@
 // Pure half of the Kata egress policy: validators, nft/tc script generators, listing parsers and the CNI result
-// parser. No process is spawned and no file is touched here. Implements ADR-239 (see egress_policy.hpp's top
+// parser. No process is spawned and no file is touched here. Implements ADR-240 (see egress_policy.hpp's top
 // comment for the design record). I3: every emitted token is a typed value or passed a charset check below.
 #include "backends/kata/egress_policy.hpp"
 

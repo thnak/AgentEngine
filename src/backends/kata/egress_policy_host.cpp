@@ -1,4 +1,4 @@
-// Host-effect half of the Kata egress policy (ADR-239): runs bridge/tc/nft through an injected runner, under an
+// Host-effect half of the Kata egress policy (ADR-240): runs bridge/tc/nft through an injected runner, under an
 // advisory flock so concurrent creates/destroys serialise across threads and processes. See egress_policy.hpp's
 // top comment for the design record; this file owns the fail-closed ordering:
 //   create:  sweep orphans -> port flags + static FDB -> tc (default-deny first) -> shared table ensure + one

@@ -331,11 +331,11 @@
 // `create()`). Fixed with a `KataBackend`-private `std::mutex` serializing just the
 // `fallocate`/`mkfs.ext4`/`losetup -f`/loop-mount sequence, not `create()` as a whole.
 //
-// SLICE 13 (2026-10-19, decisions/ADR-239-kata-egress-policy-enforcement-point.md; GitHub #194) -- the
+// SLICE 13 (2026-10-19, decisions/ADR-240-kata-egress-policy-enforcement-point.md; GitHub #194) -- the
 // SLICE 10/11 netns `ae_netpolicy` table never saw a microVM guest's traffic (live finding 2: Kata joins the tap
 // and the veth with tc mirred, so the netns's netfilter hooks are bypassed). Reachable-and-wrong until now:
 // `allowlist` enforced nothing, `net_bytes` counted ~0, and the guest could reach host services, other guests and
-// IPv6 link-local. ADR-093 §3/§4 and ADR-095 §3 (net_bytes) are WRONG for a microVM guest as shipped; ADR-239 is
+// IPv6 link-local. ADR-093 §3/§4 and ADR-095 §3 (net_bytes) are WRONG for a microVM guest as shipped; ADR-240 is
 // the correction. The netns nft block is removed. The policy now lives on the host end of the sandbox's veth, a
 // port of the CNI bridge in the HOST namespace (egress_policy.hpp has the three layers: native port hardening,
 // a tc allowlist, one shared nftables bridge table). `create()` installs it after `cnitool add` and before the
@@ -387,7 +387,7 @@
 //     tokenization (each clause as a separate argv entry rather than one shell-joined string) is
 //     assumed, not empirically confirmed.
 //   - SLICE 13 supersedes the netns-local nftables allowlist this bullet used to describe (it never saw guest
-//     traffic, see the SLICE 13 block above and ADR-239). Residuals of the replacement are listed in ADR-239 §8.
+//     traffic, see the SLICE 13 block above and ADR-240). Residuals of the replacement are listed in ADR-240 §8.
 //
 // Reachable only via `register_hardware_isolation_backend()` (`named_only`,
 // ADR-080/microvm-first-party-backend-design-draft.md finding #1) -- a host must opt a session into
@@ -534,7 +534,7 @@ private:
         bool net_created = false;     // SLICE 10: true iff create() ran the ip-netns/cnitool/nft
                                        // sequence for this instance -- destroy() only reverses it
                                        // when this is set (deny_all instances never touch it).
-        std::optional<egress::InstalledPolicy> egress;  // SLICE 13 (ADR-239): what install() proved and
+        std::optional<egress::InstalledPolicy> egress;  // SLICE 13 (ADR-240): what install() proved and
                                        // snapshotted for this sandbox's bridge port; exec() re-verifies
                                        // against it and destroy() removes it AFTER the port is gone.
         bool egress_failed = false;    // SLICE 13: exec()'s verification failed and the guest was killed;

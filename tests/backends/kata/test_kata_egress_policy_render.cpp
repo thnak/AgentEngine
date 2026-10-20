@@ -1,4 +1,4 @@
-// Host-free proof of the pure half of the Kata egress policy (ADR-239): the generators emit exactly the
+// Host-free proof of the pure half of the Kata egress policy (ADR-240): the generators emit exactly the
 // reviewed text and refuse hostile input (I3), the listing and CNI parsers behave, and HostEgress runs its
 // steps in the fail-closed order and stops (and undoes) on a failure at any step. No VM, no root, no nft needed:
 // every process goes through an injected runner. The host-side acceptance tests are

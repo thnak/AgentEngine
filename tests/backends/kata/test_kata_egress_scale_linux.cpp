@@ -1,4 +1,4 @@
-// Scaling check for the shared-table egress policy (ADR-239, red-team B2): throughput of one policed guest
+// Scaling check for the shared-table egress policy (ADR-240, red-team B2): throughput of one policed guest
 // and the control-plane cost of one more sandbox, with 1, 50, 100 and N real bridge ports each carrying a full
 // per-sandbox policy (HostEgress::install: port flags, tc, chains, quota, vmap entries). THE GUESTS HERE ARE
 // netns+veth LAB GUESTS, not microVMs: the datapath cost is the same (frames cross the veth host end and the

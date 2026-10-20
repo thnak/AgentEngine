@@ -90,7 +90,7 @@ constexpr std::string_view kKataWorkdirRoot = "/run/agentengine-kata";
     return s;
 }
 
-// SLICE 13 (ADR-239): the injected command runner every egress step shells through -- one place, so a test
+// SLICE 13 (ADR-240): the injected command runner every egress step shells through -- one place, so a test
 // can put a failing `nft`/`tc`/`bridge` first on PATH and prove each step fails create() closed.
 [[nodiscard]] egress::HostEgress make_host_egress() {
     return egress::HostEgress([](std::vector<std::string> const& argv) -> result<egress::CommandOutcome> {
@@ -101,7 +101,7 @@ constexpr std::string_view kKataWorkdirRoot = "/run/agentengine-kata";
     });
 }
 
-// SLICE 13 (ADR-239 §4.4): an allowlist entry resolving to ANY address of this host would turn the allowlist
+// SLICE 13 (ADR-240 §4.4): an allowlist entry resolving to ANY address of this host would turn the allowlist
 // into a grant over host services through the INPUT path, and resolve_and_validate() only blocks private/
 // loopback ranges, not the host's own public address. getifaddrs() covers every configured interface address.
 [[nodiscard]] bool is_host_local_ipv4(std::uint32_t host_order) {
@@ -240,7 +240,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // RFC1918/CGNAT/multicast/reserved/metadata-address ranges) -- reused, not re-implemented. Any
     // entry that fails to parse or resolve fails create() closed, before any resource is acquired.
     //
-    // SLICE 13 (ADR-239): an entry now yields EVERY validated A record (capped at
+    // SLICE 13 (ADR-240): an entry now yields EVERY validated A record (capped at
     // egress::kMaxEndpointsPerEntry, resolver order; the first is pinned in /etc/hosts), and an entry that
     // resolves to an address of this host itself is rejected. Resolution happens here, once, in backend code,
     // from the host-authored entry that cap::SandboxNetOut already covered -- never from guest or model output.
@@ -758,7 +758,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
         }
         cni_added = true;
 
-        // SLICE 13 (ADR-239): the egress policy lives on the host end of the veth CNI just created -- a
+        // SLICE 13 (ADR-240): the egress policy lives on the host end of the veth CNI just created -- a
         // bridge port in the HOST namespace -- NOT inside this netns: Kata's tc mirred datapath never
         // traverses the netns's netfilter hooks (the ADR-093/095 `ae_netpolicy` table that used to be
         // installed here enforced nothing for a microVM guest; live finding 2). Installed after `cnitool
@@ -877,7 +877,7 @@ result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecReques
                                       "kata_backend.unknown_handle"});
     }
     Instance& inst = *inst_ptr;
-    // SLICE 13 (ADR-239): re-verify the egress policy before running anything in the guest. A lost or
+    // SLICE 13 (ADR-240): re-verify the egress policy before running anything in the guest. A lost or
     // altered policy (nft flush, table delete, tampered chain, tc filters removed, port flags reset) kills
     // the guest and refuses this and every later exec(): the policy's quota cannot be re-created with a fresh
     // budget, so recovery is destroy() + create(), never an in-place reinstall.

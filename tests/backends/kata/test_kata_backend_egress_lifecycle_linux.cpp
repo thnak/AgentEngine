@@ -1,4 +1,4 @@
-// Lifecycle and fail-closed acceptance tests for the KataBackend egress policy (ADR-239, GitHub #194): table
+// Lifecycle and fail-closed acceptance tests for the KataBackend egress policy (ADR-240, GitHub #194): table
 // loss and tampering (the B1 blocker), exec-time verification, teardown, sweep ownership, parallel create/
 // destroy, create failure paths (injected), idempotent install, A-record cap and the host-local entry check.
 // Every check has a positive control; see egress_test_support.hpp for the lab and preconditions.

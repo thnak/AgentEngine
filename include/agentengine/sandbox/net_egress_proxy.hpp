@@ -91,7 +91,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 
 // Every candidate `resolve_and_validate` would accept, in `getaddrinfo` order and de-duplicated, from the same
 // single resolution attempt (shared implementation, so the two cannot drift; the first element is exactly what
-// `resolve_and_validate` returns). Fails closed like it when none is acceptable. ADR-239: the Kata egress policy
+// `resolve_and_validate` returns). Fails closed like it when none is acceptable. ADR-240: the Kata egress policy
 // allows every validated record of a granted name (capped by the caller), not just the first.
 [[nodiscard]] result<std::vector<VerifiedEndpoint>> resolve_and_validate_all(std::string_view host, std::uint16_t port);
 

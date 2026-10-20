@@ -1,4 +1,4 @@
-// Acceptance tests for the KataBackend egress policy (ADR-239, GitHub #194): the allowlist, the L2/L3
+// Acceptance tests for the KataBackend egress policy (ADR-240, GitHub #194): the allowlist, the L2/L3
 // containment of a hostile guest, and the net_bytes quota, each with a POSITIVE CONTROL (a hand-wired sandbox
 // with no policy, i.e. the pre-change behaviour, or the same probe with the barrier removed) so no check can pass
 // vacuously. See egress_test_support.hpp for the lab, the preconditions and what the runbook wrapper provides.
