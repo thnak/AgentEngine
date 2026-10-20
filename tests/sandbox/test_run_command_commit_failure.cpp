@@ -28,8 +28,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+#include "agentengine/rt/block_on.hpp"
 using namespace agentengine;
 namespace fs = std::filesystem;
 
@@ -50,8 +52,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kMarker = "MARKER-145: the command really ran";

@@ -36,6 +36,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <utility>
 
 using namespace agentengine;
 namespace fs = std::filesystem;
@@ -57,8 +58,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // A "container" that is a private directory plus a fake shell (cwd string, env map). Commands:
