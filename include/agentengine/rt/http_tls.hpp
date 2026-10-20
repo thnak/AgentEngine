@@ -59,6 +59,20 @@ namespace http_detail {
     return "other";
 }
 
+// ADR-241 S2 step 2: the class of a failed handshake -- the blocking client's own (src/backends/tls_mbedtls/
+// mbedtls_client_config.cpp: a certificate or handshake refusal is `policy`, a configuration failure `fatal`), and
+// `transient` for a connection that never got as far as a verdict (the transport broke, the stream was closed
+// under it). Mapping by the TLS client's error, never by `http_error::tls_failed` alone: a MITM or a wrong certificate
+// must not become something a retry site retries.
+[[nodiscard]] constexpr http_failure tls_failure_of(tls_error e) noexcept {
+    switch (e) {
+        case tls_error::certificate_rejected:
+        case tls_error::handshake_failed: return http_failure::policy;
+        case tls_error::setup_failed: return http_failure::fatal;
+        default: return http_failure::transient;
+    }
+}
+
 class TlsTransport final : public HttpTransport {
 public:
     TlsTransport(TlsStream tls, std::shared_ptr<pal::TcpStream> tcp) noexcept
@@ -130,6 +144,7 @@ inline task<HttpTlsHandshake> tls_handshake(std::shared_ptr<pal::TcpStream> tcp,
     } else {
         out.status  = http_io::failed;
         out.code    = r.code.empty() ? std::string("net.tls_handshake_failed") : r.code;
+        out.failure = tls_failure_of(r.error);
         out.message = r.message.empty() ? std::string("TLS handshake failed: ") + tls_error_name(r.error) : r.message;
     }
     co_return out;

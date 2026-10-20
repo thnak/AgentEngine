@@ -125,6 +125,11 @@ struct ChildSpawnRequest {
     // the child's (red team round 2: the child got only its own fresh stop source, so a canceled root kept paying
     // for a running child). Default: never stops.
     std::stop_token cancellation{};
+    // ADR-241 §8.4 (S2 step 1): the CALLER's `EffectContext::root_run_id` -- the root run the whole spawn tree serves.
+    // `run_child_agent_session` hands it to the child session as its inherited root, so the child's egress calls
+    // are charged to the ROOT run's admission bucket (and a nested spawn propagates it unchanged), never to a fresh
+    // bucket of the child's own. Host-set only (I3): `perform_agent_spawn` copies it from its own context.
+    std::string root_run_id{};
 };
 
 // The mechanism itself -- design doc §4.2 / §2 step [8]. Constructs a FRESH
@@ -161,6 +166,8 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT> child;
     child.initialize(child_id, *child_principal, req.token_budget,
                       std::optional<std::uint64_t>{req.max_turns});
+    // ADR-241 §8.4: before start_run() -- the child's runs are charged to the caller's ROOT run, not their own.
+    child.set_inherited_root_run_id(req.root_run_id);
     configure_chat_client(child.emplace_chat_client());
     child.set_capabilities(&req.capabilities);
     // §4.6 (item 6, OQ-16) -- see `ChildSpawnRequest::instructions`'s own comment above. No-op when

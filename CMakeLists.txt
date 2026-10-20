@@ -269,7 +269,8 @@ target_link_libraries(agentengine_core INTERFACE agentengine_docker_surface)
 # third-party dependency at all now, so this needs no CMake option gate beyond the platform-
 # independent build itself (ws2_32 is linked directly on agentengine::core on Windows, above).
 add_library(agentengine_net_egress_proxy STATIC
-  src/sandbox/net_egress_proxy.cpp)
+  src/sandbox/net_egress_proxy.cpp
+  src/sandbox/net_egress_fetch.cpp)  # ADR-241: the async path on rt::http (the gate and pure functions are the first file)
 target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
 target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine_warnings)
 add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
@@ -803,6 +804,8 @@ if(AGENTENGINE_WITH_HTTPS)
   # definition down here -- AGENTENGINE_WITH_HTTPS is resolved after that target already exists,
   # and CMake target_link_libraries()/target_compile_definitions() calls accumulate across a file.
   target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::tls_client)
+  # ADR-241: the egress proxy now speaks https through rt::http, i.e. rt::TlsStream (rt/http_tls.hpp).
+  target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::rt_tls)
   target_compile_definitions(agentengine_net_egress_proxy PUBLIC AGENTENGINE_WITH_HTTPS)
 
   # ---- Milestone 5 Phase C: host-initiated provider HTTP client (src/sandbox/) -------------------

@@ -79,7 +79,7 @@ enum class ProviderTransport {
 // path is untouched and still resolves through `resolve_and_validate`.
 //
 // The injectable-resolver seam itself is unchanged -- the same testability seam
-// `HostEgressProxy::resolver` already establishes (net_egress_proxy.hpp's own comment: "a
+// `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`) already establishes (net_egress_proxy.hpp's own comment: "a
 // testability seam, not a security bypass"). Since ADR-016 it is no longer needed merely to reach a
 // loopback test server (`resolve_host` resolves 127.0.0.1 fine); it remains for tests that want to
 // answer the resolution question WITHOUT a real DNS lookup at all -- e.g. binding an arbitrary

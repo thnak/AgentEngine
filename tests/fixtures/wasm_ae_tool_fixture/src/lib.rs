@@ -171,7 +171,7 @@ impl Guest for Component {
                 };
                 match http::http_request(cap, &req) {
                     Ok(_) => text_result("fetch: unexpectedly succeeded".to_string()),
-                    Err(_) => text_result("fetch: http-error returned".to_string()),
+                    Err(e) => text_result(format!("fetch: http-error returned: {:?}", e)),
                 }
             }
             "get-secret" => {

@@ -204,3 +204,10 @@ agentengine_add_test(test_task_branch_content_durability_integration
 agentengine_add_test(test_execution_seams_on_lane
   LIBS agentengine::core agentengine::net_egress_proxy agentengine::mediated_shell_runner
     agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
+# ---- ADR-241 S2: egress admission (G13 e/h/h3/i/j/k), host-Runtime and when_all cancellation (G7), first use (G13 b/d/f) --
+agentengine_add_test(test_net_egress_admission LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 300)
+agentengine_add_test(test_net_egress_first_use LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 120)
+# The context is a leaked singleton, so each first-use mode needs its own fresh process.
+add_test(NAME test_net_egress_first_use_inject COMMAND test_net_egress_first_use inject)
+set_tests_properties(test_net_egress_first_use_inject PROPERTIES TIMEOUT 120)

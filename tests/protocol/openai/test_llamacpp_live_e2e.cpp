@@ -456,7 +456,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted));
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted, agentengine::sandbox::EgressCallControl{}));
 
         auto const guest_view = sandbox::resolve_and_validate(host, static_cast<std::uint16_t>(port_value));
         if (!guest_view) {

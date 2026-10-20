@@ -309,6 +309,13 @@ struct AgentSessionRecord {
     // fork_from()/restore_from_record() (below) so a fork or a restart of a Tier-3 session cannot
     // silently downgrade to the caller-only admission path -- fail-closed direction (§21a Finding 1).
     bool require_authority = false;
+    // ADR-241 §8.4 (S2 step 1): the INHERITED root run id of a child/node session (empty for a top-level session,
+    // which is its own root on every run) and the principal's `delegation_root`. Both are additive and optional on
+    // the wire (absent = empty), so an older record still loads. Without them a restored delegated child would get
+    // a fresh egress admission bucket at the run level AND -- the principal level keys on `root_id()` -- its own
+    // principal bucket (ADR-241 R14(b)).
+    std::string root_run_id;
+    std::string principal_delegation_root;
 };
 
 // ADR-061 §24.1: the ONE other sanctioned way to construct an AgentSessionRecord outside
@@ -342,6 +349,9 @@ struct AgentSessionRecord {
         {"turn_index", json::Value::make_number(static_cast<double>(rec.turn_index))},
         {"open_interactions", json::Value::make_array(std::move(interactions))},
         {"require_authority", json::Value::make_bool(rec.require_authority)},
+        // ADR-241 §8.4: additive, optional on read (absent = empty).
+        {"root_run_id", json::Value::make_string(rec.root_run_id)},
+        {"principal_delegation_root", json::Value::make_string(rec.principal_delegation_root)},
     });
 }
 
@@ -377,6 +387,18 @@ struct AgentSessionRecord {
     rec.run_counter         = static_cast<std::uint64_t>(run_counter->as_number());
     rec.turn_index          = static_cast<std::uint64_t>(turn_index->as_number());
     rec.require_authority   = require_authority->as_bool();
+    // ADR-241 §8.4: the two additive fields. Absent (an older record) is empty; present-but-not-a-string is
+    // malformed, never silently ignored.
+    for (auto const& [key, dest] : {std::pair<char const*, std::string*>{"root_run_id", &rec.root_run_id},
+                                    {"principal_delegation_root", &rec.principal_delegation_root}}) {
+        if (json::Value const* f = v.find(key); f != nullptr) {
+            if (!f->is_string()) {
+                return std::unexpected(error{failure_class::contract, "malformed AgentSessionRecord",
+                                              "rt.agent_session.record.malformed"});
+            }
+            *dest = f->as_string();
+        }
+    }
     rec.open_interactions.reserve(open_interactions->as_array().size());
     for (json::Value const& item : open_interactions->as_array()) {
         result<Interaction> parsed = interaction_from_json(item);
@@ -760,6 +782,15 @@ public:
         return metadata_;
     }
     [[nodiscard]] std::string const& last_run_id() const noexcept { return last_run_id_; }
+    // ADR-241 §8.4 (S2 step 1): the root run id this session INHERITS -- set once, by host code, for a child or
+    // node session (rt::run_child_agent_session, rt::agent_session_as_executor_body) before its first
+    // `start_run()`. Empty (the default) means a top-level session: every run it starts is its own root
+    // (`EffectContext::root_run_id` = that run's `run_id`). Never a model-derived value (I3): the callers pass the
+    // caller's own `EffectContext::root_run_id`. `fork_from()` copies it with `principal_`; `clear_in_process_state()`
+    // deliberately does NOT reset it (ADR-241 §8.4 -- a child that cleared its inheritance would become its own
+    // root and gain a fresh egress admission bucket).
+    void set_inherited_root_run_id(std::string root_run_id) { inherited_root_run_id_ = std::move(root_run_id); }
+    [[nodiscard]] std::string const& inherited_root_run_id() const noexcept { return inherited_root_run_id_; }
     [[nodiscard]] std::uint64_t last_turn_index() const noexcept { return effect_context_.turn_index; }
     // ADR-193: both include what delegated agents charged that has not been folded in yet -- a run that ended
     // without another model call (suspended, canceled, or its last round delegated) still reports it.
@@ -1279,6 +1310,7 @@ private:
     std::unordered_map<std::string, std::string>       metadata_;
     std::uint64_t                                       run_counter_ = 0;
     std::string                                         last_run_id_;
+    std::string                                         inherited_root_run_id_;  // ADR-241 §8.4; empty = top-level
     std::vector<Interaction>                            open_interactions_;
     std::uint64_t                                       interaction_counter_ = 0;
     // ADR-057 §9 -- guarded the same way `open_interactions_` above is: every access happens inside

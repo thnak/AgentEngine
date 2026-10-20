@@ -436,6 +436,7 @@ int main() {
             bool no_sandbox = false;
             bool no_blob_sink = false;
             std::string run_id;
+            std::string root_run_id;
             std::optional<ae::BoundCapability> stashed;
         };
         auto seen = std::make_shared<Seen>();
@@ -452,12 +453,14 @@ int main() {
             seen->no_sandbox       = ctx.sandbox_fs == nullptr;
             seen->no_blob_sink     = !ctx.blob_sink;
             seen->run_id           = ctx.run_id;
+            seen->root_run_id      = ctx.root_run_id;
             if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) seen->stashed = ctx.bound_capabilities->front();
             return ok_value();
         });
         t.capability_ceiling = {ae::cap::FsRead{"docs", "", std::nullopt}};
         auto s = spec(t);
         s.capabilities = ae::CapabilitySet::grant_root({ae::cap::Background{2}, ae::cap::FsRead{"docs", "", std::nullopt}});
+        s.owner.root_run_id = "root-9";  // ADR-241 §8.4: the owner's root run reaches the job's context
         auto id = runner.submit(s);
         check(id && reaches(runner, *id, background_job_state::succeeded), "R9 setup: the inspecting job succeeds");
         if (id) {
@@ -480,6 +483,8 @@ int main() {
             check(seen->deadline_default && seen->no_sandbox && seen->no_blob_sink,
                   "R11: no deadline, sandbox_fs or blob_sink reaches a job (allowlist)");
             check(seen->run_id == "run-1", "R11: run id is carried");
+            check(seen->root_run_id == "root-9",
+                  "ADR-241 §8.4: the job's EffectContext::root_run_id is the owner's root run id (host-set, from the spec)");
             check(seen->stashed.has_value() && !seen->stashed->use().has_value(),
                   "R13: a bound capability copied out by the tool is revoked once the job ends");
         }

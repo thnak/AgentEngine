@@ -64,6 +64,15 @@ struct EffectContext {
     // -- never wall-clock-derived (001 §7: an unrecorded wall-clock read here would be exactly the
     // kind of untracked nondeterminism I5 forbids).
     std::string  run_id;
+    // ADR-241 §8.4 (S2 step 1): the id of the ROOT run this call descends from -- the run an agent.spawn
+    // child, a background job or a workflow node ultimately serves. A root run's value is its own `run_id`;
+    // every descendant carries the root's. It is the egress proxy's admission label (`EgressCallControl::
+    // admission`, sandbox/net_egress_proxy.hpp): a value that only SELECTS which bucket to debit, so it can only
+    // narrow (I2-neutral). HOST-SET ONLY (I3): every writer is host code that copies it from the session core,
+    // a `ChildSpawnRequest`, a job owner or the workflow supervisor -- nothing here is ever derived from model
+    // output, and no tool writes it. Empty means "unknown": the admission step then falls back to `run_id`, and if
+    // both are empty charges the UNATTRIBUTED bucket (it never skips a level, ADR-241 R5-1).
+    std::string  root_run_id;
     std::uint64_t turn_index = 0;
     // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): host-driven REPLAY state,
     // set by `AgentSession::resolve_interaction()`'s `codeact_ask` branch (rt/agent_session.hpp)

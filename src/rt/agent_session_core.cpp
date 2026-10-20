@@ -209,6 +209,9 @@ task<result<AgentResponse>> AgentSessionCore::start_run_locked(
     // -- setting them again here from session-level state would silently overwrite a correctly-
     // resolved per-request authority, reproducing the exact bug this mechanism exists to close.
     effect_context_.run_id       = session_id_ + ":run:" + std::to_string(run_counter_);
+    // ADR-241 §8.4: a top-level session's run is its own root; a child/node session carries the root it inherited
+    // from its host-side creator. Host-derived either way (I3).
+    effect_context_.root_run_id  = inherited_root_run_id_.empty() ? effect_context_.run_id : inherited_root_run_id_;
     effect_context_.turn_index   = 0;
     last_run_id_ = effect_context_.run_id;
     // ADR-193: a tool that runs another agent reports the child's events and usage back through these. Both
@@ -671,6 +674,8 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
                                       std::optional<std::size_t> history_prefix_len) {
     session_id_ = std::move(new_session_id);
     principal_  = source.principal_;
+    // ADR-241 §8.4: copied together with the principal -- a fork of a delegated child stays charged to the root.
+    inherited_root_run_id_ = source.inherited_root_run_id_;
     // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must
     // stay Tier-3 by default. Not copying this alongside principal_ (the identity) was a real,
     // test-proven gap (a forked session was immediately start_run()-able with require_authority_
@@ -712,6 +717,9 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
 void AgentSessionCore::clear_core_state() {
     session_id_.clear();
     principal_ = agentengine::Principal{};
+    // ADR-241 §8.4: `inherited_root_run_id_` is deliberately NOT reset here (the rule is the ADR's, G13h2): a child
+    // that cleared its inheritance would become its own root and gain a fresh egress admission bucket. A host that
+    // reuses a pooled session as a top-level one calls set_inherited_root_run_id({}) itself.
     history_.clear();
     metadata_.clear();
     run_counter_ = 0;
@@ -787,6 +795,8 @@ AgentSessionRecord AgentSessionCore::to_record() const {
     rec.session_id          = session_id_;
     rec.principal_id        = principal_.id;
     rec.principal_tenant_id = principal_.tenant_id;
+    rec.principal_delegation_root = principal_.delegation_root;  // ADR-241 §8.4 (was dropped on restore)
+    rec.root_run_id         = inherited_root_run_id_;            // empty for a top-level session
     rec.run_counter         = run_counter_;
     rec.turn_index          = effect_context_.turn_index;
     rec.open_interactions   = open_interactions_;
@@ -798,6 +808,11 @@ AgentSessionRecord AgentSessionCore::to_record() const {
 void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
     session_id_ = rec.session_id;
     principal_  = agentengine::Principal{rec.principal_id, rec.principal_tenant_id};
+    // ADR-241 §8.4 / R14(b): the principal level of egress admission keys on `root_id()`, so a restored delegated
+    // child must keep its `delegation_root` (an empty one -- a non-delegated principal or an older record -- changes
+    // nothing). The inherited root run id comes back the same way (absent = a top-level session).
+    principal_.delegation_root = rec.principal_delegation_root;
+    inherited_root_run_id_     = rec.root_run_id;
     run_counter_ = rec.run_counter;
     last_run_id_ = run_counter_ > 0 ? session_id_ + ":run:" + std::to_string(run_counter_)
                                       : std::string{};

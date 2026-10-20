@@ -242,6 +242,9 @@ struct HttpTlsHandshake {
     http_io                        status = http_io::failed;  // ok / canceled / failed
     std::string                    code;
     std::string                    message;
+    // ADR-241 S2 step 2: the TLS client's class for a `failed` handshake (certificate/handshake -> policy, setup ->
+    // fatal, transport -> transient); `unspecified` when the connector does not say. Carried to `HttpResponse::failure`.
+    http_failure                   failure = http_failure::unspecified;
 };
 // ae-naming-lint: allow HttpTlsConnector — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 using HttpTlsConnector =
@@ -289,7 +292,11 @@ struct HttpResponse {
     http_error     error = http_error::none;
     std::string    code;     // net.* code when error != none
     std::string    message;  // human-readable detail
+    http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;  // set once a head was parsed (also when the body then failed)
+    // ADR-241 S2: every byte the transport's read_some returned for this exchange (the S1 request-level counter, read
+    // back): lets a caller or a test count the response bound on the CLIENT, never at the peer. Also on failure.
+    std::uint64_t  wire_bytes = 0;
     std::string    reason;
     HttpHeaders    headers;
     std::string    body;
@@ -417,6 +424,10 @@ private:
 // ADR-241 S1: the ONE place wire bytes are counted. A read that pushes the total past the budget is `over_budget`
 // (its data dropped); callers map that to `response_too_large`.
 inline task<HttpIo> read_counted(HttpTransport& t, http_wire::WireBudget& budget, std::size_t n, std::stop_token stop) {
+    // Clamp the request to the remaining budget + 1 (never 0): the total can then never exceed `limit + 1` wire bytes, so the
+    // bound is exact and not "plus one read chunk" (ADR-241 S2, coordinator decision 4).
+    std::uint64_t const remaining = budget.limit > budget.used ? budget.limit - budget.used : 0;
+    n = static_cast<std::size_t>(std::max<std::uint64_t>(1, std::min<std::uint64_t>(n, remaining + 1)));
     HttpIo r = co_await t.read_some(n, std::move(stop));
     if (r.status == http_io::ok && !budget.charge(r.data.size())) {
         r.status = http_io::over_budget;
@@ -635,7 +646,9 @@ struct HttpStreamResponse {
     http_error     error = http_error::none;  // the head phase's outcome; body errors come from `body.next()`
     std::string    code;
     std::string    message;
+    http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;
+    std::uint64_t  wire_bytes = 0;  // ADR-241 S2: the head phase's wire bytes; see HttpResponse::wire_bytes
     std::string    reason;
     HttpHeaders    headers;
     pal::IpAddress address{};
@@ -650,6 +663,7 @@ inline void set_error(HttpStreamResponse& r, http_wire::WireError const& e) {
     r.error   = e.error;
     r.code    = e.code;
     r.message = e.message;
+    r.failure = e.failure;
 }
 
 inline http_wire::WireError from_connect(ConnectedStream const& c) {
@@ -736,7 +750,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
             tcp->close();
             set_error(out, h.status == http_io::canceled
                                ? op.why(stop)
-                               : http_wire::fail(http_error::tls_failed, h.code, h.message));
+                               : http_wire::WireError{http_error::tls_failed, h.code, h.message, h.failure});
             co_return out;
         }
         transport = std::move(h.transport);
@@ -780,6 +794,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
             }
             if (!e.ok()) {
                 transport->close();
+                out.wire_bytes = budget.used;
                 set_error(out, e);
                 co_return out;
             }
@@ -788,6 +803,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
         if (status >= 100 && status < 200 && status != 101) {
             if (auto e = parser.next_after_interim(); !e.ok()) {
                 transport->close();
+                out.wire_bytes = budget.used;
                 set_error(out, e);
                 co_return out;
             }
@@ -795,6 +811,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
         }
         if (status == 101) {
             transport->close();
+            out.wire_bytes = budget.used;
             set_error(out, http_wire::fail(http_error::malformed_response, "net.protocol_error",
                                            "101 Switching Protocols to a request that asked for no upgrade"));
             co_return out;
@@ -810,10 +827,12 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
     out.headers                   = std::move(head.headers);
     if (!fe.ok()) {
         transport->close();
+        out.wire_bytes = budget.used;
         set_error(out, fe);
         co_return out;
     }
 
+    out.wire_bytes = budget.used;  // the head phase; the body phase adds to `st->budget`
     auto st       = std::make_shared<BodyState>();
     st->reactor   = ctx.reactor;
     st->exchange  = std::move(ex);
@@ -833,15 +852,18 @@ inline task<HttpResponse> request_buffered(HttpContext ctx, HttpRequest req, std
     out.error   = s.error;
     out.code    = std::move(s.code);
     out.message = std::move(s.message);
+    out.failure = s.failure;
     out.status  = s.status;
     out.reason  = std::move(s.reason);
     out.headers = std::move(s.headers);
-    out.address = s.address;
+    out.address    = s.address;
+    out.wire_bytes = s.wire_bytes;
     if (!s.ok()) co_return out;
     std::shared_ptr<BodyState> st = s.body.state();
     s.body                        = HttpBodyReader{};
     for (;;) {
         HttpBodyChunk c = co_await body_next(st, stop, /*arm=*/false);
+        out.wire_bytes  = st->budget.used;  // the S1 counter: head + interim heads + body + framing + trailers
         if (c.status == body_status::data) {
             out.body += c.data;
             continue;

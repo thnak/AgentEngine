@@ -241,10 +241,10 @@ public:
     // hermetic same-machine test target exists for proving the round trip's POST-resolution
     // composition (does connect_authorize correctly connect to what the resolver reports, does
     // connect_send/connect_recv correctly relay real bytes) -- exactly the same problem
-    // `HostEgressProxy::resolver`'s own header comment names for the tool-bridged path. Overrides the
+    // `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`)'s own header comment names for the tool-bridged path. Overrides the
     // process-wide resolver every `dispatch_connect_authorize` call uses; `nullptr` (the default)
     // means "use the real `sandbox::resolve_and_validate`". Production code never calls this --
-    // UNLIKE `HostEgressProxy::resolver` (a per-instance field, scoped to one object), this is a
+    // UNLIKE `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`) (a per-instance field, scoped to one object), this is a
     // process-WIDE static, so setting it affects every worker session sharing the process, and
     // "never used from production" is enforced by convention/review only, not the type system or a
     // build flag. Callers MUST reset to `nullptr` unconditionally (an RAII guard, not a bare

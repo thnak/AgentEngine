@@ -446,3 +446,80 @@ old WASM path accepted or loses the sync edge's test seam.
 body peak copies 3 -> 2), the `wit/ae-tool.wit` note (managed headers are stripped and recomputed; GET/HEAD/TRACE/OPTIONS bodies
 are refused; a raw chunk-encoded body is sent as an opaque body). *Gates:* G17's peak-memory row re-measured at 2 copies; the
 existing WASM suite; G2b re-run.
+
+## 15. Implementation record (2026-10-20)
+
+**S1** merged in PR #204 (`rt::http`: at most 8 interim responses sharing the final head's budget; a request-level wire-byte
+total counted once at `read_some`, derived with saturating arithmetic; `http_error::response_too_large`, `fatal` on the
+provider plane like `body_too_large`). Gates H18 R1-R5 each failed on their named mutant.
+
+**S2** implemented in six commits (`ADR-241 S2 (1..6)`). Every gate in the S2 list was applied with its mutant and observed to
+fail, except as recorded below; the evidence table is in the PR. Corrections to the text above, found while proving it -- these
+supersede the sections they name:
+
+- **§11 G4.** "Permit-all plus a v6 answer never connects" is false for v4-mapped forms: under the test seam's permit-all
+  policy, `::ffff:127.0.0.1` reached a v4 listener through the OS dual-stack connect. Production was never exposed (its policy
+  refuses every non-v4 family). `TestEgressProxy` now narrows any policy to v4 unless a test sets `allow_non_v4`; the row
+  `permit-all + ::ffff:127.0.0.1 never reaches the listener` fails without the narrowing.
+- **§9.** A head larger than a tiny cap fails as `net.response_too_large` (the request-level total trips first), not
+  `net.header_too_large`; same `resource` class, and the 64 KiB-budget case stays `header_too_large`.
+- **D4 / G9.** `byte_cap = 0` fails every response, even an empty one (the head budget `min(64 KiB, cap)` is 0): intended, 0 means
+  0. `read_counted` clamps each read to the remaining budget + 1, so the wire-byte bound is exact (`cap + 2*min(64 KiB, cap) + 1`);
+  there is no "+ one read chunk" slack.
+- **§8.3.** `fetch_blocking` runs the gate on the calling thread BEFORE touching the egress I/O context (so a rejected call builds
+  no context, G13b), then hands the gated request to the context; the gate still runs exactly once per call (G1).
+- **G7.** The mutant "`RootHandle::request_stop()` not wired" does not fail any row: `egress_fetch` merges `control.stop` itself, so
+  the handle forwarding is redundant belt-and-braces. The mutant is withdrawn; the caller-stop, deadline and `scope_stop_token`
+  mutants all fail their rows.
+- **G10.** Structural: there is no redirect code path to mutate. The row is a behaviour pin (a 3xx is returned; the `Location`
+  target sees no connection, both entry points).
+- **G13 h3.** "Per-level locks with rollback -> spurious busy" is not deterministically falsifiable (a call refused at one level
+  is already refused at every shared higher level). Replaced by the partial-admission-leak mutant (fails G13h3) and a 32-thread
+  hammer asserting in-flight never exceeds a cap.
+- **§8.4 start sites as built.** Session run: own `run_id`, or the inherited root (survives `fork_core_from` and the session record;
+  `clear_core_state` keeps it). `agent.spawn`: the child inherits `ctx.root_run_id` (fallback `ctx.run_id`). Workflow agent node:
+  `set_inherited_root_run_id`. Workflow supervisor and its batch context: stamp `root_run_id = run_id_` when empty. MCP
+  `tools/call` (both paths): mints `"mcp:" + server counter` for `run_id` and `root_run_id`. `BackgroundJobOwner::root_run_id`
+  exists and is copied by the runner, but `BackgroundJobRunner` has no production submitter in `src/` today; the session core's
+  own background path copies the context by value, so the field already propagates there.
+- **MCP idempotency keys change.** Setting `ctx.run_id` per MCP request changes the idempotency-key derivation
+  (`{run_id, turn_index, call_index, argument_digest}`) for MCP-originated tool calls: two separate MCP requests with identical
+  arguments no longer share a key (before, the empty `run_id` made them collide). Intended.
+- **Nested `sub_workflow`.** An inner supervisor stamps its own run id, so a nested sub-workflow is its own admission root
+  (same class as R14).
+
+**Not yet proven (follow-up, tracked on #180):**
+- G7 and G17 rows for the WASM edge. The code is in place (the guest's `wall_ms` and `ctx.deadline` reach `EgressCallControl`;
+  the request size is checked before `reserve`), but `WasmBackend` constructs `HostEgressProxy` itself, whose production policy
+  refuses loopback, and the fixture plugin sends a fixed bodiless request. The rows need a `NetEgressBackend` seam on
+  `WasmBackend` (host-supplied, defaulting to `HostEgressProxy`) and a fixture tool that takes a body size.
+- G11's certificate-for-the-wrong-name row through both entry points and the broken-CA row (the TLS class carry-through itself is
+  proven in `test_rt_https`).
+- G13g (ASan) and G13d under TSan: Linux sanitizer trees.
+- R12: the 64 x 16 MiB over 2 lanes measurement.
+
+**Implementation red-team (round 5, the code): 0 FATAL / 2 MAJOR / 8 MINOR, all addressed in this PR.**
+- M1: the WASM edge's whole path is executed end to end with no new seam -- a single-entry loopback grant passes the gate and the
+  production policy refuses it; the guest sees `host-not-allowlisted`, no accept, the call returns promptly and every admission
+  counter is back to 0. Mutants: a skipped latch count-down hangs (caught by a 90 s guard); a skipped slot release leaves counters
+  non-zero.
+- M2: `egress_error`'s TLS class mapping has unit rows on synthetic responses (cert rejected -> `policy` with and without
+  `failure`; setup -> `fatal`; transport -> `transient`); mutant `tls_failed -> transient` fails five rows.
+- m1: admission inserts both map nodes before any counter moves (undoing the first on a throw), so a `bad_alloc` cannot leak a slot.
+  No test: there is no allocation-failure hook.
+- m2: the unattributed principal bucket defaults to `per_principal` (32); the unattributed run bucket stays 8.
+- m3: the WASM `wall_ms` is clamped to 24 h for the epoch ticks, the egress deadline and the timeout classification (a host's
+  `UINT64_MAX` "unbounded" no longer overflows into a past deadline).
+- m4/m5: the production proxy has `localhost` and numeric-encoding (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`) rows on both
+  entry points through the real `getaddrinfo`, asserting no connect -- the first rows that reach `production_host_resolver()`. The old
+  "encodings" row, which only fed a fake resolver, is renamed to what it proves.
+- m6: the MCP-minted run id is `mcp:<per-instance nonce>:<n>`, so two servers (or two process lifetimes) never share ids.
+- m7 (cross-reference ADR-193): persisting and restoring `delegation_root` changes ADR-193 behaviour for RESTORED delegated
+  children -- they now match their root's approved lessons and charge the root's spawn quota, as the live child does. A restored
+  child still has `on_behalf_of` unset and `delegation_depth` reset to 0 (pre-existing).
+- m8: G13d's "lazy init without the mutex" mutant was killed 5/5 on Windows at 16 threads (reduced from 64 so the test fits its
+  512 MiB RLIMIT_DATA cap on Linux, where each thread's stack counts against it); it is not TSan-proven.
+
+Still unproven after round 5 (follow-ups on #180): G17 and the G7 timing rows on the WASM edge (need a fixture tool that sends a
+body and a reachable silent peer), G11's wrong-name and broken-CA rows, G13g (ASan) and G13d (TSan), R12. Note: the WASM rows run
+only in builds with `AGENTENGINE_WITH_WASM=ON`.

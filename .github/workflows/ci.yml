@@ -619,6 +619,13 @@ jobs:
       - name: Run layering lint
         run: python tools/layering_lint.py
 
+      # ADR-241 G15: nothing outside src/sandbox/ and sandbox/testing|detail/ may include the egress test seam.
+      - name: Egress test-seam lint self-test
+        run: python tools/egress_seam_lint.py --self-test
+
+      - name: Run egress test-seam lint
+        run: python tools/egress_seam_lint.py
+
   milestone-status-lint:
     name: Milestone-status drift lint (ADR-026)
     runs-on: ubuntu-latest

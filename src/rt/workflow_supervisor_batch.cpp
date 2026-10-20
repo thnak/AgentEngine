@@ -169,6 +169,7 @@ agentengine::EffectContext WorkflowSupervisor::batch_context(std::size_t executo
     agentengine::EffectContext ctx =
         executor_index < contexts_.size() ? contexts_[executor_index] : agentengine::EffectContext{};
     ctx.cancellation = cancellation_token();
+    if (ctx.root_run_id.empty()) ctx.root_run_id = run_id_;  // ADR-241 §8.4: same stamp as synchronous dispatch
     return ctx;
 }
 

@@ -6,6 +6,8 @@
 // external claims this design rests on.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -16,6 +18,7 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"  // ADR-241: egress_call_control() reads the call's EffectContext
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -72,7 +75,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // (224.0.0.0/4), reserved (240.0.0.0/4), and unspecified (0.0.0.0/8).
 [[nodiscard]] bool is_blocked_address(std::uint32_t ipv4_host_order) noexcept;
 
-// `\r` or `\n` anywhere in `value` -- this proxy builds the raw HTTP/1.1 request line and header
+// CR, LF or NUL anywhere in value (ADR-241 D2 added NUL) -- this proxy builds the raw HTTP/1.1 request line and header
 // block itself (no vetted HTTP library exists to lean on, ADR-011 §2), so this is the only thing
 // standing between a guest-controlled `path`/header value and request-splitting/header injection
 // onto the wire (ADR-011 claim C9).
@@ -108,8 +111,9 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // service. Refusing those was not defence, it was a false positive with no attacker on the other
 // side of it.
 //
-// This deliberately does NOT weaken the guest path: `HostEgressProxy::resolver` still defaults to
-// `resolve_and_validate` above, and test_net_egress_proxy.cpp still proves every blocked range.
+// This deliberately does NOT weaken the guest path: `HostEgressProxy` (ADR-241) has no resolver or policy seam at all and runs
+// `egress_address_policy` over every answer; `resolve_and_validate` above remains for the Kata backend and the relay, and
+// test_net_egress_proxy.cpp still proves every blocked range.
 [[nodiscard]] result<VerifiedEndpoint> resolve_host(std::string_view host, std::uint16_t port);
 
 // Connects to exactly `endpoint` (never a hostname -- see `VerifiedEndpoint`'s own comment), speaks
@@ -178,6 +182,85 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
     std::stop_token stop = {}, std::string_view ca_bundle_pem_override = {});
 #endif
 
+// ---------------------------------------------------------------------------------------------------------------
+// ADR-241 S2: the egress proxy's async path on rt::http.
+// ---------------------------------------------------------------------------------------------------------------
+
+// Host-derived bucket labels for egress admission (ADR-241 D10, 8.2). A STRUCTURED triple, never a joined string (a
+// joined `tenant + "/" + id` collided tenant `a/b` + root `c` with tenant `a` + root `b/c`). These are values that only
+// SELECT which bucket to debit, so they can only narrow what a call may do -- exactly like the stop token (I2-neutral).
+// Every component is host-derived, never model-derived (I3): `egress_call_control()` below fills them from the call's
+// `EffectContext`. An EMPTY component is not "skip this level": it charges the UNATTRIBUTED bucket of that level
+// (R5-1), so a start site nobody listed fails closed into a small shared bucket, not open into the whole pool.
+// ae-naming-lint: allow AdmissionKey — ADR-241 §4: new egress vocabulary, 027 §4 row added when the ADR is Judged
+struct AdmissionKey {
+    std::string tenant;
+    std::string principal;  // principal.root_id() (ADR-241 R5-2): a spawned child shares its root principal's bucket
+    std::string root_run;   // EffectContext::root_run_id, else run_id
+};
+
+// What a conformer may be told besides the request and the grant: VALUES ONLY, none of them authority (I2). A token and
+// a time point can only make the callee stop sooner; the admission key only selects a bucket. `EffectContext` (which
+// carries `capabilities`) is deliberately NOT passed to a conformer. No default argument anywhere: forgetting to pass
+// one is a compile error, not a silent "never cancelled" call.
+// ae-naming-lint: allow EgressCallControl — ADR-241 §4: new egress vocabulary, 027 §4 row added when the ADR is Judged
+struct EgressCallControl {
+    std::stop_token                       stop;        // merged with rt::scope_stop_token() inside `fetch`
+    std::chrono::steady_clock::time_point deadline{};  // default (the epoch) = unset
+    AdmissionKey                          admission;
+};
+
+// The host-set admission limits (ADR-241 8.2): per ROOT RUN 8, per PRINCIPAL 32, global 64, two UNATTRIBUTED buckets
+// (a context with no run id: 8; a context with no principal: 32, the per-principal value, so a host that never sets
+// principals is not throttled below what one real principal gets -- red-team r5 m2), and the request-body cap the gate
+// enforces (D11). Plain atomics on one process-wide object, adjustable at any
+// time by HOST code (never model output). A host that uses ONE service principal for everything gets per-run isolation
+// under an effective per-principal 32 -- it should raise `per_principal`.
+// ae-naming-lint: allow EgressLimits — ADR-241 §8.2: new egress vocabulary, 027 §4 row added when the ADR is Judged
+struct EgressLimits {
+    std::atomic<std::uint32_t> per_run{8};
+    std::atomic<std::uint32_t> per_principal{32};
+    std::atomic<std::uint32_t> global{64};
+    std::atomic<std::uint32_t> unattributed_run{8};
+    std::atomic<std::uint32_t> unattributed_principal{32};
+    std::atomic<std::uint64_t> max_request_bytes{16u * 1024u * 1024u};
+};
+[[nodiscard]] EgressLimits& egress_limits() noexcept;
+
+// The default overall deadline of one egress call (resolve + connect + TLS + body); `<= 0` clamps to it -- there is no
+// unbounded mode (ADR-241 D5).
+inline constexpr std::chrono::milliseconds kDefaultEgressTotalTimeout{120'000};
+
+// A guest's `wall_ms` is host-configured but unbounded as an integer: a host that means "unbounded" with UINT64_MAX would
+// overflow `milliseconds(wall_ms)` into a NEGATIVE duration and put the deadline in the past, failing every call at once
+// (red-team r5 m3). Anything above this bound is treated as the bound.
+inline constexpr std::chrono::hours kMaxEgressWallBound{24};
+
+[[nodiscard]] inline std::uint64_t clamp_egress_wall_ms(std::uint64_t wall_ms) noexcept {
+    auto const bound = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(kMaxEgressWallBound).count());
+    return wall_ms < bound ? wall_ms : bound;
+}
+
+// `start + wall_ms` as a deadline, overflow-safe; `wall_ms == 0` is the caller's "unset" and yields the unset time point.
+[[nodiscard]] inline std::chrono::steady_clock::time_point egress_wall_deadline(
+    std::chrono::steady_clock::time_point start, std::uint64_t wall_ms) noexcept {
+    if (wall_ms == 0) return {};
+    return start + std::chrono::milliseconds(static_cast<std::int64_t>(clamp_egress_wall_ms(wall_ms)));
+}
+
+// The ONE place an `EffectContext` becomes an `EgressCallControl`: the cancellation token, the deadline hint, and the
+// host-derived admission labels (`{tenant, principal.root_id(), root_run_id else run_id}`).
+[[nodiscard]] inline EgressCallControl egress_call_control(EffectContext const& ctx) {
+    EgressCallControl c;
+    c.stop                = ctx.cancellation;
+    c.deadline            = ctx.deadline;
+    c.admission.tenant    = ctx.principal.tenant_id;
+    c.admission.principal = ctx.principal.root_id();
+    c.admission.root_run  = ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id;
+    return c;
+}
+
 // concept, not a base class (mirrors `SandboxBackend`, 008 §2a) -- a first-party default ships
 // (`HostEgressProxy` below); a deployer's own conforming type (a corporate proxy client, an existing
 // SSRF appliance, an mTLS-terminating gateway) is usable with no engine change, per 008 §10 Q3's
@@ -186,17 +269,22 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // decisions/ADR-237 §5.1 (Phase D, #173): `fetch` returns `task<result<NetEgressResponse>>` -- a deployer's
 // conformer is a proxy client, i.e. network I/O, and may suspend. The backend object must outlive the
 // returned task; a conformer that keeps the request or grant past its first suspension takes them by value.
+// ADR-241 D1: the third argument is the control value above (no default; the 2-argument form is gone).
 template <class T>
 // ae-naming-lint: allow NetEgressBackend — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEgressRequest const& req) {
+concept NetEgressBackend = requires(T backend, cap::NetOut const& granted, NetEgressRequest const& req,
+                                    EgressCallControl const& control) {
     { T::traits } -> std::convertible_to<NetEgressTraits const&>;
-    { backend.fetch(req, granted) } -> std::same_as<task<result<NetEgressResponse>>>;
+    { backend.fetch(req, granted, control) } -> std::same_as<task<result<NetEgressResponse>>>;
 };
 
-// The first-party default `NetEgressBackend`. `fetch()` composes, in order: single-target-grant gate
-// (C1) -> scheme gate (C3) -> CRLF gate (C9) -> method-restriction gate (C7) -> `resolve_and_validate`
-// (C4/C5/C6) -> `perform_http_exchange` (C2/C8/C10). See ADR-011 §3 for why each gate runs before any
-// network activity.
+// The first-party default `NetEgressBackend` (ADR-241). BOTH entry points are one implementation on `rt::http`:
+//   gate (C1, C3, C7, C9, managed-header strip, GET/HEAD/TRACE/OPTIONS body refusal, request-body cap, wire validation)
+//   -> admission (per root run / per principal / global, a bounded wait)
+//   -> resolve ONCE through the IPv4-only resolver, filter EVERY address through `egress_address_policy`, connect to the
+//      verified address, TLS verified against the allowlisted NAME, no redirect, response bytes bounded.
+// There is NO seam on this type: no resolver, address policy or CA override can be set on it (ADR-241 5, G15). The
+// test-only `TestEgressProxy` (sandbox/testing/net_egress_proxy_testing.hpp) is a separate type for that.
 // ae-naming-lint: allow HostEgressProxy — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct HostEgressProxy {
 #ifdef AGENTENGINE_WITH_HTTPS
@@ -205,27 +293,21 @@ struct HostEgressProxy {
     static constexpr NetEgressTraits traits{"host-egress-proxy", false};
 #endif
 
-    // Real by default. A test may inject a fake to prove `fetch()`'s POST-RESOLUTION composition
-    // (does it correctly hand `resolve_and_validate`'s answer to `perform_http_exchange` and return
-    // a real response) without needing a live target outside every range production must always
-    // block -- every address reachable from this project's own test environment is itself loopback
-    // or RFC 1918. The fake answers "what does this hostname resolve to," the same question DNS
-    // answers; it does not skip `is_blocked_address`, which is proven exhaustively on its own, as a
-    // pure function, with zero network dependency. This is a testability seam, not a security
-    // bypass: production code never constructs a `HostEgressProxy` with a non-default resolver.
-    std::function<result<VerifiedEndpoint>(std::string_view, std::uint16_t)> resolver = resolve_and_validate;
+    // Host-set (never model output): the overall deadline of one call, narrowed by `control.deadline`. `<= 0` clamps to
+    // `kDefaultEgressTotalTimeout`; there is no unbounded mode.
+    std::chrono::milliseconds total_timeout = kDefaultEgressTotalTimeout;
 
-    // The seam (ADR-237 §5.1, #173). Completes without suspending: the body is still the blocking
-    // `fetch_blocking` below -- moving it onto `rt::http` is #180's, not this seam's. Request and grant are
-    // taken by value so a task held past this call never reads a dead temporary.
-    [[nodiscard]] task<result<NetEgressResponse>> fetch(NetEgressRequest req, cap::NetOut granted) const {
-        co_return fetch_blocking(req, granted);
-    }
+    // The async entry point. Request, grant and control are taken by value so a task held past this call never reads a
+    // dead temporary; `total_timeout` is read now, so the task does not reference this object either.
+    [[nodiscard]] task<result<NetEgressResponse>> fetch(NetEgressRequest req, cap::NetOut granted,
+                                                        EgressCallControl control) const;
 
-    // The gates and the exchange, synchronous. Called directly only where the caller cannot suspend: the
-    // WASM host import `http-request` (`wasm_backend.cpp`), whose guest is blocked inside the call.
-    [[nodiscard]] result<NetEgressResponse> fetch_blocking(NetEgressRequest const& req,
-                                                           cap::NetOut const& granted) const;
+    // The synchronous entry point, for the one caller that cannot suspend: the WASM host import `http-request`
+    // (`wasm_backend.cpp`), whose guest is blocked inside the call. It runs the SAME `fetch` as a root on the egress
+    // I/O context and waits on a latch (ADR-241 8.3): it parks the calling thread exactly as the old blocking exchange
+    // did, but bounded by `min(total_timeout, control.deadline)` and by `control.stop`.
+    [[nodiscard]] result<NetEgressResponse> fetch_blocking(NetEgressRequest req, cap::NetOut granted,
+                                                           EgressCallControl control) const;
 };
 
 static_assert(NetEgressBackend<HostEgressProxy>);
