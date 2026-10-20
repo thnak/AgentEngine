@@ -17,6 +17,12 @@ owner marks it Judged. (2) Draft the recycling design (section 9), same loop. (3
 microVMs and guests under load were not tested. (4) Open PRs when the owner wants them. The server
 (`ssh thnak-server`) is clean; `python:3.12-alpine` and `alpine:latest` are pulled there.
 
+**Update 2026-10-20:** the six branches were merged to `main` with Phase E (the Kata ADR is renumbered **ADR-240**;
+Phase E's ADR-239 is older); #194 stays open, ADR-240 stays Proposed, and the judge's fix list above is still step (1).
+Live Kata work waits for `thnak-server`. `bash tools/kata-host-check.sh [--host H]` is a read-only readiness check
+(Linux or Windows). `root@192.168.0.138` (lab-02, Ubuntu 25.10, nested KVM) is used for builds only: it is a
+shared host with ~44 running containers and has no Kata/cnitool/CNI network (check: 28 ok, 6 warn, 4 fail).
+
 ## 1. Standing instructions from the project owner (this session)
 
 - **No WSL on the dev machine; no docker for builds** (slow). Linux builds go over SSH to `thnak-server`
