@@ -49,6 +49,7 @@
 //         times with a fresh pump each round, since a single lucky pass proves little about a
 //         cross-thread-resume hazard.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <set>
@@ -125,8 +126,7 @@ void check(bool cond, char const* what) {
 // -- Same drive()/ScriptedChatClient shape test_rt_agent_spawn_child_run.cpp already established --
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct ScriptedOutcome {

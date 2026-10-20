@@ -31,6 +31,7 @@
 // MACHINE SAFETY (CLAUDE.md): single-threaded, deterministic, no sleeps -- 100 Projects is an object
 // count, not a thread or activation count, in rt:: land.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -61,8 +62,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;

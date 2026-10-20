@@ -49,6 +49,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/spawn_cost_budget.hpp"
 
 using agentengine::rt::ConsumeSpawnTokens;
@@ -73,8 +74,7 @@ void check(bool cond, char const* what) {
 // in a real rt::AgentSession, which this file has no need of).
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Mirrors rt/agent_spawn.hpp's own SpawnPump EXACTLY for the cost-consumption step: one dedicated

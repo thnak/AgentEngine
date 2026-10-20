@@ -31,6 +31,7 @@
 //         reproduction of the *pre-fix* hazard is named in the task's own residual list, not
 //         attempted here -- see the final report.)
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -100,8 +101,7 @@ void check(bool cond, char const* what) {
 // session_mutex_ is never genuinely contended.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // -- The scripted backend, extended from test_rt_agent_workflow_executor.cpp's own fixture with one

@@ -13,6 +13,7 @@
 //   Q4 -- member_count()/workflow_count() accessors track registrations.
 //   Q5 -- 030 Sec4/Sec8 Q4's own ordering: all member hooks run before any workflow hook.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -46,8 +47,7 @@ void check(bool cond, char const* what) {
 // fully, matching every other single-caller rt:: test file's own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
