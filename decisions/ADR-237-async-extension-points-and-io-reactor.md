@@ -3012,6 +3012,37 @@ fails it).
 - **Residual:** the null-runtime default is still a detached thread with a blocking sleep. Making the runtime required
   changes every call site; left to #180.
 
+### Step 62 (2026-10-20): delegated-run drop residuals (#196, ADR-193 §9)
+
+- **Found and fixed:** `discarded_tokens_estimate()` ignored delegated charges not yet folded, while `run_usage()` and
+  `run_tokens_consumed()` already included them. A run dropped while suspended on a delegate never folds, so its caller
+  lost a grandchild's discarded-attempt estimate (`R5-N3`: 0 instead of 777). The accessor now adds the unfolded
+  `extra_tokens` under the charges mutex -- the same quantity `fold_delegated_usage()` adds to
+  `discarded_tokens_estimate_`, so nothing is counted twice.
+- **Accepted residual, documented at `perform_agent_spawn`:** a spawn parent dropped mid-child-run keeps the quota slot
+  (`SpawnQuotaTracker` has no release, ADR-193 §4), the cost token (non-refundable, ADR-031) and the minted worktree
+  (the branch may hold the child's committed work). A FAILED child leaves exactly the same three, so a drop is a failed
+  child; refunding on this path only would make the quota depend on how the caller was cancelled. Pinned by `R5-S1..S3`
+  (`R5-S1` drops through `perform_agent_spawn`, not `run_child_agent_session` directly).
+- **Verified:** a nested drop (A spawns B spawns C, A dropped while C is parked) charges each level exactly once into its
+  own ledger (`R5-N1`, `R5-N2`); a session whose run frame was destroyed mid-run runs again, directly and through the
+  adapter (`R5-W2`, `R5-W3`); a dropped streaming node charges its discarded estimate (`R5-W1`). The adapter's step after
+  `completed()` (moving the outcome into the promise) is a nothrow move, now `static_assert`ed, closing step 55's R3.
+- **Still open (#196):** the shared-supervisor start token (step 59); a model call in flight at a drop and a late charge
+  from a detached worker; a SUCCESSFUL workflow agent node's discarded estimate is not carried in `ExecutorOutcome`
+  (new, found here).
+
+### Step 63 (2026-10-20): #183 batch 3-4 -- more test drivers move to `block_on`
+
+- Batch 3 (PR #200): 12 files in `tests/core/chat/`, `tests/eval/`, `tests/protocol/openai/`; 44/44 before and after.
+  Batch 4: 19 files -- 4 in `tests/rt/` (top level), 15 in `tests/sandbox/` (3 of them live-only, compile-verified;
+  `test_composed_containerd_providers_live` has no target in the Windows configuration); 18/18 before and after.
+  Same mechanical swap as step 60: each local `drive()` helper's body becomes `rt::block_on`. No hang, deadlock or
+  `block_on_refused`.
+- Left by hand on purpose: the `tests/rt/` files that test the primitives themselves (`task`, `channel`,
+  `async_mutex`, `block_on`, parked-task home, host resumer, lanes, manual reactor, reactor timer/tcp/process, TLS,
+  HTTP, runtime, offload) -- they observe suspended states, which is what D7's sanctioned stepping API must cover.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
