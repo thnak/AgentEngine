@@ -260,6 +260,7 @@ struct WasmBackend::Instance {
 };
 
 WasmBackend::WasmBackend() = default;
+WasmBackend::WasmBackend(EgressBlockingFetch egress) : egress_(std::move(egress)) {}
 WasmBackend::~WasmBackend() = default;
 
 result<SandboxHandle> WasmBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
@@ -391,6 +392,8 @@ struct CallCapabilities {
     // code runs, never inside a host import -- so without this a guest parked in `http-request` against a trickling peer
     // would hold the host lane for the whole `total_timeout`. Filled in `invoke_tool`; default (empty) while listing tools.
     sandbox::EgressCallControl egress{};
+    // Host-supplied egress backend (ADR-070-shaped opt-in, `WasmBackend(EgressBlockingFetch)`); null = HostEgressProxy.
+    EgressBlockingFetch const* egress_backend = nullptr;
 };
 
 // Every capability-gated function's callback recovers its bound capability the same way: pull the
@@ -580,8 +583,13 @@ wasmtime_error_t* cb_http_request(void* env, wasmtime_context_t* ctx,
     // nothing to suspend to. `fetch_blocking` (ADR-241 8.3) runs the SAME `fetch` the async seam runs, as a root on the
     // egress I/O context, and parks this thread on a latch -- bounded by `min(total_timeout, call->egress.deadline)` and
     // by `call->egress.stop`, which `invoke_tool` filled from the call's EffectContext (a `{}` here is the G7 mutant).
-    sandbox::HostEgressProxy const proxy;
-    auto response = proxy.fetch_blocking(std::move(req), effective_grant, call->egress);
+    auto response = [&]() -> result<sandbox::NetEgressResponse> {
+        if (call->egress_backend != nullptr && *call->egress_backend) {
+            return (*call->egress_backend)(std::move(req), effective_grant, call->egress);
+        }
+        sandbox::HostEgressProxy const proxy;
+        return proxy.fetch_blocking(std::move(req), effective_grant, call->egress);
+    }();
     if (!response) {
         // The WIT `http-error` enum has exactly four cases -- a deliberately small, guest-facing vocabulary
         // (wit/ae-tool.wit's own comment: the guest only needs to know "not allowlisted", "too big", "network
@@ -865,6 +873,7 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
     CallCapabilities call{};
     call.bound = &bound;
     call.limits = &inst.limits;
+    call.egress_backend = &egress_;
     // ADR-241 8.3 (R3-1): the egress control for every `http-request` of this call -- VALUES ONLY (I2: never `ctx`).
     // stop = the call's cancellation; deadline = min(call start + wall_ms [when > 0], ctx.deadline [when set]);
     // admission = {tenant, principal.root_id(), root_run_id else run_id}, all host-derived.

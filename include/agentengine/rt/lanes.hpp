@@ -272,9 +272,18 @@ public:
         work_cv_.notify_all();
     }
     // After the workers are joined: later posts are dropped (the last worker already set it; idempotent).
+    // It also breaks the ownership cycle Scheduler -> {watched_, ready_groups_, priority_} -> GroupCore/StrandCore
+    // -> sched_ -> Scheduler (ADR-237 lanes/strands): a group still listed for the watchdog (the scan that prunes
+    // it stops with the watchdog) would otherwise keep the Scheduler alive forever. Nothing is resumed or
+    // destroyed here beyond the scheduler's own references; a strand/group held elsewhere stays valid, and a
+    // later post to it is dropped by the `stopped_` check in post().
     void mark_stopped() noexcept {
         std::lock_guard lock(m_);
         stopped_ = true;
+        for (auto& g : watched_) g->listed_ = false;
+        watched_.clear();
+        ready_groups_.clear();
+        priority_.clear();
     }
 
     [[nodiscard]] std::uint64_t slices() const noexcept { return slices_.load(std::memory_order_relaxed); }
@@ -285,6 +294,7 @@ public:
     // Stuck-run watchdog: a group with a root in flight is watched (counted: one group may carry several roots).
     void watch(std::shared_ptr<GroupCore> const& g) {
         std::lock_guard lock(m_);
+        if (stopped_) return;  // no watchdog scans any more; listing would re-create the cycle
         if (g->watched_++ == 0) g->last_progress_ns_.store(now_ns(), std::memory_order_relaxed);
         if (!g->listed_) {
             g->listed_ = true;

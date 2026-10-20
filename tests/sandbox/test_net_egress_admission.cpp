@@ -1,5 +1,5 @@
 // Proves decisions/ADR-241-egress-proxy-async-path-on-rt-http.md section 8.2 / 8.3 and the gates G7 (host-Runtime and
-// when_all cancellation), G13 (the egress I/O context and admission, rows e, h, h3, i, j, k) of section 11.
+// when_all cancellation), G13 (the egress I/O context and admission, rows e, g, h, h3, i, j, k) of section 11.
 //
 // Loopback fake servers and injected resolvers only; every call is bounded by a stop token or a short deadline, and the
 // process is memory-capped (CLAUDE.md "Machine safety"). The first-use rows (G13 b, d, f) need a fresh process and live in
@@ -511,6 +511,43 @@ void g7_runtime_and_when_all(SilentListener& silent) {
     }
 }
 
+// ---- G13g: the deadline timer fires as the host Runtime tears the frame down (run under ASan on Linux) ---------------
+agentengine::task<void> drive_fetch_until(std::shared_ptr<TestEgressProxy> p, std::uint16_t port, clk::time_point deadline,
+                                          std::shared_ptr<std::atomic<int>> outcome) {
+    EgressCallControl c;
+    c.deadline = deadline;
+    auto r     = co_await p->fetch(get_root(), grant_to(port), std::move(c));
+    outcome->store(r.has_value() ? 1 : (r.error().klass == failure_class::canceled ? 2 : 3));
+}
+
+void g13_g_timer_vs_teardown(SilentListener& silent) {
+    // Each iteration parks a fetch on the silent peer with a 40 ms deadline and destroys its host Runtime at 40 ms +/- a
+    // few ms, so across the sweep the egress-side timer completes before, during and after ~Runtime cancels and joins the
+    // root. The assertion that matters is the sanitizer's (no use-after-free of the frame or the host strand); the checks
+    // here pin that every call ended (canceled or deadline, never success) and every slot came back.
+    constexpr int kIterations = 60;
+    int           ended       = 0;
+    for (int i = 0; i < kIterations; ++i) {
+        auto p = std::make_shared<TestEgressProxy>();
+        configure(*p);
+        auto outcome = std::make_shared<std::atomic<int>>(0);
+        {
+            agentengine::rt::RuntimeConfig cfg;
+            cfg.lanes = 1;
+            auto       host     = std::make_unique<agentengine::rt::Runtime>(cfg);
+            auto const deadline = clk::now() + milliseconds(40);
+            auto       handle   = host->spawn(drive_fetch_until(p, silent.port(), deadline, outcome));
+            std::this_thread::sleep_until(deadline + milliseconds((i % 11) - 5));
+            host.reset();
+            (void)handle;
+        }
+        if (outcome->load() == 2 || outcome->load() == 3) ++ended;
+    }
+    check(ended == kIterations, "G13g every fetch ended canceled or on its deadline (" + std::to_string(ended) + "/" +
+                                    std::to_string(kIterations) + ")");
+    check(wait_for_global(0), "G13g every slot was released");
+}
+
 }  // namespace
 
 int main() {
@@ -525,6 +562,7 @@ int main() {
     g13_k_unattributed(silent, fast);
     g13_e_global_cap(silent, fast);
     g7_runtime_and_when_all(silent);
+    g13_g_timer_vs_teardown(silent);
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_net_egress_admission: ALL PASS\n");

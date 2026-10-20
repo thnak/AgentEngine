@@ -184,8 +184,8 @@ int main() {
 
     // -- 1. Adaptation shape ---------------------------------------------------------------------
     auto descriptors = wasm_tools_as_descriptors_from(backend, *handle, "bridge-plugin", load_ctx);
-    AE_CHECK(descriptors.has_value() && descriptors->size() == 7,
-              "adapt: all 7 real fixture tools are adapted into agentengine::ToolDescriptor");
+    AE_CHECK(descriptors.has_value() && descriptors->size() == 8,
+              "adapt: all 8 real fixture tools are adapted into agentengine::ToolDescriptor");
 
     agentengine::ToolDescriptor const* echo_descriptor = nullptr;
     agentengine::ToolDescriptor const* now_descriptor = nullptr;
@@ -213,7 +213,7 @@ int main() {
     std::vector<agentengine::ToolDescriptor> const empty_mcp_tools;
     auto unioned = descriptors ? union_codeact_tools(agent_tools, skill_tools, empty_mcp_tools, *descriptors)
                                 : result<ToolTable>(std::unexpected(error{failure_class::fatal, "", ""}));
-    AE_CHECK(unioned.has_value() && unioned->descriptors().size() == 7,
+    AE_CHECK(unioned.has_value() && unioned->descriptors().size() == 8,
               "union: wasm-sourced descriptors merge into one bridge-ready ToolTable");
 
     if (unioned) {

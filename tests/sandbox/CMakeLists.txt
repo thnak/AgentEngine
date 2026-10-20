@@ -207,6 +207,17 @@ agentengine_add_test(test_execution_seams_on_lane
 
 # ---- ADR-241 S2: egress admission (G13 e/h/h3/i/j/k), host-Runtime and when_all cancellation (G7), first use (G13 b/d/f) --
 agentengine_add_test(test_net_egress_admission LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 300)
+# ---- ADR-241 G11: TLS on the egress boundary through BOTH entry points (wrong name, broken CA, IP-literal entry) --
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_net_egress_tls
+    LIBS agentengine::net_egress_proxy agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
+# ---- ADR-241 R12: the 64 x 16 MiB over 2 lanes MEASUREMENT. Manual, never a CI gate: DISABLED so ctest (and CI's
+# `ctest -LE live-network`) skips it; run build/tests/bench_net_egress_r12 <N> [body_mib] directly, once per N.
+agentengine_add_test(bench_net_egress_r12 LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 300
+  LABELS "bench;manual")
+set_tests_properties(bench_net_egress_r12 PROPERTIES DISABLED TRUE)
 agentengine_add_test(test_net_egress_first_use LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 120)
 # The context is a leaked singleton, so each first-use mode needs its own fresh process.
 add_test(NAME test_net_egress_first_use_inject COMMAND test_net_egress_first_use inject)
