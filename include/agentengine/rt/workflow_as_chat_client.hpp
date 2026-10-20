@@ -223,7 +223,7 @@ inline constexpr char const* kResponseTypeId = "agentengine.workflow_request_por
         }
         std::span<std::byte const> bytes{reinterpret_cast<std::byte const*>(payload_json.data()),
                                           payload_json.size()};
-        auto blob = ctx.blob_sink(bytes, "application/json");
+        auto blob = drive(ctx.blob_sink(bytes, "application/json"));  // ADR-237 5.1 (#187): plain call site, like run_workflow below
         if (!blob) return std::unexpected(blob.error());
         agentengine::ContentItem item{};
         item.origin = agentengine::content_origin::external;

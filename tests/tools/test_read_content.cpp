@@ -196,10 +196,10 @@ void test_over_threshold_with_blob_sink() {
 
     std::string sunk_bytes;
     std::string sunk_media_type;
-    ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const& media_type) -> result<agentengine::BlobRef> {
+    ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const& media_type) -> agentengine::task<result<agentengine::BlobRef>> {
         sunk_bytes.assign(reinterpret_cast<char const*>(bytes.data()), bytes.size());
         sunk_media_type = media_type;
-        return agentengine::BlobRef{"deadbeef", media_type, bytes.size(), "test-store"};
+        co_return agentengine::BlobRef{"deadbeef", media_type, bytes.size(), "test-store"};
     };
 
     auto reply = agentengine::rt::block_on(ReadContent::invoke_via(ReadContent::Args{.url = "http://example.com/big", .path = std::nullopt}, ctx, backend));
@@ -322,7 +322,7 @@ void test_path_source_no_sandbox() {
 
     ReadContent::Args args;
     args.path = "foo.txt";
-    auto reply = ReadContent::invoke_from_sandbox(args, ctx);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_from_sandbox(args, ctx));
     check(!reply.has_value(), "no sandbox_fs wired -> the tool fails, not a crash or silent no-op");
     if (!reply) check(reply.error().code == "read_content.no_sandbox", "the failure names exactly why");
 }
@@ -336,7 +336,7 @@ void test_path_source_capability_denied_never_touches_adapter() {
 
     ReadContent::Args args;
     args.path = "secret.txt";
-    auto reply = ReadContent::invoke_from_sandbox(args, ctx);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_from_sandbox(args, ctx));
     check(!reply.has_value(), "no FsRead grant -> denied");
     if (!reply) check(reply.error().code == "tool.capability_not_held", "denial uses the standard capability error code");
     check(adapter.read_file_calls == 0, "the adapter is never touched when the capability check fails (I2)");
@@ -352,7 +352,7 @@ void test_path_source_grant_for_different_prefix_is_not_used() {
 
     ReadContent::Args args;
     args.path = "secret.txt";
-    auto reply = ReadContent::invoke_from_sandbox(args, ctx);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_from_sandbox(args, ctx));
     check(!reply.has_value(), "a FsRead grant for a DIFFERENT prefix does not cover this path");
     check(adapter.read_file_calls == 0, "adapter never touched -- no capability laundering across paths");
 }
@@ -368,7 +368,7 @@ void test_path_source_happy_path_under_threshold() {
 
     ReadContent::Args args;
     args.path = "hello.txt";
-    auto reply = ReadContent::invoke_from_sandbox(args, ctx);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_from_sandbox(args, ctx));
     check(reply.has_value(), "reading a real (faked) file through the seam succeeds");
     if (reply) {
         check(reply->preview == "hello from the sandbox mount", "preview is the whole body under threshold");
@@ -391,14 +391,14 @@ void test_path_source_over_threshold_with_blob_sink() {
     ctx.sandbox_fs = &adapter;
 
     std::string sunk_bytes;
-    ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const&) -> agentengine::result<agentengine::BlobRef> {
+    ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const&) -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
         sunk_bytes.assign(reinterpret_cast<char const*>(bytes.data()), bytes.size());
-        return agentengine::BlobRef{"deadbeef", "application/octet-stream", bytes.size(), "test-store"};
+        co_return agentengine::BlobRef{"deadbeef", "application/octet-stream", bytes.size(), "test-store"};
     };
 
     ReadContent::Args args;
     args.path = "big.bin";
-    auto reply = ReadContent::invoke_from_sandbox(args, ctx);
+    auto reply = agentengine::rt::block_on(ReadContent::invoke_from_sandbox(args, ctx));
     check(reply.has_value(), "over-threshold path read still succeeds when a sink is wired");
     if (reply) {
         check(reply->truncated, "flagged truncated over threshold");

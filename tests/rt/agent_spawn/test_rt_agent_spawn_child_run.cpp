@@ -40,6 +40,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn_child_run.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
 
 using agentengine::AgentMetadata;
@@ -240,16 +241,16 @@ private:
     // ADR-237 §5.2: the instance-form SpawnTool above reaches this.
     friend struct SpawnTool;
 
-    [[nodiscard]] result<SpawnReply> spawn_child(SpawnArgs a, EffectContext& ctx) {
+    [[nodiscard]] task<result<SpawnReply>> spawn_child(SpawnArgs a, EffectContext& ctx) {
         ++spawn_call_count_;
         // §2 step [2] (item 4, already landed).
         auto depth = check_and_consume_spawn_depth(*caller_held_, "helper");
-        if (!depth) return std::unexpected(depth.error());
+        if (!depth) co_return std::unexpected(depth.error());
         // §2 steps [3]/[6] (item 5, already landed). Item 3's real worktree mint is not built here --
         // an empty grant, matching that header's own "data-only mirror" scope.
         agentengine::SpawnWorktreeGrant const empty_worktree_grant{};
         auto minted = mint_child_spawn_capabilities(*caller_held_, target_, empty_worktree_grant, *depth);
-        if (!minted) return std::unexpected(minted.error());
+        if (!minted) co_return std::unexpected(minted.error());
 
         // §2 step [8] -- THIS task's own mechanism.
         ChildSpawnRequest req;
@@ -258,13 +259,13 @@ private:
         req.principal     = ctx.principal;
         req.max_turns     = 5;
         std::string const child_script = child_script_text_;
-        auto response = run_child_agent_session<ScriptedChatClient>(
+        auto response = co_await run_child_agent_session<ScriptedChatClient>(
             "child-1", std::move(req), [this, &child_script](ScriptedChatClient& c) {
                 c.set_script({{text_response(child_script), Usage{1, 1, 0, 0, 0.0}}});
                 child_observed_state_ = c.shared_state();
             });
-        if (!response) return std::unexpected(response.error());
-        return SpawnReply{agentengine::text_of(response->message)};
+        if (!response) co_return std::unexpected(response.error());
+        co_return SpawnReply{agentengine::text_of(response->message)};
     }
 
     CapabilitySet const* caller_held_ = nullptr;
@@ -277,7 +278,7 @@ static_assert(agentengine::ContextProvider<SpawnHistoryProvider>);
 
 // ADR-237 §5.2: out-of-line -- needs `SpawnHistoryProvider` complete.
 task<result<SpawnReply>> SpawnTool::invoke(SpawnArgs a, EffectContext& ctx) const {
-    co_return provider_->spawn_child(std::move(a), ctx);
+    co_return co_await provider_->spawn_child(std::move(a), ctx);
 }
 
 }  // namespace
@@ -305,11 +306,11 @@ int main() {
         req.max_turns    = 5;
 
         std::shared_ptr<ScriptedChatClient::State> observed;
-        auto response = run_child_agent_session<ScriptedChatClient>(
+        auto response = agentengine::rt::block_on(run_child_agent_session<ScriptedChatClient>(
             "child-t1", std::move(req), [&observed](ScriptedChatClient& c) {
                 c.set_script({{text_response("child-converged"), Usage{1, 1, 0, 0, 0.0}}});
                 observed = c.shared_state();
-            });
+            }));
         check(response.has_value(), "T1: run_child_agent_session() drives a fresh child to completion");
         if (response.has_value()) {
             check(agentengine::text_of(response->message) == "child-converged",

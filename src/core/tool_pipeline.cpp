@@ -53,7 +53,7 @@ ToolResult make_error_result(std::string call_id, error const& e) {
     return r;
 }
 
-result<std::pair<ToolResult, std::size_t>> normalize_success(
+task<result<std::pair<ToolResult, std::size_t>>> normalize_success(
     std::string call_id, json::Value const& reply_value, EffectContext& ctx) {
     std::string reply_json = json::dump(reply_value);
     std::size_t const reply_bytes = reply_json.size();
@@ -67,7 +67,7 @@ result<std::pair<ToolResult, std::size_t>> normalize_success(
 
     if (ctx.tool_result_byte_threshold.has_value() && reply_bytes > *ctx.tool_result_byte_threshold) {
         if (!ctx.blob_sink) {
-            return std::unexpected(error{
+            co_return std::unexpected(error{
                 failure_class::resource,
                 "tool result (" + std::to_string(reply_bytes) + " bytes) exceeds the run's byte "
                 "threshold (" + std::to_string(*ctx.tool_result_byte_threshold) + ") and no blob "
@@ -76,8 +76,8 @@ result<std::pair<ToolResult, std::size_t>> normalize_success(
         }
         std::span<std::byte const> const bytes{
             reinterpret_cast<std::byte const*>(reply_json.data()), reply_json.size()};
-        auto blob = ctx.blob_sink(bytes, "application/json");
-        if (!blob) return std::unexpected(blob.error());
+        auto blob = co_await ctx.blob_sink(bytes, "application/json");
+        if (!blob) co_return std::unexpected(blob.error());
         item.value = Media{*blob, "application/json"};
     } else {
         // `Data::schema_id` is a schema *reference* (a registry id/URI), not the schema body itself
@@ -90,7 +90,7 @@ result<std::pair<ToolResult, std::size_t>> normalize_success(
     ok_result.call_id = std::move(call_id);
     ok_result.is_error = false;
     ok_result.content.push_back(std::move(item));
-    return std::make_pair(std::move(ok_result), reply_bytes);
+    co_return std::make_pair(std::move(ok_result), reply_bytes);
 }
 
 bool is_auto_declassifiable_text_derived_call(ToolDescriptor const& tool) noexcept {
@@ -261,7 +261,7 @@ task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCall
         co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
     }
 
-    auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
+    auto normalized = co_await normalize_success(request.call_id, *invoke_result, ctx);
     if (!normalized) {
         error const& e = normalized.error();
         co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};
@@ -542,7 +542,16 @@ task<result<void>> background_task(ToolTable const& table, CapabilitySet const& 
             return;
         }
 
-        auto normalized = normalize_success(request.call_id, *invoke_result, ctx);
+        // ADR-237 5.1 (#187): `blob_sink` is async; drive it from this detached worker exactly as `invoke` is
+        // above -- same fault translation, since this thread has no outer catch either.
+        auto drive_normalize = [&]() -> result<std::pair<ToolResult, std::size_t>> {
+            try {
+                return rt::block_on(normalize_success(request.call_id, *invoke_result, ctx));
+            } catch (...) {
+                return std::unexpected(error{failure_class::transient, "leaf task faulted", "rt.leaf_task_faulted"});
+            }
+        };
+        auto normalized = drive_normalize();
         if (!normalized) {
             error const& e = normalized.error();
             audit.ok         = false;

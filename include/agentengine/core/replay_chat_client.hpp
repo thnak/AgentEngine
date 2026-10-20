@@ -91,8 +91,9 @@ inline void real_sleep(std::chrono::milliseconds d) { std::this_thread::sleep_fo
     return error{failure_class::fatal, std::move(detail), "replay_chat_client.stream_failed"};
 }
 
-// The detached background worker (mirrors protocol/openai/chat_client.hpp's own `run_stream_worker` --
-// see that file's top comment for why detached, not a tracked member). Every parameter is owned by
+// The background worker `chat_stream()` runs on its own thread (this client does not use the provider
+// clients' reactor path: it replays recorded chunks with an injectable sleep, so there is nothing to
+// await; those clients' `run_stream_worker_async` is a coroutine on a `rt::Runtime`). Every parameter is owned by
 // value, INCLUDING `error_detail` now (see file banner) -- `chunks`/`stream_terminal`/`error_detail`
 // are all independent copies, safe across the thread boundary and leaving the originating
 // `ReplayChatClient`'s own `recording_` untouched for a possible second `chat_stream()` call against

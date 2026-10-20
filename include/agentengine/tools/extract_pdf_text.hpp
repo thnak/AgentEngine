@@ -161,7 +161,7 @@ struct ParsedPages {
 // Source-agnostic threshold/blob-promotion -- a deliberate, small, standalone copy of
 // read_content_detail::build_reply's own logic (see this file's own top comment on why this stays
 // standalone rather than sharing ReadContent's helper).
-[[nodiscard]] inline result<ExtractPdfTextReply> build_reply(ParsedPages&& parsed, EffectContext& ctx) {
+[[nodiscard]] inline task<result<ExtractPdfTextReply>> build_reply(ParsedPages&& parsed, EffectContext& ctx) {
     std::string joined;
     for (auto const& page_text : parsed.pages) {
         joined += page_text;
@@ -178,7 +178,7 @@ struct ParsedPages {
     if (reply.total_bytes <= threshold) {
         reply.preview = std::move(joined);
         reply.truncated = false;
-        return reply;
+        co_return reply;
     }
 
     reply.preview = joined.substr(0, static_cast<std::size_t>(threshold));
@@ -186,11 +186,11 @@ struct ParsedPages {
     if (ctx.blob_sink) {
         std::span<std::byte const> const bytes{reinterpret_cast<std::byte const*>(joined.data()),
                                                  joined.size()};
-        auto blob = ctx.blob_sink(bytes, "text/plain");
-        if (!blob) return std::unexpected(blob.error());
+        auto blob = co_await ctx.blob_sink(bytes, "text/plain");
+        if (!blob) co_return std::unexpected(blob.error());
         reply.blob = *blob;
     }
-    return reply;
+    co_return reply;
 }
 
 // ---- Fetching bytes for the two sources -- own minimal copy of ReadContent's pattern ----
@@ -517,7 +517,7 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
         auto parsed = extract_pdf_text_detail::parse_worker_output(*raw_output);
         if (!parsed) co_return std::unexpected(parsed.error());
 
-        co_return extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
+        co_return co_await extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
     }
 };
 

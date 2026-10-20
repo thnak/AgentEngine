@@ -2864,6 +2864,90 @@ error. Recorded divergence: `http_error_to_error` maps `deadline_exceeded`/`idle
 says `resource`; left for #180. Proof: `tests/rt/test_rt_io_error_class.cpp` (mutating the stop and deadline rows
 fails it).
 
+### Step 55 (2026-10-20): Phase G slice 3 -- `ChildRunner` is `task`-shaped; `agent.spawn` awaits the child run (#187)
+
+- **Signature.** `rt::ChildRunner` is `std::function<task<result<rt::AgentResponse>>(std::string, ChildSpawnRequest)>`.
+  `perform_agent_spawn` and `AgentSpawnProvider::dispatch_agent_spawn` are coroutines; the tool `co_await`s the runner.
+  `perform_agent_spawn` takes reference parameters, so every argument must outlive the awaited task (all callers
+  await it in the same full expression; stated at the declaration).
+- **The nested drive loop is gone.** `run_child_agent_session` is a coroutine that awaits `child.start_run(...)` in
+  place (the `agent_spawn_child_run.hpp` `block_on`, ADR-175, is deleted). Its configure callable is taken by value so
+  the lazily started frame owns it. `agent_spawn_detail::drive` survives only for `SpawnPump`'s own worker thread.
+- **Conformers.** 8 `run_child` assignments (1 example, 7 tests) by `git grep -n "run_child ="`; 7 return
+  `run_child_agent_session<...>(...)` and needed no body change, `DirectSpawn` became a coroutine. Direct test callers
+  of `perform_agent_spawn` / `run_child_agent_session` drive the task with `rt::block_on`. No assertion moved; the
+  delegation-provenance suite (ADR-185/193) passes unchanged.
+- **FINDING (I8, ADR-193 §9), fixed here.** `delegated_run_detail::ChargeOnUnwind` decided whether to charge with
+  `std::uncaught_exceptions() > entry`. Once the guarded scope holds a `co_await` -- this slice, and
+  `agent_workflow_executor.hpp` since step 53 -- that is wrong twice: a frame destroyed while suspended (the parent's
+  task dropped mid child-run; §4.5 rule 3's chain-wide in-flight counting is not built, #184) runs the destructor
+  with no exception in flight, so the child's whole spend was never charged to the caller; and the count is
+  per-thread while a coroutine may resume on another thread. The guard now charges in its destructor unless the
+  normal path called `completed()`; each user calls it at the point where it charges or hands the run off (in the
+  workflow adapter, after the outcome is built -- a throw from that copy is still charged). Proof:
+  `test_delegation_provenance` R4-D1 (agent.spawn) and R4-D4 (workflow agent node) drive a run that parks on a
+  never-resumed awaiter after spending 100 tokens, destroy the parent task, and assert exactly one charge of 100;
+  both FAIL against the old guard (verified by swapping it back in). R4-D2/R4-D5 pin exactly one charge on normal
+  completion; R4-D0/D3 check the setup really is suspended and uncharged. The throw-path tests (R2-E1, R3-C1, R3-C1b)
+  pass unchanged.
+- **Lock audit.** Only `SpawnQuotaTracker::m_` and `SpawnPump`'s internals, each taken around synchronous work; none
+  across a `co_await`. **Residual:** `SpawnPump::submit` still blocks on a `std::future` inside the async spawn path.
+- **Red-team (2026-10-20, read-only, verdict ship-with-changes).** No double charge, no zero charge beyond the
+  window below, and no use-after-free on the drop path: the awaited child frame (and any grandchild's guard) is
+  destroyed before the guard runs, while `charge`, `req`/`ctx` and the session are still alive; a grandchild's spend
+  reaches the root exactly once. Fixed: R4-D3/D4 passed a temporary `Message` by `const&` into the lazy body (UB on
+  the first resume). What the claim does NOT cover, recorded as residuals (tracked in a follow-up issue):
+  a dropped run is charged what was OBSERVED -- a model call in flight at the drop is not counted, nor is a late
+  charge from a detached worker the child owns; in the workflow adapter, moving the outcome into the promise happens
+  after `completed()`; `workflow_as_executor`'s `run_once` has no guard at all, so a throw or a drop there still
+  charges nothing (pre-existing for a throw; a drop became reachable at step 53) -- a correct guard needs to know the
+  inner run actually started, or it charges the previous run's total; a spawn parent dropped mid-child-run keeps the
+  consumed quota, the pump slot and the minted worktree (unreachable under the old `block_on`); and an `AgentSession`
+  whose `start_run` frame was destroyed mid-run has not been tested for reuse by a later run.
+
+### Step 56 (2026-10-20): Phase G slice 4 -- `EffectContext::blob_sink` is `task`-shaped (#187)
+
+- `blob_sink` is `std::function<task<result<BlobRef>>(std::span<std::byte const>, std::string const&)>`, matching its
+  documented conformer `WorktreeObjectStore::put_blob` (step 49). The four production callers await it:
+  `normalize_success` (now a `task`, awaited in `run_admitted_call`), `read_content_detail::build_reply`,
+  `extract_pdf_text_detail::build_reply` and `ReadContent::invoke_from_sandbox`. Each call site's bytes and media type
+  live in a frame that outlives the await. 8 test conformers became coroutines; no assertion moved
+  (`test_blob_sink_failure_propagates` unchanged).
+- The detached `background_task` worker and `BackgroundJobRunner::run_job` drive the normalize step with
+  `rt::block_on`, translating a fault exactly as their neighbouring `invoke` drive does (step 51). One edge, recorded:
+  in `run_job` a sink that THROWS now reports `background_job.tool_threw` (fatal) from the normalize step's own catch;
+  before, a synchronous throw there escaped `invoke`'s `try`. `WorkflowAsChatClient::build_history_envelope`, a plain
+  call site, uses its existing `drive()` helper.
+- Lock audit: the only lock live at the new awaits is the session's `session_mutex_` (`AsyncMutex`, by design, I1);
+  every `std::mutex` on the path guards a short synchronous scope elsewhere.
+- **`ReplayChatClient::SleepFn` was assessed, not converted:** the client holds no runtime, so a suspending sleep
+  needs either a public API change or an optional runtime parameter with the thread path kept for null. The second is
+  recommended and moves to #180 with the other blocking conformers.
+
+### Step 57 (2026-10-20): `ModelCallGateway` retry backoff suspends and honours stop (#180, #184)
+
+- `attempt_with_retry`'s backoff is `co_await rt::sleep_for(reactor, delay, ctx.cancellation)` (was
+  `std::this_thread::sleep_for`, H-c). **Intended behaviour change:** a stop during backoff ends the wait and the call
+  fails `canceled` (`gateway.canceled`, not retried, D6) instead of sleeping the delay out. The reactor is a new
+  trailing constructor parameter (`pal::Reactor*`, borrowed, must outlive the gateway); when it is null the gateway
+  lazily creates a private one on its first backoff (a call that never retries starts no thread), the same rule the
+  provider clients apply to their Runtime.
+- Proof: `test_model_call_gateway` G17 -- a 10 s backoff with a stop at 150 ms returns `canceled` in under 1 s with no
+  second attempt; the control (300 ms, no stop) really waits. Mutating the await back to the blocking sleep fails
+  three checks. No other assertion moved.
+- **Residuals:** a call driven by a raw `resume()` with no home parks forever in the backoff, because `rt::sleep_until`
+  refuses homeless waiters (§4.2) -- the requirement every `rt::http`-based primary already has. The streaming path
+  (`stream_attempt_with_retry`, on `call_stream()`'s own detached thread) keeps its blocking sleep and does not observe
+  stop mid-sleep; it goes with that thread (§4.5 rule 1).
+- **#184 stale text:** comments citing `run_stream_worker`, "detached" workers and the blocking pump are corrected.
+  **Deleted:** the blocking `pump_sse_stream` template in `src/protocol/sse_stream_pump.hpp`. Kept uninstantiated as a
+  "documented twin" since step 34, it no longer compiled when instantiated (it called the removed
+  `sandbox::perform_provider_streaming_exchange`); a twin that cannot be built documents nothing.
+- Inventory for #180 (blocking `sleep_for` on a coroutine path, not changed here): the 5 ms drain polls in
+  `core/chat_stream_drain.hpp:140`, `rt/agent_session_trust.hpp:190` and `eval/eval_trial.hpp:296`; the polls in
+  `native_shell_session.cpp:401,506`, `docker_persistent_shell_surface.cpp:242` and `linux_native_jail_backend.cpp:463`
+  under the task-shaped execution surfaces.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
@@ -2873,9 +2957,9 @@ narrowed out of the same row). The triage adds **3 seams §5.1 never named** tha
 (`ReplayChatClient::SleepFn`, `RegisteredRunner::invoke`, `EffectContext::blob_sink`): **8 conversions left**.
 The "~27" figure and the step-46-era paragraph below are kept as history; §14.2 supersedes their count.
 
-**Since then (2026-10-18/19):** Phase G slices 1-2 (steps 52-53) converted `ApprovalDecider`, `PolicyDecider` and
-`ExecutorBody`, so **5 conversions are left**: `ChildRunner`, the batch `Call`, `EffectContext::blob_sink`,
-`ReplayChatClient::SleepFn` and `RegisteredRunner::invoke`. The #174 inventory was triaged twice, independently, on
+**Since then (2026-10-18/20):** Phase G slices 1-4 (steps 52-53, 55-56) converted `ApprovalDecider`, `PolicyDecider`,
+`ExecutorBody`, `ChildRunner` and `EffectContext::blob_sink`, so **3 conversions are left**: the batch `Call`,
+`ReplayChatClient::SleepFn` and `RegisteredRunner::invoke` (the last two with #180). The #174 inventory was triaged twice, independently, on
 two branches merged together: §14.2 (2026-10-16, the Phase E branch) and the "§14.1 triage table" below (2026-10-19,
 the Phase G branch, reconciled with steps 52-53). Both count 49 aliases; where their status differs, the 2026-10-19
 table is current.
@@ -2907,7 +2991,7 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
 C, steps 46-49); ~~plus ~15 further `std::function` typedefs that have not been triaged individually yet~~
 (triaged, #174: §14.2 and the §14.1 triage table below). What is left after the triage and Phase G slices 1-2:
-`ChildRunner`, `BatchableModelCall::Call` and `EffectContext::blob_sink` (**Phase G**), plus
+~~`ChildRunner`~~ (step 55), `BatchableModelCall::Call` and ~~`EffectContext::blob_sink`~~ (step 56) (**Phase G**), plus
 `ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking conformer bodies).
 
 **§14.1 triage table (#174, 2026-10-19, `main` at `16efaa38`; doc-only -- nothing below was converted).**
@@ -3075,7 +3159,8 @@ the nested drive loops it targeted are gone -- `WorkflowSupervisor::drive<T>` an
 `agent_executor_detail::drive<T>` no longer exist, their call sites `co_await` in place. Remaining:
 `ChildRunner`; `BatchableModelCall::Call`/`Complete` (reached only *through* `BatchableModelCall`, so their
 own slice); `EffectContext::blob_sink`; and the nested drive loop at `agent_spawn_child_run.hpp:139`, which
-belongs with the agent.spawn seam rather than with the executor body.
+belongs with the agent.spawn seam rather than with the executor body. **Slices 3-4 DONE** (§14 steps 55-56,
+2026-10-20): `ChildRunner` with that drive loop, and `blob_sink`. Remaining: `BatchableModelCall::Call`/`Complete`.
 
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
 OK; layering-lint OK; `ctest -LE live-network` -> the identical 14 baseline failures (re-measured 402/418 non-live

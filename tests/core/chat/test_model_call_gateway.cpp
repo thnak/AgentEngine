@@ -747,6 +747,61 @@ int main() {
                  "a more-preferred tier ever happens, exactly the named, undesigned residual");
     }
 
+    // ---- G17 (ADR-237 §4.4, #180): retry backoff suspends on the reactor and honours stop ----------
+    {
+        ae::RetryPolicy retry;
+        retry.max_attempts = 3;
+        retry.base_delay = std::chrono::milliseconds(300);
+        retry.max_delay = std::chrono::milliseconds(10000);
+        retry.jitter_fraction = 0.0;
+
+        // Positive control: with no stop the backoff really waits, then the retry succeeds.
+        {
+            ScriptedGatewayBackend primary;
+            primary.outcomes = {
+                ScriptedOutcome::fail(ae::failure_class::transient),
+                ScriptedOutcome::ok({text_delta("hi", /*is_final=*/true, ae::Usage{2, 3, 0, 0, 0.0})}),
+            };
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), retry,
+                                                              ae::BreakerConfig{}, &no_jitter);
+            auto ctx = make_ctx();
+            auto const started = std::chrono::steady_clock::now();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            auto const elapsed = std::chrono::steady_clock::now() - started;
+            AE_CHECK(r.has_value() && primary.call_count() == 2, "G17: without stop the retry happens and succeeds");
+            AE_CHECK(elapsed >= std::chrono::milliseconds(250),
+                     "G17 control: the 300ms backoff really waited (so the stop case below measures a cut-short wait)");
+        }
+
+        // A stop requested mid-backoff ends the wait promptly with `canceled`; no second attempt.
+        {
+            retry.base_delay = std::chrono::milliseconds(10000);
+            ScriptedGatewayBackend primary;
+            primary.outcomes = {
+                ScriptedOutcome::fail(ae::failure_class::transient),
+                ScriptedOutcome::ok({text_delta("hi", /*is_final=*/true, ae::Usage{2, 3, 0, 0, 0.0})}),
+            };
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), retry,
+                                                              ae::BreakerConfig{}, &no_jitter);
+            std::stop_source src;
+            auto ctx = make_ctx();
+            ctx.cancellation = src.get_token();
+            std::thread stopper([&src] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                src.request_stop();
+            });
+            auto const started = std::chrono::steady_clock::now();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            auto const elapsed = std::chrono::steady_clock::now() - started;
+            stopper.join();
+            AE_CHECK(!r.has_value() && r.error().klass == ae::failure_class::canceled,
+                     "G17: stop during backoff -> failure_class::canceled");
+            AE_CHECK(elapsed < std::chrono::seconds(1),
+                     "G17: the cancel is prompt (well under the 10s backoff)");
+            AE_CHECK(primary.call_count() == 1, "G17: no further attempt after the stop");
+        }
+    }
+
     std::cout << (g_failures == 0 ? "test_model_call_gateway: OK\n" : "test_model_call_gateway: FAIL\n");
     return g_failures == 0 ? 0 : 1;
 }

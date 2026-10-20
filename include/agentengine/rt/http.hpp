@@ -12,9 +12,10 @@
 //   SseNext            e = co_await sse.next(stop);                              // event / end / error
 //
 // The wire format (request building, head parsing, framing, SSE) is rt/http_wire.hpp; this header only drives it.
-// It replaces, later, the blocking `perform_http_exchange[_streaming]` / `perform_https_exchange[_streaming]`
-// (sandbox/net_egress_proxy.cpp) and `pump_sse_stream` (src/protocol/sse_stream_pump.hpp); the switch-over of
-// their callers is a later step. What it keeps from them, and where it deliberately differs:
+// It has replaced the provider plane's use of the blocking `perform_http_exchange[_streaming]` /
+// `perform_https_exchange[_streaming]` (sandbox/net_egress_proxy.cpp) and of `pump_sse_stream`
+// (src/protocol/sse_stream_pump.hpp; the blocking pump was deleted in ADR-237 step 57, `pump_sse_stream_async`
+// replaced it). What it keeps from them, and where it deliberately differs:
 //
 //   SAME
 //   - ADR-011 resolve-once, connect-to-the-verified-address: the connection is made ONLY by `rt::connect_resolved`

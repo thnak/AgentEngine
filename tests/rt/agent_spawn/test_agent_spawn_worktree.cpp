@@ -493,11 +493,11 @@ int main() {
         static_assert(agentengine::ChatClient<ScriptedChatClient>);
 
         std::shared_ptr<ScriptedChatClient::State> observed;
-        auto response = rt::run_child_agent_session<ScriptedChatClient>(
+        auto response = rt::block_on(rt::run_child_agent_session<ScriptedChatClient>(
             "child-t11", std::move(req), [&](ScriptedChatClient& c) {
                 c.state_->mount_id_to_check = child_mount_id;
                 observed                    = c.shared_state();
-            });
+            }));
         AE_CHECK(response.has_value(),
                  "T11: run_child_agent_session() drives a fresh child, wired with the real worktree "
                  "grant, to completion");

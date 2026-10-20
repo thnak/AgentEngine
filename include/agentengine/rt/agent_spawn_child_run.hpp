@@ -48,7 +48,6 @@
 #include <utility>
 #include <vector>
 
-#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
@@ -128,19 +127,6 @@ struct ChildSpawnRequest {
     std::stop_token cancellation{};
 };
 
-namespace agent_spawn_detail {
-
-// Drives an `rt::task<T>` to completion from a plain, non-coroutine call site. Formerly the same
-// hand-rolled resume-until-done loop as `rt/agent_workflow_executor.hpp`, argued safe because a fresh
-// session's `session_mutex_` is uncontended -- but the child's round can still park on something shared
-// (a quota), and the loop then resumed a parked handle twice. `block_on()` since decisions/ADR-175.
-template <class T>
-[[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
-}
-
-}  // namespace agent_spawn_detail
-
 // The mechanism itself -- design doc §4.2 / §2 step [8]. Constructs a FRESH
 // `AgentSession<ChatClientT, StateT, HistoryProviderT>`, configures it from `req` (an already-minted,
 // already-bounded `ChildSpawnRequest` -- see that struct's own comment), lets the caller wire
@@ -148,7 +134,7 @@ template <class T>
 // matching the design's own residual "ChildRunner's ChatClientT selection is fully host-authored,
 // static per registered target" -- item 1, not built here, is what will eventually own per-target
 // selection; this function only takes it as a template parameter plus a configuration callback), and
-// drives it synchronously to completion.
+// awaits it to completion (ADR-237 §5.1: a task, no nested block_on).
 //
 // The child's `Principal` is ALWAYS a delegated derivation of `req.principal` via
 // `agentengine::derive_on_behalf_of()` (018 §2, already-proven, independently depth-bounded by
@@ -161,12 +147,15 @@ template <class T>
 template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
           class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>,
           class ConfigureChatClientFn>
-[[nodiscard]] agentengine::result<agentengine::rt::AgentResponse> run_child_agent_session(
-    std::string child_id, ChildSpawnRequest req, ConfigureChatClientFn&& configure_chat_client) {
+[[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::rt::AgentResponse>> run_child_agent_session(
+    std::string child_id, ChildSpawnRequest req, ConfigureChatClientFn configure_chat_client) {
+    // ADR-237 §5.1: a coroutine -- the child's run is awaited in place (no nested block_on). Every parameter is
+    // taken BY VALUE (the configure callable included) so the frame owns them: a lazily-started task outlives the
+    // full expression that built it.
     agentengine::result<agentengine::Principal> child_principal =
         agentengine::derive_on_behalf_of(req.principal, child_id);
     if (!child_principal) {
-        return std::unexpected(child_principal.error());
+        co_return std::unexpected(child_principal.error());
     }
 
     agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT> child;
@@ -213,19 +202,19 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     });
     if (req.unattended_operator) {
         if (auto set = child.set_unattended_approvals(*req.unattended_operator, std::move(req.unattended_veto)); !set) {
-            return std::unexpected(set.error());
+            co_return std::unexpected(set.error());
         }
     }
     if (req.fence_disabled_by) {
         if (auto set = child.disable_system_channel_fence(*req.fence_disabled_by); !set) {
-            return std::unexpected(set.error());
+            co_return std::unexpected(set.error());
         }
     }
     if (req.approved_lessons != nullptr) {
         if (auto set = child.set_approved_lessons(req.approved_lessons, req.lesson_level,
                                                   req.lesson_level_set_by.value_or(std::string{}));
             !set) {
-            return std::unexpected(set.error());
+            co_return std::unexpected(set.error());
         }
     }
     if (!req.context.empty()) child.set_pinned_context(std::move(req.context));
@@ -250,13 +239,16 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     // Charged by a guard during unwinding, not by catch-and-rethrow: clang-cl's ASan build crashes in the Windows
     // unwinder on a `throw;` from this frame (CI, PR #110). The guard is shared with the workflow agent-node adapter
     // and `WorkflowChatClient` (rt/delegated_run_guard.hpp, ADR-193 §9).
-    agentengine::result<agentengine::rt::AgentResponse> response = [&] {
-        delegated_run_detail::ChargeOnUnwind const guard{charge};
-        return agent_spawn_detail::drive(child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
-    }();
+    std::optional<agentengine::result<agentengine::rt::AgentResponse>> run_result;
+    {
+        delegated_run_detail::ChargeOnUnwind guard{charge};
+        run_result.emplace(co_await child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
+        guard.completed();  // the normal path charges below; a throw or a dropped (suspended) frame charges here
+    }
+    agentengine::result<agentengine::rt::AgentResponse>& response = *run_result;
     agentengine::Usage const spent = charge();
     if (response) response->usage = spent;
-    return response;
+    co_return std::move(response);
 }
 
 }  // namespace agentengine::rt

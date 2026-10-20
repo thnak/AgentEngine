@@ -229,7 +229,7 @@ namespace tool_pipeline_detail {
 // (`tool.result_oversized_no_sink`) rather than falling back to inlining the oversized result anyway
 // -- inlining exactly what crossed the threshold is the hazard 006 §7 exists to prevent, so silently
 // doing it as a fallback would defeat the whole mechanism the moment a caller forgot to wire a sink.
-[[nodiscard]] result<std::pair<ToolResult, std::size_t>> normalize_success(
+[[nodiscard]] task<result<std::pair<ToolResult, std::size_t>>> normalize_success(
         std::string call_id, json::Value const& reply_value, EffectContext& ctx);
 
 // ADR-023 §6 point 4 / 007 §4 amendment, declassifier (a′): a `text_derived` call auto-declassifies
