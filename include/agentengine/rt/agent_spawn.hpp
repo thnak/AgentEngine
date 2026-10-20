@@ -532,6 +532,9 @@ template <agentengine::rt::AppendLogStore StoreT>
         args.input);
     child_request.capabilities  = child_grant->capabilities;
     child_request.principal     = ctx.principal;
+    // ADR-241 §8.4: the root run, not this (possibly itself spawned) caller's run. An empty value (a direct host
+    // dispatch with no session) falls back to the caller's own run id, so the child still shares ONE bucket with it.
+    child_request.root_run_id   = ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id;
     child_request.token_budget  = target->child_token_budget;
     // ADR-193 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
     // tree could spend (children x child budget) past the root's.

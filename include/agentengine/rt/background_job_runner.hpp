@@ -107,6 +107,10 @@ inline constexpr std::string_view kToolCanceledNoEffect = "tool.canceled_no_effe
 struct BackgroundJobOwner {
     std::string   session_id;
     std::string   run_id;      // the run that submitted it, if any
+    // ADR-241 §8.4 (S2 step 1): the ROOT run that submitter serves, copied by the runner into the job's
+    // `EffectContext::root_run_id`, so a job's egress charges the root run's admission bucket. Host-set (the
+    // submitter copies its own context's value); empty falls back to `run_id` at admission.
+    std::string   root_run_id;
     std::uint64_t turn_index = 0;
 };
 
@@ -632,6 +636,7 @@ private:
         ctx.capabilities       = std::make_shared<CapabilitySet const>(job.spec.capabilities);
         ctx.bound_capabilities = &job.bound;
         ctx.run_id             = job.spec.owner.run_id;
+        ctx.root_run_id        = job.spec.owner.root_run_id;  // ADR-241 §8.4
         ctx.turn_index         = job.spec.owner.turn_index;
         ctx.cancellation       = job.stop.get_token();
         ctx.idempotency_key    = job.idempotency_key;

@@ -199,3 +199,8 @@ if(AGENTENGINE_WITH_HTTPS)
   # The TLS mapping is header-only (rt/tls.hpp enums/TlsResult); the macro is not propagated by agentengine::core.
   target_compile_definitions(test_rt_io_error_class PRIVATE AGENTENGINE_WITH_HTTPS)
 endif()
+
+# ---- ADR-241 §8.4 (S2 step 1) -- EffectContext::root_run_id plumbing: every place a run starts hands its calls the
+# ROOT run id the egress proxy's admission buckets will key on (session core, fork_from/clear/restore, the spawn child
+# run, workflow nodes, the MCP server's per-request mint). The background-job owner row is test_rt_background_job_runner.
+agentengine_add_test(test_rt_root_run_id LIBS agentengine::core agentengine_warnings TIMEOUT 120)

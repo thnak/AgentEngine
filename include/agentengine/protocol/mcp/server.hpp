@@ -53,7 +53,9 @@
 // that could ever produce `"input_required"`); `notifications/tasks` needs a push channel this
 // request/response-only dispatcher does not have.
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -369,6 +371,7 @@ private:
         CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
         EffectContext ctx;
         ctx.principal = caller;
+        mint_request_run(ctx);  // ADR-241 §8.4 (R5-1)
         if (grant.has_value()) ctx.capabilities = grant->capabilities;
         // ADR-237 §5.2: the pipeline is async; this request handler is a genuinely-sync edge.
         ToolResult tool_result = rt::block_on(invoke_tool(table_, effective, call, ctx, approve_));
@@ -429,6 +432,7 @@ private:
         CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
         EffectContext ctx;
         ctx.principal = caller;  // ADR-061 §7 R4/R26, same reasoning as the synchronous path above.
+        mint_request_run(ctx);    // ADR-241 §8.4 (R5-1)
         if (grant.has_value()) ctx.capabilities = grant->capabilities;
         // ADR-237 §5.2: `background_task` is async; this request handler is a genuinely-sync edge.
         auto started = rt::block_on(background_task(
@@ -517,6 +521,17 @@ private:
         return JsonRpcResponse::make_result(req.id, std::move(result));
     }
 
+    // ADR-241 §8.4 / R5-1: a `tools/call` is a start site that never passes through the session core, so its
+    // `EffectContext` had neither `run_id` nor `root_run_id`. The server mints one per REQUEST from its own
+    // monotonic counter -- NEVER the JSON-RPC request id, which the client chooses and could use to pick (or
+    // collide into) another request's egress admission bucket. An authenticated caller is thereby bounded per
+    // request (8) and per principal (32); an UNAUTHENTICATED caller has an empty principal and is held by the
+    // shared unattributed principal bucket whatever run id it carries (empty `caller.id`, ADR-061 SS7 R13).
+    void mint_request_run(EffectContext& ctx) const {
+        ctx.run_id      = "mcp:" + std::to_string(request_seq_.fetch_add(1, std::memory_order_relaxed) + 1);
+        ctx.root_run_id = ctx.run_id;
+    }
+
     [[nodiscard]] static std::string req_id_to_call_id(RpcId const& id) {
         if (std::holds_alternative<std::string>(id)) return std::get<std::string>(id);
         return std::to_string(static_cast<long long>(std::get<double>(id)));
@@ -526,6 +541,7 @@ private:
     CapabilitySet const& held_;
     ApprovalDecider       approve_;
     std::string          server_name_;
+    mutable std::atomic<std::uint64_t>          request_seq_{0};  // ADR-241 §8.4: server-minted, host-side only
     mutable std::mutex                          tasks_mutex_;
     mutable std::unordered_map<std::string, TaskRecord> tasks_;
 };

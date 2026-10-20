@@ -106,6 +106,10 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // `WorkflowSupervisor`'s own `contexts_[i]` between rounds (not done by any code in this
             // codebase today, but nothing here forbids it) is honored rather than silently stale.
             session.set_capabilities(ctx.capabilities.get());
+            // ADR-241 §8.4: this node's runs serve the ROOT run the supervisor stamped on its context (the workflow
+            // run's own id, or the outer run's when the workflow is driven from a tool), so N agent nodes of one
+            // workflow share ONE egress admission bucket. An empty value leaves the session a top-level one.
+            session.set_inherited_root_run_id(ctx.root_run_id);
 
             // ADR-152 (issue #29): forward this call's real RunEvents live -- model_delta,
             // tool_call_*, everything emit_run_event_for() fires -- through whatever

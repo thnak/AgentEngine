@@ -887,6 +887,11 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 // run_executor_job() alongside sink/executor_id/round/attempt/path_prefix.
                 agentengine::EffectContext ctx = contexts_[idx];
                 ctx.cancellation                = cancellation_token();
+                // ADR-241 §8.4 / G13h: every node of this run serves ONE root run -- the workflow run's own id when
+                // the host set none (a top-level workflow), the outer run's when a host stamped it (a workflow
+                // driven from a tool). `run_id_` exists before the first node is dispatched (set at the top of
+                // `run_workflow`, restored by `resume_workflow`), so N agent nodes share one admission bucket.
+                if (ctx.root_run_id.empty()) ctx.root_run_id = run_id_;
                 in_flight.push_back(pool_.submit(run_executor_job(
                     body_override[i] ? *body_override[i] : bodies_[idx], exec_deliveries[i].payload, std::move(ctx),
                     slot, event_sink,

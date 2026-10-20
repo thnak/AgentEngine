@@ -680,6 +680,55 @@ int main() {
               "is denied, never silently auto-approved by default");
     }
 
+    // ---- T-root: ADR-241 §8.4 -- perform_agent_spawn() hands the child the ROOT run id (G13h child row) -----
+    //      Observed on the ChildSpawnRequest the REAL perform_agent_spawn() builds (the lambda records it before
+    //      moving it into run_child_agent_session), so a mutant that keys the child on the caller's own run id fails.
+    {
+        std::string seen_root = "<not called>";
+        auto make_recording_target = [&seen_root]() {
+            SpawnTargetDescriptor d = make_helper_target("root-recorded");
+            d.run_child = [&seen_root](std::string child_id, ChildSpawnRequest req) {
+                seen_root = req.root_run_id;
+                return run_child_agent_session<ScriptedChatClient>(
+                    std::move(child_id), std::move(req), [](ScriptedChatClient& c) {
+                        c.set_script({{text_response("ok"), Usage{1, 1, 0, 0, 0.0}}});
+                    });
+            };
+            return d;
+        };
+        for (int variant = 0; variant < 2; ++variant) {
+            InMemoryAppendLogStore ref_store;
+            SpawnCostBudget        cost_pool;
+            cost_pool.initialize(10);
+            SpawnPump<InMemoryAppendLogStore> pump(cost_pool, ref_store);
+            SpawnTargetRegistry registry;
+            (void)registry.register_target("root-helper", make_recording_target());
+            SpawnQuota        quota{100};
+            SpawnQuotaTracker tracker;
+            CapabilitySet const caller_held =
+                CapabilitySet::grant_root({AgentCall{"root-helper", SpawnBudget::mint_root(2)}});
+            EffectContext ctx;
+            ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
+            ctx.principal    = Principal{"caller-root", ""};
+            ctx.run_id       = "spawner:run:5";
+            if (variant == 0) ctx.root_run_id = "ROOT:run:1";  // a spawned caller: it carries the root of ITS tree
+            agentengine::Ref const caller_ref{"session:caller-root", ""};
+            AgentSpawnArgs const   args{"root-helper", "do it"};
+            auto reply = agentengine::rt::block_on(
+                perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
+            check(reply.has_value(), "T-root setup: perform_agent_spawn() succeeds");
+            if (variant == 0) {
+                check(seen_root == "ROOT:run:1",
+                      "T-root: the child request carries the caller's ROOT run id, not the caller's own run id "
+                      "(nested spawns propagate the root unchanged)");
+            } else {
+                check(seen_root == "spawner:run:5",
+                      "T-root: with no root on the caller's context the child still shares ONE bucket with the "
+                      "caller (its run id), never an empty one");
+            }
+        }
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "test_rt_agent_spawn: ALL PASS\n");
     } else {
