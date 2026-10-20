@@ -3043,6 +3043,34 @@ fails it).
   `async_mutex`, `block_on`, parked-task home, host resumer, lanes, manual reactor, reactor timer/tcp/process, TLS,
   HTTP, runtime, offload) -- they observe suspended states, which is what D7's sanctioned stepping API must cover.
 
+### Step 64 (2026-10-20): a canceled attempt is neither a success nor a failure for the circuit breaker (#184)
+
+- Closes the "Open after D6" item (a canceled attempt counted as a breaker failure). `rt::CircuitBreaker::on_canceled()`:
+  closed -- the consecutive-failure count is neither bumped nor reset; half-open -- the probe slot is released and the
+  state stays half-open (not re-opened: the provider did nothing wrong; not closed: no evidence of health), so the next
+  call probes. `ModelCallGateway` calls it instead of `on_result()` only when an attempt fails `failure_class::canceled`
+  AND the caller's stop is set (`ctx.cancellation`, or the stream's stop token in `call_stream`). A `canceled` the caller
+  did not cause still counts as a failure; a deadline is `resource` (the step-4 rule), so the gateway's own timeouts
+  still trip it. Accepted: a provider that hangs until the CALLER gives up and cancels does not trip the breaker.
+- **Real wedge found and fixed:** `call_stream`'s consumer-gone exit returned after `on_send()` without any breaker
+  callback, so a half-open probe abandoned mid-stream kept the probe slot forever and every later call was shed.
+- Proof (`test_model_call_gateway`): G8b (a) 5 cancels under threshold 3 do not trip; (a2) a cancel neither bumps nor
+  resets the count; (a3) `canceled` without a caller stop still trips (control); (b) a canceled probe frees the slot and
+  a successful probe closes; (c) a provider failure on the probe re-opens (control). G8c holds the streaming probe
+  open on a test gate, cancels the consumer, and asserts the next call probes -- it FAILS with the consumer-gone
+  `on_canceled()` removed. (a), (a2) and (b) failed on the old code.
+
+### Step 65 (2026-10-20): #183 batch 5 -- the drive-helper migration is complete
+
+- 24 files (`tests/core/{tools,skills,context}`, `tests/protocol/{a2a,mcp,agui}`, `tests/trust`, `tests/testing`,
+  `tests/backends/native_process`, `tests/rt/agent_spawn`, `tests/rt/project`): each local `drive()` helper's body
+  becomes `rt::block_on`. No hang, deadlock or `block_on_refused`, including `test_rt_spawn_pump_concurrency`.
+  `test_native_shell_session_provider` is compile-unchecked on Windows (no target in that configuration).
+- What is still hand-driven is deliberate (class b, marked `// #178`): the primitive tests in `tests/rt/` (step 63) and
+  the suspended-state observers (`test_rt_workflow_as_executor` x3, `test_rt_workflow_supervisor` P5,
+  `test_ledger_async_locking`, `test_rt_agent_session_snapshot` P6, `test_delegation_provenance` R4/R5). #183's
+  mechanical part is done; making direct driving private (D7, #178) needs a sanctioned stepping API for these first.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
