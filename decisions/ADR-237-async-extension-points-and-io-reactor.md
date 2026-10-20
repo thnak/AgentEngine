@@ -1163,8 +1163,8 @@ in force under this WSL; untouched by this change). Naming, layering and milesto
 fewer naming-lint suppression).
 
 Open after D6:
-- A canceled attempt still counts as a circuit-breaker failure in the gateway (not the provider's fault;
-  changing it touches half-open probe bookkeeping).
+- (Closed by #184.) A caller-canceled attempt (`failure_class::canceled` while the caller's stop is set) is now neither a
+  circuit-breaker success nor failure: `CircuitBreaker::on_canceled()` leaves the failure count alone and frees a half-open probe slot.
 - `route_from` handles a round's replies in executor order, so when `when_all` cancels siblings after one
   fails, a canceled sibling can be named `failed_executor` instead of the cause. No in-round sibling cancel
   exists yet; the structured-concurrency step should route the originating failure first.

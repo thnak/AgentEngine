@@ -532,6 +532,104 @@ int main() {
         }
     }
 
+    // ---- G8b (#184): a CALLER-canceled attempt is neither a success nor a failure for the breaker ----
+    {
+        auto canceled_ctx = [](std::stop_token t) {
+            auto c = make_ctx();
+            c.cancellation = t;
+            return c;
+        };
+        std::stop_source src;
+        src.request_stop();
+        ae::RetryPolicy no_retry;
+        no_retry.max_attempts = 1;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 3;
+        breaker.open_duration = std::chrono::milliseconds(60);
+
+        // (a) closed: 5 canceled attempts (threshold 3) do not trip; the next real call still reaches the backend.
+        {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 5; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::canceled));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("fine", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 5; ++i) {
+                auto ctx = canceled_ctx(src.get_token());
+                auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+                AE_CHECK(!r.has_value() && r.error().klass == ae::failure_class::canceled,
+                         "G8b(a): a canceled attempt fails canceled");
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(r.has_value() && primary.call_count() == 6,
+                     "G8b(a): 5 canceled attempts did NOT trip the breaker (the 6th call reached the backend)");
+        }
+        // (a2) a canceled attempt does not RESET the consecutive count either: 2 failures, cancel, 1 failure -> trips.
+        {
+            ScriptedGatewayBackend primary;
+            primary.outcomes = {ScriptedOutcome::fail(ae::failure_class::transient),
+                                ScriptedOutcome::fail(ae::failure_class::transient),
+                                ScriptedOutcome::fail(ae::failure_class::canceled),
+                                ScriptedOutcome::fail(ae::failure_class::transient)};
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 4; ++i) {
+                auto ctx = (i == 2) ? canceled_ctx(src.get_token()) : make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open" && primary.call_count() == 4,
+                     "G8b(a2): a canceled attempt neither bumped nor reset the count -- 3 real failures tripped it");
+        }
+        // (a3) a provider that reports `canceled` WITHOUT the caller having stopped still counts as a failure.
+        {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 3; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::canceled));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 3; ++i) {
+                auto ctx = make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open",
+                     "G8b(a3): a `canceled` the caller did not cause still trips the breaker");
+        }
+        // (b) half-open probe canceled -> stays half-open, slot freed, NEXT call probes, success closes.
+        // (c) control: a provider failure on the probe re-opens.
+        for (bool provider_fails : {false, true}) {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 3; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::transient));
+            primary.outcomes.push_back(provider_fails ? ScriptedOutcome::fail(ae::failure_class::transient)
+                                                      : ScriptedOutcome::fail(ae::failure_class::canceled));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("probe ok", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("closed", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 3; ++i) {
+                auto ctx = make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            {
+                auto ctx = provider_fails ? make_ctx() : canceled_ctx(src.get_token());
+                auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+                AE_CHECK(!r.has_value() && primary.call_count() == 4, "G8b: the probe reached the backend and failed");
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            if (provider_fails) {
+                AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open" && primary.call_count() == 4,
+                         "G8b(c): a provider failure on the probe re-opens the breaker (next call shed)");
+            } else {
+                AE_CHECK(r.has_value() && primary.call_count() == 5,
+                         "G8b(b): a canceled probe freed the slot -- the NEXT call probed (not shed, not wedged)");
+                auto ctx2 = make_ctx();
+                auto r2 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx2));
+                AE_CHECK(r2.has_value() && primary.call_count() == 6, "G8b(b): the successful probe closed the breaker");
+            }
+        }
+    }
+
     // ---- G9: call_stream() basic success -- chunks pushed live, reconstruction matches call() -----
     {
         ScriptedGatewayBackend primary;

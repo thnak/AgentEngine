@@ -96,6 +96,16 @@ public:
         if (++consec_fail_ >= fail_threshold_) trip(now_ns);
     }
 
+    // #184 (ADR-237 follow-up): an admitted attempt that the CALLER canceled is neither a success nor a
+    // failure -- no evidence about the provider either way. Closed: nothing changes (the consecutive-
+    // failure count is neither bumped nor reset). Half-Open: the probe slot is RELEASED, the state stays
+    // Half-Open (not re-opened -- that would punish the provider for the caller's cancel; not closed --
+    // no evidence of health) and the next on_send() probes. Same contract as on_result(): call it only
+    // for an attempt on_send() admitted.
+    void on_canceled() noexcept {
+        if (state_ == State::HalfOpen) probe_inflight_ = false;
+    }
+
     [[nodiscard]] State state() const noexcept { return state_; }
     [[nodiscard]] std::uint32_t consecutive_failures() const noexcept { return consec_fail_; }
     [[nodiscard]] bool is_open() const noexcept { return state_ == State::Open; }
