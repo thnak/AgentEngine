@@ -2892,6 +2892,18 @@ fails it).
   pass unchanged.
 - **Lock audit.** Only `SpawnQuotaTracker::m_` and `SpawnPump`'s internals, each taken around synchronous work; none
   across a `co_await`. **Residual:** `SpawnPump::submit` still blocks on a `std::future` inside the async spawn path.
+- **Red-team (2026-10-20, read-only, verdict ship-with-changes).** No double charge, no zero charge beyond the
+  window below, and no use-after-free on the drop path: the awaited child frame (and any grandchild's guard) is
+  destroyed before the guard runs, while `charge`, `req`/`ctx` and the session are still alive; a grandchild's spend
+  reaches the root exactly once. Fixed: R4-D3/D4 passed a temporary `Message` by `const&` into the lazy body (UB on
+  the first resume). What the claim does NOT cover, recorded as residuals (tracked in a follow-up issue):
+  a dropped run is charged what was OBSERVED -- a model call in flight at the drop is not counted, nor is a late
+  charge from a detached worker the child owns; in the workflow adapter, moving the outcome into the promise happens
+  after `completed()`; `workflow_as_executor`'s `run_once` has no guard at all, so a throw or a drop there still
+  charges nothing (pre-existing for a throw; a drop became reachable at step 53) -- a correct guard needs to know the
+  inner run actually started, or it charges the previous run's total; a spawn parent dropped mid-child-run keeps the
+  consumed quota, the pump slot and the minted worktree (unreachable under the old `block_on`); and an `AgentSession`
+  whose `start_run` frame was destroyed mid-run has not been tested for reuse by a later run.
 
 ### Step 56 (2026-10-20): Phase G slice 4 -- `EffectContext::blob_sink` is `task`-shaped (#187)
 

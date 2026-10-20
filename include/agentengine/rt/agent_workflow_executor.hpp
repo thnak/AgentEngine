@@ -179,7 +179,9 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // exactly this call's own total with no delta needed.
             ExecutorOutcome outcome{driven->message};
             outcome.usage = session.run_usage();
-            charge_if_unfinished.completed();  // the outcome now carries the run's usage to the supervisor
+            // The outcome now carries the run's usage to the supervisor. Residual (red-team R3): moving it into the
+            // promise below happens after the guard is disarmed, so a throw from that move would go uncharged.
+            charge_if_unfinished.completed();
             co_return outcome;
         });
 }

@@ -1380,7 +1380,10 @@ int main() {
                 charged.output_tokens += u.output_tokens;
             };
             {
-                auto t = body(r3_user("go"), ctx);
+                // The body takes `Message const&` and `task` is lazy: the message must outlive the task, so it is a
+                // named local, not a temporary that dies at the end of this statement (red-team R1).
+                agentengine::Message const input = r3_user("go");
+                auto t = body(input, ctx);
                 t.resume();
                 check(g_parked && !t.done() && charges == 0,
                       "R4-D3: setup -- the agent node is suspended mid-run and nothing is charged yet");
