@@ -1,5 +1,5 @@
 #pragma once
-// ADR-096 (decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
+// ADR-096 (decisions/archive/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
 // `SandboxToolProvider` -- the `ContextProvider` conformer (`core/context_provider.hpp`) that gives
 // Shell a real, reusable, per-session lifecycle. Composed into a session via the existing
 // `Ms.../ComposedContextProvider<Ms...>` mechanism (`core/composed_context_provider.hpp`,
@@ -95,7 +95,7 @@ inline constexpr std::size_t kSessionDigestHexLength = 64;
 // ae-naming-lint: allow SandboxToolProvider — ADR-096's own vocabulary, the design's central type
 class SandboxToolProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "sandbox";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     // `host_scratch_root`: a real host directory (need not already exist -- created idempotently,

@@ -1,4 +1,4 @@
-// Proof for ADR-182 P1 and P2 (decisions/ADR-182-agent-test-driver-mcp.md).
+// Proof for ADR-182 P1 and P2 (decisions/archive/ADR-182-agent-test-driver-mcp.md).
 //
 //   P2 -- agentengine::testing::ScriptedChatClient (include/agentengine/testing/scripted_chat_client.hpp)
 //     SC1 -- chat() plays scripted turns in order and captures each request.

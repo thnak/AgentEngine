@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8
 // -- `HybridRagContextProvider` (core/hybrid_rag_context_provider.hpp): RRF fusion is real (neither
 // leg alone determines the fused top-K), citation rendering and the citation-forgery defense are
 // reused VERBATIM from `vector_rag_context_provider.hpp` (not reimplemented), and the `recall` tool
@@ -309,7 +309,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R4
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R4
     // (2026-09-22): HybridRagContextProvider had no cross-tenant isolation test of its own, even
     // though it reuses the identical Mount/read_cap/VectorIndex-scoping mechanism ADR-063's own
     // C5-R1..R5 proves for VectorRagContextProvider. Mirrors that test's exact "same id, different
@@ -399,7 +399,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding M1
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding M1
     // (2026-09-22): a degenerate rrf_k (<= -1 for rank 0) must not produce +inf/a corrupted score.
     // ============================================================================================
     {

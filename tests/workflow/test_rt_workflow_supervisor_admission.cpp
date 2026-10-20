@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-169-workflow-supervisor-admission.md (GitHub issue #65): every public
+// Proof for decisions/archive/ADR-169-workflow-supervisor-admission.md (GitHub issue #65): every public
 // entry point of `agentengine::rt::WorkflowSupervisor` -- `run_workflow()`, `resume_workflow()`,
 // `continue_workflow()` -- admits its caller against the supervisor's owning `Principal` before
 // touching any run state, closing the I2/I4 gap where any holder of an `interaction_id` could resolve

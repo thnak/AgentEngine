@@ -133,7 +133,7 @@ class FileAppendLogStore {
 public:
     explicit FileAppendLogStore(std::filesystem::path root, append_log_sync sync = append_log_sync::os_buffer);
 
-    // `task`-shaped since decisions/ADR-237 §5.1 (#172). The bodies are the `*_blocking` members below and
+    // `task`-shaped since decisions/archive/ADR-237 §5.1 (#172). The bodies are the `*_blocking` members below and
     // complete without suspending: moving them onto `rt::offload` (§6) is a named residual, as for
     // FileSessionStore. Ids are by value so a held task never reads a dead temporary.
     [[nodiscard]] task<result<SeqNo>> append(LogId id, std::vector<std::byte> bytes) const {

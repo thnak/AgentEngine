@@ -7,7 +7,7 @@
 // `fixed_string<N>` and the type is usable directly as written in every RFC example.
 //
 // Extracted out of core/agent.hpp (its original, M0-era home) because
-// decisions/ADR-009-capability-set-enforcement-mechanism.md's compile-time capability declaration
+// decisions/archive/ADR-009-capability-set-enforcement-mechanism.md's compile-time capability declaration
 // tags (trust/capability.hpp's `cap::decl::*`) need the same idiom too, and trust/ is a lower tier
 // than core/agent.hpp — trust/capability.hpp cannot include core/agent.hpp without an include
 // cycle (agent.hpp already includes trust/capability.hpp for `CapabilitySet`).

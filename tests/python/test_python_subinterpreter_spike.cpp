@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md Section 6 item 5, backlog item #39:
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md Section 6 item 5, backlog item #39:
 // "Whether Py_NewInterpreterFromConfig with PyInterpreterConfig_OWN_GIL (PEP 684, per-interpreter
 // GIL) is a viable per-session isolation unit that keeps sys.modules genuinely separate per
 // session, and whether numpy/pandas -- as installed in the target environment -- actually load and

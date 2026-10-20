@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4e (red-team pass 5,
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4e (red-team pass 5,
 // 2026-09-23) -- EXECUTES every checked-VkResult failure branch in VulkanCosineIndex
 // (src/backends/vulkan_vector_index/vulkan_cosine_index.cpp), which every prior red-team pass (§4c,
 // §4d) could only reason about: a real device-lost/out-of-memory cannot be induced safely on a dev box

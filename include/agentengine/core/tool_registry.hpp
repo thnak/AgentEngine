@@ -1,7 +1,7 @@
 #pragma once
 // Implements docs/planning/tool-capability-registry-design-draft.md, closing 2026-08-10-full-
 // codebase-adr-gap-audit.md gap #4 (and gap #5's name-keyed ToolTable construction half). See
-// decisions/ADR-054-tool-registry-name-keyed-resolution.md for the full design writeup; summarized
+// decisions/archive/ADR-054-tool-registry-name-keyed-resolution.md for the full design writeup; summarized
 // here for the reader looking at this file directly.
 //
 // A `ToolRegistry` answers, for a bare string in a declarative document's `spec.tools`, exactly the

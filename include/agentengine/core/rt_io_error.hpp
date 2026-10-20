@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md Â§9 D6 and Â§14.1 (#181): the one place the
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md Â§9 D6 and Â§14.1 (#181): the one place the
 // `rt::` I/O results become the engine's `failure_class`. `rt/` itself never constructs a failure class (L0);
 // the seams that convert onto it (#180) call these. Placement mirrors `http_error_to_error`
 // (protocol/provider_chat_wire.hpp), whose rules this file extends rather than restates.

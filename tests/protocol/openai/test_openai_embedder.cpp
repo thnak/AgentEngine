@@ -1,4 +1,4 @@
-// Milestone-parallel work on decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.5:
+// Milestone-parallel work on decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.5:
 // proves protocol/openai/embedder.hpp's OFFLINE-provable surface -- request-body construction,
 // response parsing (including the out-of-order/partial/malformed shapes a real provider could send),
 // and the two synchronous gates `embed_batch()` applies BEFORE any network attempt (a declared

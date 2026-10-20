@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md's discovery half:
+// Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md's discovery half:
 // PATH enumeration for NativeShellProvider/NativeBashProvider/NativePythonProvider/
 // NativeNodeProvider's `scan()` (the NativeExecutableDiscovery concept, provider layer).
 //

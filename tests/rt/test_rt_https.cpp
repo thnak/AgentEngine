@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE ... rewritten as
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE ... rewritten as
 // coroutines"; "TLS: keep mbedTLS (ADR-013)") -- rt/http.hpp over rt/http_tls.hpp (rt::TlsStream). Only built with
 // AGENTENGINE_WITH_HTTPS. The peer is a loopback mbedTLS server on a test thread with a CA generated in memory (as
 // test_rt_tls.cpp). Also the field-level SSE differential against the EXISTING provider parsers (it links them).

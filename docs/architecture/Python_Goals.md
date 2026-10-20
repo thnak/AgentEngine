@@ -13,7 +13,7 @@ here.
 **This is a summary, not a second spec.** Per `CLAUDE.md`: when this document and an RFC or ADR
 disagree, the RFC/ADR wins — fix this document, never the other way around. Every goal below cites
 where it's actually specified, and several are now backed by real evidence from
-`decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01) — the first
+`decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01) — the first
 place in this project a Python-integration claim was tested against a real embedded interpreter
 rather than argued.
 
@@ -241,7 +241,7 @@ Differences introduced by the framework should exist only when required to prese
 Unexpected behavioral differences should be minimized.
 
 **This goal is now backed by the sharpest concrete evidence in this document, and it cuts both
-ways.** `decisions/ADR-002-pythonrunner-embedding-and-mediation.md` §8.9/§10.1 (`OpenQuestions.md`
+ways.** `decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md` §8.9/§10.1 (`OpenQuestions.md`
 OQ-15) found that "only differ when security requires it" is harder to deliver than it sounds: the
 import-allowlist mechanism gates by module name, and granting `numpy`/`pandas` transitively requires
 also granting `ctypes`/`winreg`/`subprocess` — names a security review would otherwise deny — because

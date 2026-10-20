@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §3-§5, §8 (build step 5) --
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §3-§5, §8 (build step 5) --
 // `LiveShellSandboxProvider<Surface, Store, Lifetime>` and its one tool, `shell_exec`: a shell held in this
 // session's own sandbox whose cwd, environment and processes persist from one command to the next.
 //

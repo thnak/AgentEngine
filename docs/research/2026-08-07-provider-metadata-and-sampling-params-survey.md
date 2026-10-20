@@ -172,7 +172,7 @@ after the previous last parameter (`ca_bundle_pem_override`), never inserted ear
    (→ `metadata.user_id`) — **no `seed` param exists on `AnthropicChatClient`**, deliberately: Finding 2
    confirmed Anthropic has no native seed field at all, and a fake no-op parameter would be worse than
    its honest absence.
-3. ~~**`reasoning_effort`**~~ — **BUILT 2026-08-07 by `decisions/ADR-020-portable-reasoning-effort.md`**,
+3. ~~**`reasoning_effort`**~~ — **BUILT 2026-08-07 by `decisions/archive/ADR-020-portable-reasoning-effort.md`**,
    taking option **(c)** below (the RFC-touching one): a 004 §2 amendment adding
    `enum class reasoning_effort {off, low, medium, high}` and `ChatRequest::reasoning_effort`
    (appended last). Finding 2's "one vendor's shape leaking" objection is about admitting a vendor's

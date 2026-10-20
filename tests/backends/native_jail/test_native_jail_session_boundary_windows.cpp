@@ -1,7 +1,7 @@
 // rfcs/008-Sandbox-and-Isolation.md §9 G7 -- "a guest instance is never reused across sessions or
 // principals; a canary written in session A is unreachable from session B on every profile,
 // including under pooling and snapshot-restore. Positive control: a deliberately shared pool is
-// caught." Traced as a real, previously-untracked gap in decisions/ADR-082-native-jail-promotion-
+// caught." Traced as a real, previously-untracked gap in decisions/archive/ADR-082-native-jail-promotion-
 // gate-008-9.md §4 (unlike G5/G6, G7 was absent from M2 Phase C's own "what's deferred" list
 // entirely -- no test existed anywhere for this claim before this file).
 //
@@ -11,7 +11,7 @@
 // the gate's own text imagines. What this file proves instead is the load-bearing claim ADR-082 §4
 // left as an argument, not a fact: that two independently-created worker instances are genuinely
 // separate OS processes with genuinely separate CPython interpreter state, not merely "no pooling
-// code happens to run today." Since decisions/ADR-081-jailed-python-worker-process-slice-1.md moved
+// code happens to run today." Since decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md moved
 // the interpreter into its own OS process per worker, this is now a real KERNEL-ENFORCED boundary
 // (two processes cannot share heap memory), not a language-level argument about missing code paths
 // -- this file is the first test to actually exercise that.

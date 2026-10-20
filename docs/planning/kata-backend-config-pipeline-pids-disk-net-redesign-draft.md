@@ -16,12 +16,12 @@ to produce a live host-filesystem-corruption path), all fixed in this draft befo
 cross-chain `nft` quota, the loop-backed writable overlay) are sound; this was a fix-and-re-review,
 not a structural redesign.
 
-**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1b/§2, `decisions/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md` (reopened by this draft — its own negative finding is superseded, not
-wrong), `decisions/ADR-092-kata-backend-disk-net-bytes-investigated-and-deferred.md` (reopened,
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1b/§2, `decisions/archive/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md` (reopened by this draft — its own negative finding is superseded, not
+wrong), `decisions/archive/ADR-092-kata-backend-disk-net-bytes-investigated-and-deferred.md` (reopened,
 `net_bytes` moot-because-deny_all reasoning is stale since ADR-093/Slice 10; `disk_bytes`
 interpreter-mediation reasoning is correct but this draft proposes a **different**, backend-level
 mechanism 008 §2's own resource-cap axis already permits alongside mediation, not a replacement for
-it), `decisions/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md` (the `--config`/OCI-spec
+it), `decisions/archive/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md` (the `--config`/OCI-spec
 pipeline and per-instance netns/nftables machinery this draft extends, not replaces).
 
 ## 1. What changed since ADR-090/ADR-092's negative decisions

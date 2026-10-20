@@ -122,7 +122,7 @@ struct DangerousNeverRequireTool
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-// -- decisions/ADR-070-host-configurable-responsibility-boundary.md: a capability-bearing tool
+// -- decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: a capability-bearing tool
 // gated by Approval<policy_driven> -- the mode the new PolicyDecider seam exists to resolve.
 struct PolicyArgs {
     std::string action;
@@ -144,7 +144,7 @@ struct PolicyDrivenTool
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-// -- decisions/ADR-184-text-derived-never-laxer-than-vendor-structured.md: two tools that ARE
+// -- decisions/archive/ADR-184-text-derived-never-laxer-than-vendor-structured.md: two tools that ARE
 // declassifiable (pure, no capabilities) but whose authors declared that every call needs a human.
 // A text_derived call must not be gated less than the same vendor_structured call.
 struct PureAlwaysTool
@@ -433,7 +433,7 @@ int main() {
     }
 
     // ==============================================================================================
-    // ADR-070 (decisions/ADR-070-host-configurable-responsibility-boundary.md): the PolicyDecider
+    // ADR-070 (decisions/archive/ADR-070-host-configurable-responsibility-boundary.md): the PolicyDecider
     // seam, consulted ONLY for approval_mode::policy_driven.
     // ==============================================================================================
 

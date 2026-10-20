@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md, implementation step 1: the I/O reactor
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md, implementation step 1: the I/O reactor
 // seam (pal/reactor.hpp), its Asio backend (src/backends/reactor_asio/) and the first engine awaitable on it,
 // rt::sleep_until (rt/sleep.hpp). Each claim names the ADR rule it proves and how it would fail.
 //

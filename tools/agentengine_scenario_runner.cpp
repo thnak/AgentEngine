@@ -1,4 +1,4 @@
-// Implements ADR-182 §16 (decisions/ADR-182-agent-test-driver-mcp.md): replays checked-in scenarios
+// Implements ADR-182 §16 (decisions/archive/ADR-182-agent-test-driver-mcp.md): replays checked-in scenarios
 // (tests/scenarios/*.json) with the scripted model and diffs the normalized event stream. No network,
 // no Claude: this is what turns a test agent's exploration -- including a live-model run -- into a
 // deterministic ctest (022 §3 golden traces).

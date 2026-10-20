@@ -1,4 +1,4 @@
-// Implements mbedtls_client_config.hpp -- decisions/ADR-013-https-egress-tls-client.md's client configuration,
+// Implements mbedtls_client_config.hpp -- decisions/archive/ADR-013-https-egress-tls-client.md's client configuration,
 // moved here verbatim from src/sandbox/tls_client.cpp (2026-10-03, ADR-237 §6.3) so the blocking client and
 // rt::TlsStream share one copy. The comments on each step are the original ones.
 

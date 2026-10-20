@@ -18,7 +18,7 @@
 // simply absent from both outputs -- never listed as "present" and never explained as denied.
 //
 // KNOWN LIMITATION, stated rather than papered over: `trust/capability.hpp` now has a real
-// parameterized `Capability` (decisions/ADR-009-capability-set-enforcement-mechanism.md) that CAN
+// parameterized `Capability` (decisions/archive/ADR-009-capability-set-enforcement-mechanism.md) that CAN
 // distinguish a "/memory mount" FsRead/FsWrite from any other mount's — but this registry still
 // gates on plain `capability_kind` (`contains_kind`, kind-only), coarser than 026 §5's actual
 // "FsRead<mount> on /memory" / "FsWrite<mount> on /memory". Sharpening `ModuleDescriptor` to gate on

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.6a / §3 claim 5 --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.6a / §3 claim 5 --
 // `corpus_scope` and its key derivation (core/corpus_scope.hpp). Mirrors
 // `test_memory_cross_tenant_isolation.cpp`'s exact shape and rationale: this codebase already found
 // and fixed a real cross-tenant leak from under-scoped key derivation for Memory (Milestone 5 Phase

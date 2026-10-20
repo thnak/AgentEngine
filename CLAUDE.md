@@ -15,7 +15,8 @@ vocabulary) expressed in AgentEngine's own **zero-cost CRTP policy idiom** (orig
 Quark's identical idiom).
 
 **The project is spec-driven.** 30 RFC documents (`rfcs/NNN-*.md`) are the authoritative design;
-`decisions/ADR-*.md` are executed proofs. **When code and a spec disagree, the spec wins**; if the
+`decisions/ADR-*.md` are executed proofs (the live record starts at ADR-242; ADR-001 to ADR-241 are
+in `decisions/archive/`, and `decisions/README.md` says which of them still bind). **When code and a spec disagree, the spec wins**; if the
 spec is wrong, fix the spec first (with an ADR), then the code.
 
 **Status: implementation under way, not design phase.** All 30 RFCs passed their own review gate
@@ -71,7 +72,7 @@ model output influence a permission decision, it is wrong regardless of how well
   (host-fronted server role's session-side admission mechanism and bearer-credential bridges) are
   both Judged (2026-08-20, project-owner sign-off) — but Tier 3 never built the actual test-fixture
   listener a server-role conformance run needs, so 011 §10 G1 / 012 §8 G1 remain unmet. Don't reopen
-  "should AgentEngine bind a port" without a new ADR; `decisions/README.md`'s ADR-061 row and the
+  "should AgentEngine bind a port" without a new ADR; `decisions/archive/README.md`'s ADR-061 row and the
   milestone-7 breakdown doc's Phase H have the full rationale and the real security defects this
   decision's red-teaming found and fixed in already-shipped code.
 - **The licence is MIT, decided.** See [`LICENSE`](LICENSE); resolved 2026-08-04

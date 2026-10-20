@@ -1,4 +1,4 @@
-// Answers decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question with
+// Answers decisions/archive/ADR-069-content-triggered-model-response-replay.md §7's own open question with
 // real evidence for the first time: "whether ADR-067's pre_model mechanism and this ADR's
 // post_model-adjacent mechanism are genuinely non-overlapping... a future pass implementing both
 // together, wired into one real session, must confirm this before either ships." Both are now wired

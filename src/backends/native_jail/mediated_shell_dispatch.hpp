@@ -1,6 +1,6 @@
 #pragma once
 // Implements rfcs/010-Python-Code-Interpreter.md §2/§3a -- Milestone 3 Phase E3's evaluator, carrying
-// forward decisions/ADR-001's shared-dispatch-layer finding (a fixed builtin set, kind-only ->
+// forward decisions/archive/ADR-001's shared-dispatch-layer finding (a fixed builtin set, kind-only ->
 // path-scoped capability checks before touching the filesystem adapter, ExecState mutated by
 // reference, `for`-loop variables kept in a LocalScope NEVER written into ExecState.env so a
 // guest-controlled loop can't reopen the export-as-ambient-authority hole ADR-001 finding 4 named)

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.2/§6.3 (with §4.4) -- the Asio
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.2/§6.3 (with §4.4) -- the Asio
 // backend of `pal::TcpStream` (pal/reactor_tcp.hpp): asio::ip::tcp::socket on the AsioReactor's one
 // io_context. Follows asio_reactor.hpp's recipe for every operation:
 //   1. the start is posted to the reactor thread (the handle's methods only post);

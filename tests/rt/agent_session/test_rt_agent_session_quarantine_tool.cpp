@@ -1,4 +1,4 @@
-// Proves decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own named residual
+// Proves decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own named residual
 // closed for real: "no production call site wires scan_and_quarantine()/
 // make_quarantine_secret_tool_descriptor() into AgentSession/assemble_context() anywhere." trust/
 // secret_quarantine.hpp's new QuarantineToolProvider (a real ContextProvider conformer wrapping

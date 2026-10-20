@@ -91,7 +91,7 @@
 // CURRENT `open_interactions()` set on every call (so a stale answer to an already-resolved interaction
 // is silently skipped, not a special case -- it simply never matches).
 //
-// ANSWER ROUTING (decisions/ADR-230, issue #44) -- this type is also an `InteractiveChatClient`
+// ANSWER ROUTING (decisions/archive/ADR-230, issue #44) -- this type is also an `InteractiveChatClient`
 // (core/chat_client.hpp): `pending_client_interactions()` reports the open asks from the supervisor's own
 // state and `cancel_client_interactions()` abandons them. An `AgentSession` bound to it never reads the ask
 // item above out of content; it suspends as a `client_input` interaction and hands its caller's answer back
@@ -155,7 +155,7 @@ namespace workflow_chat_client_detail {
 
 // Drives a task<T> from a plain, non-coroutine call site. Formerly the resume-until-done loop every such
 // rt:: call site duplicated, which resumed a parked handle a second time; `block_on()` since
-// decisions/ADR-175.
+// decisions/archive/ADR-175.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
     return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`

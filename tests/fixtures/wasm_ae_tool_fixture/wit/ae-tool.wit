@@ -4,7 +4,7 @@
 // §1/§3/§7) -- the contract of record for a WASM component exposing one or more tools (schema +
 // invoke) to the engine.
 //
-// Scope (Milestone 2 task D2, revised by task D3 / decisions/ADR-010-wasm-component-host-manifest-
+// Scope (Milestone 2 task D2, revised by task D3 / decisions/archive/ADR-010-wasm-component-host-manifest-
 // capability-binding.md): the world shape only for D2; D3 is the first host implementation
 // (`src/backends/wasm/wasm_backend.{hpp,cpp}`), built through design->red-team->prove->judge per
 // CLAUDE.md and landed as ADR-010. Narrowed to what an M2 native tool call actually is: synchronous

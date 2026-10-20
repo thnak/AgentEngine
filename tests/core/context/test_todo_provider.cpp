@@ -1,4 +1,4 @@
-// Implements decisions/ADR-166-todo-provider.md's proof obligations for `TodoProvider`
+// Implements decisions/archive/ADR-166-todo-provider.md's proof obligations for `TodoProvider`
 // (core/todo_provider.hpp), 005 §5, issue #53. Mirrors test_memory_provider.cpp's structure: each
 // block proves one claim from the ADR's per-claim verdict table.
 

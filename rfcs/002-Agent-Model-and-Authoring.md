@@ -65,7 +65,7 @@ nothing. There is no vtable, no RTTI, and no null check per turn.
 
 ### 2.1 Running an agent
 
-**Amended by `decisions/ADR-226-agent-run-bridge.md` (2026-10-01, issue #46).** A session is bound to
+**Amended by `decisions/archive/ADR-226-agent-run-bridge.md` (2026-10-01, issue #46).** A session is bound to
 one agent when it is created; the caller supplies the model client and the authority it holds, the
 agent's declaration supplies everything else:
 
@@ -106,7 +106,7 @@ agents, it is a map from names to `make_agent_session<A>` calls — host code, o
 
 ### 2.2 Running an agent with the harness
 
-**Added by `decisions/ADR-234-harness-composition.md` (2026-10-01, issue #60).** The counterpart of Microsoft
+**Added by `decisions/archive/ADR-234-harness-composition.md` (2026-10-01, issue #60).** The counterpart of Microsoft
 Agent Framework's `AsHarnessAgent()` / `create_harness_agent()`: one call that runs an agent with an
 opinionated default stack. It is the §2.1 bridge plus pieces, not a different way to build a session — every
 §2.1 guarantee (declared tools only, the caller's grants narrowed to the ceiling, narrowing-only overrides,
@@ -163,7 +163,7 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 | `Stateless<N>` | Agent holds no cross-run state (historical: hosted as a Quark pool before ADR-037 removed Quark; the `rt::` hosting mechanism for this policy is not yet re-specified) | off |
 | `OutputSchema<T>` | Structured-output contract (003) | free text |
 
-**No `Mode<PlanExecute>` policy tag (issue #54, decisions/ADR-167-plan-execute-mode.md).** MAF's
+**No `Mode<PlanExecute>` policy tag (issue #54, decisions/archive/ADR-167-plan-execute-mode.md).** MAF's
 Harness bundles single-agent "plan then execute" phase gating by default. AgentEngine gets the same
 behavior without a new table row here: `core/agent.hpp`'s own comments already disclose that most of
 this table's tags (`Concurrency`, `Memory`, `Retry`, `Middleware`, `Telemetry`, `Stateless`) are
@@ -194,7 +194,7 @@ profile table this selects among.
 `P` is any type satisfying `SandboxBackend` (008 §2), or the resolution selector `Strict` (008 §3's
 "the strongest profile available on this platform, never `none`") — never an enum-like value; a
 deployer's own custom backend type works exactly the same way an engine-shipped one does (008 §2a).
-`decisions/ADR-012-sandbox-profile-template-parameter-kind.md` is the record of this decision.
+`decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md` is the record of this decision.
 
 **The rule for adding a policy:** a knob belongs here only if it changes *what the agent is*.
 Knobs that change *how the deployment runs* (worker counts, endpoints, timeouts, credentials) are
@@ -273,7 +273,7 @@ composition order). This supersedes ADR-033's original consumer, `MiddlewareChat
 deprecation-then-migration cost to justify keeping the three `chat()`-only wrappers once
 `ModelCallGateway`/`MiddlewareModelCallGateway` gave `AgentSession` a real, streaming-capable
 successor with the identical combined-not-layered reasoning. **The TURN interception point is now
-also real and wired** (`decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md`,
+also real and wired** (`decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md`,
 implementation complete and proven by `tests/core/context/test_turn_middleware.cpp`, 22/22, though the ADR itself
 is still Proposed, awaiting explicit project-owner "Judged"): `AgentSession::set_turn_middleware_hook()`
 runs a `TurnMiddlewareHook` (`core/turn_middleware.hpp`) once per round, after the final tool surface
@@ -285,14 +285,14 @@ inspect/redact/reorder the tool surface and deny the round, but has no seam on t
 model response — it cannot force another round after the model has already produced a final,
 no-tool-calls answer (verified directly against `run_rounds()`: that path `co_return`s an
 `AgentResponse` immediately, `agent_session.hpp:2511-2546`, with nothing in between for a hook to
-intercept). `decisions/ADR-168-bounded-reflection-loop.md` (issue #55) is grounded in this exact gap:
+intercept). `decisions/archive/ADR-168-bounded-reflection-loop.md` (issue #55) is grounded in this exact gap:
 bounded single-agent reflection could not be built on the TURN point for that reason, and is instead a
 thin outer driver over repeated `start_run()` calls, one layer up from this middleware chain entirely.
 RUN and TOOL-CALL remain declared-but-unwired — `AgentSession`'s turn loop
 is large, mature, and heavily tested; threading a middleware chain through those two is separately-
 scoped, larger work this pass does not attempt, matching this project's own established "prove the
 mechanism against one real consumer, name the rest" precedent
-(`decisions/ADR-028-session-scoped-stateful-tools.md`).
+(`decisions/archive/ADR-028-session-scoped-stateful-tools.md`).
 MAF's verified decorator-chain mechanics remain the prior art for that future work — a *separate*
 wrapping pipeline around the raw model call from the one around the whole run/turn (`AIAgentBuilder`),
 both composed by reverse-apply ordering so the first-registered middleware ends up outermost —

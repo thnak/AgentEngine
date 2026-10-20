@@ -1,4 +1,4 @@
-// Proves decisions/ADR-241-egress-proxy-async-path-on-rt-http.md section 8.2 / G13 rows b, d and f: the process-wide egress
+// Proves decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md section 8.2 / G13 rows b, d and f: the process-wide egress
 // I/O context is created lazily, exactly once, never by a gate-rejected call, and a failed construction is retried.
 //
 // These rows need a FRESH process (the context is a leaked singleton that, once built, is never rebuilt), so the executable

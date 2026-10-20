@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-174-root-owned-container-seed.md (GitHub issue #68), offline half.
+// Proof for decisions/archive/ADR-174-root-owned-container-seed.md (GitHub issue #68), offline half.
 //
 // ADR-171's `--cap-drop ALL` took CAP_DAC_OVERRIDE and CAP_DAC_READ_SEARCH away from the container's
 // root, `docker cp <host path>` preserves the HOST file's ownership, and `write_verified()`

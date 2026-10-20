@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3 --
 // `HybridRagContextProvider<EmbedderT, DenseIndexT, SparseIndexT, OS, RS>`, a NEW, SEPARATE
 // `ContextProvider` conformer (matching ADR-063 §2.1b's own "each RAG kind is its own class"
 // precedent exactly -- `VectorRagContextProvider`, `MemoryProvider`, `SkillsProvider` are all
@@ -15,7 +15,7 @@
 // ADR's own "generalize, don't duplicate" discipline (ADR-063 §2.6b's precedent, extended here).
 //
 // `DenseIndexT` is any `VectorIndex`, local or network-backed; `SparseIndexT` any `SparseIndex`. Since
-// decisions/ADR-237 §5.1 (#172) both seams are `task`-shaped and every call below -- in `on_context()` and
+// decisions/archive/ADR-237 §5.1 (#172) both seams are `task`-shaped and every call below -- in `on_context()` and
 // in the `recall` tool alike -- is simply awaited: no dispatch on the index kind, no `synchronous_leaf`
 // gate, no `rt::drive_leaf_task()`.
 
@@ -94,7 +94,7 @@ template <class EmbedderT, class DenseIndexT, class SparseIndexT, class OS, clas
 // ae-naming-lint: allow HybridRagContextProvider — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
 class HybridRagContextProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: every ContextProvider routed
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: every ContextProvider routed
     // through make_context_provider_descriptor()/ComposedContextProvider must declare a static name.
     // Distinct from VectorRagContextProvider's own "rag" -- a session composing BOTH providers (e.g.
     // one plain-vector corpus, one hybrid corpus) must be able to tell their contributions apart.

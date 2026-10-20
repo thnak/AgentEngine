@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, stretch item (§4 claim
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, stretch item (§4 claim
 // C1): does a native `PySys_AddAuditHook`-installed hook fire on an import attempt regardless of
 // whether sys.meta_path has been tampered with by guest code? This test's trampoline
 // (python_lockdown.cpp's `audit_hook_trampoline`) only COUNTS "import" events -- it does not

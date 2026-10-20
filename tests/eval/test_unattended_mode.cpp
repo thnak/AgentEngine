@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-192-unattended-mode.md, the delivery half (what the model is sent; the approval half is
+// Proof for decisions/archive/ADR-192-unattended-mode.md, the delivery half (what the model is sent; the approval half is
 // test_unattended_approvals.cpp, which needs no HTTPS):
 //   L1-L6  Approved lessons delivered as `instructions` (plain, unfenced system text, still tainted); the
 //          system-channel fence switched off for every tainted system text; a provider cannot set the delivery mark

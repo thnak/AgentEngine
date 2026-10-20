@@ -111,7 +111,7 @@ confirmed gap: an endpoint declaring `tool_calling: true` that in fact serves ra
 llama.cpp/GGUF Hermes/Qwen without a normalizing `--tool-call-parser`) leaks a tool-call attempt into
 an ordinary `content` string with no structured `tool_calls[]` entry — captured today as plain,
 untainted text, no error, no warning, unless the operator has *also* armed the separate
-`AgentSession::scan_response_format_leaks` recovery mechanism (`decisions/ADR-023-response-format-
+`AgentSession::scan_response_format_leaks` recovery mechanism (`decisions/archive/ADR-023-response-format-
 codec-seam.md`). ADR-076 adds the missing inbound check: when `tool_calling` is declared true and
 that recovery scan is not armed, a response whose content structurally matches a live tool name in
 one of `response_format_codec`'s known raw wire shapes is refused (`failure_class::contract`) rather

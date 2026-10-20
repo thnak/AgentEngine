@@ -5,7 +5,7 @@ agentengine_fast_build_this_directory()
 
 # ---- Policy-reachability CI tool -- 007 §9 gate G6, M2 Phase F task F2 ------------------
 # Enumerates {capability kind, tool, taint} against the real mechanical enforcement
-# decisions/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
+# decisions/archive/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
 # trust/capability.hpp) via include/agentengine/trust/policy_reachability.hpp's enumerator -- see
 # that header's own top comment for the RFC-vs-code scope note (no declarative rule set exists yet,
 # decision 4; taint is enumerated as the boolean the mechanism actually has, not 007 §5's

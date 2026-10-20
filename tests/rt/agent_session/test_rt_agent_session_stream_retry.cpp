@@ -1,4 +1,4 @@
-// Proof for ADR-177 (decisions/ADR-177-stream-retry-in-session.md): a session may re-issue a model call
+// Proof for ADR-177 (decisions/archive/ADR-177-stream-retry-in-session.md): a session may re-issue a model call
 // whose response stream died MID-ANSWER, and the ways that must be right are each a claim here.
 //
 // Deterministic and offline: every fixture pushes its scripted stream synchronously, then closes or

@@ -691,8 +691,8 @@ export function ApiMemoryReference() {
 
           <RevealItem>
             <Cite
-              path="decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md"
-              label="decisions/ADR-046 — Judged (2026-08-14) · decisions/ADR-047 — Judged (2026-08-14)"
+              path="decisions/archive/ADR-046-memory-confidence-labels-and-system-message-separator.md"
+              label="decisions/archive/ADR-046 — Judged (2026-08-14) · decisions/archive/ADR-047 — Judged (2026-08-14)"
             />
           </RevealItem>
         </RevealGroup>

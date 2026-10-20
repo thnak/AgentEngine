@@ -4,17 +4,17 @@
 // design-draft.md Design A, narrowed per §7 C2's steelmanned scoping (NOT Revision 1's original
 // two-runtime-class proposal): exactly ONE Kata runtime class (`kata-clh`, cloud-hypervisor --
 // chosen specifically over `kata-qemu` to avoid QEMU's own CVE surface, per that same finding), one
-// exact-pinned release (4.1.0), vendored the way `decisions/ADR-013-...mbedtls-vendoring.md` pins
+// exact-pinned release (4.1.0), vendored the way `decisions/archive/ADR-013-...mbedtls-vendoring.md` pins
 // mbedTLS. Reopen condition (i) (`native-jail`'s own 008 §9 gate reaching Judged on both platforms)
 // was independently verified met on 2026-08-23 before this file was written -- see
-// `decisions/ADR-004-appcontainer-native-jail-windows-backend.md` and
-// `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`.
+// `decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` and
+// `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md`.
 //
 // SLICE 1 (2026-08-23) -- mirrors ADR-081's own "Slice 1" precedent for the jailed Python worker.
 // Proved a real, working create()/exec()/destroy() round trip against a REAL Kata sandbox
 // (cloud-hypervisor VMM, a distinct guest kernel measured different from the host's own, real
 // state persistence across exec() calls into the same instance) -- not a mock, not a design
-// sketch. Independently red-teamed (decisions/ADR-084-kata-backend-slice-1.md §4) -- two BLOCKING
+// sketch. Independently red-teamed (decisions/archive/ADR-084-kata-backend-slice-1.md §4) -- two BLOCKING
 // findings (unbounded host-side output capture, no subprocess timeout) fixed and re-verified there.
 //
 // SLICE 2 (2026-08-24) -- closes three of Slice 1's four named `SandboxSpec` gaps:
@@ -64,7 +64,7 @@
 // -- see `docs/planning/sandbox-spec-capability-enforcement-design-draft.md` for the full design,
 // its red-team pass, and why a Kata-only fix would itself have been wrong (per-backend divergence in
 // what `SandboxSpec` fields mean). `LinuxNativeJailBackend`/`NativeJailBackend` (Windows) got the
-// identical call in the same pass -- `decisions/ADR-087-sandbox-spec-capability-enforcement.md` is
+// identical call in the same pass -- `decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md` is
 // the closing ADR for all three. Two new capability kinds, `cap::SandboxMount`/`cap::SandboxNetOut`
 // (`trust/capability.hpp`) -- deliberately NOT a reuse of `cap::FsRead`/`FsWrite`/`NetOut` (those are
 // `mount_id`-keyed, Worktree/FileSystemAdapter-mediated; `SandboxSpec::MountSpec` names a raw host
@@ -80,7 +80,7 @@
 // for this backend, `tests/backends/kata/test_kata_backend_abuse_corpus_linux.cpp`. This slice began as an attempt
 // to close the `exec_outcome_class::oom` gap named below via an exit-code-137 heuristic (mirroring
 // `LinuxNativeJailBackend`'s own 128+signal fallback), but an independent red-team pass against that
-// design (`decisions/ADR-088-kata-backend-abuse-corpus.md` §3) found it FATAL: native-jail's heuristic
+// design (`decisions/archive/ADR-088-kata-backend-abuse-corpus.md` §3) found it FATAL: native-jail's heuristic
 // rests on a documented Linux kernel `wait()` fact about a process THIS backend's own `waitpid()`
 // directly reaps; KataBackend's `outcome.exit_code` instead reflects the HOST-side `ctr` CLI's own
 // exit, three RPC hops removed from the guest's actual death (guest kernel -> kata-agent ->
@@ -162,7 +162,7 @@
 // internal naming conventions, not calling a documented API. No `ctr tasks update` command exists
 // either (checked: `attach/checkpoint/delete/exec/list/kill/metrics/pause/ps/resume/start`, no
 // `update`), closing off a lower-risk "create normally, patch pids after" alternative before it
-// could be attempted. **Decision (`decisions/ADR-090-kata-backend-pids-limit-investigated-and-
+// could be attempted. **Decision (`decisions/archive/ADR-090-kata-backend-pids-limit-investigated-and-
 // deferred.md`): `ResourceLimits::pids` stays unenforced.** This CLI-process-boundary limitation is
 // the direct, foreseeable cost of this backend's own deliberate architecture choice (shell out to
 // `ctr`, never embed containerd's gRPC/ttrpc client -- see "Mechanism" below); real enforcement would
@@ -184,7 +184,7 @@
 // it can run against a real deployment.
 //
 // SLICE 8 (2026-08-24) -- `ResourceLimits::disk_bytes`/`net_bytes` were investigated to a real
-// conclusion, like `pids` in SLICE 6, not left "uninvestigated" (decisions/ADR-092-kata-backend-disk-
+// conclusion, like `pids` in SLICE 6, not left "uninvestigated" (decisions/archive/ADR-092-kata-backend-disk-
 // net-bytes-investigated-and-deferred.md). Unlike `pids`/`fds`, these two are assigned by 008 §1b to
 // **interpreter-level mediation** (a mediating process AgentEngine itself controls, instrumenting
 // `open()`/`socket()` at the point of use), not a create-time backend resource cap -- confirmed
@@ -201,7 +201,7 @@
 // `deny_all`, so there is no network path to meter in the first place -- it collapses into the
 // separately-named CNI gap below, not an independent problem. **Decision: both stay unenforced.**
 //
-// SLICE 9 (2026-08-24, decisions/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) -- replaces
+// SLICE 9 (2026-08-24, decisions/archive/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) -- replaces
 // `create()`'s convenience-flag `ctr run` invocation with `ctr run --config <path> <id>`, closing the
 // rootfs-preparation gap SLICE 6/ADR-090 found blocking `--config` mode for `pids`: that
 // investigation checked only the lower-level `ctr snapshot unpack`/`prepare` primitives (blocked by
@@ -331,7 +331,7 @@
 // `create()`). Fixed with a `KataBackend`-private `std::mutex` serializing just the
 // `fallocate`/`mkfs.ext4`/`losetup -f`/loop-mount sequence, not `create()` as a whole.
 //
-// SLICE 13 (2026-10-19, decisions/ADR-240-kata-egress-policy-enforcement-point.md; GitHub #194) -- the
+// SLICE 13 (2026-10-19, decisions/archive/ADR-240-kata-egress-policy-enforcement-point.md; GitHub #194) -- the
 // SLICE 10/11 netns `ae_netpolicy` table never saw a microVM guest's traffic (live finding 2: Kata joins the tap
 // and the veth with tc mirred, so the netns's netfilter hooks are bypassed). Reachable-and-wrong until now:
 // `allowlist` enforced nothing, `net_bytes` counted ~0, and the guest could reach host services, other guests and
@@ -405,7 +405,7 @@
 // a real VM, not a closure-over-a-fresh-instance bug); `destroy()` kills and removes the task/
 // container. Every subprocess is spawned with `posix_spawn_file_actions_t`-style explicit fd
 // wiring (stdin/stdout/stderr pipes only, `FD_CLOEXEC` on everything else via `pipe2(..., O_CLOEXEC)`)
-// -- deliberately applying the lesson `decisions/ADR-004-...md` §12 Finding 6 found the hard way on
+// -- deliberately applying the lesson `decisions/archive/ADR-004-...md` §12 Finding 6 found the hard way on
 // Windows (`CreateProcessW` with no handle list inheriting every open host handle into a
 // zero-capability child) to this backend's own host-side subprocess spawns, proactively rather than
 // after an incident.

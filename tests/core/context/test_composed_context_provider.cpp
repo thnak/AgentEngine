@@ -128,7 +128,7 @@ static_assert(std::is_default_constructible_v<ThreeWayProvider>,
 // default ctor never auto-engages regardless of Ms (see composed_context_provider.hpp's own comment
 // on why an earlier draft's "auto-engage when possible" design was tried and reverted) -- plus proof
 // that ComposedContextProvider is move-only (2026-08-22 tracker Finding B;
-// decisions/ADR-074-composed-context-provider-consolidation.md).
+// decisions/archive/ADR-074-composed-context-provider-consolidation.md).
 struct RequiredArgProvider {
     static constexpr std::string_view name = "required-arg";  // ADR-066 §3
 

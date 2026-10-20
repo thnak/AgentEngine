@@ -1,5 +1,5 @@
 #version 450
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6 --
 // VulkanCosineIndex's one compute shader. Exact brute-force cosine similarity, GPU-PARALLEL ACROSS
 // CANDIDATES, SEQUENTIAL WITHIN each candidate's own dot product: each invocation owns exactly one
 // stored vector (gl_GlobalInvocationID.x indexes candidates, never dimensions), and accumulates its

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4/§6.1 -- the I/O reactor
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4/§6.1 -- the I/O reactor
 // seam (`pal::Reactor`), first slice: timers. Sockets, pipes and process waits extend this seam in later
 // steps of the ADR's implementation order (§9 D2); the threading rules below already hold for them.
 //

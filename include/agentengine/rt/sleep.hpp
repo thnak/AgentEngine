@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4 -- `rt::sleep_until` /
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4 -- `rt::sleep_until` /
 // `rt::sleep_for`: a coroutine timer that genuinely suspends on the I/O reactor (pal/reactor.hpp) instead of
 // blocking its thread (today's `std::this_thread::sleep_for` in retry backoff, model_call_gateway.hpp). It is
 // the first engine awaitable on the reactor and the reference for the rules every later one follows:

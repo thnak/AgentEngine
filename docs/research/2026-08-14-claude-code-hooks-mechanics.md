@@ -65,7 +65,7 @@ errors, action proceeds. A JSON object on stdout, independent of exit code, carr
 
 **`updatedInput` is a direct content-rewrite point**: a `PreToolUse` hook is not limited to allow/deny
 — it can hand back a *modified* tool call, which Claude Code then executes in place of the model's
-original. This is the exact shape ADR-033 (`decisions/ADR-033-middleware-model-call-chain.md`) found
+original. This is the exact shape ADR-033 (`decisions/archive/ADR-033-middleware-model-call-chain.md`) found
 fatal for AgentEngine's own in-process `Middleware`: content a hook rewrites can carry a fabricated or
 mutated tool call, and nothing in the contract shown here says what trust tier that rewritten call
 gets relative to one the model itself produced.

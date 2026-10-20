@@ -1,5 +1,5 @@
 #pragma once
-// ADR-061 §42/§43 (decisions/ADR-061-host-provided-inbound-transport.md): converts a wall-clock
+// ADR-061 §42/§43 (decisions/archive/ADR-061-host-provided-inbound-transport.md): converts a wall-clock
 // deadline to a steady-clock one, sampled together by the caller at the same admission event (I5: the
 // nondeterministic read crosses a recorded seam at the caller's boundary, never read internally here).
 //

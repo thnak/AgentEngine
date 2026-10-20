@@ -105,7 +105,7 @@ in-memory-only (`standing_effect.hpp`'s own comment: "NOT one of `AgentSessionRe
 SAME limitation `background_task` already has today, not a new regression this draft introduces, but
 worth naming plainly since "Timer/schedule" (019 §2's own row name) has a much stronger intuitive
 expectation of durability than "a task currently running." Closing this needs `StandingEffect`
-persistence generally — a separate, larger, already-named gap (`decisions/README.md`'s own ADR-038
+persistence generally — a separate, larger, already-named gap (`decisions/archive/README.md`'s own ADR-038
 entry notes passivation's own durable-state story), not something this draft's own scope can absorb.
 
 ## 5. What this draft does not claim

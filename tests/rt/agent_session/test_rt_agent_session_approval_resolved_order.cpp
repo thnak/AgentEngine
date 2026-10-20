@@ -1,4 +1,4 @@
-// Proof for ADR-183 (decisions/ADR-183-approval-resolved-before-dispatch.md): on every path that
+// Proof for ADR-183 (decisions/archive/ADR-183-approval-resolved-before-dispatch.md): on every path that
 // resolves an `interaction_reason::approval` interaction, `approval_resolved` is emitted
 //   (a) for exactly the calls that got `approval_requested` for that interaction, in the same order,
 //   (b) before any `tool_call_started` of the resumed round,

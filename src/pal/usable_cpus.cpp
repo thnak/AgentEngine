@@ -1,4 +1,4 @@
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §9 D5 -- the OS half of
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §9 D5 -- the OS half of
 // `pal::usable_cpus()` (include/agentengine/pal/cpu.hpp, whose comment states the rules). Compiled here so
 // <windows.h> never reaches the headers that include the runtime.
 

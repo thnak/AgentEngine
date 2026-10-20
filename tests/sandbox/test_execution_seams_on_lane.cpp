@@ -1,4 +1,4 @@
-// decisions/ADR-237 §5.1, Phase D (#173): the execution and sandbox seams are `task`-shaped -- `NetEgressBackend`,
+// decisions/archive/ADR-237 §5.1, Phase D (#173): the execution and sandbox seams are `task`-shaped -- `NetEgressBackend`,
 // `Runner`, `SandboxBackend`, `ExecutionSurface`, `PersistentShellSurface`.
 //
 // This file proves the property that conversion exists for: a conformer whose calls GENUINELY SUSPEND (each one

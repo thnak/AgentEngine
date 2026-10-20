@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §4.6 ("Truly blocking work:
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.6 ("Truly blocking work:
 // `rt::offload`", "Offload lifetime rules") and the §4.3 refusal of block_on on offload workers --
 // rt::OffloadPool / rt::offload (rt/offload.hpp). Each claim names the rule it proves and how it would fail.
 //

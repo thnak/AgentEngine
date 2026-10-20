@@ -1,6 +1,6 @@
 #ifndef AGENTENGINE_MBEDTLS_THREADING_ALT_H
 #define AGENTENGINE_MBEDTLS_THREADING_ALT_H
-// decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3: the mutex type mbedTLS's alternate
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3: the mutex type mbedTLS's alternate
 // threading layer (MBEDTLS_THREADING_C + MBEDTLS_THREADING_ALT) is built against. mbedTLS compiles this
 // as C (library/threading.c), so the type must be plain C: a handle on the std::mutex the C++ side owns
 // (agentengine_mbedtls_threading.hpp). threading.c zero-initialises its own static mutexes (MUTEX_INIT is

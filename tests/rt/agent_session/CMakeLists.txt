@@ -116,30 +116,30 @@ agentengine_add_test(test_rt_agent_session_tool_call_loop LIBS agentengine::core
 # builder-design-draft.md). No real MediatedPythonRunner needed -- see this file's own top comment.
 agentengine_add_test(test_rt_agent_session_codeact_ask_max_turns LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md wired for real:
+# ---- decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md wired for real:
 # AgentSession::set_turn_middleware_hook() -- the turn/pre_model mechanism proven standalone in
 # test_turn_middleware.cpp now proven against a real AgentSession round.
 agentengine_add_test(test_rt_agent_session_turn_middleware LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-069-content-triggered-model-response-replay.md wired for real: ContentReplayGateway
+# ---- decisions/archive/ADR-069-content-triggered-model-response-replay.md wired for real: ContentReplayGateway
 # plugs directly into AgentSession's existing ChatClientT slot (ModelCallGatewayLike), zero core changes.
 agentengine_add_test(test_rt_agent_session_content_replay LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-066-context-provider-attribution-provenance.md wired for real: a composed
+# ---- decisions/archive/ADR-066-context-provider-attribution-provenance.md wired for real: a composed
 # multi-provider HistoryProviderT slot (already-existing composition path, ComposedContextProvider)
 # carries attribution all the way to a real AgentSession round's outbound ChatRequest.
 agentengine_add_test(test_rt_agent_session_context_provenance LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md wired for real:
+# ---- decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md wired for real:
 # QuarantineToolProvider (trust/secret_quarantine.hpp) occupies AgentSession's HistoryProviderT slot;
 # a real tool-call round reaches the quarantine store through the actual invoke_tool() pipeline.
 # QuarantineSecretStore depends on trust::hmac_sha256, now the portable agentengine::hmac library
-# (decisions/ADR-107-hmac-sha256-linux-parity.md) -- previously WIN32-only when hmac_sha256 was only
+# (decisions/archive/ADR-107-hmac-sha256-linux-parity.md) -- previously WIN32-only when hmac_sha256 was only
 # reachable via agentengine::capability_token.
 agentengine_add_test(test_rt_agent_session_quarantine_tool
   LIBS agentengine::core agentengine::hmac agentengine_warnings)
 
-# ---- decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
+# ---- decisions/archive/ADR-069-content-triggered-model-response-replay.md §7's own open question, answered
 # with real evidence: ADR-067's turn/pre_model hook and ADR-069's ContentReplayGateway, both wired
 # into ONE real AgentSession simultaneously -- proves they compose correctly, not merely independently.
 agentengine_add_test(test_rt_agent_session_turn_and_replay_composition
@@ -149,7 +149,7 @@ agentengine_add_test(test_rt_agent_session_turn_and_replay_composition
 # for agentengine::AgentSession's core turn loop.
 agentengine_add_test(test_rt_agent_session LIBS agentengine::core agentengine_warnings)
 
-# ---- Gap-16/21 fix (2026-08-14, decisions/ADR-042-*.md) -- ContextContribution::instructions
+# ---- Gap-16/21 fix (2026-08-14, decisions/archive/ADR-042-*.md) -- ContextContribution::instructions
 # actually reaching the model as a real role::system Message, taint-checked at the one explicit
 # declassification site.
 agentengine_add_test(test_rt_agent_session_instructions LIBS agentengine::core agentengine_warnings)
@@ -162,7 +162,7 @@ agentengine_add_test(test_rt_agent_session_media_capability_gate LIBS agentengin
 # end-to-end into AgentSession::run_rounds().
 agentengine_add_test(test_rt_agent_session_reasoning_provenance LIBS agentengine::core agentengine_warnings)
 
-# ---- Gap-15 fix (2026-08-14, decisions/ADR-043-*.md) -- start_run_with_ack_policy()'s
+# ---- Gap-15 fix (2026-08-14, decisions/archive/ADR-043-*.md) -- start_run_with_ack_policy()'s
 # at_most_once/require_durable sequencing, and the turn-delta durable write/read round trip.
 agentengine_add_test(test_rt_agent_session_ack_policy LIBS agentengine::core agentengine_warnings)
 

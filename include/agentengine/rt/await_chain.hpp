@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.3 ("Holder identity and re-entry":
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.3 ("Holder identity and re-entry":
 // await chains) and the stop-token half of §4.4/§4.5 (a scope's stop token reaches every frame of its children)
 // -- step 5 of the ADR's implementation order (§14).
 //

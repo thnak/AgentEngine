@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026-Agent-Facing-
+// Proof for decisions/archive/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026-Agent-Facing-
 // Runtime-Surface.md §5's `agent.output` ("Emit structured output conforming to the run's schema",
 // zero capability). Runs a REAL script against the REAL built `agentengine_python_worker.exe`
 // (native_jail_backend.cpp's create_python_worker()/exec_session()), the same harness

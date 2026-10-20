@@ -387,7 +387,7 @@ public:
     // directory, corrupting each other. Fixed by deriving the child's staging directory INTERNALLY from
     // the real, just-minted child branch's own name -- unique by construction (`Ledger::branch_from()`'s
     // own internal sequence counter) -- via `compute_digest()`, the same digest-based per-session
-    // subdirectory naming precedent `decisions/ADR-096-...` already established and shipped in this
+    // subdirectory naming precedent `decisions/archive/ADR-096-...` already established and shipped in this
     // codebase for the identical hazard class.
     //
     // `const`: legitimately so, not a cast-away -- `Ledger::branch_from()` takes its parent

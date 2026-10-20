@@ -1,5 +1,5 @@
 #pragma once
-// #120 S8 (decisions/ADR-203-one-base64-one-process-identity.md): the one base64 codec (RFC 4648 §4 alphabet,
+// #120 S8 (decisions/archive/ADR-203-one-base64-one-process-identity.md): the one base64 codec (RFC 4648 §4 alphabet,
 // '=' padding on encode). Replaces four hand-copied codecs: src/core/message_json.cpp's private one (ADR-202),
 // protocol/a2a/types.hpp's `a2a::detail::base64_*`, protocol/mcp/client.hpp's `mcp::client_detail::base64_encode`
 // and src/backends/native_jail/relay_base64.hpp. Those names remain as thin wrappers over this file.

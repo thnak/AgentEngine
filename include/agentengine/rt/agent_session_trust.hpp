@@ -96,7 +96,7 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
 // ADR-177: `failure`, when non-null, receives what the retry decision needs and the flattened
 // `run.stream_incomplete` error below cannot carry -- the stream's OWN error (with its real class and
 // code) and whether ANY update had arrived before it died. Read as data, never from the message text.
-struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
+struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/archive/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
     agentengine::error inner;
     bool               any_update_seen = false;
     // Bytes of model output the dead stream delivered (text, reasoning, tool-call arguments). It is what

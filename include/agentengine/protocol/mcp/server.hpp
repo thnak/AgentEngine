@@ -75,7 +75,7 @@
 
 namespace agentengine::mcp {
 
-// ADR-061 §39/§40 (decisions/ADR-061-host-provided-inbound-transport.md): a per-request capability
+// ADR-061 §39/§40 (decisions/archive/ADR-061-host-provided-inbound-transport.md): a per-request capability
 // grant `McpServer::dispatch()` MAY consult instead of `held_` (the construction-time capability set).
 // Unblocked by §20.3's earlier fix, which made `EffectContext::capabilities` a `shared_ptr` rather
 // than a raw borrowed pointer -- the specific hazard that made a per-request, function-local

@@ -86,7 +86,7 @@ bool g_initialized = false;
 
 std::vector<std::string> const* g_preseeded_answers = nullptr;
 std::size_t                     g_preseeded_answer_index = 0;
-// decisions/ADR-154-agent-output-codeact-module.md: the JSON-encoded value from the MOST RECENT
+// decisions/archive/ADR-154-agent-output-codeact-module.md: the JSON-encoded value from the MOST RECENT
 // `agent.output.set(...)` call this execution, or empty if never called (see WorkerExecResult's own
 // field comment for why empty is unambiguous). Reset at the top of every `run()` call -- one script
 // execution's own call must never leak into the NEXT execution the way `g_preseeded_answer_index`
@@ -587,7 +587,7 @@ PyObject* Internal_call_tool(PyObject* /*self*/, PyObject* args) {
     return PyUnicode_FromString(reply_json.c_str());
 }
 
-// `_ae_internal.report_progress(text) -> None` -- decisions/ADR-155-agent-progress-codeact-module.md.
+// `_ae_internal.report_progress(text) -> None` -- decisions/archive/ADR-155-agent-progress-codeact-module.md.
 // Reuses `query_or_raise` verbatim (the SAME `g_query_fn` round trip `Internal_call_tool`/`Internal_
 // open`/etc. above already use) -- a synchronous, blocking call the script waits on, exactly like any
 // other worker_query, NOT a fire-and-forget send: this is a deliberate, simpler alternative to GitHub
@@ -626,7 +626,7 @@ PyObject* Internal_ask_or_raise(PyObject* /*self*/, PyObject* args) {
     return nullptr;
 }
 
-// `_ae_internal.set_output(json_text) -> None` -- decisions/ADR-154-agent-output-codeact-module.md.
+// `_ae_internal.set_output(json_text) -> None` -- decisions/archive/ADR-154-agent-output-codeact-module.md.
 // Stores the ALREADY-JSON-ENCODED text verbatim (the generated Python module does the `json.dumps`,
 // matching `agent.tools`' own established "the C side never re-parses what it can pass through as
 // opaque text" convention, `agent_tools_codegen.hpp`'s own file comment) into a plain global -- no IPC
@@ -844,7 +844,7 @@ socket.socket.close = _ae_socket_close
 # connect_ex/sendto/recvfrom for a path that never goes through _ae_connect/_ae_send at all, e.g.
 # UDP, which needs no connect() before sendto()) was still the real, unmediated CPython
 # implementation, with no capability check ever attempted. ADR-004 AC-S1's own measured evidence
-# (decisions/ADR-004-...md §5.3) is specifically `socket.connect()`; it says nothing about bind/
+# (decisions/archive/ADR-004-...md §5.3) is specifically `socket.connect()`; it says nothing about bind/
 # sendto/etc under the same zero-capability AppContainer, so relying on that evidence to cover this
 # wider surface would be exactly the kind of unverified claim CLAUDE.md's evidence discipline exists
 # to catch. Denied explicitly here instead, the SAME defense-in-depth posture this bootstrap already

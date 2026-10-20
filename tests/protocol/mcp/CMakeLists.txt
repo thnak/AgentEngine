@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "protocol/mcp" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- ADR-061 §10b claim 4 (decisions/ADR-061-host-provided-inbound-transport.md, Tier 1 prove -------
+# ---- ADR-061 §10b claim 4 (decisions/archive/ADR-061-host-provided-inbound-transport.md, Tier 1 prove -------
 # phase): the MCP conformance client's resolve_host/resolve_and_validate two-way SSRF control. Written
 # for real -- tools/mcp_conformance_client.cpp's own top comment referred to this file before it
 # existed.
@@ -15,7 +15,7 @@ agentengine_add_test(test_mcp_json_rpc LIBS agentengine::core agentengine_warnin
 # tools/list, tools/call over a real ToolTable and the real invoke_tool() pipeline -------------------
 agentengine_add_test(test_mcp_server LIBS agentengine::core agentengine_warnings)
 
-# ---- ADR-061 §39/§40 prove phase -- McpServer's per-request CapabilityGrant (decisions/ADR-061) -----
+# ---- ADR-061 §39/§40 prove phase -- McpServer's per-request CapabilityGrant (decisions/archive/ADR-061) -----
 agentengine_add_test(test_mcp_capability_grant LIBS agentengine::core agentengine_warnings)
 
 # ---- Milestone 7 Phase C3 -- 011 §3's MCP client role (protocol/mcp/client.hpp): caching,
@@ -38,7 +38,7 @@ agentengine_add_test(test_mcp_progress LIBS agentengine::core agentengine_warnin
 if(WIN32)
   # ---- ADR-061 §42/§43 prove phase -- trust::steady_deadline_from() (shared clock-conversion
   # primitive) and mcp::capability_grant_from_bearer_claims(), the bearer-credential-to-CapabilityGrant
-  # bridge for McpServer::dispatch()'s per-request grant (§39-§41, decisions/ADR-061) -----------------
+  # bridge for McpServer::dispatch()'s per-request grant (§39-§41, decisions/archive/ADR-061) -----------------
   agentengine_add_test(test_capability_grant_bridge
     LIBS agentengine::core agentengine::capability_token agentengine_warnings)
 endif()

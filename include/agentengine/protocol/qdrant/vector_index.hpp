@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5 --
 // `QdrantVectorIndex`, the remote `VectorIndex` (core/vector_index.hpp) reference conformer.
 // Reaches any Qdrant-API-compatible host over plain JSON/HTTPS, on the same transport as
 // `protocol/openai/embedder.hpp` (`provider_wire::exchange_async`, `rt::http` on the reactor since ADR-237

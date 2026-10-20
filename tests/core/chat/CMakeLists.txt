@@ -2,13 +2,13 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "core/chat" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- decisions/ADR-069-content-triggered-model-response-replay.md's prove phase: ContentReplayGateway
+# ---- decisions/archive/ADR-069-content-triggered-model-response-replay.md's prove phase: ContentReplayGateway
 # -- a settled response's content-triggered discard-and-retry, wrapping any ModelCallGatewayLike,
 # bounded both per-trigger-site and across a session's lifetime independently.
 agentengine_add_test(test_content_replay_gateway LIBS agentengine::core agentengine_warnings)
 
 if(AGENTENGINE_WITH_HTTPS)
-  # ---- ADR-023 Phase 1: response-format codec (decisions/ADR-023-response-format-codec-seam.md) ----
+  # ---- ADR-023 Phase 1: response-format codec (decisions/archive/ADR-023-response-format-codec-seam.md) ----
   # Pure logic (core/response_format_codec.hpp) proven directly against real Harmony/DeepSeek/Hermes/
   # <think> example strings -- no network, no ChatClient backend involved, only core content types.
   agentengine_add_test(test_response_format_codec LIBS agentengine::core agentengine_warnings)

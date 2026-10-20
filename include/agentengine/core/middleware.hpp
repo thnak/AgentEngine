@@ -4,7 +4,7 @@
 // the model call, one of the four declared interception points ("run", "turn", "model call", "tool
 // call"). This file moves the MODEL-CALL point from "declared CRTP policy tag with no
 // chain-composition logic or consumer" (§5's own prior text) to real, tested code. ADR-033
-// (decisions/ADR-033-middleware-model-call-chain.md).
+// (decisions/archive/ADR-033-middleware-model-call-chain.md).
 //
 // SCOPE, narrower than "implement Middleware<Ms...>" sounds, deliberately: only the model-call point
 // is wired to a real consumer. This file's own machinery below (`ModelCallContext`, `run_before`/
@@ -20,7 +20,7 @@
 // loop -- that file is large, mature, and heavily tested; threading a middleware chain through its
 // template parameters and every call site is separately-scoped, larger work, matching this project's
 // own established "prove the mechanism against one real consumer, name the rest" precedent
-// (decisions/ADR-028-session-scoped-stateful-tools.md).
+// (decisions/archive/ADR-028-session-scoped-stateful-tools.md).
 //
 // I2 ENFORCEMENT, stated once here because it shapes every type below: `ModelCallContext` carries
 // NEITHER `EffectContext&` nor any capability-related type. A hook structurally cannot widen (or
@@ -35,7 +35,7 @@
 // `invoke_tool`'s step 5 checks only against the target tool's own `approval_mode` (may be
 // `never_require`). A middleware that fabricates or mutates a `ToolCall` therefore launders an
 // untrusted decision through the same channel a genuine, vendor-returned tool call travels --
-// exactly the confused-deputy shape `decisions/ADR-023...` (007 §4 amendment) already forced closed
+// exactly the confused-deputy shape `decisions/archive/ADR-023...` (007 §4 amendment) already forced closed
 // once for raw model TEXT, relocated here to a middleware CONTENT REWRITE. Closed by
 // `middleware_detail::enforce_backend_tool_call_provenance`: any `ToolCall` in the final response
 // that is not byte-identical (ignoring provenance/origin) to one the REAL backend call actually

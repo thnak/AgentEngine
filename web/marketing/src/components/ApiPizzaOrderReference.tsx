@@ -971,7 +971,7 @@ export function ApiPizzaOrderReference() {
           snippet={SNIPPET_ORDER}
           filename="pizza_palace/order_flow.cpp — transcribed from examples/02_add_tools.cpp"
           note={t.s2Note}
-          cite="decisions/ADR-027-agent-session-tool-call-loop.md"
+          cite="decisions/archive/ADR-027-agent-session-tool-call-loop.md"
         />
 
         <Act
@@ -994,7 +994,7 @@ export function ApiPizzaOrderReference() {
           filename="pizza_palace/refund_approval.cpp — transcribed from examples/05_human_approval.cpp"
           note={t.s4Note}
           cite="examples/05_human_approval.cpp"
-          citeLabel="examples/05_human_approval.cpp · decisions/ADR-029-suspend-for-human-approval.md"
+          citeLabel="examples/05_human_approval.cpp · decisions/archive/ADR-029-suspend-for-human-approval.md"
         />
 
         <Act

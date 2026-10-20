@@ -13,7 +13,7 @@ that landed, matching this doc's own evidence discipline.
 (no-code) events.
 
 - **Gap 3 (no generic JSON Schema validator) is CLOSED.**
-  `decisions/ADR-045-json-schema-validator-subset.md` confirms no runtime instance-against-a-
+  `decisions/archive/ADR-045-json-schema-validator-subset.md` confirms no runtime instance-against-a-
   schema-document validator existed (only schema-generation-from-C++-type machinery). Ships a
   deliberately scoped subset (`core/json_schema_validator.hpp`) satisfying both named gates (006 §8
   G2's structured-violation requirement, 015 §7 G2's cyclic-$ref-rejection requirement) — never
@@ -52,7 +52,7 @@ that landed, matching this doc's own evidence discipline.
   direction — a future ADR would need to build and prove this for real.
 
 - **Gap 2 (AgentMetadata/Workflow missing description/version) is CLOSED.**
-  `decisions/ADR-044-agent-workflow-description-version.md` (Judged) confirms this is not new
+  `decisions/archive/ADR-044-agent-workflow-description-version.md` (Judged) confirms this is not new
   surface — 002 §1/§7 has specified `{agent_id, description, version}` as agent identity since the
   RFC was written; three independent compilers (A2A Agent Card, Agent YAML, Workflow YAML) hit the
   identical gap independently and each honestly recorded it. Fixed via `requires`-detected optional
@@ -61,7 +61,7 @@ that landed, matching this doc's own evidence discipline.
   positional aggregate-init before landing fields mid-struct, per `Usage`'s own prior amendment
   lesson). I6 test extended, full suite green.
 
-- **Gap 15 (ack races ahead of durability) is CLOSED.** `decisions/ADR-043-ack-durability-policy.md`
+- **Gap 15 (ack races ahead of durability) is CLOSED.** `decisions/archive/ADR-043-ack-durability-policy.md`
   (Proposed) corrects this row's own cited blocker on both counts: a `SessionStore` seam already
   existed and was already wired into `save_agent_session_snapshot()`/`checkpoint_if_due()` (it was
   never meant to be type-erased — a deliberate `concept`, matching this project's `ChatClient`/
@@ -80,7 +80,7 @@ that landed, matching this doc's own evidence discipline.
   dominant case 005 §2's own gate describes). New test file, full suite green.
 
 - **Gaps 16 and 21 (the I3 taint pair) are PARTIALLY CLOSED, together, as this row's own note said
-  they had to be.** `decisions/ADR-042-context-instructions-taint-channel.md` (Judged) confirms the
+  they had to be.** `decisions/archive/ADR-042-context-instructions-taint-channel.md` (Judged) confirms the
   drop site is one level later than gap 16's framing implied (`assemble_context()` reads
   `.instructions` correctly; `rt::AgentSession::run_rounds()` is where it actually vanishes, and
   `ChatRequest` had no slot for it), retypes `ContextContribution::instructions` to `TaintedText` —
@@ -104,14 +104,14 @@ that landed, matching this doc's own evidence discipline.
   real, easy-to-miss ordering invariant, not a hypothetical) and MUST-FIX 2 (a read-only bind mount
   needs a required second `MS_REMOUNT` call; the initial `MS_BIND` call silently ignores `MS_RDONLY`).
   **Update (2026-08-23): CLOSED for real.** A Linux build/test environment (WSL2/Ubuntu) was
-  obtained specifically to prove this design; `decisions/ADR-083-linux-native-jail-pivot-root-
+  obtained specifically to prove this design; `decisions/archive/ADR-083-linux-native-jail-pivot-root-
   containment.md` implements §2's design verbatim, measures both MUST-FIX findings directly
   (host-side `errno`/file-content checks, not guest self-report — `EROFS` on a denied RO write,
   `ENOENT` on a denied ungranted-path read, host `/proc/mounts` unchanged after hundreds of jail
   creations), and closes both G2's and G3's Linux halves of the still-open promotion gate this row
-  fed into (`decisions/ADR-082-native-jail-promotion-gate-008-9.md`).
+  fed into (`decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md`).
 - **Gap 11 (Windows AppContainer ACE leak) is CLOSED, and its own recommended approach is corrected,
-  not followed.** `decisions/ADR-041-appcontainer-ace-leak-accepted-residual.md` (Judged) finds this
+  not followed.** `decisions/archive/ADR-041-appcontainer-ace-leak-accepted-residual.md` (Judged) finds this
   row's cited blocker (`CreateProcessAsUser`/`CreateProcessWithTokenW` needing privilege) is a
   misattribution — that API is used nowhere in this codebase and was never proposed in ADR-004; the
   real launch mechanism already runs under a standard non-admin token. The real, ADR-004-evidenced
@@ -124,7 +124,7 @@ that landed, matching this doc's own evidence discipline.
   (`tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp` Case 4, predating this pass); ADR-004 §11 item 1
   asked for exactly this test and had gone stale (never marked done), corrected in the same pass.
 - **Gap 12 (ShellRunner write-quota false denial) is CLOSED, and its own deferred FsRead note is
-  folded in and CLOSED too.** `decisions/ADR-056-fs-quota-capability-gate-fix.md` (Judged) confirms
+  folded in and CLOSED too.** `decisions/archive/ADR-056-fs-quota-capability-gate-fix.md` (Judged) confirms
   the false-denial bug re-verified against current code (the audit's "ShellRunner" is precisely
   `mediated_shell_dispatch.cpp`, not the untouched `shell_dispatch.cpp` spike), ships the gate fix
   paired with live usage enforcement exactly as this row's own recommendation required, and
@@ -137,7 +137,7 @@ that landed, matching this doc's own evidence discipline.
   build/test-verified this session (`AGENTENGINE_BUILD_PYTHON_RUNNER=OFF` in this environment).
 
 - **Gap 17 (memory rendered identically regardless of provenance) is CLOSED.**
-  `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md` (Judged) confirms
+  `decisions/archive/ADR-046-memory-confidence-labels-and-system-message-separator.md` (Judged) confirms
   `MemoryProvider` rendered every item as bare `item.content` with no visible distinction between
   `UserStated` and `ModelInferred`, even though 029 §3 calls `MemorySource` "a trust signal, not
   decoration." Found and fixed this row's own named precondition first: `protocol/anthropic/
@@ -155,7 +155,7 @@ that landed, matching this doc's own evidence discipline.
   content contains the exact marker string). Does not touch `ContentItem::tainted`/`origin` (029 §6's
   actual enforcement, unchanged) or gap #21's broader raw-`ContentItem::text` claim. Full suite green.
 - **Gap 18 (memory ranking additive, not the RFC's own product formula) is CLOSED.**
-  `decisions/ADR-047-memory-ranking-product-formula.md` (Judged) confirms `rank_memory_items()`
+  `decisions/archive/ADR-047-memory-ranking-product-formula.md` (Judged) confirms `rank_memory_items()`
   computed `salience + keyword_overlap_score` — additive, and never using recency at all, contrary to
   029 §5's literal "salience × recency × tag/keyword overlap." This row's own first-pass alternative
   (a full commit-history scan per item) does not work against this codebase's real worktree model,
@@ -175,7 +175,7 @@ that landed, matching this doc's own evidence discipline.
   pre-existing ranking-outcome assertion elsewhere in the suite re-verified unchanged under the new
   formula. Full suite green.
 - **Gap 19 (Media silently dropped outbound, Phase 1) is CLOSED.**
-  `decisions/ADR-048-outbound-media-capability-gate.md` (Judged) confirms both real backends'
+  `decisions/archive/ADR-048-outbound-media-capability-gate.md` (Judged) confirms both real backends'
   outbound translation drops `Media` content unconditionally, regardless of what
   `ChatClientCapabilities` declares (neither ever checks the capability bit before not-encoding it).
   Fixed with a real fail-closed gate (`validate_outbound_media_capabilities()`, `core/chat_client.hpp`)
@@ -186,7 +186,7 @@ that landed, matching this doc's own evidence discipline.
   either phase" residual as a direct consequence of the recursive check. Two new test files, full
   suite green.
 - **Gap 20 (cross-provider reasoning exclusion, 003 §8 Q2) is CLOSED, and its own recommended
-  approach is corrected, not followed as-is.** `decisions/ADR-049-cross-provider-reasoning-
+  approach is corrected, not followed as-is.** `decisions/archive/ADR-049-cross-provider-reasoning-
   exclusion.md` (Proposed) confirms Q2's policy was already resolved (2026-08-04) but structurally
   unimplementable — `Reasoning` carried no producer-identity field at all. This row's own cited
   blocker (`FailoverChatClient`'s ambiguous identity) is moot, that type was removed the same day as
@@ -200,7 +200,7 @@ that landed, matching this doc's own evidence discipline.
   compile break. First real producer of `run_event_kind::policy_decision` (013 §1's own long-dormant
   vocabulary). New test file + Anthropic translation extension, full suite green.
 - **Gap 9 (027's `UsageDetails` vs. code's `Usage`) is CLOSED, and the direction of drift is
-  reversed from the audit's own framing.** `decisions/ADR-050-usage-usagedetails-canonical-name-
+  reversed from the audit's own framing.** `decisions/archive/ADR-050-usage-usagedetails-canonical-name-
   reconciliation.md` (Proposed) confirms 003 §6 and 004 both already, consistently, normatively
   spell it `Usage` — 027's own table row was the outlier despite citing 003 §6 as its source; the
   naming-lint script confirmed this structurally (`Usage` needed a suppression comment to avoid
@@ -208,7 +208,7 @@ that landed, matching this doc's own evidence discipline.
   before/after lint run (96→95 suppressed, the identical 202 unlisted names, proving no silent
   absorption of ADR-025's own deferred bulk-reconciliation backlog).
 - **Gap 13 (shell-dispatched Tools bypass the 006 §3 pipeline) is CLOSED, and the finding is
-  narrowed to what's actually reachable.** `decisions/ADR-052-shell-registered-tool-dispatch-scope-
+  narrowed to what's actually reachable.** `decisions/archive/ADR-052-shell-registered-tool-dispatch-scope-
   correction.md` (Proposed) confirms the bypass CODE is real (`shell_dispatch.cpp`'s `dispatch_
   command()` calls a `RegisteredTool`'s bare closure with no gates) but was never reachable:
   `command_registry.hpp`'s own pre-existing comment already discloses `RegisteredTool` is a test
@@ -221,7 +221,7 @@ that landed, matching this doc's own evidence discipline.
   site and the type's own definition, both naming the real requirement (route through `invoke_tool()`)
   for whichever future work eventually builds real shell-tool dispatch.
 - **Gap 22 (014 §8 G3's 10³-seed shuffle test, never built) is CLOSED.**
-  `decisions/ADR-051-workflow-scheduling-shuffle-test.md` (Judged) confirms the test genuinely
+  `decisions/archive/ADR-051-workflow-scheduling-shuffle-test.md` (Judged) confirms the test genuinely
   never existed — the M6 breakdown doc's own decisions 5/8 only ever designed it. Found and fixed a
   real, narrower documentation gap along the way: that same doc's own Phase J completion section
   silently dropped G3 between its "delivered" claim (naming only G1/030§7 G1) and its own separate
@@ -267,7 +267,7 @@ that landed, matching this doc's own evidence discipline.
   precondition (merge-on-join wiring itself) doesn't exist yet either, scoped as design-only.
 - **Gap 8 (naming-lint namespace bug) is CLOSED.** Its suggested title,
   `naming-lint-namespace-coverage-and-vocabulary-reconciliation`, matches
-  `decisions/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
+  `decisions/archive/ADR-025-naming-lint-namespace-scope-and-027-vocabulary-diagram.md` (Judged) — confirmed
   the exact bug this row named (`tools/naming_lint.py` matching the literal string `"agentengine"`
   only, blind to `trust::`/`sandbox::`/`workflow::`) and fixed the scanner. That ADR's own text is
   explicit that the ~263-name BULK RECONCILIATION against 027 §2-4 is deliberately NOT done in the
@@ -275,13 +275,13 @@ that landed, matching this doc's own evidence discipline.
   and honestly failing against the real surface, not that every unlisted name has been triaged yet.
 - **Gap 23 (milestone-status doc drift) is CLOSED.** Its own suggested title,
   `milestone-status-doc-accuracy-and-drift-lint`, is exactly what shipped as
-  `decisions/ADR-026-milestone-status-doc-accuracy-and-drift-lint.md` (Judged) — the CLAUDE.md/
+  `decisions/archive/ADR-026-milestone-status-doc-accuracy-and-drift-lint.md` (Judged) — the CLAUDE.md/
   README.md/marketing-site corrections and `tools/milestone_status_lint.py` this row called for are
   real. A separate, unrelated pass (2026-08-13, the post-ADR-037 Quark-mention sweep) additionally
   corrected residual staleness this row didn't originally scope (RFC-body present-tense Quark claims,
-  code-comment banners) — see `decisions/README.md`'s own ADR-037 row for that sweep's own accounting.
+  code-comment banners) — see `decisions/archive/README.md`'s own ADR-037 row for that sweep's own accounting.
 - **Gap 1 (network listener) is REDIRECTED, not closed — and its own recommended approach is now
-  explicitly rejected.** `decisions/ADR-039-inbound-transport-host-pluggable.md` (Proposed,
+  explicitly rejected.** `decisions/archive/ADR-039-inbound-transport-host-pluggable.md` (Proposed,
   2026-08-13) supersedes ADR-021 §3–8/ADR-022 in full: it does NOT "build the already-Judged
   listener/TLS/parser now" (this row's own recommendation) — it accepts that AgentEngine builds no
   first-party listener at all, ever, matching MAF/OpenAI Agents SDK precedent neither this audit nor
@@ -313,14 +313,14 @@ that landed, matching this doc's own evidence discipline.
 not implemented" rows from the update immediately above are now real code, at the project owner's
 explicit direction to implement them.
 
-- **Gap 4 (no tool/capability name-keyed registry) is now CLOSED.** `decisions/ADR-054-tool-registry-
+- **Gap 4 (no tool/capability name-keyed registry) is now CLOSED.** `decisions/archive/ADR-054-tool-registry-
   name-keyed-resolution.md`: the design draft is real code, unchanged from what was designed — `Tool
   Registry` (`core/tool_registry.hpp`), `ToolTable::from_names()` (gap #5's own remaining half, now
   also closed as a direct consequence), and `compile_agent_document()` wired with an additive
   `ToolRegistry const* registry = nullptr` parameter whose `nullptr` default re-proves the pre-existing
   "tools stays honestly empty" behavior byte-for-byte. Two new test files, full suite green.
 - **Gap 7 (`schedule_wakeup` has no real `StandingEffect` producer) is now CLOSED.**
-  `decisions/ADR-053-schedule-wakeup-standing-effect.md`: `rt::AgentSession::schedule_wakeup()`/
+  `decisions/archive/ADR-053-schedule-wakeup-standing-effect.md`: `rt::AgentSession::schedule_wakeup()`/
   `due_standing_effects()` are real code — `rt::`'s first working timer/delay primitive, host-polled,
   deliberately never self-firing. A correction to the design draft found while implementing it: 007 §3
   already normatively names `Schedule<max_horizon, max_active>` as a CAPABILITY with full runtime
@@ -328,7 +328,7 @@ explicit direction to implement them.
   CRTP policy tag was unnecessary; only one lookup method (`CapabilitySet::find_schedule()`) needed
   adding. New test file (S1-S6), full suite green.
 - **Gap 14 (025 §4 conflict-surfacing unimplemented) is now CLOSED for the evidence-materialization
-  half.** `decisions/ADR-055-conflict-evidence-materialization.md`: `conflicts_ref_name()`/
+  half.** `decisions/archive/ADR-055-conflict-evidence-materialization.md`: `conflicts_ref_name()`/
   `materialize_merge_conflicts()` (`core/worktree.hpp`) are real code, proven end to end against a REAL
   merge conflict. The real precondition this gap's own re-grounding found (`merge_branch_into_parent()`
   has zero production call sites — merge-on-join itself still isn't wired anywhere) remains open and is
@@ -377,7 +377,7 @@ needs the full reasoning behind a specific line item below, not just the one-lin
 |---|---|---|---|---|
 | 1 | No real network listener despite ADR-021/022 deciding its shape | **High** | ~~needs_adr~~ **[2026-08-13: REDIRECTED, ADR-039 Proposed]** | ~~Build the already-Judged listener/TLS/parser now~~ — superseded: ADR-039 rejects building one at all; principal propagation and the A2A cross-tenant leak this row named are both independently addressed there (see header update). |
 | 8 | 027's naming-lint gate fails on main (76 unlisted + 112 suppressed names) | **High** | ~~needs_adr~~ **[2026-08-13: CLOSED, ADR-025 Judged]** | Scanner fixed as recommended; bulk table reconciliation against 027 §2-4 deliberately deferred by that same ADR, still open. |
-| 10 | Linux native-jail gives the guest full host FS read/write + process visibility | **High** | **[2026-08-23: CLOSED — `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`, Judged]** | ~~Build pivot_root+bind-mount containment... narrow the blanket `/usr` bind-mount.~~ — the `/usr` bind-mount claim didn't correspond to real code; `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md` reused the accepted primitive as recommended, and its own red-team found two MUST-FIX ordering bugs (`MS_PRIVATE` propagation, two-step read-only remount) a naive implementation would have missed. Built and proven against a real Linux kernel (WSL2), both MUST-FIXes measured directly, not just argued. |
+| 10 | Linux native-jail gives the guest full host FS read/write + process visibility | **High** | **[2026-08-23: CLOSED — `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md`, Judged]** | ~~Build pivot_root+bind-mount containment... narrow the blanket `/usr` bind-mount.~~ — the `/usr` bind-mount claim didn't correspond to real code; `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md` reused the accepted primitive as recommended, and its own red-team found two MUST-FIX ordering bugs (`MS_PRIVATE` propagation, two-step read-only remount) a naive implementation would have missed. Built and proven against a real Linux kernel (WSL2), both MUST-FIXes measured directly, not just argued. |
 | 12 | ShellRunner write builtins unconditionally deny writes under any quota-capped FsWrite grant | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-056 Judged]** | Gate fix + live usage enforcement shipped together as recommended, plus the deferred FsRead mirror bug (gap 3/12's own note) folded in and closed too; Python-runner half is a pattern-match fix not locally build-verified (`AGENTENGINE_BUILD_PYTHON_RUNNER=OFF` here). |
 | 15 | AgentSession acks a turn before it's durable; no `at_most_once_ack` escape hatch | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-043 Judged]** | ~~Add an AckPolicy... the proposed insertion point sits after run_finished is already emitted... the required type-erased Store seam doesn't exist yet.~~ — both premises wrong: the Store seam already existed (a deliberate `concept`, never meant to be type-erased) and the fix never touches `run_finished`'s emission at all, since it's enforced entirely in two new free functions around `AgentSession`, not inside it. |
 | 16 | `ContextContribution.instructions` computed but silently dropped before reaching the model | **High** | ~~needs_adr~~ **[2026-08-14: CLOSED, ADR-042 Judged]** | Routed through `role::system` as recommended, gated by making `Tainted<T>` real for this one field first (closing the "must close that first" precondition this row itself named) rather than the whole content model. |
@@ -413,12 +413,12 @@ All 23 confirmed gaps. Each carries a suggested title, but nearly all were indep
 
 - **Trust boundary / network listener:** `ADR-025-inbound-principal-propagation-and-per-resource-authorization.md` (gap 1)
 - **Agent/workflow metadata & declarative surface:** `agent-workflow-description-version-metadata` (2), `json-schema-instance-validator-wiring` (3), `name-keyed-tool-capability-registry` (4), `declarative-tool-registry-resolution` (5), `declarative-output-schema-ref-resolution` (6)
-- **Workflow orchestration proofs:** `schedule-wakeup-standing-effect-and-horizon-enforcement` (7), ~~`workflow-g3-shuffle-determinism-test` (22)~~ **[2026-08-14: CLOSED, `decisions/ADR-051-workflow-scheduling-shuffle-test.md`]**, `conflict-evidence-materialization` (14)
-- **Governance / documentation integrity:** `naming-lint-namespace-coverage-and-vocabulary-reconciliation` (8), ~~`usage-usagedetails-canonical-name-reconciliation` (9)~~ **[2026-08-14: CLOSED, `decisions/ADR-050-usage-usagedetails-canonical-name-reconciliation.md`]**, `milestone-status-doc-accuracy-and-drift-lint` (23)
-- **Sandbox / native-jail (highest consequence for I2):** ~~`linux-native-jail-pivot-root-containment` (10)~~ **[2026-08-23: CLOSED, `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`]**, `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), ~~`shell-tool-dispatch-bridge-unification` (13)~~ **[2026-08-14: CLOSED, `decisions/ADR-052-shell-registered-tool-dispatch-scope-correction.md` — narrowed, not built, see that ADR]**
+- **Workflow orchestration proofs:** `schedule-wakeup-standing-effect-and-horizon-enforcement` (7), ~~`workflow-g3-shuffle-determinism-test` (22)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-051-workflow-scheduling-shuffle-test.md`]**, `conflict-evidence-materialization` (14)
+- **Governance / documentation integrity:** `naming-lint-namespace-coverage-and-vocabulary-reconciliation` (8), ~~`usage-usagedetails-canonical-name-reconciliation` (9)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-050-usage-usagedetails-canonical-name-reconciliation.md`]**, `milestone-status-doc-accuracy-and-drift-lint` (23)
+- **Sandbox / native-jail (highest consequence for I2):** ~~`linux-native-jail-pivot-root-containment` (10)~~ **[2026-08-23: CLOSED, `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md`]**, `windows-native-jail-appcontainer-token-hardening` (11), `shellrunner-fswrite-quota-gate-and-enforcement` (12), ~~`shell-tool-dispatch-bridge-unification` (13)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-052-shell-registered-tool-dispatch-scope-correction.md` — narrowed, not built, see that ADR]**
 - **Session durability & content taint (I3/I4):** `agent-session-ack-durability-policy` (15), `context-instructions-taint-channel` (16), `content-item-taint-enforcement` (21)
-- **Memory subsystem:** ~~`memory-confidence-labeling-and-system-message-separation` (17)~~ **[2026-08-14: CLOSED, `decisions/ADR-046-memory-confidence-labels-and-system-message-separator.md`]**, ~~`memory-ranking-recency-signal` (18)~~ **[2026-08-14: CLOSED, `decisions/ADR-047-memory-ranking-product-formula.md`]**
-- **Model provider content fidelity:** ~~`outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists)~~ **[2026-08-14: CLOSED, `decisions/ADR-048-outbound-media-capability-gate.md`, Phase 1 only — Phase 2 still needs RFC 019]**, ~~`cross-provider-reasoning-exclusion` (20)~~ **[2026-08-14: CLOSED, `decisions/ADR-049-cross-provider-reasoning-exclusion.md`]**
+- **Memory subsystem:** ~~`memory-confidence-labeling-and-system-message-separation` (17)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-046-memory-confidence-labels-and-system-message-separator.md`]**, ~~`memory-ranking-recency-signal` (18)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-047-memory-ranking-product-formula.md`]**
+- **Model provider content fidelity:** ~~`outbound-multimodal-capability-gate` (19, Phase 1 only — Phase 2 needs a second, later ADR once RFC 019's blob-store seam exists)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-048-outbound-media-capability-gate.md`, Phase 1 only — Phase 2 still needs RFC 019]**, ~~`cross-provider-reasoning-exclusion` (20)~~ **[2026-08-14: CLOSED, `decisions/archive/ADR-049-cross-provider-reasoning-exclusion.md`]**
 
 ### What's deferred (named residuals, not silently dropped)
 

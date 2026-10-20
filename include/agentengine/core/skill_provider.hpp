@@ -26,7 +26,7 @@
 // longer merely advisory once wired through that header -- see its own top comment for the real
 // enforcement boundary this depends on).
 //
-// Skills Phase 3 (on-demand mounting, decisions/ADR-024's addendum): "resolved" (this class's own
+// Skills Phase 3 (on-demand mounting, decisions/archive/ADR-024's addendum): "resolved" (this class's own
 // scope -- every configured skill is resolved and its files are materialized unconditionally, per
 // §8b) is a DIFFERENT thing from "mounted" (an agent-triggered SUBSET, tracked outside this class --
 // see `tools/cli_chat.cpp`'s `MountedSkillsState`). `allowed_tool_names_for(mounted_names)` and
@@ -110,7 +110,7 @@ template <WorktreeObjectStore ObjectStoreT>
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
 class SkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "skills";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     explicit SkillsProvider(std::vector<SkillSourceDescriptor> sources) : sources_(std::move(sources)) {}

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §8.1 ("a test reactor:
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §8.1 ("a test reactor:
 // single-threaded, manual run, virtual clock") and §4.7 (a virtual timer queue so unit tests run without wall
 // time) -- `testing::ManualReactor`, a `pal::Reactor` that does nothing until the test drives it.
 //

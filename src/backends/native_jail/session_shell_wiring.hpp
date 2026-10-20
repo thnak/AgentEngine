@@ -7,7 +7,7 @@
 // generalization of existing shell code, because none existed to generalize.
 //
 // Unlike `MediatedPythonRunner` (capped at one live instance per OS process by CPython's own
-// embedding API -- `decisions/ADR-030-session-scoped-codeact-wiring.md`, Judged), `MediatedShellRunner`
+// embedding API -- `decisions/archive/ADR-030-session-scoped-codeact-wiring.md`, Judged), `MediatedShellRunner`
 // (`src/backends/native_jail/mediated_shell_runner.hpp`) has NO such constraint: it operates purely
 // over `FileSystemAdapter&`/`CommandRegistry const&`/`ExecState&`, no shared/global state. So this
 // is a plain, per-session-constructible object -- no `CodeActRunnerBinding`-style claim/arbitration

@@ -96,7 +96,7 @@ struct Ref {
 
 // 025 §2's digest+store+tree contract. A concept, not a base class -- matches SandboxBackend/
 // Runner/ChatClient's own established shape in this codebase. Every method returns `task<result<T>>`
-// since decisions/ADR-237 §5.1 (#172): a store backed by a database or an object service suspends on its I/O.
+// since decisions/archive/ADR-237 §5.1 (#172): a store backed by a database or an object service suspends on its I/O.
 // `put_blob` takes a `std::span` -- zero-copy, the caller keeps the bytes alive until the task completes, which
 // every caller does by awaiting it in the same full-expression/statement; ids and trees are taken by value.
 template <class S>

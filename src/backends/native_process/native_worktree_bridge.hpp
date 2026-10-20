@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md's worktree-
+// Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md's worktree-
 // confinement half. Worktree confinement stays mandatory for NativeShellProvider/NativeBashProvider/
 // NativePythonProvider/NativeNodeProvider even though the OS sandbox jail is optional (explicit
 // project-owner instruction). This file does NOT re-implement worktree materialization -- that is

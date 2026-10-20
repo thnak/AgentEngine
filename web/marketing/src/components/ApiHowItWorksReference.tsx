@@ -775,7 +775,7 @@ export function ApiHowItWorksReference() {
           </RevealItem>
           <RevealItem>
             <ApiDiagnosticNote>{t.s5Note}</ApiDiagnosticNote>
-            <Cite path="decisions/ADR-061-host-provided-inbound-transport.md" />
+            <Cite path="decisions/archive/ADR-061-host-provided-inbound-transport.md" />
           </RevealItem>
         </RevealGroup>
 
@@ -801,7 +801,7 @@ export function ApiHowItWorksReference() {
             </ApiDiagnosticNote>
             <Cite
               path="docs/planning/v1-implementation-roadmap.md"
-              label="docs/planning/v1-implementation-roadmap.md · decisions/ADR-237-async-extension-points-and-io-reactor.md"
+              label="docs/planning/v1-implementation-roadmap.md · decisions/archive/ADR-237-async-extension-points-and-io-reactor.md"
             />
           </RevealItem>
         </RevealGroup>

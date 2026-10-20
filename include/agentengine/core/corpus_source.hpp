@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.4 (folder-source-
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.4 (folder-source-
 // mount, copy-at-mount semantics) and §2.4b (chunking strategy), and closes §4 finding 2 as far as
 // this file's own scope reasonably allows ("the design never names a manifest/lookup that lets
 // re-mount answer 'does this digest already have a stored vector' before calling embed_batch()

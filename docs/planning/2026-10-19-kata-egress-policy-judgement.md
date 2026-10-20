@@ -1,7 +1,7 @@
 # Kata egress policy: judgement (ADR-240, GitHub #194)
 
 Stage: JUDGE of design -> red-team -> prove -> judge. Date: 2026-10-19/20. Judge branch `kata-egress-judge`, cut from
-`kata-egress-prove`. Claim under judgement: `decisions/ADR-240-kata-egress-policy-enforcement-point.md` (status Proposed).
+`kata-egress-prove`. Claim under judgement: `decisions/archive/ADR-240-kata-egress-policy-enforcement-point.md` (status Proposed).
 The previous stage's summary was not trusted; everything below was re-derived from the code and re-run on `thnak-server`
 (Ubuntu 26.04, kernel 7.0.0-38, nftables 1.1.6, iproute2 6.19, containerd 2.4.2, Kata 4.1.0 runtime-rs/cloud-hypervisor,
 gcc 15 Release). I changed no implementation or ADR file; all mutations lived only in the server copy of the sources and

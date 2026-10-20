@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.0 item 3: the gross-harm regression screen,
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.0 item 3: the gross-harm regression screen,
 // end to end -- 2*K*tasks real run_trial calls (arms and tasks interleaved by one seeded shuffle),
 // each graded for TASK SUCCESS by its own task's grader, aggregated intention-to-treat into
 // per-task diffs, and fed to tier1_statistics.hpp's sign_flip_sum_lower_tail_pvalue and

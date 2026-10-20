@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6 --
 // `QdrantVectorIndex` (protocol/qdrant/vector_index.hpp): the OFFLINE-provable half of the claim
 // (request/response shape, point-id derivation, error parsing) -- mirrors
 // `test_openai_embedder.cpp`'s own split exactly: this file exercises the `detail::` functions

@@ -1,4 +1,4 @@
-// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) residual, closed here:
+// ADR-145 (decisions/archive/ADR-145-containerd-execution-surface-promotion.md) residual, closed here:
 // "Not wired into tools/cli_chat.cpp/tools/sandboxed_shell_chat.cpp or any real session builder --
 // this ADR promotes the CONFORMER... A future pass wiring ContainerdExecutionSurface into a real,
 // user-reachable tool surface is real, contained, disclosed follow-on work, not attempted here."

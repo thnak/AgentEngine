@@ -8,7 +8,7 @@
 //
 // Windows: `hmac.cpp`, via Windows CNG/BCrypt -- a system API, not a third-party dependency
 // (CONVENTIONS' core tier: "std + Quark only, no third-party dependency, ever"). Linux:
-// `hmac_posix.cpp` (decisions/ADR-107-hmac-sha256-linux-parity.md), a from-scratch RFC 2104
+// `hmac_posix.cpp` (decisions/archive/ADR-107-hmac-sha256-linux-parity.md), a from-scratch RFC 2104
 // construction on top of `worktree_digest_posix.cpp`'s own SHA-256 primitive -- no third-party
 // dependency there either, same posture. Both are built into the portable `agentengine::hmac`
 // CMake library (top-level CMakeLists.txt) so any consumer needs only that one link, on either

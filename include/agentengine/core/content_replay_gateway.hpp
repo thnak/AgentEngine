@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-069-content-triggered-model-response-replay.md: a settled model response
+// Implements decisions/archive/ADR-069-content-triggered-model-response-replay.md: a settled model response
 // has already committed content that violates policy (a secret, a toxicity hit, anything a pluggable
 // trigger flags) -- this file discards it and re-invokes the underlying model call with a corrective
 // instruction, rather than letting it commit to durable history/checkpoint/transcript at all.
@@ -104,7 +104,7 @@ using ContentReplayTraceHook = std::function<void(ContentReplayAttemptEvent cons
     return m;
 }
 
-// decisions/ADR-069 §3's mechanism. Bounded TWO independent ways, both must pass before a replay is
+// decisions/archive/ADR-069 §3's mechanism. Bounded TWO independent ways, both must pass before a replay is
 // allowed to proceed: `max_replay_attempts` (per-`call()`-invocation, i.e. per trigger site) AND
 // `session_lifetime_cap` (a counter that persists across every `call()` this ONE gateway instance
 // ever serves -- meaningful only if this gateway instance itself lives as long as the session that

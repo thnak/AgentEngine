@@ -4,7 +4,7 @@
 // backed by wasmtime's Component Model C API (AGENTENGINE_WITH_WASM, D1) -- Milestone 2 Phase D task
 // D3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Security-critical: built
 // through design->red-team->prove->judge per CLAUDE.md, landed as
-// decisions/ADR-010-wasm-component-host-manifest-capability-binding.md. That ADR is the source of
+// decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md. That ADR is the source of
 // truth for *why* this file is shaped the way it is -- comments here cite it by section, not restate
 // it.
 //
@@ -14,7 +14,7 @@
 // fresh per call -- ADR-010 SS3.5); `blob`/`tool-call` host imports are recognized in the WIT
 // contract but never linked (ADR-010 SS3.1) -- a component that imports either always fails to load.
 // Wired into core/tool_pipeline.hpp's ToolTable/invoke_tool via wasm_tool_bridge.hpp
-// (decisions/ADR-040-wasm-tool-pipeline-bridge.md) -- that bridge calls create()/load_component()/
+// (decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md) -- that bridge calls create()/load_component()/
 // list_tools()/invoke_tool() directly (ADR-010's own §9 point: "any future SandboxBackend consumer
 // written against just the three concept methods will not see plugin loading at all, by design"),
 // never the generic SandboxBackend::exec() adapter below. This backend's own internals (import

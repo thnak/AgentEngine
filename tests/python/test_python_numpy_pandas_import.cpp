@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 4: claim
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 4: claim
 // A2 -- `import numpy` / `import pandas` actually working under the locked-down interpreter, with
 // numpy/pandas explicitly allowlisted. This is also the practical, empirical check on whether
 // Layer 0's sweep (§3.0/§5.5.1) broke anything real (§4 claim A5).

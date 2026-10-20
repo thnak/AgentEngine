@@ -1,6 +1,6 @@
 #pragma once
 // Implements ADR-030 (session-scoped CodeAct wiring) -- enforces, in code, the constraint
-// `decisions/ADR-002-pythonrunner-embedding-and-mediation.md` §5.5.6 Finding 7.8 already documents
+// `decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md` §5.5.6 Finding 7.8 already documents
 // but never enforced: "this design requires one OS process per session." Confirmed directly (not
 // assumed) by reading `src/backends/native_jail/mediated_python_runner.cpp`: `run()`/
 // `refresh_agent_tools()` route through unsynchronized, process-wide-file-scope globals

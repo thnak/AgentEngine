@@ -104,7 +104,7 @@ concept ContextProvider = requires(T provider, SessionContext& session_ctx, Effe
     { provider.on_turn_end(turn, ctx) } -> std::same_as<task<std::monostate>>;
 };
 
-// decisions/ADR-209-persistent-shell-sessions.md §8.1 -- how a run that STARTED (emitted `run_started`)
+// decisions/archive/ADR-209-persistent-shell-sessions.md §8.1 -- how a run that STARTED (emitted `run_started`)
 // ended. There is deliberately no `suspended` value: a run paused on an approval, an `agent.ask()` or a hook
 // decision is not over, and the hook below never fires for it.
 enum class run_end_reason {

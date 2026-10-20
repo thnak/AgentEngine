@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md's process-spawn
+// Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md's process-spawn
 // primitive for NativeShellProvider/NativeBashProvider/NativePythonProvider/NativeNodeProvider.
 //
 // Deliberately NOT a `SandboxBackend` (008): there is no AppContainer/seccomp isolation here at

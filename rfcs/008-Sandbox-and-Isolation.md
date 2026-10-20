@@ -33,7 +33,7 @@ Two things are nonetheless **locked**, because leaving them open would leave the
   agent to reason about and one thing to test, not two runtimes whose subtle differences (available
   packages, threading, extension modules) surface as bugs nobody can reproduce on the other one.
 
-  **Amendment (decisions/ADR-071-native-unsandboxed-process-execution-providers.md):** the paragraph
+  **Amendment (decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md):** the paragraph
   above (and 010 §2's fuller "ecosystem argument" AND "architectural argument," both amended
   in-place there) is scoped to a second, INTERCHANGEABLE `execute_code` backend — the confusion
   concern ("an agent's generated code... must know which Python they were dealing with") is real
@@ -68,8 +68,8 @@ The contract below is what makes that split safe: profiles differ in backend, ne
 
 **Priority: `native-jail` first, the backend seam absorbs the rest.** `native-jail` is the one
 profile that is cross-platform today, already has a proven Windows backend
-(`decisions/ADR-004-appcontainer-native-jail-windows-backend.md`) and a proven caller-aware import
-story for the full native-library Python ecosystem (010, `decisions/ADR-003-caller-aware-import-gating.md`)
+(`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md`) and a proven caller-aware import
+story for the full native-library Python ecosystem (010, `decisions/archive/ADR-003-caller-aware-import-gating.md`)
 — it is the v1 completeness target, not one profile among equally-unfinished others. `wasm` and
 `remote` are already specified for when their tradeoffs fit. Anything stronger and Linux-only —
 gVisor, Kata, a future microVM backend — is deliberately **not** something the engine commits to
@@ -99,7 +99,7 @@ and Component Model support, which is the one axis that matters here. On the fea
 depends on it has fewer, not more. It may still earn a scoped place for ultra-short guest calls or
 constrained deployments, behind the same host interface and behind a gate; that was
 [OQ-12](../OpenQuestions.md), now resolved (2026-08-03,
-`decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`): a real, measured cold-start comparison on this
+`decisions/archive/ADR-008-wasm3-cold-start-vs-wasmtime.md`): a real, measured cold-start comparison on this
 project's own trivial-workload shape found wasm3 160-180x faster at p50 and 250-400x at p99 — the
 gate this paragraph named is cleared, so wasm3 is now a real candidate for that scoped niche, not a
 hypothetical one. This paragraph's rejection of wasm3 **as the primary runtime** is unchanged — the
@@ -201,7 +201,7 @@ struct SandboxSpec {
 ```
 
 **`cpu_ms` is best-effort, not a dependable bound, on Windows `native-jail`.** Measured evidence
-(`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §10): `JOB_OBJECT_LIMIT_JOB_TIME`
+(`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` §10): `JOB_OBJECT_LIMIT_JOB_TIME`
 fired automatically in only 3 of 11 runs, with 1.38x-8.22x overrun when it did, and no relationship
 between the configured budget and the actual overrun. **A caller that needs a dependable CPU/time
 bound sets `wall_ms` to the value it actually wants enforced** — that field, not `cpu_ms`, is what
@@ -300,7 +300,7 @@ The four the engine ships and backs with a promotion gate (§9) — not the exha
 - with no fallback, **startup fails**. Silently running unisolated because the preferred isolation
   was unavailable is the single worst failure mode in this design, and it is prohibited.
 
-**`Strict`** (`decisions/ADR-012-sandbox-profile-template-parameter-kind.md` corrected this section's
+**`Strict`** (`decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md` corrected this section's
 naming from the earlier, undefined `Profile::Strict`) is the named alias meaning "the strongest
 profile available on this platform, never `none`" and is the default for every agent (002 §3). It is
 a resolution *selector*, not a backend itself — it has no `create`/`exec`/`destroy` and is never
@@ -316,7 +316,7 @@ profiles at the same declared strength — broken toward whichever has the broad
 platform support, since a rank that doesn't discriminate should not be allowed to make the choice
 arbitrary. `resolve_strict()` (`sandbox/sandbox.hpp`) implements this rule exactly, against a caller-
 supplied candidate set — ADR-012 built `Strict` as a real, structurally-distinct type and wired its
-extraction into `register_agent<A>()`. `decisions/ADR-080-sandbox-backend-registry.md` closes the gap
+extraction into `register_agent<A>()`. `decisions/archive/ADR-080-sandbox-backend-registry.md` closes the gap
 ADR-012 §9 named: `SandboxBackendRegistry` (`sandbox/sandbox_backend_registry.hpp`) is the real,
 host-curated set of backends *this deployment* has available, populated only by an explicit
 `register_backend()` call the host itself makes (never auto-discovered, mirroring `ChatClientRegistry`/
@@ -370,7 +370,7 @@ a process the host directly mediates syscalls for the way `native-jail` is?
 **Decision: `RemoteExecToken` is the self-verifying, macaroon-style bearer token ADR-005 proved out
 (Design A), not an opaque lookup key into a host-side registry.** An earlier draft of this section
 argued for the opaque-reference alternative (Design B) specifically to avoid taking on a crypto
-dependency and a caveat-parsing forgery surface; `decisions/ADR-005-capability-bearer-tokens-cross-
+dependency and a caveat-parsing forgery surface; `decisions/archive/ADR-005-capability-bearer-tokens-cross-
 process.md` (007 §10 Q1, executed, red-teamed, ASan-clean) settled that argument the other way for
 capabilities crossing a process boundary generally, and `RemoteExecToken` is that mechanism applied
 to this RFC's specific callback-authentication problem, not a separate bespoke protocol.
@@ -489,7 +489,7 @@ guest→host time manipulation · resource exhaustion of the host by many concur
 **read-access leak via inherited OS-default ACEs on `native-jail`/Windows** — a curated set of host
 files (e.g. `win.ini`, `drivers\etc\hosts`) carry `ALL APPLICATION PACKAGES`/`ALL RESTRICTED
 APPLICATION PACKAGES` read grants by Windows' own default, independent of any capability this
-profile grants or withholds (`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1) —
+profile grants or withholds (`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` §6.1) —
 this is exactly why §1b makes interpreter-level `open()` mediation primary rather than relying on the
 kernel jail's ACL model for reads.
 
@@ -499,7 +499,7 @@ namespace with nothing populating it with a restricted view. That gap is now clo
 `LinuxNativeJailBackend::setup_jail()` builds a real `pivot_root` + bind-mount jail (exactly the
 granted `MountSpec` set, read-only grants genuinely read-only, a fresh namespace-local `/proc`),
 proven against a real Linux kernel and measured directly (host-side `errno`/file-content checks, not
-guest self-report) in `decisions/ADR-083-linux-native-jail-pivot-root-containment.md`. The
+guest self-report) in `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md`. The
 fs-escape-attempt abuse case below and G3's process axis are now proven on both platforms; see that
 ADR for the residual scope this closure does not claim (id-generation-scheme collision under
 concurrent processes, the test-only toolchain-mount grant's own guest-path scope note).
@@ -579,7 +579,7 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
   `SandboxBackend`-is-a-concept pattern §2a already uses) for a deployer who wants to substitute a
   corporate proxy, an existing SSRF appliance, or an mTLS-terminating gateway.
 - ~~**Q4** — Whether capabilities should cross to the `remote` profile as bearer tokens (007 Q1).~~
-  **Resolved — see 007 §10 Q1 and `decisions/ADR-005-capability-bearer-tokens-cross-process.md`.**
+  **Resolved — see 007 §10 Q1 and `decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`.**
   Capabilities do cross a process boundary, as narrowly-scoped, self-verifying bearer tokens: a
   macaroon-style HMAC-chain construction with caveats such as `ExpiresAt`/`PathPrefix`, executed and
   red-teamed, ASan-clean (`include/agentengine/trust/capability_token.hpp`,

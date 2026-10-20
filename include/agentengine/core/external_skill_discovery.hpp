@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-072-external-host-discovered-skill-sources.md -- locates real, on-disk
+// Implements decisions/archive/ADR-072-external-host-discovered-skill-sources.md -- locates real, on-disk
 // skill directories belonging to OTHER AI coding tools already installed on the host machine
 // (Claude Code, GitHub Copilot, OpenAI Codex), so a host can feed them into the EXISTING
 // `DiskSkillSource`/`SkillsProvider` pipeline (core/skill_source.hpp, core/skill_provider.hpp)

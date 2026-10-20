@@ -185,11 +185,11 @@ reads to the model as "not available here" rather than as a policy essay.
 - **`agent.spawn` inherits an attenuated capability set** and a sub-worktree (025 §3) — a spawned
   agent can never exceed its parent. Target design; not yet a real call path. `agent.spawn` has no
   implementation to wire a sub-worktree to today — its depth-budget half is proven, in isolation
-  from any real spawn (`decisions/ADR-006-agent-spawn-depth-budget-bound.md` §9), and its cost-pool
-  half now has a real, tested actor primitive too (`decisions/ADR-031-spawn-cost-budget-actor-
+  from any real spawn (`decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md` §9), and its cost-pool
+  half now has a real, tested actor primitive too (`decisions/archive/ADR-031-spawn-cost-budget-actor-
   primitive.md`) — but neither is wired to an actual nested-agent-run invocation mechanism, which
   still does not exist anywhere in this codebase. `AgentSession` DOES now own a real production
-  tool-call loop (`decisions/ADR-027-agent-session-tool-call-loop.md`, closing the gap this line
+  tool-call loop (`decisions/archive/ADR-027-agent-session-tool-call-loop.md`, closing the gap this line
   used to name), but that loop has no `agent.spawn` case — a spawn call would still have nothing to
   invoke. Full trace: `docs/architecture/worktree-sharing-skills-and-subagents.md` §3.
 
@@ -317,12 +317,12 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
 - **Q1** — Whether `agent.spawn` belongs in the sandbox at all: it lets model-written code create
   runs, which is powerful and is also a recursion/cost hazard. Depth and budget bounds are
   necessary; whether they are sufficient is unproven. **Partially resolved by
-  `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
+  `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md`**: the depth half is proven sufficient
   against unbounded recursion, conditional on the effect-mediation boundary (006 §9 G4) holding —
   see that ADR for the exact scope. The cost half (token spend per spawned run — wall-clock is a
   further, separately-deferred dimension, see below) started as a **Draft design sketch (2026-08-11,
   designed and red-teamed, deliberately NOT an ADR at the time — no code, no tests yet)**, and is now
-  **resolved as real, tested code the same day**: `decisions/ADR-031-spawn-cost-budget-actor-
+  **resolved as real, tested code the same day**: `decisions/archive/ADR-031-spawn-cost-budget-actor-
   primitive.md` (Proposed) turned this sketch into `SpawnCostBudgetActor`, matching the corrected
   shape this sketch calls for below. What ADR-031 does NOT claim, so this isn't overstated: `agent
   .spawn` itself still has zero real call path anywhere in this codebase — no nested-agent-run
@@ -367,7 +367,7 @@ when it grows. Prompt bloat is a regression like any other; without a gate it on
     `agent_session.hpp` implements none of it, unlike `TokenBudget<N>`). Not folded into "cost
     half resolved" language — naming it separately is the point.
   - **Done:** this sketch became a real ADR the same day (design → red-team → prove, real code +
-    tests, per this project's own ADR discipline — `decisions/README.md`; `decisions/ADR-031-
+    tests, per this project's own ADR discipline — `decisions/README.md`; `decisions/archive/ADR-031-
     spawn-cost-budget-actor-primitive.md`, Proposed, awaiting the project owner's explicit "Judged").
 - ~~**Q2** — Non-actionable failure phrasing (§3) is the hardest part to get right: too vague and the
   agent retries forever, too specific and it becomes an architecture description.~~ **Resolved: don't

@@ -1,4 +1,4 @@
-// D3 proof fixture (decisions/ADR-010-wasm-component-host-manifest-capability-binding.md §7.2),
+// D3 proof fixture (decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md §7.2),
 // extended by D5 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md) -- a minimal,
 // real `ae:tool` component used to prove the manifest-vs-import verification and capability-handle
 // binding mechanism against a genuinely compiled component, not a hand-crafted stub. "echo" needs no

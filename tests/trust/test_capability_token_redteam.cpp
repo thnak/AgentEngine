@@ -1,4 +1,4 @@
-// Adversarial claims for decisions/ADR-005-capability-bearer-tokens-cross-process.md — attacks a
+// Adversarial claims for decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md — attacks a
 // party holding tokens/refs but never the CapabilityToken SecretKey (Design A) or acting as an
 // unprivileged remote caller of CapabilityRegistry (Design B) would attempt. Every R-x check's
 // "ok" means the attack was rejected; R-A0/R-B0 are positive controls proving a genuinely valid

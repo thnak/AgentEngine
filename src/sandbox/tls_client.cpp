@@ -1,4 +1,4 @@
-// Implements tls_client.hpp. See decisions/ADR-013-https-egress-tls-client.md.
+// Implements tls_client.hpp. See decisions/archive/ADR-013-https-egress-tls-client.md.
 
 #include "agentengine/sandbox/tls_client.hpp"
 #include "agentengine/sandbox/io_timeout.hpp"

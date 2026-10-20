@@ -1,5 +1,5 @@
 #pragma once
-// decisions/ADR-175 -- who resumes a parked coroutine, and who owns a lock while it is parked.
+// decisions/archive/ADR-175 -- who resumes a parked coroutine, and who owns a lock while it is parked.
 //
 // Before ADR-175, `AsyncMutex::unlock()` and `channel<T>::push()` resumed a parked coroutine INLINE, on
 // whichever thread released the lock or pushed the item. Every synchronous driver in `rt::` then had to
@@ -32,7 +32,7 @@
 // Lazy: `block_on()` creates its home on the first park, on its own thread, so an uncontended call pays no
 // allocation (ADR-175 round 2 finding 8 measured an eager home at 3.7x an uncontended call).
 //
-// decisions/ADR-219 (issue #79) -- A HOST'S RESUMER. ADR-175 gave `block_on()` a home; a coroutine driven any
+// decisions/archive/ADR-219 (issue #79) -- A HOST'S RESUMER. ADR-175 gave `block_on()` a home; a coroutine driven any
 // other way stayed homeless and was resumed inline on the waker's thread. When AgentEngine runs inside
 // another runtime, that waker can be a foreign thread (a Quark lane, a UI thread, an IOCP thread) that drops
 // a `Guard` or pushes an item, and it then runs an AgentEngine continuation under its own scheduling rules.
@@ -44,7 +44,7 @@
 // record and one null test at park and at wake time (ADR-219 §6 measures about +10% on a chain of homeless
 // hand-offs, nothing measurable elsewhere).
 //
-// decisions/ADR-237 §4.2/§4.3 (step 3) -- A STRAND. The fourth kind of home, and the one engine work uses: a
+// decisions/archive/ADR-237 §4.2/§4.3 (step 3) -- A STRAND. The fourth kind of home, and the one engine work uses: a
 // lane worker (rt/lanes.hpp) runs each continuation of a strand under an execution context that names the
 // strand, and a coroutine that parks during that slice records the strand; its waker posts it back to the
 // strand -- never resumes it inline, never on the waker's thread. ADR-219 rejected "home in the promise"

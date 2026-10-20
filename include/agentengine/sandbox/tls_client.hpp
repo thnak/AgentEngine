@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-013-https-egress-tls-client.md: an ordinary outbound TLS client (system-
+// Implements decisions/archive/ADR-013-https-egress-tls-client.md: an ordinary outbound TLS client (system-
 // CA-style validation against a vendored root bundle, real hostname verification) wrapping mbedTLS
 // -- distinct from Quark's SecureTransport, built for node-identity cluster mTLS (ADR-011 section 3
 // Design C's own rejection reasoning: SecureTransport deliberately opts OUT of hostname verification

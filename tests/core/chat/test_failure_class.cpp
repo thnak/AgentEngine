@@ -1,4 +1,4 @@
-// Implements ADR-237 §9 D6 (decisions/ADR-237-async-extension-points-and-io-reactor.md) against 001 §6:
+// Implements ADR-237 §9 D6 (decisions/archive/ADR-237-async-extension-points-and-io-reactor.md) against 001 §6:
 // `failure_class::canceled`, its one spelling, and the ONE retry decision (`is_retryable(failure_class,
 // retry_budget)` in core/error.hpp) that every retrying site now calls.
 //

@@ -156,7 +156,7 @@ this section's filter/policy pipeline — one gate, one home, cross-referenced r
   Full text: §4.
 - ~~**Q2** — Span-level taint (003 Q3) would make structural separation far more precise.~~
   **Resolved, No (OQ-5, 2026-08-04):** see 003 §8 Q3 / 007 §10 Q2 and
-  `decisions/ADR-007-span-level-taint-vs-per-item.md` — rejected because it would downgrade I3's
+  `decisions/archive/ADR-007-span-level-taint-vs-per-item.md` — rejected because it would downgrade I3's
   static (compile-fail) guarantee to a runtime one across every text-touching path, for a precision
   gain rather than a security fix, and the ADR's prove found span tracking's own bug surface (a
   missed offset-shift silently under-taints real danger bytes) to be the worse risk. §3's structural

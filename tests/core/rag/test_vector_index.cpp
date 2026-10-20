@@ -1,10 +1,10 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 --
 // `BruteForceCosineIndex` (core/vector_index.hpp): correctness of cosine ranking, contract
 // rejection on malformed batches, and the deterministic tie-break (closes §4 finding 7, "no
 // tie-break defined for top-K on equal/near-equal scores") -- score desc, then id asc, mirroring
 // `rank_memory_items()`'s own score-desc-then-tie-break-field-desc shape (memory_provider.hpp).
 //
-// Also implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4/§3 claims
+// Also implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4/§3 claims
 // 4-5 -- `BruteForceCosineIndex::snapshot()`/`restore()` (`PersistentVectorIndex`): round-trip
 // fidelity, content-addressed re-snapshot dedup, and reject-not-coerce on a malformed/nonexistent
 // blob.

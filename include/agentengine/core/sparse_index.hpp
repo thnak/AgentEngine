@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2 — the
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2 — the
 // `SparseIndex` seam and its core-resident default, `BM25Index` (std-only, zero third-party
 // dependency, CONVENTIONS.md tier 1, matching `VectorIndex`/`BruteForceCosineIndex`'s own bar
 // directly one file over). Mirrors `core/vector_index.hpp`'s exact shape — concept + default

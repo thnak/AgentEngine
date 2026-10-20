@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §9 D5 -- `pal::usable_cpus()`: how many
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §9 D5 -- `pal::usable_cpus()`: how many
 // CPUs this process may actually run on, which is what the default lane count is derived from
 // (`max(2, usable_cpus() / 2)`, rt/runtime.hpp). `std::thread::hardware_concurrency()` alone reports the
 // host's cores: inside a `--cpus=1` container or under `taskset -c 0` it overstates the CPUs by up to the

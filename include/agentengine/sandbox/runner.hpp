@@ -62,7 +62,7 @@ private:
 // neither is declared here — each is a seam backend (CONVENTIONS tier 2) with its own
 // implementation, not core vocabulary.
 //
-// decisions/ADR-237 §5.1 (Phase D, #173): `run` returns `ae::task<result<ExecOutcome>>`. A runner may be
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): `run` returns `ae::task<result<ExecOutcome>>`. A runner may be
 // remote or may park (an interpreter behind a worker process, a runner on another host), so the seam can
 // suspend. `state` and `ctx` are borrowed and must outlive the returned task; callers await it in place.
 template <class T>

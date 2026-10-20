@@ -1,6 +1,6 @@
 // 014 §8 G3 (determinism): "shuffling intra-round executor scheduling across 10^3 seeds produces
 // identical workflow output; an intentionally order-dependent executor is detected by the same
-// test." Gap-audit finding 22 (2026-08-14, decisions/ADR-051-*.md): this test never existed in this
+// test." Gap-audit finding 22 (2026-08-14, decisions/archive/ADR-051-*.md): this test never existed in this
 // codebase before this file -- confirmed directly (no file under tests/ matched "shuffle" for the
 // workflow-scheduling sense before this one; the milestone-6 breakdown doc's own decisions 5/8 only
 // ever DESIGNED this test, never claimed it built).

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `ExclusivityGroup<Name>`
+// Implements decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: `ExclusivityGroup<Name>`
 // is a declared policy tag with zero pipeline logic yet (matching `Parallelizable`'s own existing
 // state -- 006 §8 G4's parallel-batch scheduler is still deferred). This proves the declaration
 // surface itself: `Tool<Derived, Policies...>::declared_exclusivity_group()` and

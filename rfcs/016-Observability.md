@@ -59,7 +59,7 @@ Cardinality is bounded deliberately: principal ids and session ids are **not** m
 (they are span/audit fields) — a design principle originally adopted from Quark's own cardinality
 discipline (historical credit; Quark itself was removed as AgentEngine's dependency by ADR-037,
 `AgentEngineSpecification.md` §7). Note this RFC's "ADR-022" citation predates and is unrelated to
-this repo's own `decisions/ADR-022-inbound-listener-reactor-model.md`.
+this repo's own `decisions/archive/ADR-022-inbound-listener-reactor-model.md`.
 
 ## 4. Content capture and privacy
 

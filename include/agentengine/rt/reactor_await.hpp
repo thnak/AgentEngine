@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4 -- the one operation
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.2/§4.4 -- the one operation
 // record every reactor awaitable parks on (rt/sleep.hpp, rt/tcp.hpp, rt/process.hpp). Factored out of those
 // three after step 2 copied it into each (ADR §14): the resume/abandon rules live in exactly one place, so
 // the lanes step (home stored in the promise, §4.2) changes them once.

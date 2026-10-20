@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 2:
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 2:
 // Layer 0 (§3.0, widened by §5.5.1) -- the sys.modules sweep and its scope. This test talks to
 // CPython directly (not through native_jail::PythonLockdownInterpreter) because it exists to
 // document and check the RAW, pre-lockdown facts the lockdown design depends on:

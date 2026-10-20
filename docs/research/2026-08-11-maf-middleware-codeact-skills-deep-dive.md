@@ -141,7 +141,7 @@ motivates.
 ## 3. CodeAct's tool-registry design — additive by rule, not by accident
 
 MAF's own `docs/decisions/0024-codeact-integration.md` (in the `agent-framework` repo — **distinct
-from, and unrelated to, AgentEngine's own** `decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md`;
+from, and unrelated to, AgentEngine's own** `decisions/archive/ADR-024-skill-scoped-tool-and-mount-wiring.md`;
 same number, different repos, different topics — disambiguated here to prevent future confusion)
 records three considered options for where CodeAt should live in the architecture:
 
@@ -238,7 +238,7 @@ custom type rather than raw `AIFunction`s that could otherwise plug into `Functi
 existing per-tool approval.
 
 **Relevance to AgentEngine:** this whole section is corroborating evidence for
-`decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md`'s existing rationale, not new grounds to
+`decisions/archive/ADR-024-skill-scoped-tool-and-mount-wiring.md`'s existing rationale, not new grounds to
 revisit it. ADR-024 already found (§8 addendum) that MAF's `load_skill` is "advisory only, never
 enforced in code" and built `MountedSkillsState` as real, persistent, per-run state instead. The
 approval-coarseness finding here is the same shape of gap one level down (per-dispatcher, not

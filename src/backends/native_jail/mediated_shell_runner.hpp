@@ -1,7 +1,7 @@
 #pragma once
 // Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§3a -- Milestone 3 Phase E3
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md, decision 4). A genuinely
-// new `ShellRunner`, carrying forward decisions/ADR-001's Judged Design A finding (whole-script-
+// new `ShellRunner`, carrying forward decisions/archive/ADR-001's Judged Design A finding (whole-script-
 // parses-before-anything-executes) as a design, not copied code -- shell_runner.hpp stays
 // untouched, completely unmodified. Named `MediatedShellRunner`, not `ShellRunner`, specifically to
 // avoid colliding with the untouched spike's own class name in the same `agentengine` namespace

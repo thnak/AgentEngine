@@ -1,4 +1,4 @@
-// This file MUST NOT compile (decisions/ADR-071-native-unsandboxed-process-execution-providers.md)
+// This file MUST NOT compile (decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md)
 // -- see the compile-fail gate in tests/compile_fail/CMakeLists.txt, which fails if it does.
 // `NativeCapabilityAnnouncer<Ps...>` rejects composing two providers that share the same declared
 // family name (`Ps::name`) -- here, two `NativePythonProvider` instances, which would otherwise hand

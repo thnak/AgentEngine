@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE ... rewritten as
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE ... rewritten as
 // coroutines"), §4.4 (deadlines are timers, two-phase cancel), §4.5 rule 5 (consumer-stall deadline) and §6.3's
 // round-3 gaps 6/7 -- rt/http_wire.hpp (pure) and rt/http.hpp (on the reactor), plain HTTP. The peer is a scripted
 // loopback server on a test thread (pal/net.hpp sockets); always built. HTTPS is tests/rt/test_rt_https.cpp. Each

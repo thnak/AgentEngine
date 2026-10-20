@@ -133,7 +133,7 @@ ports; port flags `learning off`, `locked on`, `isolated on` + static FDB entry;
 allowlist on the veth host end (agent's addition, beyond the owner's stated direction)**; fail-closed
 ordering (sweep, flags, FDB, tc, nft, read-back); destroy removes the port first and keeps the policy if the
 port persists; `exec` re-verifies the policy and kills the guest on mismatch
-(`kata_backend.egress_policy_missing`). `decisions/ADR-240-kata-egress-policy-enforcement-point.md`
+(`kata_backend.egress_policy_missing`). `decisions/archive/ADR-240-kata-egress-policy-enforcement-point.md`
 (Proposed; ADR-093/095 carry partial-supersession banners; README row added). Reported: all 19 claims held
 with positive controls; egress_linux 73/73, lifecycle_linux 119/119, scale_linux pass, existing four Kata
 suites pass; scaling flat at ~22-23 Gbit/s for N=1..200 netns guests (per-sandbox-table control: 7.99 at

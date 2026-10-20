@@ -1,4 +1,4 @@
-// #120 S8 (decisions/ADR-203-one-base64-one-process-identity.md): proves the one base64 codec (core/base64.hpp) and
+// #120 S8 (decisions/archive/ADR-203-one-base64-one-process-identity.md): proves the one base64 codec (core/base64.hpp) and
 // every wrapper over it behave exactly like the copies they replaced.
 //
 // Oracles, all verbatim copies of the old code:

@@ -234,7 +234,7 @@ public:
         return chat_client_.emplace(std::forward<Args>(args)...);
     }
 
-    // decisions/ADR-066-context-provider-attribution-provenance.md §7 residual / ADR-070 amendment:
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §7 residual / ADR-070 amendment:
     // this session calls `history_provider_.on_context()` DIRECTLY, never `assemble_context()` --
     // messages/tools this session assembles carry NO `attribution` (`Message::attribution`/
     // `ToolDescriptor::attribution` stay `nullopt` throughout), even for a genuinely multi-role
@@ -342,7 +342,7 @@ public:
     // same-pass mechanical tightening. Matches this hazard's own pre-ADR-123 status: not reachable
     // through any real call site in this codebase today.
     //
-    // CLOSED BY decisions/ADR-175 -- and a worse failure the thread comparison also had: after a lock
+    // CLOSED BY decisions/archive/ADR-175 -- and a worse failure the thread comparison also had: after a lock
     // hand-off, the thread that released `session_mutex_` (or resumed the new holder inline) could run
     // unrelated code for which the check was TRUE, and this function then skipped the lock while the real
     // holder was mid-round (an I1 violation, demonstrated). `is_held_by_current_thread()` now compares the
@@ -551,7 +551,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
 // Load the latest durable record for `session_id`, or std::nullopt if it was never snapshotted or
 // was deleted (delete_session()'s tombstone) -- a caller of THIS function sees no distinction
 // between "never existed" and "deleted", matching the Quark original's own read-path property.
-// `task`-shaped since decisions/ADR-237 §5.1 (#172) because the store is -- it still never touches a live
+// `task`-shaped since decisions/archive/ADR-237 §5.1 (#172) because the store is -- it still never touches a live
 // AgentSession instance, so there is no in-flight state to guard against. `store` must outlive the await.
 template <SessionStore StoreT>
 [[nodiscard]] task<result<std::optional<AgentSessionRecord>>> load_agent_session_snapshot(
@@ -565,7 +565,7 @@ template <SessionStore StoreT>
     co_return std::optional<AgentSessionRecord>{std::move(*rec)};
 }
 
-// Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): 005 §2's exact policy vocabulary
+// Gap-15 fix (2026-08-14, decisions/archive/ADR-043-*.md): 005 §2's exact policy vocabulary
 // ("acknowledged... only after its effects and history delta are durable, or the session declares
 // an at_most_once_ack durability policy"). `at_most_once` is today's only real behavior (a bare
 // start_run()/resolve_interaction() call, unchanged) -- `require_durable` is new, wired ONLY through

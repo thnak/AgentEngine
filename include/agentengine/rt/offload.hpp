@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.6 ("Truly blocking work:
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.6 ("Truly blocking work:
 // `rt::offload`" and "Offload lifetime rules") with the threading rules of §4.1/§4.2/§4.3 and the lifetime
 // rules of §4.5 -- `rt::OffloadPool` and `co_await rt::offload(pool, stop, fn, args...)`: run a blocking or
 // CPU-heavy callable on a small, fixed pool of worker threads and resume the awaiting coroutine on its HOME

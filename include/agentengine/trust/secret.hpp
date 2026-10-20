@@ -279,7 +279,7 @@ namespace secret_detail {
 
 }  // namespace secret_detail
 
-// concept, not a base class (mirrors ChatClient/NetEgressBackend). `task`-shaped since decisions/ADR-237
+// concept, not a base class (mirrors ChatClient/NetEgressBackend). `task`-shaped since decisions/archive/ADR-237
 // §5.1 (#172): a store backed by a vault or an OS keystore resolves over the network, so the seam lets it
 // suspend. The stores in this file read env/memory/a small file and complete without suspending.
 // `SecretSource::get()` stays synchronous -- it is the env/file adapter underneath, not the seam.

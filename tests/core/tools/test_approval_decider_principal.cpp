@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §46 (decisions/ADR-061-host-provided-inbound-transport.md). Proves the
+// ADR-061 prove phase, §46 (decisions/archive/ADR-061-host-provided-inbound-transport.md). Proves the
 // falsifiable claims table at §46.5: `ApprovalDecider` widened to `bool(Principal const&,
 // std::string_view, std::string const&)` closes R27's `approve_` finding -- a decider can now see WHO
 // is asking, sourced from the SAME `ctx.principal` `ToolInvocationAudit` already records, at both the

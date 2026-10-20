@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §4.5 (structured concurrency: with_scope,
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.5 (structured concurrency: with_scope,
 // when_all, no child outlives its scope), §4.3 (children are child strands of the session; the cap is a semaphore on
 // the scope; results in emitted order, I5) and §4.4/§4.2 (stop callbacks posted to the owning strand) -- step 5:
 // rt/scope.hpp, rt/await_chain.hpp (scope stop tokens), rt/strand_stop_callback.hpp. Each claim names how it would

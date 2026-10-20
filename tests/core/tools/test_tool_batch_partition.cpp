@@ -1,4 +1,4 @@
-// Implements decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". Proves
+// Implements decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". Proves
 // `partition_batch()` (core/tool_pipeline.hpp) in complete isolation from AgentSession -- no I/O, no
 // admission, no invocation, just the pure eligibility-gate + concurrency-class logic against real
 // `ToolDescriptor`s built through the real `Tool<>`/`make_tool_descriptor<>()` path (never hand-rolled),

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.1/§6.3 "Processes" -- child
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.1/§6.3 "Processes" -- child
 // processes on the I/O reactor (pal/reactor.hpp), the primitive every spawner moves onto in later steps --
 // with §4.4 "Process cancellation", §2 H-e (pipes are read concurrently with the exit wait, never drained
 // after it) and §6.3 "Handle hygiene becomes mandatory" (red-team round 1 G4, gate §8.2 1d).

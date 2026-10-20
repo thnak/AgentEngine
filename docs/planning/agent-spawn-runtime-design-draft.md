@@ -7,10 +7,10 @@ turns into `decisions/ADR-0NN-*.md`, per `decisions/README.md`'s required shape.
 
 **Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn`), OpenQuestions.md OQ-14
 (named `agent.spawn` the project's own "sharpest case"; its cost/depth halves are separately
-Judged in `decisions/ADR-006-agent-spawn-depth-budget-bound.md` and
-`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`, both real, tested, and **zero callers**)
+Judged in `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md` and
+`decisions/archive/ADR-031-spawn-cost-budget-actor-primitive.md`, both real, tested, and **zero callers**)
 and OQ-16 (`trust/agent_library_manifest.hpp`, real, tested, **zero callers**).
-`decisions/ADR-059-invoke-agent-tool-capability-attenuation.md` is the closest prior art for §5
+`decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md` is the closest prior art for §5
 below and is reused, not re-derived, wherever this document says so explicitly.
 
 ---

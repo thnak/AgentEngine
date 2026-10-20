@@ -16,7 +16,7 @@
 //   7. register_hardware_isolation_backend() -- introduced by
 //      docs/planning/microvm-first-party-backend-design-draft.md Revision 2's red-team finding #1 --
 //      always registers named_only, with no mode argument available to omit or get wrong.
-//   8. 008 SS9 G6 (downgrade visibility) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4's
+//   8. 008 SS9 G6 (downgrade visibility) -- decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md SS4's
 //      own finding that G6 was real, open work: SandboxBackendResolutionEvent::downgraded distinguishes
 //      "the winner is the strongest backend registered, full stop" from "a stronger backend is
 //      registered but does not support this platform, so this IS a fallback" -- the audit hook

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-170-sandbox-exec-events.md (GitHub issue #64): `run_event_kind::
+// Proof for decisions/archive/ADR-170-sandbox-exec-events.md (GitHub issue #64): `run_event_kind::
 // sandbox_exec_started`/`sandbox_exec_finished` -- declared in `core/run_event.hpp`, listed
 // normatively in 013 §1, and already projected to AG-UI `ActivitySnapshot`
 // (`protocol/agui/projection.hpp`) -- had **no producer anywhere in the tree**. The only construction

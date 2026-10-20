@@ -3,7 +3,7 @@
 `agentengine_test_driver` is an MCP server over stdio that lets a Claude Code agent drive real
 AgentEngine sessions: start a session, script what the model says, send user turns, answer approvals,
 cancel, and read the event stream. A finished run can be exported as a scenario that ctest replays
-offline. Design, claims and proof: [`ADR-182`](../../decisions/ADR-182-agent-test-driver-mcp.md).
+offline. Design, claims and proof: [`ADR-182`](../../decisions/archive/ADR-182-agent-test-driver-mcp.md).
 
 There are three ways to use it, from cheapest to most expensive:
 

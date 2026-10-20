@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 1: prove a
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 1: prove a
 // minimal embedded CPython interpreter actually runs inside a C++23 translation unit in this
 // repo, linked against the concrete miniconda 3.13.5 target the ADR names, round-tripping a
 // trivial script through PythonRunner's real (no longer stub) `run()`. Also proves PythonRunner

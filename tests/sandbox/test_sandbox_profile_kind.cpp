@@ -1,4 +1,4 @@
-// Proves decisions/ADR-012-sandbox-profile-template-parameter-kind.md: SandboxProfile<P>'s template-
+// Proves decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md: SandboxProfile<P>'s template-
 // parameter kind (a real SandboxBackend, or the Strict resolution selector -- never an enum value)
 // round-trips correctly through register_agent<A>() into AgentMetadata::sandbox_profile.
 //

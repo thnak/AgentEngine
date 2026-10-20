@@ -1,4 +1,4 @@
-// End-to-end proof of decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §3 claim 6's
+// End-to-end proof of decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §3 claim 6's
 // live half: "QdrantVectorIndex reaches a real Qdrant instance and round-trips add_batch -> search ->
 // contains correctly." Mirrors tests/protocol/openai/test_openai_embedder_openrouter_live_e2e.cpp's EXACT pattern
 // (env-var-gated credential/host, SKIP not FAIL when unset, an auth positive control, an I2

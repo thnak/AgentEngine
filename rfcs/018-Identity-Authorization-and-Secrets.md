@@ -119,7 +119,7 @@ struct SecretStore {                                  // concept
   resolution for the 007-side duplicate: 007 §10 Q4.
 - ~~**Q2** — Capability bearer tokens (007 Q1) would let the `remote` sandbox profile and remote
   plugins carry attenuated authority without a bespoke protocol.~~ **Resolved — see 007 §10 Q1 and
-  `decisions/ADR-005-capability-bearer-tokens-cross-process.md`: yes, narrowly, for the
+  `decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`: yes, narrowly, for the
   `ExpiresAt`/`PathPrefix` caveat classes proven there** — a macaroon-style HMAC-chain bearer token,
   not a blanket replacement for host-side state; any capability needing immediate revocation still
   uses a host-side registry rather than the token mechanism itself. Real, executed, red-teamed,

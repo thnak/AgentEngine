@@ -133,7 +133,7 @@ bool mkdir_p(std::string const& path) {
 // 008 SS9 G2/G3's Linux filesystem/process containment (see linux_native_jail_backend.hpp's own
 // header comment for the full rationale, docs/planning/linux-native-jail-pivot-root-containment-
 // design-draft.md for the design + self-red-team record this implements verbatim, and
-// decisions/ADR-083-linux-native-jail-pivot-root-containment.md for the closing ADR and its real
+// decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md for the closing ADR and its real
 // build/test evidence). Runs in the child, after the sync-pipe handshake
 // (cgroup membership already confirmed by the parent) and BEFORE `install_seccomp_filter()` --
 // `mount`/`umount2`/`pivot_root` are all in that filter's denylist, so this jail-construction code
@@ -270,7 +270,7 @@ result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const&
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
-    // decisions/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
+    // decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
     // this design's own red-team pass found (finding B3) -- KataBackend::create() already fails
     // closed on any NetPolicy beyond deny_all=true (ADR-086); this backend previously ignored
     // NetPolicy entirely. Independent of capabilities/authorize_spec() above: this backend has no
@@ -308,7 +308,7 @@ result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const&
     // Host-unique, not just process-unique: PID + a per-process counter. A counter alone collides
     // across DIFFERENT test/host processes sharing this backend's default delegated paths (real,
     // observed directly: two `ctest -j` binaries both minting "linux_native_jail-0" and racing to
-    // `mkdir` the identical cgroup/jail_root directory -- decisions/ADR-083-linux-native-jail-
+    // `mkdir` the identical cgroup/jail_root directory -- decisions/archive/ADR-083-linux-native-jail-
     // pivot-root-containment.md §4). A PID cannot repeat among processes alive at the same instant,
     // so prefixing it closes the collision at its root rather than only papering over it with test
     // serialization (`RUN_SERIAL`, still kept in tests/CMakeLists.txt as defense in depth against a

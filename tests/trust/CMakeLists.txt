@@ -2,14 +2,14 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "trust" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- CapabilitySet enforcement mechanism (decisions/ADR-009-capability-set-enforcement-mechanism.md) --
+# ---- CapabilitySet enforcement mechanism (decisions/archive/ADR-009-capability-set-enforcement-mechanism.md) --
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 agentengine_add_test(test_capability_enforcement LIBS agentengine::core agentengine_warnings)
 
 # ---- Compile-time capability declaration tags (M2 Phase A task A2) -----------------------------
 agentengine_add_test(test_capability_declaration_tags LIBS agentengine::core agentengine_warnings)
 
-# ---- cap::NativeExec (decisions/ADR-071-native-unsandboxed-process-execution-providers.md) ------
+# ---- cap::NativeExec (decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md) ------
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 agentengine_add_test(test_native_exec_capability LIBS agentengine::core agentengine_warnings)
 
@@ -23,7 +23,7 @@ agentengine_add_test(test_agent_library_manifest LIBS agentengine::core agenteng
 # restart, fail-closed without a granted cap::Secret.
 agentengine_add_test(test_secret_store LIBS agentengine::core agentengine_warnings)
 
-# decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's prove phase.
+# decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's prove phase.
 # QuarantineSecretStore's content-addressed naming reuses trust::hmac_sha256 (trust/hmac.cpp/
 # hmac_posix.cpp, ADR-021, Linux parity ADR-107) rather than a second, unaudited digest
 # implementation -- that primitive now lives in the portable agentengine::hmac library
@@ -32,7 +32,7 @@ agentengine_add_test(test_secret_store LIBS agentengine::core agentengine_warnin
 # was only reachable via the Windows-only agentengine::capability_token library).
 agentengine_add_test(test_secret_quarantine LIBS agentengine::core agentengine::hmac agentengine_warnings)
 
-# ---- decisions/ADR-107-hmac-sha256-linux-parity.md's own direct regression test -----------------
+# ---- decisions/archive/ADR-107-hmac-sha256-linux-parity.md's own direct regression test -----------------
 # A dedicated RFC 4231 known-answer test for trust::hmac_sha256()/constant_time_equal() -- prior
 # coverage of this primitive was only INDIRECT (test_capability_token_proof/redteam.cpp,
 # test_secret_quarantine.cpp, test_rt_agent_session_quarantine_tool.cpp above). Portable: only calls
@@ -56,7 +56,7 @@ target_include_directories(test_policy_reachability PRIVATE "${CMAKE_SOURCE_DIR}
 target_link_libraries(test_policy_reachability PRIVATE agentengine::core agentengine_warnings)
 add_test(NAME test_policy_reachability COMMAND test_policy_reachability)
 
-# ---- Capability bearer-token prove phase (decisions/ADR-005-capability-bearer-tokens-cross-process.md)
+# ---- Capability bearer-token prove phase (decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md)
 # Resolves OQ-3. Design A (capability_token.hpp) correctness + red-team, Design B
 # (capability_registry.hpp) red-team, and the verify()-vs-check() cost comparison §5 rests on.
 if(WIN32)
@@ -70,23 +70,23 @@ if(WIN32)
     LIBS agentengine::core agentengine::capability_token agentengine_warnings)
 
   # ---- ADR-021 prove phase -- the inbound bearer-token mechanism (trust/bearer_token.hpp),
-  # closing the specific red-team findings named in that header/decisions/ADR-021 §6 ---------------
+  # closing the specific red-team findings named in that header/decisions/archive/ADR-021 §6 ---------------
   agentengine_add_test(test_bearer_token_proof
     LIBS agentengine::core agentengine::capability_token agentengine_warnings)
 
   # ---- ADR-039 prove phase -- trust::principal_from_bearer_claims(), the canonical claims -> Principal
-  # bridge every host-pluggable transport adapter is expected to call (decisions/ADR-039) -------------
+  # bridge every host-pluggable transport adapter is expected to call (decisions/archive/ADR-039) -------------
   agentengine_add_test(test_principal_from_bearer_claims
     LIBS agentengine::core agentengine::capability_token agentengine_warnings)
 
   # ---- ADR-061 §31/§33/§34/§35 prove phase -- trust::EndpointId/EndpointRegistry/mint_endpoint_id()
   # and rt::request_authority_from_bearer_claims(), the bearer-credential-to-RequestAuthority bridge
-  # for the Tier-3 mechanism §20-§30 already proved (decisions/ADR-061) -------------------------------
+  # for the Tier-3 mechanism §20-§30 already proved (decisions/archive/ADR-061) -------------------------------
   agentengine_add_test(test_request_authority_bridge
     LIBS agentengine::core agentengine::capability_token agentengine_warnings)
 endif()
 
-# ---- ADR-102 Phase 1 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md) ------
+# ---- ADR-102 Phase 1 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md) ------
 # IdentityAuthority/IdentityHandle/Grant<T> (trust/identity_authority.hpp) and AsyncQuota<T>
 # (rt/async_quota.hpp) -- the identity-native sandbox/worktree design's (ADR-099) first primitives
 # ported into production. Header-only; agentengine::core alone provides the include path.

@@ -1,4 +1,4 @@
-// Implements native_shell_session.hpp -- decisions/ADR-209-persistent-shell-sessions.md §9 (build step 7). See the
+// Implements native_shell_session.hpp -- decisions/archive/ADR-209-persistent-shell-sessions.md §9 (build step 7). See the
 // header for the transport, the Job Object and what is and is not contained.
 
 #include "backends/native_process/native_shell_session.hpp"

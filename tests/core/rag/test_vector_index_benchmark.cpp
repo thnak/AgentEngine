@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §3 claim 1 --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §3 claim 1 --
 // BruteForceCosineIndex::search() latency at the hypothesized corpus size (§2.3A: "low hundreds to
 // low thousands of items, embedding dimension in the low hundreds to ~1536"). RFC
 // rfcs/023-Performance-Targets-and-Budgets.md names no dedicated budget row for vector-index search

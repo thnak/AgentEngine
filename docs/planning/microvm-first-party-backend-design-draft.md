@@ -3,7 +3,7 @@
 **Status:** Revision 2 (2026-08-23) — 4-lens red-team complete (security/I2-I3, maintenance-economics,
 architecture-fit/precedent, steelman-for-reversal). **Verdict: reversal declined for now.** See §7.
 No code written; this stays a design/decision document.
-**Branch:** `microvm-first-party-backend`. **Depends on:** `decisions/ADR-080-sandbox-backend-registry.md`
+**Branch:** `microvm-first-party-backend`. **Depends on:** `decisions/archive/ADR-080-sandbox-backend-registry.md`
 (Proposed — the registry this design would register against).
 
 ## 0. Why this file exists
@@ -60,7 +60,7 @@ bounded and worth paying now — not just that the registry now exists to regist
 
 ## 2. What's actually different since 008 §1 was written (the honest "why now")
 
-- `decisions/ADR-080-sandbox-backend-registry.md` (Proposed) makes `SandboxBackend` a real,
+- `decisions/archive/ADR-080-sandbox-backend-registry.md` (Proposed) makes `SandboxBackend` a real,
   runtime-resolvable extension point (`register_backend`, `resolve_strict`/`resolve_named`) instead of
   a compile-time-only template parameter. Before ADR-080, *nothing* — first-party or consumer-supplied
   — could become the winner of `Strict` resolution; only `SandboxProfile<P>` naming a concrete type
@@ -280,7 +280,7 @@ Revision 1 as the weakest claim and nothing in red-team strengthened it.
 Two lenses independently checked the real, current status of `native-jail`'s own v1 completeness gate
 and reached different secondary sources but the same authoritative answer. The maintenance-economics
 lens cited a milestone-2 breakdown doc claiming G1 cross-platform parity is "done." The steelman lens
-cited `decisions/README.md`'s own ADR-004 row directly. **`decisions/README.md` is this project's
+cited `decisions/archive/README.md`'s own ADR-004 row directly. **`decisions/README.md` is this project's
 authoritative status ledger** (per its own convention, cross-checked directly for this synthesis):
 ADR-004 (the Windows `native-jail` backend) is marked **"Spiked, not Judged"** — the full 008 §9
 promotion gate (G1-G8) has not cleared. Whichever secondary planning doc says otherwise is stale
@@ -299,7 +299,7 @@ that path is already open today, unconditionally. But Design D's specific propos
 CI-compiled, tested example authored by the engine team — is a real, if much lighter, maintenance
 commitment closer to "the engine building it" than to "a deployer supplies their own." It's a smaller
 exception to 008 §1's letter than Design A, not a non-exception. The same lens also surfaced a directly
-on-point precedent Revision 1 missed entirely: `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`
+on-point precedent Revision 1 missed entirely: `decisions/archive/ADR-008-wasm3-cold-start-vs-wasmtime.md`
 (2026-08-03/04, three weeks before this draft) evaluated a *quantified* alternative backend (wasm3,
 160-400x faster cold start) for first-party adoption and explicitly declined it in favor of the open
 seam, on nearly identical "two sandbox-escape surfaces, two conformance stories" reasoning. That
@@ -362,11 +362,11 @@ gate Judged, or an explicit decision to proceed despite it) still gate anything 
 §7 item 3's reopen condition (i) — "`native-jail`'s own 008 §9 gate reaches Judged on both
 platforms" — is the one this document's own §8 (C5) cited as still unmet ("`native-jail`'s own v1
 gate (`ADR-004`) being 'Spiked, not Judged' is a sequencing fact"). As of this same day:
-`decisions/ADR-004-appcontainer-native-jail-windows-backend.md` was independently red-teamed for
+`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md` was independently red-teamed for
 real (a fresh reviewer with no prior context — the missing piece C5 implicitly required), found one
 BLOCKING and three REAL GAP/MINOR findings, fixed all four, re-verified, and is now **Judged**.
-`decisions/ADR-083-linux-native-jail-pivot-root-containment.md` closed the Linux filesystem/process-
-visibility gap the same way. `decisions/ADR-082-native-jail-promotion-gate-008-9.md` (the actual
+`decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md` closed the Linux filesystem/process-
+visibility gap the same way. `decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md` (the actual
 008 §9 G1-G8 synthesis) now shows every gate Judged or correctly-scoped-out on both platforms except
 G5 (deliberately out of scope pending 023's own M8 baseline, not a `native-jail` gap). **Condition
 (i) reads as met.** This does NOT itself decide to build `KataBackend` or reverse 008 §1's locked

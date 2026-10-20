@@ -1,4 +1,4 @@
-// decisions/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 3: the
+// decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md prove phase, priority item 3: the
 // sys.meta_path finder (Design A, §3.1) as a real C-implemented type (tp_dictoffset == 0, §5.5.2),
 // installed as the sole sys.meta_path entry. Tests claim A1 (denial of a disallowed name) and A3
 // (documented limitation: a name pre-seeded into sys.modules bypasses the finder entirely), plus

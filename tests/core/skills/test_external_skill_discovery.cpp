@@ -1,4 +1,4 @@
-// Implements decisions/ADR-072-external-host-discovered-skill-sources.md -- proves
+// Implements decisions/archive/ADR-072-external-host-discovered-skill-sources.md -- proves
 // core/external_skill_discovery.hpp's `discover_external_skill_locations()` against real host
 // filesystem state: synthetic scratch directories simulating each known tool/scope convention, and
 // (D6) this session's REAL, unmodified environment, since `~/.claude/skills/*` are real NTFS

@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "rt" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- decisions/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
+# ---- decisions/archive/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
 # rt/message_codec.hpp's JSON codec (previously confirmed absent).
 agentengine_add_test(test_message_codec_attribution LIBS agentengine::core agentengine_warnings)
 
@@ -54,12 +54,12 @@ agentengine_add_test(test_rt_session_store LIBS agentengine::core agentengine_wa
 # wired into any live Quark-based code.
 agentengine_add_test(test_rt_thread_pool LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-175 (issue #78) -- a parked coroutine is resumed by its home (the block_on() driving
+# ---- decisions/archive/ADR-175 (issue #78) -- a parked coroutine is resumed by its home (the block_on() driving
 # it, including every ThreadPool job), and AsyncMutex ownership is a holder id. Issue #78's reproduction
 # plus every red-team finding against the intermediate designs. Memory-capped, self-watchdogged.
 agentengine_add_test(test_rt_parked_task_home LIBS agentengine::core agentengine_warnings TIMEOUT 300)
 
-# ---- decisions/ADR-219 (issue #79) -- a host's Resumer: a coroutine driven from a host's own executor
+# ---- decisions/archive/ADR-219 (issue #79) -- a host's Resumer: a coroutine driven from a host's own executor
 # (ScopedResumer) is handed back to it when an AsyncMutex/channel<T> wakes it, never resumed on the
 # waker's foreign thread. Plain std::thread fake executor. Memory-capped, self-watchdogged.
 agentengine_add_test(test_rt_host_resumer LIBS agentengine::core agentengine_warnings TIMEOUT 300)
@@ -105,7 +105,7 @@ agentengine_add_test(test_block_on_exception LIBS agentengine::core agentengine_
 # (<thread>), no Docker/Ledger needed -- agentengine::core alone provides AsyncMutex/task<T>.
 agentengine_add_test(test_rt_block_on LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-168-bounded-reflection-loop.md -- issue #55: run_with_bounded_reflection()
+# ---- decisions/archive/ADR-168-bounded-reflection-loop.md -- issue #55: run_with_bounded_reflection()
 # (rt/bounded_reflection.hpp), a thin outer driver over repeated AgentSession::start_run() calls.
 agentengine_add_test(test_bounded_reflection LIBS agentengine::core agentengine_warnings)
 

@@ -109,7 +109,7 @@ touches; every one of them is a testable gate, not a slogan.
 ### D1 — Quark is a dependency, not a fork (SUPERSEDED by ADR-037)
 
 Originally: Quark consumed as an **unmodified submodule**, never patched in-tree, with AgentEngine
-mapping its own concepts onto Quark's. **ADR-037 (`decisions/ADR-037-remove-quark-as-core-runtime.md`,
+mapping its own concepts onto Quark's. **ADR-037 (`decisions/archive/ADR-037-remove-quark-as-core-runtime.md`,
 executed 2026-08-13) overturned this decision entirely** — the project owner's reasoning was that an
 agent engine should provide an API to build AI systems the way Microsoft Agent Framework, the OpenAI
 Agents SDK, and Anthropic's own agent patterns do, none of which ship a custom actor/distributed
@@ -237,7 +237,7 @@ architecture detail: containment results must be identical.
 AgentEngine was originally built on top of Quark, a distributed actor engine (mailbox dispatch,
 cluster placement, `Sequential` policy, snapshot/event-sourced persistence) — the vocabulary that
 motivated this document's own earlier title for this section, "The Quark mapping." **ADR-037
-(`decisions/ADR-037-remove-quark-as-core-runtime.md`) removed that dependency entirely**: the
+(`decisions/archive/ADR-037-remove-quark-as-core-runtime.md`) removed that dependency entirely**: the
 project owner's own reasoning was that an agent engine should provide an API to build AI systems,
 the way Microsoft Agent Framework, the OpenAI Agents SDK, and Anthropic's own agent patterns do —
 none of which ship a custom actor/distributed runtime — not carry a distributed-actor-engine's own

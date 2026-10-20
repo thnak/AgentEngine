@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-241-egress-proxy-async-path-on-rt-http.md §5 (D2 the one gate, D3 the address policy),
+// Implements decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md §5 (D2 the one gate, D3 the address policy),
 // §7 (D5 the deadline), §8.2 (the egress I/O context and admission) and §9 (the error table): the shared egress
 // implementation that `HostEgressProxy` (production seams) and `TestEgressProxy` (test seams) both call.
 //

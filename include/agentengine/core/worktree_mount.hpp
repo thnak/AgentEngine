@@ -466,7 +466,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // parent (new commits, tree grows) -- both versions retained, nothing silently overwritten, matching
 // 025 §4's own wording literally. This is a deliberate choice with a named consequence (design draft
 // §3): the conflicts Ref has no built-in retention/pruning, the same class of residual
-// `decisions/README.md`'s own ADR-038 entry already names for passivation/archival generally.
+// `decisions/archive/README.md`'s own ADR-038 entry already names for passivation/archival generally.
 //
 // Digests are reused directly from the ALREADY-STORED `MergeConflict::ours`/`::theirs` entries, never
 // re-written as fresh blobs: `object_store` is the SAME content-addressed store the parent/branch

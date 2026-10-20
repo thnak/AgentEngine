@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 2 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
+// Proves ADR-102 Phase 2 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
 // roadmap; this test itself belongs to Phase 2, ported from docs/planning/proofs/worktree_io/
 // worktree_ledger.hpp) -- Ledger<Store>/BranchHandle<Store>/Checkpoint/merge_trees() (core/ledger.hpp)
 // actually work against the REAL agentengine::InMemoryWorktreeObjectStore, not a stand-in.

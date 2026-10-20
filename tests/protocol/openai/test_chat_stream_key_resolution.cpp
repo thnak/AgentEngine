@@ -1,4 +1,4 @@
-// decisions/ADR-237 §5.1 (#172, Phase C SecretStore slice): `SecretStore::resolve` is `task`-shaped, and both real
+// decisions/archive/ADR-237 §5.1 (#172, Phase C SecretStore slice): `SecretStore::resolve` is `task`-shaped, and both real
 // chat clients resolve their API key as the FIRST step of `chat_stream`'s producer root (an owned root on the
 // client's `rt::Runtime`), not inline in `chat_stream()`. Driven offline against a loopback server, for both
 // `OpenAIChatClient` and `AnthropicChatClient`.

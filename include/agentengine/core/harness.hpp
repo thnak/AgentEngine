@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-234-harness-composition.md (issue #60): the Harness composition point -- one
+// Implements decisions/archive/ADR-234-harness-composition.md (issue #60): the Harness composition point -- one
 // call that turns a declared agent plus the caller's client and authority into a session carrying an
 // opinionated default stack, the AgentEngine counterpart of MAF's `chatClient.AsHarnessAgent()` /
 // `create_harness_agent()` (docs/research/2026-10-01-agent-harness.md has the MAF source read for this).

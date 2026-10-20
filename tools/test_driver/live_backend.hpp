@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-182 live mode (decisions/ADR-182-agent-test-driver-mcp.md §3.3): a driver session
+// Implements ADR-182 live mode (decisions/archive/ADR-182-agent-test-driver-mcp.md §3.3): a driver session
 // whose model is a REAL OpenAI-compatible provider (DeepSeek by default), wrapped in
 // RecordingChatClient so every call is written to disk as a ChatCallRecording (I5: a confusing live
 // run can be replayed later without the network).

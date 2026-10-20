@@ -1,4 +1,4 @@
-// Child program for tests/rt/test_rt_reactor_process.cpp -- decisions/ADR-237-async-extension-points-and-io-
+// Child program for tests/rt/test_rt_reactor_process.cpp -- decisions/archive/ADR-237-async-extension-points-and-io-
 // reactor.md §6.3 "Processes", §8.2 gates 1d and 4. Every mode is bounded in time (machine safety, CLAUDE.md):
 // even a "forever" sleeper a broken test leaks exits on its own after 120 s.
 //

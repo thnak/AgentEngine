@@ -1,6 +1,6 @@
 #pragma once
 // Implements rfcs/002-Agent-Model-and-Authoring.md §2.1 ("Running an agent", as amended by
-// decisions/ADR-226-agent-run-bridge.md) and the run half of 015 §1's equivalence rule (I6): the bridge
+// decisions/archive/ADR-226-agent-run-bridge.md) and the run half of 015 §1's equivalence rule (I6): the bridge
 // from a declared agent -- `struct A : Agent<A, Policies...>` compiled by `register_agent<A>()`, or a
 // 015 Agent document compiled by `compile_agent_document()` -- to a RUNNING `rt::AgentSession`
 // (issue #46, issue #32 Layer A).
@@ -213,7 +213,7 @@ template <class ChatClientT>
 // ae-naming-lint: allow AgentBundle — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 using AgentBundle = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentToolSurface<>>;
 
-// decisions/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
+// decisions/archive/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
 // surface -- how the harness (core/harness.hpp) composes ON this bridge instead of a third session-
 // construction path. `AgentBundle<C>` is exactly `AgentBundleWith<C>`.
 template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
@@ -249,7 +249,7 @@ namespace agent_bind_detail {
 // resolves inline and simply returns an immediately-ready task.
 using OutputValidator = std::function<task<result<void>>(std::string_view)>;
 
-// decisions/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
+// decisions/archive/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
 // floors below. The bridge's own callers pass none; the harness passes one that may only make a tool MORE
 // gated (core/harness.hpp's plan-gate coverage), never less -- the bridge cannot check that direction for an
 // arbitrary callable, so this stays in `agent_bind_detail`, not on any public signature.

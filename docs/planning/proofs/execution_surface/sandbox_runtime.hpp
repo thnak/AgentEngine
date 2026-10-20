@@ -253,7 +253,7 @@ public:
     // corrupting each other. Fixed by deriving the child's staging directory INTERNALLY from the
     // real, just-minted child branch's own name -- unique by construction (`branch_seq_` in
     // `Ledger::branch_from()`) -- via `compute_digest()`, the SAME digest-based per-session
-    // subdirectory naming precedent `decisions/ADR-096-...:147-153` (C8) already established and
+    // subdirectory naming precedent `decisions/archive/ADR-096-...:147-153` (C8) already established and
     // shipped in this codebase for the identical hazard class, reused correctly this time (an
     // earlier version of this file cited a DIFFERENT, never-shipped prototype as its precedent
     // instead of this real one -- fixed).

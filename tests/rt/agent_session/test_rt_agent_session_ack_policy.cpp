@@ -1,4 +1,4 @@
-// Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): proves `start_run_with_ack_policy()`'s two real
+// Gap-15 fix (2026-08-14, decisions/archive/ADR-043-*.md): proves `start_run_with_ack_policy()`'s two real
 // behaviors -- `ack_policy::at_most_once` is byte-identical to calling `session.start_run()` directly
 // (no store interaction at all, matching today's unchanged default), and `ack_policy::require_durable`
 // durably writes BOTH the turn's own history delta (via `save_turn_delta`/`load_turn_delta`, reusing

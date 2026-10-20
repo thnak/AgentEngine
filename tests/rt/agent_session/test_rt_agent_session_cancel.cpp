@@ -1,4 +1,4 @@
-// Proof for ADR-178 (decisions/ADR-178-session-cancellation.md): `AgentSession::cancel()` stops the run it
+// Proof for ADR-178 (decisions/archive/ADR-178-session-cancellation.md): `AgentSession::cancel()` stops the run it
 // is executing, cooperatively, at named checkpoints -- and a canceled run is a STATE (run_canceled, an
 // attributable `run.canceled` result), never an abort.
 //

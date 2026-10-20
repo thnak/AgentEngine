@@ -1,5 +1,5 @@
 // HandleRelay (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
-// decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md) -- the two positive/negative
+// decisions/archive/ADR-085-jailed-python-worker-slice-2-handle-relay.md) -- the two positive/negative
 // controls the design draft's own §6 named but the regression sweep against the existing suite does
 // not exercise: (1) a real, successful socket relay round trip under a genuinely granted `cap::NetOut`
 // -- nothing in the pre-existing suite ever grants NetOut and expects a live connect to succeed, every

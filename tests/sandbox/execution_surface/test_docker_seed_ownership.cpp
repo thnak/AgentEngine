@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-174-root-owned-container-seed.md (GitHub issue #68), live half.
+// Proof for decisions/archive/ADR-174-root-owned-container-seed.md (GitHub issue #68), live half.
 //
 // test_ustar_writer.cpp proves the archive BYTES are right without a daemon. This file proves the
 // daemon and the kernel agree: that a workspace seeded through `docker cp -` is genuinely owned by

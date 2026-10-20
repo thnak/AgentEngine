@@ -52,7 +52,7 @@ own (partly superseded) draft text:
 
 ## 2. License check (ADR-106-style: checked directly, not assumed)
 
-Verified directly against each project's own license file, the same discipline `decisions/ADR-106-
+Verified directly against each project's own license file, the same discipline `decisions/archive/ADR-106-
 document-extraction-catalog-candidate-license-substitution.md` §2 used for poppler/mupdf/libxml2:
 
 - **Tesseract** (`tesseract-ocr/tesseract`): **Apache License, Version 2.0** — verified against the

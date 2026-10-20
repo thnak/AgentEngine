@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 1 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md) --
+// Proves ADR-102 Phase 1 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md) --
 // IdentityAuthority/IdentityHandle/Grant<T> (trust/identity_authority.hpp) and AsyncQuota<T>
 // (rt/async_quota.hpp), ported from docs/planning/proofs/{identity_authority,async_quota}/, actually
 // work against the real, agentengine-namespaced code -- re-proving ADR-099 §3's own claims against

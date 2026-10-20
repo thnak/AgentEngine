@@ -95,7 +95,7 @@ namespace agentengine::rt {
 
 namespace workflow_as_executor_detail {
 
-// The `drive<T>` trampoline that used to live here is gone: decisions/ADR-237 §5.1 (Phase G) made the
+// The `drive<T>` trampoline that used to live here is gone: decisions/archive/ADR-237 §5.1 (Phase G) made the
 // executor body `task`-shaped, so `run_once` below is a coroutine and awaits the inner run directly.
 
 [[nodiscard]] inline char const* status_tag(workflow_status s) {

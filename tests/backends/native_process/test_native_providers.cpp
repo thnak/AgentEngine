@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's src/backends/native_process/native_providers.hpp: NativeShellProvider/
 // NativeBashProvider/NativePythonProvider/NativeNodeProvider end to end -- concept satisfaction,
 // capability-gated discovery, dispatch that starts in the worktree (R-S8 pins what that does NOT

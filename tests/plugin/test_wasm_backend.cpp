@@ -1,5 +1,5 @@
 // Milestone 2 Phase D tasks D3 and D5 (docs/planning/milestone-2-tools-capabilities-sandbox-
-// breakdown.md), decisions/ADR-010-wasm-component-host-manifest-capability-binding.md §7.3 --
+// breakdown.md), decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md §7.3 --
 // proves the real WasmBackend implementation (src/backends/wasm/wasm_backend.{hpp,cpp}) against a
 // genuinely compiled `ae:tool` component (tests/fixtures/wasm_ae_tool_fixture/), not a hand-crafted
 // stub. D5 extended the fixture with four tools ("read-file"/"write-file"/"fetch"/"get-secret",
@@ -26,7 +26,7 @@
 //      places a mismatched capability first (wrong kind -- rejected before reaching it), against the
 //      real fixture's read-file/write-file/fetch/get-secret tools. fs-read/fs-write/resolve-secret are
 //      still stubs (reaching them traps with "not implemented in M2's minimal host"); http-request is
-//      no longer one (decisions/ADR-011-first-party-egress-proxy.md, M2 Phase F task F1) -- its
+//      no longer one (decisions/archive/ADR-011-first-party-egress-proxy.md, M2 Phase F task F1) -- its
 //      right-kind probe is a dedicated block below, not `probe_gated_callback`, since a real result
 //      no longer traps.
 //   6. wall_ms is a real, measured kill (claim 5): the "spin" tool loops forever; a low wall_ms
@@ -576,7 +576,7 @@ int main() {
                               {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
                               "wrong kind");
 
-        // http-request/right-kind is no longer a stub-trap probe (decisions/ADR-011-first-party-
+        // http-request/right-kind is no longer a stub-trap probe (decisions/archive/ADR-011-first-party-
         // egress-proxy.md, M2 Phase F task F1): cb_http_request now returns a REAL, structured
         // result<http-response-data, http-error> instead of trapping once the capability-kind check
         // passes, so probe_gated_callback's "the wasmtime call itself fails" assumption (still

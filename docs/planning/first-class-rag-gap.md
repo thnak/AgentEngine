@@ -119,7 +119,7 @@ handles with list and cancel (`core/standing_effect.hpp`, `rt/standing_effect_re
 by ADR-097). It does **not** report progress: `background_task()` deliberately resets
 `report_progress` to a no-op (ADR-060 §4). (The older `backgroundable-standingeffect-gap.md` still
 says "never built"; that note is stale.) The full audit, and the fix, is
-**`decisions/ADR-181-durable-cancellable-background-jobs.md`**. Gaps for a long indexing job, found
+**`decisions/archive/ADR-181-durable-cancellable-background-jobs.md`**. Gaps for a long indexing job, found
 by reading that code:
 
 - **Session-scoped.** A background task belongs to one `AgentSession`, and its completion is silently

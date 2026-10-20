@@ -4,8 +4,8 @@
 **implemented and proven (2026-08-23, see §10).** Not yet judged (project-owner sign-off, 024 §4.2,
 still pending — implementation ahead of judging matches this project's own "design → red-team →
 prove → judge" order, prove being this step). Relates to `OpenQuestions.md` OQ-23,
-`decisions/ADR-023-response-format-codec-seam.md` (the codec/declassifier this design sits beside
-without modifying), `decisions/ADR-035-chatclient-streaming-completeness.md` (the backend-agnostic
+`decisions/archive/ADR-023-response-format-codec-seam.md` (the codec/declassifier this design sits beside
+without modifying), `decisions/archive/ADR-035-chatclient-streaming-completeness.md` (the backend-agnostic
 `AgentSession::run_model_call()` centralization this design reuses as its insertion point). Confirming
 fixture for the underlying gap: `tests/protocol/openai/test_openai_chat_client_translation.cpp`'s `OQ-23-R1` block
 (2026-08-23, 9/9 passing).

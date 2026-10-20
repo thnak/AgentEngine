@@ -4,7 +4,7 @@
 // (wall_ms timeout only killed the HOST-side `ctr` CLI wrapper, not the guest process -- see the
 // infinite-loop case below, which specifically proves the fix rather than just the host-side call
 // returning) and one it investigated and REJECTED (an exit-code-137 OOM-classification heuristic --
-// decisions/ADR-088-kata-backend-abuse-corpus.md SS3 has the red-team reasoning). Consequently this
+// decisions/archive/ADR-088-kata-backend-abuse-corpus.md SS3 has the red-team reasoning). Consequently this
 // corpus does NOT have full parity with `test_native_jail_abuse_corpus_linux.cpp`'s four cases:
 //   - infinite loop (`wall_ms`) and unbounded output (`output_bytes`) are covered, each with a
 //     positive control, same G2 shape as the native-jail corpus.

@@ -1,4 +1,4 @@
-// Prove-phase correctness gate for decisions/ADR-001-shellrunner-grammar-and-dispatch.md's Design
+// Prove-phase correctness gate for decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md's Design
 // A (src/backends/native_jail/{shell_grammar,shell_parser,shell_dispatch,shell_runner,
 // command_registry}.hpp). Exercises, end-to-end through the real ShellRunner (never a mock), the
 // claims ADR-001 §5 names that this pass attempts: Sh-C1 (ExecState sharing), Sh-C2 (shadowing

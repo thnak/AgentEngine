@@ -181,7 +181,7 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     }
 };
 
-// -- H4c's regression fixture: decisions/ADR-070-host-configurable-responsibility-boundary.md's
+// -- H4c's regression fixture: decisions/archive/ADR-070-host-configurable-responsibility-boundary.md's
 // PolicyDecider seam, at the resolve_hook_decision() completion call site specifically -- the exact
 // call site the implementing pass's own report says had a real bug (finish_hook_processed_round()'s
 // invoke_tool() call silently dropping policy_decider_, so a PolicyDecider-auto_approved

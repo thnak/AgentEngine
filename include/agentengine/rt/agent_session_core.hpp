@@ -539,7 +539,7 @@ public:
         return tool_call_hook_;
     }
 
-    // decisions/ADR-070-host-configurable-responsibility-boundary.md: unset (`nullptr`) by default --
+    // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: unset (`nullptr`) by default --
     // every existing session is unaffected until it opts in. Consulted ONLY for
     // `approval_mode::policy_driven` calls, at exactly the two places that already decide anything
     // about that mode -- the main round loop's `invoke_tool()` call and the suspend-for-approval
@@ -552,7 +552,7 @@ public:
         return policy_decider_;
     }
 
-    // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real: runs once
+    // decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md, wired in for real: runs once
     // per round, in `run_rounds()`, after this turn's `ContextContribution` is fully assembled
     // (including the dynamically-injected `schedule_wakeup` tool, if any) but BEFORE it is turned
     // into that round's `ChatRequest` -- the real `pre_model`/`turn` seam 017 §4 and 002 §5 both name.
@@ -824,7 +824,7 @@ public:
     }
     [[nodiscard]] std::size_t pending_client_input_count() const noexcept { return pending_client_inputs_.size(); }
 
-    // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: closes the named gap that
+    // decisions/archive/ADR-029-suspend-for-human-approval.md §6 / ADR-070: closes the named gap that
     // `Interaction::expires_at_ns` is stored but nothing ever checks it. `interaction.hpp`'s own
     // comment is why this is a QUERY, not a wired timer: "no real wall-clock source wired in
     // anywhere in this project yet (Clock is not a wired capability)" -- an engine-internal poll
@@ -838,7 +838,7 @@ public:
     // was missing.
     [[nodiscard]] std::vector<std::string> expired_interaction_ids(std::int64_t now_ns) const;
 
-    // decisions/ADR-029-suspend-for-human-approval.md §6 / ADR-070: the OTHER half of the same gap
+    // decisions/archive/ADR-029-suspend-for-human-approval.md §6 / ADR-070: the OTHER half of the same gap
     // -- nothing today ever POPULATES `expires_at_ns` either (`open_interaction()`'s own body sets
     // only `interaction_id`/`run_id`/`reason`). A host that learns of a new suspension (the
     // `input_required` run event already names the interaction_id) calls this, in its own wall-clock
@@ -1075,7 +1075,7 @@ private:
     void emit_run_event_for(std::string const& run_id, run_event_kind kind,
                              RunEventPayload payload = run_event_payload::Empty{});
 
-    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5. Dispatches one already-filtered batch
+    // decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5. Dispatches one already-filtered batch
     // of requests (the caller has already skipped/resolved anything a hook denied) through the
     // corrected design: admission (steps 1,4/7,5 -- admit_call(), tool_pipeline.hpp) sequentially,
     // in emitted order, exactly as invoke_tool() does inline -- then fans any batch
@@ -1381,13 +1381,13 @@ private:
     agentengine::Usage                                    run_usage_{};
     std::optional<std::uint64_t>                         max_turns_;
     ApprovalDecider                                      approval_decider_{};
-    // decisions/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
+    // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
     // set_policy_decider()'s own comment above for exactly where this is (and is not) consulted.
     PolicyDecider                                         policy_decider_{};
     // OQ-21 (core/tool_call_hook.hpp). Unset by default -- see set_tool_call_hook()'s own comment
     // above for exactly where this is (and is not) consulted.
     agentengine::ToolCallHook                             tool_call_hook_{};
-    // decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Unset by default.
+    // decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md. Unset by default.
     agentengine::TurnMiddlewareHook                       turn_middleware_hook_{};
     bool                                                  suspend_for_approval_ = false;
     bool                                                  stream_model_calls_ = false;
@@ -1413,7 +1413,7 @@ private:
     std::uint64_t                                         admission_denied_count_ = 0;
     stream_producer<RunEvent>                             run_event_producer_;
     std::unordered_map<std::string, std::uint64_t>        run_event_seq_by_run_;
-    // decisions/ADR-160-parallel-tool-batch-scheduler.md §5 MUST-FIX 2: `emit_run_event_for()`
+    // decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5 MUST-FIX 2: `emit_run_event_for()`
     // mutates `run_event_seq_by_run_` (a plain `std::unordered_map`) and calls `run_event_producer_.
     // push()` (`rt::channel_producer<T,E>`, which documents "Multiple PRODUCERS... unsupported",
     // rt/channel.hpp) -- both unsafe under concurrent callers. A parallel-batch call's own

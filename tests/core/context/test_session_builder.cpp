@@ -175,7 +175,7 @@ struct ScriptedChatClient {
         return std::move(pair.consumer);
     }
 };
-// B30 (decisions/ADR-175 round 3 finding 1): a provider that throws. `ask_stream()`'s driver thread runs
+// B30 (decisions/archive/ADR-175 round 3 finding 1): a provider that throws. `ask_stream()`'s driver thread runs
 // the round through `rt::block_on()`, which rethrows -- uncaught on a std::jthread that was std::terminate.
 struct ThrowingChatClient {
     bool throws = true;  // a member, not a literal: a bare `throw` before `co_return` is unreachable code (C4702)
@@ -1142,7 +1142,7 @@ int main() {
         }
 
         // ---- B30: ask_stream() against a provider that throws -- the process survives and the stream
-        // ends FAILED, not closed as if the run had succeeded (decisions/ADR-175 round 3 finding 1).
+        // ends FAILED, not closed as if the run had succeeded (decisions/archive/ADR-175 round 3 finding 1).
         {
             auto built_b30 = RawQuickstartSessionBuilder(ThrowingChatClient{}).session_id("s-b30").build();
             check(built_b30.has_value(), "B30 setup: a Bundle over a throwing provider builds");
@@ -1163,7 +1163,7 @@ int main() {
 
         // ---- B31: ask_stream() delivers the reply's text with a provider that answers at once. The relay
         // used to exit on the stop request issued as soon as the run returned -- usually mid-sleep, before
-        // relaying anything -- so the stream ended closed and empty (decisions/ADR-175 round 4 finding 4,
+        // relaying anything -- so the stream ended closed and empty (decisions/archive/ADR-175 round 4 finding 4,
         // pre-existing). Five consecutive calls on one Bundle.
         {
             auto built_b31 = RawQuickstartSessionBuilder(ScriptedChatClient{}).session_id("s-b31").build();

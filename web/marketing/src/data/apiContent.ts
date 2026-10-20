@@ -1290,7 +1290,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "A tool declared Approval<approval_mode::always_require> normally needs a synchronous approval_decider_ configured on the session. ADR-029 adds the alternative: with suspend_for_approval_ set and no decider configured, the WHOLE StartRun ask genuinely suspends — it never resolves — and a real Interaction opens (interaction_reason::approval), with input_required/approval_requested events on the run's event stream. A later ResolveInteraction{interaction_id, approved} ask resumes the SAME run (never a new run_id — 001's attributability invariant, I4): approved=true invokes the pending call for real through the ordinary capability-checked pipeline; approved=false folds a denial into history as an ordinary tool error. A second StartRun sent while an interaction is open is rejected outright, and a ResolveInteraction from a caller that doesn't match the session's owning principal is denied at admission before the interaction lookup even runs.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
-      href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
+      href: gh("decisions/archive/ADR-029-suspend-for-human-approval.md"),
     },
     {
       id: "middleware-chain",
@@ -1300,7 +1300,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "A decorator over any ModelCallGatewayLike backend (typically a retry/failover ModelCallGateway<Primary, Fallback...>), a real coroutine so a hook's co_await is completely ordinary: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
-      href: gh("decisions/ADR-036-model-call-gateway.md"),
+      href: gh("decisions/archive/ADR-036-model-call-gateway.md"),
     },
     {
       id: "turn-middleware",
@@ -1402,7 +1402,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "Một tool được khai báo Approval<approval_mode::always_require> thông thường cần một approval_decider_ đồng bộ được cấu hình trên session. ADR-029 bổ sung một lựa chọn khác: khi suspend_for_approval_ được thiết lập và không có decider nào được cấu hình, TOÀN BỘ yêu cầu StartRun sẽ thực sự tạm dừng — nó không bao giờ được giải quyết — và một Interaction thật được mở ra (interaction_reason::approval), kèm các sự kiện input_required/approval_requested trên luồng sự kiện của run. Một yêu cầu ResolveInteraction{interaction_id, approved} sau đó sẽ khôi phục lại CHÍNH run đó (không bao giờ tạo run_id mới — theo invariant về khả năng quy trách nhiệm I4 của 001): approved=true sẽ gọi thực thi thật lệnh gọi đang chờ, thông qua pipeline kiểm tra capability thông thường; approved=false gộp một sự từ chối vào history như một lỗi tool bình thường. Một StartRun thứ hai gửi tới trong lúc một interaction đang mở sẽ bị từ chối thẳng, và một ResolveInteraction từ một caller không khớp với principal sở hữu session sẽ bị từ chối ngay ở bước tiếp nhận, trước cả khi việc tra cứu interaction diễn ra.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
-      href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
+      href: gh("decisions/archive/ADR-029-suspend-for-human-approval.md"),
     },
     {
       id: "middleware-chain",
@@ -1412,7 +1412,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "Một decorator bọc quanh bất kỳ backend nào kiểu ModelCallGatewayLike (thường là một ModelCallGateway<Primary, Fallback...> có retry/failover), là một coroutine thật nên co_await trong một hook hoàn toàn bình thường: mỗi Ms... theo thứ tự có một hook before_model(ModelCallContext&) (có thể viết lại request đi ra hoặc short-circuit bằng một phản hồi tổng hợp) và một hook after_model(ModelCallContext&) (nhìn thấy phản hồi thật một khi nó đã ổn định). Một đợt red-team đã phát hiện trường hợp chí mạng mà cơ chế này phải tự đóng lại: nếu không, một middleware viết lại nội dung có thể giả mạo hoặc thay đổi một ToolCall đáng tin cậy được tái dựng từ văn bản thuần, âm thầm vượt qua cổng confused-deputy của ADR-023 — viết lại nội dung không cùng loại mối đe dọa với mở rộng capability, nhưng nếu không được kiểm soát thì dẫn tới cùng một hậu quả. enforce_backend_tool_call_provenance() buộc mọi ToolCall mà nội dung Message đã bị middleware viết lại — nếu không đến nguyên văn từ backend — phải hạ xuống thành call_provenance::text_derived, nên nó vẫn phải tự giành lấy quyền đi qua cổng giải mật thông thường — một middleware có thể thay đổi những gì model được hỏi hay được nói, nhưng không bao giờ thay đổi được việc một lệnh gọi tool được tin là đến từ đâu.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
-      href: gh("decisions/ADR-036-model-call-gateway.md"),
+      href: gh("decisions/archive/ADR-036-model-call-gateway.md"),
     },
     {
       id: "turn-middleware",
@@ -2645,8 +2645,8 @@ export const codeActEntries: Record<Lang, ApiEntry[]> = {
       title: "One interpreter per session, enforced in code — not just true by accident",
       body:
         "Before ADR-030, tools/cli_chat.cpp wired execute_code/mount_skill through five independent process-wide static variables — a MediatedPythonRunner, ExecState, MountedSkillsState, a pending-mount-roots vector, and a second SkillsProvider instance — correct only because the CLI happens to run one session per process, with nothing enforcing that. A red-team pass rejected the obvious fix (give each session's provider its own separately-owned MediatedPythonRunner) on two fatal grounds: the runner routes through unsynchronized process-wide globals internally, and ADR-002 §5.5.6's own 'one OS process per session' rule was still just prose, never enforced. ADR-030's CodeActState makes each of the five pieces a real per-AgentSession member via ADR-028's make_tool_descriptor_with_invoke — the interpreter process boundary itself is what now keeps two sessions' CodeAct state genuinely apart, not a shared-process convention nobody checks.",
-      cite: "decisions/ADR-030-session-scoped-codeact-wiring.md",
-      href: gh("decisions/ADR-030-session-scoped-codeact-wiring.md"),
+      cite: "decisions/archive/ADR-030-session-scoped-codeact-wiring.md",
+      href: gh("decisions/archive/ADR-030-session-scoped-codeact-wiring.md"),
     },
   ],
   vi: [
@@ -2677,8 +2677,8 @@ export const codeActEntries: Record<Lang, ApiEntry[]> = {
       title: "Một trình thông dịch cho mỗi session, được thực thi trong mã — không chỉ đúng một cách tình cờ",
       body:
         "Trước ADR-030, tools/cli_chat.cpp đấu nối execute_code/mount_skill thông qua năm biến static độc lập, toàn tiến trình — một MediatedPythonRunner, ExecState, MountedSkillsState, một vector pending-mount-roots, và một thực thể SkillsProvider thứ hai — chỉ đúng vì CLI tình cờ chạy đúng một session cho mỗi tiến trình, mà không có gì thực thi điều đó. Một đợt red-team đã bác bỏ giải pháp hiển nhiên (cho mỗi provider của session sở hữu riêng một MediatedPythonRunner) vì hai lý do chí mạng: runner định tuyến qua các biến toàn cục toàn-tiến-trình không được đồng bộ hóa ở bên trong, và quy tắc 'một tiến trình OS cho mỗi session' của chính ADR-002 §5.5.6 vẫn chỉ là văn xuôi, chưa từng được thực thi. CodeActState của ADR-030 biến mỗi trong năm thành phần đó thành một thành viên thật riêng theo từng AgentSession thông qua make_tool_descriptor_with_invoke của ADR-028 — chính ranh giới tiến trình của trình thông dịch giờ đây là thứ giữ cho trạng thái CodeAct của hai session thực sự tách biệt nhau, không phải một quy ước dùng-chung-tiến-trình mà không ai kiểm tra.",
-      cite: "decisions/ADR-030-session-scoped-codeact-wiring.md",
-      href: gh("decisions/ADR-030-session-scoped-codeact-wiring.md"),
+      cite: "decisions/archive/ADR-030-session-scoped-codeact-wiring.md",
+      href: gh("decisions/archive/ADR-030-session-scoped-codeact-wiring.md"),
     },
   ],
 };
@@ -3511,7 +3511,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       body:
         "014 §1 named a real gap: nothing stated whether a workflow executor gets its own sub-worktree, inherits the caller's, or shares one. ADR-032 closes it: mint_executor_worktrees walks a Workflow's executors and mints a real 025 §3 SubWorktree (and, for shared/branch modes, a Mount + FsRead/FsWrite capability pair) per executor, keyed off each executor's own sharing_mode -- defaulting to branch UNCONDITIONALLY rather than reusing 025 §3's 'sequential defaults to shared' rule per node, because the superstep model gives concurrent asks to any two executors reachable in the same round (not only explicit fan_out edges), and general graphs here have cycles and dynamic switch_case routing that make proving two nodes can never co-occur unsound to do cheaply. A red-team pass found the mechanism's own fatal case before it shipped: readonly sharing_mode is structurally incompatible with a Mount (a Mount is what makes a sub-worktree reachable from inside a sandbox at all) -- resume_executor_worktrees fails closed on it rather than silently minting a working-but-wrong grant.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
     {
       id: "workflow-executable-kinds",
@@ -3553,7 +3553,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       body:
         "014 §1 đã nêu tên một khoảng trống có thật: không có gì khẳng định liệu một executor của workflow có nhận sub-worktree riêng, kế thừa của caller, hay dùng chung một cái. ADR-032 đóng khoảng trống này lại: mint_executor_worktrees duyệt qua các executor của một Workflow và tạo mới một SubWorktree thật theo 025 §3 (và, với chế độ shared/branch, thêm một cặp capability Mount + FsRead/FsWrite) cho mỗi executor, dựa theo sharing_mode riêng của từng executor — mặc định là branch một cách VÔ ĐIỀU KIỆN thay vì tái sử dụng quy tắc 'sequential mặc định là shared' của 025 §3 theo từng node, bởi vì mô hình superstep trao các yêu cầu đồng thời cho bất kỳ hai executor nào có thể chạm tới nhau trong cùng một vòng (không chỉ các cạnh fan_out tường minh), và các đồ thị tổng quát ở đây có chu trình và định tuyến switch_case động khiến việc chứng minh hai node không bao giờ đồng thời xảy ra là điều không thể làm một cách rẻ và an toàn. Một đợt red-team đã phát hiện trường hợp chí mạng của chính cơ chế này trước khi nó được phát hành: sharing_mode readonly về mặt cấu trúc không tương thích với một Mount (một Mount chính là thứ khiến một sub-worktree có thể chạm tới được từ bên trong sandbox) — resume_executor_worktrees từ chối đóng trên trường hợp đó thay vì âm thầm tạo ra một cấp phát chạy-được-nhưng-sai.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
     {
       id: "workflow-executable-kinds",
@@ -3938,7 +3938,7 @@ export const worktreeEntries: Record<Lang, ApiEntry[]> = {
       title: "Every workflow executor gets its own worktree grant, minted or resumed",
       body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() are real and tested, but this is policy-and-minting ONLY: not yet wired into FunctionExecutor's own EffectContext inside WorkflowSupervisor's real construction path (no production host builds a FunctionExecutor fleet today, confirmed by grep). readonly executors can't resume (a pinned digest isn't durably persisted); branch executors lose their merge ancestor on resume too — both named residuals, not bugs.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
   ],
   vi: [
@@ -3976,7 +3976,7 @@ export const worktreeEntries: Record<Lang, ApiEntry[]> = {
       title: "Mỗi executor workflow đều nhận cấp phát worktree riêng, được tạo mới hoặc khôi phục",
       body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() có thật và đã kiểm thử, nhưng đây CHỈ là policy và cấp phát: chưa được đấu nối vào EffectContext riêng của FunctionExecutor bên trong đường xây dựng thật của WorkflowSupervisor (chưa có host production nào xây một fleet FunctionExecutor hôm nay, đã xác nhận bằng grep). Executor readonly không thể resume (digest ghim không được lưu bền vững); executor branch cũng mất merge ancestor khi resume — cả hai đều là tồn đọng có tên, không phải lỗi.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
   ],
 };
@@ -4511,7 +4511,7 @@ export interface JobTimeRun {
   overrun: string;
 }
 
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10.2 -- test_job_time_limit, run 11
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §10.2 -- test_job_time_limit, run 11
 // times across 3 invocations of the test binary: a CPU-spinning child under cpu_ms=500 with a
 // generous wall_ms=5000 backstop, so the measurement shows which mechanism actually fires.
 // Purely numeric/measured data -- language-neutral, not a Record<Lang, ...>.

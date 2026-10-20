@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §4.3 "Holder identity and re-entry" -- step 5:
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.3 "Holder identity and re-entry" -- step 5:
 // holder await chains (rt/await_chain.hpp) and AsyncMutex lending / refusal (rt/async_mutex.hpp), driven through
 // rt/scope.hpp's when_all / with_scope and rt::on_strand. Each claim names how it would fail.
 //

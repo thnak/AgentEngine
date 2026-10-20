@@ -1,4 +1,4 @@
-// Implements rfcs/009-Plugin-and-Extension-System.md §8c's Skills Phase 3 addendum (decisions/ADR-024) --
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's Skills Phase 3 addendum (decisions/archive/ADR-024) --
 // agent-triggered, on-demand skill mounting. Proves two things without a live model or native_jail
 // dependency: (R1) `MountedSkillsState`'s own trivial contract, and (R2) the load-bearing end-to-end
 // chain -- BEFORE any mount, a tool named by a skill's `allowed-tools` is genuinely unreachable via

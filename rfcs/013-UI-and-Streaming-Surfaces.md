@@ -387,7 +387,7 @@ Approval payloads carry the **exact validated arguments** and the hash the appro
 
   **Upstream primitive originally requested and scoped (historical, closed by ADR-037)**: filed as
   [QuarkCpp#10](https://github.com/thnak/QuarkCpp/issues/10), pre-registered as
-  [Quark ADR-039](https://github.com/thnak/QuarkCpp/blob/master/decisions/ADR-039-ordered-reliable-multi-subscriber-fanout.md)
+  [Quark ADR-039](https://github.com/thnak/QuarkCpp/blob/master/decisions/archive/ADR-039-ordered-reliable-multi-subscriber-fanout.md)
   (Draft — sketch only, no red-team/prove pass ever ran). This was never adopted as a live plan to
   wait on: checking our own §2.3/§2.4 against Quark's then-proposed two-policy design (`EvictAfter<N>`
   vs `Block`) had already settled which one we'd need even if it shipped: A2A's ordering MUST applies

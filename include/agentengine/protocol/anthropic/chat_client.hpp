@@ -300,7 +300,7 @@ void accumulate_message_delta_usage(AnthropicUsageSnapshot& snapshot, json::Valu
 // compatible endpoints), duplicated rather than shared with protocol/openai/chat_client.hpp per this
 // project's own "a second, independent copy rather than a shared header" precedent. As of 2026-08-19
 // that gap is closed at the transport layer instead (`net_egress_proxy.cpp`'s
-// `dechunk_response_body_if_needed`, decisions/ADR-011-first-party-egress-proxy.md's addendum) --
+// `dechunk_response_body_if_needed`, decisions/archive/ADR-011-first-party-egress-proxy.md's addendum) --
 // `resp->body` below is already plain by the time `chat()` sees it. Running the old per-provider decode
 // a second time on an already-dechunked JSON body misparses it as chunk framing and fails closed
 // (found the hard way, fixed same day as protocol/openai's identical retirement). The STREAMING path

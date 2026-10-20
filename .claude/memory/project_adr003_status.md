@@ -8,7 +8,7 @@ metadata:
   modified: 2026-08-01T11:42:51.987Z
 ---
 
-ADR-003 (`decisions/ADR-003-caller-aware-import-gating.md`) completed the full
+ADR-003 (`decisions/archive/ADR-003-caller-aware-import-gating.md`) completed the full
 `design → red-team → prove → judge` cycle and is committed as `cf38d96`
 ("ADR-003: prove and judge caller-aware import gating (resolves OQ-15)"), 2026-08-01.
 

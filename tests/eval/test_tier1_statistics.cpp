@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md's Tier-1 statistics as real code (round 5):
+// Implements decisions/archive/ADR-195-evaluation-harness.md's Tier-1 statistics as real code (round 5):
 // the Clopper-Pearson bounds behind the follow-rate screen (E27) and the containment gate (§3.7 gate
 // rule 2), the gross-harm sum statistic (E28), and round 4's hypergeometric min-task concentration
 // fix (§6 G3). Numeric checks are pinned against known closed-form values and against the numbers

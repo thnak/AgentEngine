@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.2 -- the standalone-Asio
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.2 -- the standalone-Asio
 // `pal::Reactor`, as an internal header of src/backends/reactor_asio/ so each I/O family (timers here;
 // sockets, pipes and processes in their own translation units) can reach the one io_context without any Asio
 // type leaving this directory. Never included from include/.

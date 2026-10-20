@@ -65,7 +65,7 @@ struct WebSearch : Tool<WebSearch,
   requires an explicit `EffectClass<effect_class::pure>`: `at_most_once` may not be re-run and an
   `idempotent` re-run on another node has no idempotency key, so `Tool<>` rejects any other pairing
   at compile time. Absent by default. Tools from MCP servers and WASM plugins cannot express it and
-  are never deterministic. `decisions/ADR-212-deterministic-tool-output-declaration.md`;
+  are never deterministic. `decisions/archive/ADR-212-deterministic-tool-output-declaration.md`;
   `tests/core/tools/test_tool_deterministic.cpp` and three `tests/compile_fail/` gates.
 
 ## 2. Tool sources
@@ -139,7 +139,7 @@ protocols we speak (MCP MRTR, A2A `INPUT_REQUIRED`).
 - **Approvals never come from a model** (I3). A model may *request*; only a host policy or a human
   may *grant*.
 
-**Amendment (`decisions/ADR-070-host-configurable-responsibility-boundary.md`).** The declared-policy
+**Amendment (`decisions/archive/ADR-070-host-configurable-responsibility-boundary.md`).** The declared-policy
 engine this section describes (007 §5's rule DSL) is still unbuilt. ADR-070 adds `PolicyDecider` — a
 host-supplied `{tool, capability_ceiling, arguments_tainted, principal} -> {auto_approve, auto_deny,
 require_approval}` function, consulted only for `PolicyDriven` — as an evolutionary, code-level way

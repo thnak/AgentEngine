@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.1/§2.1b/§2.6a/§2.6b
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.1/§2.1b/§2.6a/§2.6b
 // -- `VectorRagContextProvider<EmbedderT, IndexT, OS, RS>`, the flat/vector-similarity RAG
 // `ContextProvider` conformer (the ONLY RAG "kind" this ADR actually designs -- §2.1b: a
 // `GraphRagContextProvider` would be its own, separately-named class, never a template
@@ -20,7 +20,7 @@
 // would silently diverge from whatever a real ingestion step populated elsewhere.
 //
 // **A real, named implementation gap found while building this file, not previously listed in
-// ADR-063 §4/§7's own residual lists -- RESOLVED by decisions/ADR-064-recall-tool-sync-invoke-vs-
+// ADR-063 §4/§7's own residual lists -- RESOLVED by decisions/archive/ADR-064-recall-tool-sync-invoke-vs-
 // async-embedder.md, Design B (2026-08-19).** `ToolDescriptor::invoke` (core/tool_pipeline.hpp) is
 // `std::function<result<json::Value>(json::Value const&, EffectContext&)>` -- synchronous only (an
 // M2-era decision, never revisited). `MemoryProvider::make_recall_tool_descriptor()`'s own `invoke`
@@ -38,7 +38,7 @@
 // `failure_class::contract` error (unchanged, no regression) -- see `make_recall_tool_descriptor()`'s
 // own comment below for both paths.
 //
-// **Extended by decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1/§2.3
+// **Extended by decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1/§2.3
 // (2026-09-22).** Two changes, both additive, neither touching this file's already-Judged behavior
 // for the `VectorIndex<IndexT>` (local, synchronous) case:
 //   1. `IndexT` is now constrained by `AnyVectorIndex<IndexT>` (`VectorIndex<IndexT> ||
@@ -54,7 +54,7 @@
 //      don't duplicate" discipline ADR-063 §2.6b already used once for
 //      `neutralize_forged_provenance_markers()`.
 //
-// **Superseded in part by decisions/ADR-237 §5.1 (2026-10-14, #172).** `ToolDescriptor::invoke` is now
+// **Superseded in part by decisions/archive/ADR-237 §5.1 (2026-10-14, #172).** `ToolDescriptor::invoke` is now
 // `task`-shaped (§5.2), so `recall`'s `invoke` simply `co_await`s `embed_batch()` and `search()` like
 // `on_context()` does: no `rt::drive_leaf_task()`, no `synchronous_leaf` gate on either leg, and no
 // fail-closed contract error for a conformer that genuinely suspends. `VectorIndex` and the former
@@ -216,7 +216,7 @@ template <class EmbedderT, class IndexT, class OS, class RS>
 // ae-naming-lint: allow VectorRagContextProvider
 class VectorRagContextProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 (merged from a sibling branch
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 (merged from a sibling branch
     // after this class was first written): every ContextProvider routed through
     // make_context_provider_descriptor()/ComposedContextProvider must declare a static name.
     static constexpr std::string_view name = "rag";

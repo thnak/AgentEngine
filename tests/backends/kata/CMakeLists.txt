@@ -38,7 +38,7 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
     set_tests_properties(test_kata_backend_abuse_corpus_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 
     # ---- Slice 9/10 (--config-mode OCI-spec pipeline + real NetPolicy allowlist via manual netns +
-    # cnitool + nftables, decisions/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) end-to-end
+    # cnitool + nftables, decisions/archive/ADR-093-kata-backend-netpolicy-allowlist-config-cni.md) end-to-end
     # test. Cases 3-5 need `cnitool`/a CNI plugin+config/`nft` on the host in addition to this block's
     # own containerd+Kata precondition -- see kata_backend.hpp's own header comment.
     agentengine_add_test(test_kata_backend_slice9_10_linux

@@ -1,5 +1,5 @@
 #pragma once
-// ADR-061 §31.2 (decisions/ADR-061-host-provided-inbound-transport.md, as corrected in place through
+// ADR-061 §31.2 (decisions/archive/ADR-061-host-provided-inbound-transport.md, as corrected in place through
 // §33/§34/§35): the recommended -- not construction-enforced, `RequestAuthority` stays a plain
 // aggregate matching `Principal`'s own existing posture (ADR-039 §3c) -- path from a verified bearer
 // credential to the `RequestAuthority` the Tier-3 mechanism in `agent_session.hpp` (§20-§30, proven)

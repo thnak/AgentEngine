@@ -33,7 +33,7 @@
 // hiding a harm. Exactly one analysis runs per screen (ITT when valid, harm-favouring when not), so
 // the false-flag bound for valid runs is unchanged; invalid runs can only be flagged MORE often.
 //
-// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/ADR-195-evaluation-harness.md
+// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/archive/ADR-195-evaluation-harness.md
 // §8's "Still unbuilt" list is the authoritative one): the baseline canary; per-task variance and the task-level CI (Tier 2,
 // §3.6); task generators; arm S / SlotTable (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md -- a
+// Implements decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md -- a
 // mint-at-runtime SecretStore for a secret that shows up incidentally inside ordinary content
 // (a pasted API key, a tool result echoing a leaked credential), as opposed to trust/secret.hpp's
 // existing declare-then-resolve path for operator-declared config secrets. See that ADR for the
@@ -28,10 +28,10 @@
 // unaudited digest implementation for the same job -- this makes the header link-dependent on the
 // portable `agentengine::hmac` library (CMakeLists.txt), not just `agentengine::core`, unlike
 // `trust/secret.hpp` itself. `agentengine::hmac` builds on both platforms (Windows: CNG/BCrypt;
-// Linux: a from-scratch RFC 2104 construction, decisions/ADR-107-hmac-sha256-linux-parity.md) -- this
+// Linux: a from-scratch RFC 2104 construction, decisions/archive/ADR-107-hmac-sha256-linux-parity.md) -- this
 // WAS a Windows-only link dependency (a real, previously-undiscovered gap: it broke every
 // AGENTENGINE_WITH_HTTPS-gated Linux target touching QuarantineSecretStore, found and disclosed by
-// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7, closed by ADR-107), now fixed.
+// decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7, closed by ADR-107), now fixed.
 //
 // Fixed here by splitting the concern instead of granting inline: `quarantine()` NEVER mutates any
 // capability set, ever. It records `quarantine_trigger` (how the extraction happened) purely as
@@ -282,7 +282,7 @@ private:
 // ("no production call site wires this in yet") closed here structurally: this type can occupy
 // `rt::AgentSession`'s `HistoryProviderT` slot directly, or be composed alongside other contributors
 // via `ComposedContextProvider` (`core/composed_context_provider.hpp`),
-// the SAME real, already-proven composition path `decisions/ADR-066-context-provider-attribution-
+// the SAME real, already-proven composition path `decisions/archive/ADR-066-context-provider-attribution-
 // provenance.md`'s own end-to-end test uses -- no change to `agent_session.hpp` needed for this ADR
 // at all. Contributes exactly one tool (`quarantine_secret`) and no messages/instructions of its own.
 // Owns `store_` by value (not a reference to a caller-owned instance): `ComposedContextProvider`
@@ -293,7 +293,7 @@ private:
 // already use for their own long-lived, session-scoped state.
 class QuarantineToolProvider {
 public:
-    static constexpr std::string_view name = "quarantine";  // decisions/ADR-066-...md §3
+    static constexpr std::string_view name = "quarantine";  // decisions/archive/ADR-066-...md §3
 
     explicit QuarantineToolProvider(QuarantineAuditHook audit_hook = nullptr)
         : store_(std::move(audit_hook)) {}

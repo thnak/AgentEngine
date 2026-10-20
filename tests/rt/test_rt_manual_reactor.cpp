@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §8.1 / §4.7 -- testing::ManualReactor
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §8.1 / §4.7 -- testing::ManualReactor
 // (testing/manual_reactor.hpp), the virtual-time, single-threaded test reactor. Each claim names the rule it
 // proves and how it would fail. It proves ordering and logic only; a single-threaded reactor cannot show
 // strand races (§8.1), so the concurrency claims live in test_rt_reactor_timer.cpp / test_rt_offload.cpp

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.4/§2.4b --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.4/§2.4b --
 // `DiskCorpusSource`/`RecursiveChunker` (core/corpus_source.hpp). Proves, against real temp files on
 // disk, a small scripted mock `Embedder`, `InMemoryWorktreeObjectStore`, and
 // `rt::InMemoryAppendLogStore`:
@@ -336,7 +336,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3a --
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3a --
     // `DiskCorpusSource::mount_hybrid()`: chunks once, ingests into BOTH a dense and a sparse index,
     // and independently backfills a leg that was newly added to an already-mounted corpus WITHOUT
     // re-embedding -- found, by this exact check, to require passing EMPTY previous_file_hashes for
@@ -406,7 +406,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R3
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R3
     // (2026-09-22): a dense-leg add_batch() failure must NOT block committing chunks that only need
     // the SPARSE leg in the same pass (and vice versa) -- the two legs commit independently.
     // ============================================================================================

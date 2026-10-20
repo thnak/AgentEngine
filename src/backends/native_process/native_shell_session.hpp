@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- the process half of a HELD native
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- the process half of a HELD native
 // shell: one `pwsh` per session, inside its own Job Object, driven out of band through files (the same transport
 // shape ADR-209 §15 adopted for the container shell: the command never reaches the shell as a spliced string).
 //

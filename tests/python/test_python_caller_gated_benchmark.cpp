@@ -1,4 +1,4 @@
-// decisions/ADR-003-caller-aware-import-gating.md prove phase, claim B9 (performance): the
+// decisions/archive/ADR-003-caller-aware-import-gating.md prove phase, claim B9 (performance): the
 // caller-gated stack walk (frame_stack_caller_is_trusted(), fired from CallerGatedImport_Wrapper)
 // vs. an ordinary O(1) allowed-name hash lookup, for N repeated FRESH imports of otherwise-
 // identical trivial synthetic modules (both one-liners: 'X = 1'), evicted from sys.modules between

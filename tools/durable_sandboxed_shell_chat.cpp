@@ -15,7 +15,7 @@
 // on.
 //
 // THE SECURITY PRECONDITION THIS TOOL GETS RIGHT, DELIBERATELY, NOT BY ACCIDENT
-// (decisions/ADR-130-content-durability-conformer.md's own `test_identity_durability_precondition.cpp`
+// (decisions/archive/ADR-130-content-durability-conformer.md's own `test_identity_durability_precondition.cpp`
 // proved this the hard way): making `Ledger`'s own content durable WITHOUT ALSO durably configuring
 // `IdentityAuthority::bootstrap()` turns a previously-latent id-recycling risk into a REAL, working
 // cross-principal content leak on a process restart. This tool configures BOTH `Ledger`'s own

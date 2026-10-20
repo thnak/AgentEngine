@@ -77,7 +77,7 @@ items 1-3 above, M6's breakdown doc does not say which later milestone picks thi
 "deferred."
 
 **Superseded note (ADR-037, 2026-08-13):** the "Quark has real `cluster.hpp`/`membership.hpp`/
-`placement.hpp`, so this is not impossible" reasoning above no longer holds — `decisions/ADR-037-
+`placement.hpp`, so this is not impossible" reasoning above no longer holds — `decisions/archive/ADR-037-
 remove-quark-as-core-runtime.md` removed Quark as a dependency entirely, and `agentengine::rt::` has
 no cluster/membership/placement mechanism of any kind. Before M9 can pick this gate up, it needs a
 real cluster substrate built from scratch, not "stand up a harness against Quark's existing one" —

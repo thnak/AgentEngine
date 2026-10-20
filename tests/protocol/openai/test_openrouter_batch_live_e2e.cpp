@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md claim C15, live: a real two-node fan-out round sent to
+// decisions/archive/ADR-235-batch-inference-coalescing.md claim C15, live: a real two-node fan-out round sent to
 // OpenRouter's Batch API as ONE job, polled to completion through WorkflowSupervisor::poll_batches(), and folded
 // into a completed run -- the whole engine path against the real vendor, nothing scripted.
 //

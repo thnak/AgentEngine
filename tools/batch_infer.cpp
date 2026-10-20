@@ -1,5 +1,5 @@
 // Standalone, non-interactive batch-inference CLI: sends N independent single-shot prompts to OpenRouter's Batch
-// API as one job, polls it to the end, and prints each answer. decisions/ADR-235 §7 / ADR-236 §4: it drives the
+// API as one job, polls it to the end, and prints each answer. decisions/archive/ADR-235 §7 / ADR-236 §4: it drives the
 // engine's own `openai::OpenRouterBatchBackend` (GA `/api/v1/batches`), so the tool and a batched workflow round
 // speak the vendor through ONE wire translation -- the tool is a manual live probe of exactly the code the engine
 // runs, not a second client that could drift from it.

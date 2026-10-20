@@ -28,7 +28,7 @@ Verify: `sudo systemctl status containerd` is active, `ctr version` runs.
 ## 3. Kata Containers 4.1.0, `kata-clh` runtime class ONLY
 
 This project pinned Kata Containers **4.1.0**, and **only** the `kata-clh` (cloud-hypervisor) runtime
-class — never `kata-qemu` — per `decisions/ADR-084-kata-backend-slice-1.md`'s own narrowed scope (a
+class — never `kata-qemu` — per `decisions/archive/ADR-084-kata-backend-slice-1.md`'s own narrowed scope (a
 deliberate CVE-surface-bounding choice, not an oversight). Do not install a different Kata version or
 enable `kata-qemu` without a new ADR revisiting that scope.
 
@@ -120,5 +120,5 @@ failure — trust that diagnostic over re-reading this whole runbook top to bott
 - Nothing here automates image pre-pulling (`docker.io/library/busybox:latest`, the test suite's
   default `KataBackend` image) — the first live run will pull it, adding to that run's own wall-clock
   time; a future iteration could pre-pull it during provisioning instead.
-- No guidance on updating Kata Containers past 4.1.0 — that is a scope decision (`decisions/ADR-084-...md`'s
+- No guidance on updating Kata Containers past 4.1.0 — that is a scope decision (`decisions/archive/ADR-084-...md`'s
   own pin), not a provisioning detail; revisit via a new ADR, not by silently bumping the version here.

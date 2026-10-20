@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §4.5 (structured concurrency: rule 2 "no
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.5 (structured concurrency: rule 2 "no
 // detached tasks", rule 3 "with_scope only ... when_all: on the first failure, request stop on every sibling, join
 // all of them, then propagate") and §4.3 (parallel children are child strands of the session; the concurrency cap
 // is a semaphore on the scope; results appended in emitted order, I5) -- step 5 of the ADR's implementation order

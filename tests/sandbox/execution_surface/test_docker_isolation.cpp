@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-171-docker-execution-surface-isolation.md (GitHub issue #63).
+// Proof for decisions/archive/ADR-171-docker-execution-surface-isolation.md (GitHub issue #63).
 //
 // Before ADR-171, grepping docker_execution_surface.hpp for `--network`, `--memory`, `--pids-limit`
 // or `--cpus` returned NOTHING: `DockerCliBackend::create()` emitted a bare `docker run -d --rm -w

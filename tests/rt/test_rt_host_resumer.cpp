@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-219 (issue #79) -- a host's Resumer: an AgentEngine coroutine driven from a host's
+// Proof for decisions/archive/ADR-219 (issue #79) -- a host's Resumer: an AgentEngine coroutine driven from a host's
 // own executor, parked on an AsyncMutex or a channel<T>, is handed back to that executor when woken instead
 // of being resumed on the waker's (foreign) thread (include/agentengine/rt/resume_home.hpp, task.hpp,
 // async_mutex.hpp, channel.hpp).

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE: keep the in-house
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("HTTP/1.1 + SSE: keep the in-house
 // client (net_egress_proxy.cpp, sse_stream_pump.hpp), rewritten as coroutines") -- the I/O-free half of that
 // rewrite: building an HTTP/1.1 request, parsing a response head, decoding a response body's framing, and decoding
 // server-sent events. Every type here is a pure function of (state, bytes in) -> (bytes / events / verdict out),

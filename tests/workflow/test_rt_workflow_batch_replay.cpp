@@ -1,4 +1,4 @@
-// decisions/ADR-236-batch-recording-and-replay.md -- claims R1-R10: a batched workflow run recorded through
+// decisions/archive/ADR-236-batch-recording-and-replay.md -- claims R1-R10: a batched workflow run recorded through
 // core/batch_recording.hpp's BatchRecorder replays offline through a BatchReplayer to the same results, events
 // and time-dependent decisions, and a replay asked anything the recording does not hold diverges instead of
 // handing recorded answers to a different run.

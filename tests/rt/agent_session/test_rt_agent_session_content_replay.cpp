@@ -1,4 +1,4 @@
-// Proves decisions/ADR-069-content-triggered-model-response-replay.md's ContentReplayGateway<Inner>
+// Proves decisions/archive/ADR-069-content-triggered-model-response-replay.md's ContentReplayGateway<Inner>
 // plugs into a real rt::AgentSession's own ChatClientT slot with ZERO changes to agent_session.hpp --
 // AgentSession already accepts anything satisfying ChatClient<ChatClientT> OR
 // ModelCallGatewayLike<ChatClientT> (agent_session.hpp's own class template requires-clause), and

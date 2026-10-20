@@ -1,8 +1,8 @@
 # 003 — Message and Content Model
 
 **Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-24** (§2,
-`decisions/ADR-191-approved-lesson-delivery.md`: `ContentItem::approval` and outbound marker neutralization) ·
-**Amended 2026-09-04** (§2, `decisions/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
+`decisions/archive/ADR-191-approved-lesson-delivery.md`: `ContentItem::approval` and outbound marker neutralization) ·
+**Amended 2026-09-04** (§2, `decisions/archive/ADR-173-system-channel-taint-fence.md` / GitHub issue #61: taint had no obligation at the serializer, so every conformer legitimately dropped it on the way to the wire) · **Depends on:** (historical: originally also depended on Quark 003/016 — ADR-037 removed that dependency) · **Used by:** 004, 005, 011, 012, 013 · **Gate:** §7
 
 ## Goal
 
@@ -80,7 +80,7 @@ flag**.
 - Untainting requires an explicit, logged decision (a sanitizer, a schema validation, or an
   operator policy), never an implicit cast.
 - **Taint carries a wire-level obligation, not only a type-level one** (amended 2026-09-04,
-  `decisions/ADR-173-system-channel-taint-fence.md`, GitHub issue #61). Everything above describes
+  `decisions/archive/ADR-173-system-channel-taint-fence.md`, GitHub issue #61). Everything above describes
   taint as a marker on an *accessor* — which left a real gap this section did not name: a
   `ContextProvider` may legitimately place tainted content in the `role::system` channel (memory,
   RAG, todo, reflection feedback, and summarizer output all do, correctly), and every serializer was
@@ -99,7 +99,7 @@ flag**.
   text a model produced, however trusted the provider relaying it. `HistoryProvider`'s summary was
   the one place in the tree that crossed this line.
 - **An approved lesson carries an `approval`, not a different origin or taint** (amended 2026-09-24,
-  `decisions/ADR-191-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
+  `decisions/archive/ADR-191-approved-lesson-delivery.md`). `ContentItem::approval` is empty, or the id of the approval under
   which that exact text was approved — by a human (ADR-195 E31), or, if the host opted in, by its automated reviewer
   (`automatic:<reviewer>`, ADR-192). It is granted per request, only by `AgentSession`, only to a tainted
   `role::system` text the host's `ApprovedLessonRegistry` holds for the session's principal; the session clears it
@@ -111,14 +111,14 @@ flag**.
   marker can form there from the real glyphs however it is split (escapes and look-alikes are not rewritten — see
   ADR-191 §3.5 and its residuals). Breaking a marker invisibly is not enough: measured live, a model reads a marker broken
   by a zero-width space as a real one (ADR-191 §7, L1).
-- **The host may choose unfenced delivery** (amended 2026-09-24, `decisions/ADR-192-unattended-mode.md`).
+- **The host may choose unfenced delivery** (amended 2026-09-24, `decisions/archive/ADR-192-unattended-mode.md`).
   `ContentItem::deliver_as_instructions` is set only by `AgentSession`, only when the host opted in — an approved
   lesson at `approved_lesson_level::instructions`, or every tainted system text with the system-channel fence
   switched off — and cleared on every other item. Such an item keeps `tainted` and its origin, and is sent as plain
   system text: the one exception to the delimiting obligation above. Each such request is logged. Combined with
   unattended approvals this lets model-derived text drive granted tools with no human — an owner-sanctioned
   exception for full-automation hosts, recorded in ADR-192 §4, not a relaxation of I2.
-- **A handoff between agents never untaints** (amended 2026-09-25, `decisions/ADR-193-delegation-provenance.md`).
+- **A handoff between agents never untaints** (amended 2026-09-25, `decisions/archive/ADR-193-delegation-provenance.md`).
   Text one agent's model wrote reaches another agent — `agent.spawn`'s input, a workflow agent node's input — as a
   delegated task: a host-authored line saying which agent delegated it and that no human wrote it, then the text
   itself, `content_origin::external`, `tainted = true` (`make_delegated_message`, `delegate_foreign_items`). It was
@@ -155,7 +155,7 @@ provider capability (004) and recorded in the trace:
    because a high repair rate is a provider or prompt defect worth surfacing.
 
 **Validation is type-driven parsing against the declared C++ shape, matching MCP's tool-argument
-validation, so one mechanism serves both** (corrected 2026-08-14, `decisions/ADR-058-agent-output-
+validation, so one mechanism serves both** (corrected 2026-08-14, `decisions/archive/ADR-058-agent-output-
 live-wiring.md` §4 C1/C2 — this line previously described validation as a generic JSON Schema
 2020-12 rule engine; direct inspection found neither `OutputSchema<T>` nor tool arguments were ever
 checked against one, and the schema this codebase's own generator (`schema::json_schema_of<T>`)
@@ -262,7 +262,7 @@ cache_write_tokens`) which had no field to land in — see
 
 - ~~**Q3** — Whether taint should be tracked at sub-string granularity (span-level) rather than
   per-item.~~ **Resolved 2026-08-03 (see OpenQuestions.md OQ-5,
-  `decisions/ADR-007-span-level-taint-vs-per-item.md`): no, keep per-item.** A small prove found
+  `decisions/archive/ADR-007-span-level-taint-vs-per-item.md`): no, keep per-item.** A small prove found
   span-level taint is not merely "materially harder" as this line assumed — a naive, otherwise
   plausible `concat` implementation silently under-taints genuinely tainted bytes on the very first
   attempt, a security-relevant bug class per-item taint cannot have because it carries no offsets to

@@ -7,7 +7,7 @@
 // already-aggregated counts with nothing that produces them from real trial output.
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
-// decisions/ADR-195-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
+// decisions/archive/ADR-195-evaluation-harness.md §8): the gross-harm regression screen (§3.0 item 3 --
 // built separately, in eval_gross_harm_screen.hpp); arm
 // S / SlotTable / the steering manifest (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard

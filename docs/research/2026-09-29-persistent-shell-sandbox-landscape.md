@@ -1,6 +1,6 @@
 # Persistent shell sessions in agent sandboxes — who keeps a live shell, for how long, and how
 
-Compiled: 2026-09-29. Feeds `decisions/ADR-209-persistent-shell-sessions.md` (revision 4, Proposed).
+Compiled: 2026-09-29. Feeds `decisions/archive/ADR-209-persistent-shell-sessions.md` (revision 4, Proposed).
 All external facts below were fetched on 2026-09-29 from the URLs in §Sources; anything not
 confirmed from a primary page or source file is marked **UNVERIFIED**. Isolation-technology
 pluggability and the general feature matrix are **not** re-surveyed here — see

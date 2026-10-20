@@ -1,8 +1,8 @@
 #pragma once
 // Implements rfcs/002-Agent-Model-and-Authoring.md §5's `turn` interception point AND
 // rfcs/017-Safety-and-Content-Governance.md §4's `pre_model` filter point -- one mechanism closes both,
-// per decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md. Depends on
-// decisions/ADR-066-context-provider-attribution-provenance.md (provenance must exist first -- see
+// per decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md. Depends on
+// decisions/archive/ADR-066-context-provider-attribution-provenance.md (provenance must exist first -- see
 // context_assembly.hpp's own `assemble_context()` stamping loop).
 //
 // SCOPE, same "prove the mechanism against one real consumer, name the rest" precedent
@@ -71,7 +71,7 @@
 
 namespace agentengine {
 
-// decisions/ADR-067 §3, the FATAL finding's fix: structural prevention, not detection. Never exposes
+// decisions/archive/ADR-067 §3, the FATAL finding's fix: structural prevention, not detection. Never exposes
 // a mutable `ToolDescriptor&` for anything fan-out already produced -- `redact()`/`reorder()`/
 // `annotate_description()` are the ONLY mutations available, and none of them can touch `invoke`,
 // `capability_ceiling`, or `approval_mode`. `redact()`/`reorder()` operate on a stable HANDLE (the
@@ -156,7 +156,7 @@ struct TurnContext {
     ToolSurfaceView        tool_surface;
 };
 
-// decisions/ADR-067 §5, the taint-boundary fix: the ONLY way a `turn` middleware may produce a
+// decisions/archive/ADR-067 §5, the taint-boundary fix: the ONLY way a `turn` middleware may produce a
 // replacement for an already-declassified `TaintedText` (e.g. `assembled.combined.instructions`).
 // Subtractive-only -- removes a byte range and returns the result, still carrying the same
 // declassification. There is no code path here that can introduce a byte that wasn't already present
@@ -270,7 +270,7 @@ template <class... Ms>
 // every existing `AgentSession<...>` specialization is unaffected until a caller opts in.
 using TurnMiddlewareHook = std::function<task<result<std::monostate>>(TurnContext&)>;
 
-// decisions/ADR-067 §4 -- 005 §8 Q3's re-resolution, made real. A `turn`-level compactor that shapes
+// decisions/archive/ADR-067 §4 -- 005 §8 Q3's re-resolution, made real. A `turn`-level compactor that shapes
 // what THIS turn's model call sees, never `history[]`: PROVABLE BY THE TYPE SIGNATURE, not merely by
 // behavior -- `on_turn` below only ever touches `ctx.assembled`, and `TurnContext` (above) carries no
 // reference to any session's durable `history_` at all, so there is no expression by which this type
@@ -283,7 +283,7 @@ using TurnMiddlewareHook = std::function<task<result<std::monostate>>(TurnContex
 // disambiguate from via a wrapper tag the way `HistoryProvider<Strategy>` needs one).
 template <std::size_t N>
 struct Compactor {
-    static constexpr std::string_view name = "compactor";  // decisions/ADR-067 §3/middleware.hpp's HasMiddlewareName precedent
+    static constexpr std::string_view name = "compactor";  // decisions/archive/ADR-067 §3/middleware.hpp's HasMiddlewareName precedent
 
     [[nodiscard]] task<result<std::monostate>> on_turn(TurnContext& ctx) {
         std::vector<Message>& msgs = ctx.assembled.combined.messages;

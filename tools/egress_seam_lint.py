@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Egress test-seam lint -- decisions/ADR-241-egress-proxy-async-path-on-rt-http.md section 5 and gate G15.
+"""Egress test-seam lint -- decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md section 5 and gate G15.
 
 `TestEgressProxy` (include/agentengine/sandbox/testing/net_egress_proxy_testing.hpp) is the ONLY way to run the egress
 proxy with a non-default host resolver, address policy or CA bundle, and

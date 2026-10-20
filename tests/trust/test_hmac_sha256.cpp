@@ -1,5 +1,5 @@
 // Real, permanent regression test for trust/hmac.hpp's hmac_sha256()/constant_time_equal() --
-// decisions/ADR-107-hmac-sha256-linux-parity.md. Portable: this test only calls the two functions
+// decisions/archive/ADR-107-hmac-sha256-linux-parity.md. Portable: this test only calls the two functions
 // hmac.hpp declares, never anything platform-specific, so it is wired into tests/CMakeLists.txt for
 // BOTH Windows (hmac.cpp, CNG/BCrypt) and Linux (hmac_posix.cpp, a from-scratch RFC 2104
 // construction) -- the same source proving both backends agree with the real standard, the same

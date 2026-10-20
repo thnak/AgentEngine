@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter `BatchBackend`'s wire behaviour, offline,
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter `BatchBackend`'s wire behaviour, offline,
 // against a loopback HTTP server that replays the documented response shapes
 // (https://openrouter.ai/docs/batch-quickstart.md, fetched 2026-10-02). The live counterpart is
 // test_openrouter_batch_live_e2e.cpp.

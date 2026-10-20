@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's native_path_scan.hpp: PATH enumeration filtered against an already-granted
 // allowlist. The load-bearing claim (ADR-070 property 3 / trust/capability.hpp's own
 // native_exec_pattern_covers): scanning can never surface a program the caller did not already

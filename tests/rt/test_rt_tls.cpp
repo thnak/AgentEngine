@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS ... BIO callbacks
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS ... BIO callbacks
 // driven by reactor socket readiness ... Handshake, read and write are all cancellable"; "TLS context
 // ownership"; "TLS details") with §4.2/§4.4 -- rt::TlsStream (rt/tls.hpp, src/backends/tls_mbedtls/). Only built
 // with AGENTENGINE_WITH_HTTPS. The peer is a loopback mbedTLS server on a test thread; its CA and certificates are

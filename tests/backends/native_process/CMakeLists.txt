@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "backends/native_process" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- native_process backend (decisions/ADR-071-native-unsandboxed-process-execution-providers.md)
+# ---- native_process backend (decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md)
 # Only built when AGENTENGINE_WITH_NATIVE_PROCESS is explicitly turned ON (root CMakeLists.txt) --
 # matching AGENTENGINE_BUILD_PYTHON_RUNNER/AGENTENGINE_WITH_WASM's own gating pattern. Windows-only
 # for now (native_process_spawn/native_worktree_bridge have no POSIX implementation yet, a named,

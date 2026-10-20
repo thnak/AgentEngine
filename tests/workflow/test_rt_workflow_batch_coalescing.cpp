@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md -- claims C1-C14 and C16-C21, proven against the real
+// decisions/archive/ADR-235-batch-inference-coalescing.md -- claims C1-C14 and C16-C21, proven against the real
 // WorkflowSupervisor with testing::ScriptedBatchBackend standing in for a vendor (C15, the live OpenRouter run,
 // is tests/protocol/openai/test_openrouter_batch_live_e2e.cpp).
 //

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15) --
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15) --
 // `DockerPersistentShellSurface`, the `PersistentShellSurface` conformer over the same `DockerCliBackend` the
 // Tier 0 `DockerExecutionSurface` uses. A held container with a live `sh` in it, so `cd`, `export`, a venv and
 // background processes survive from one command to the next.

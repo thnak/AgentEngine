@@ -1,7 +1,7 @@
 # Qdrant REST API — points upsert/search/retrieve, point ID constraints, authentication
 
 **Fetched:** 2026-09-22, via web search + direct scrape of Qdrant's official documentation and API
-reference. Backing `decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md` §2.5's
+reference. Backing `decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md` §2.5's
 `QdrantVectorIndex` — a `RemoteVectorIndex` conformer over plain JSON/HTTPS, reusing the same
 `sandbox::perform_provider_https_exchange` transport `protocol/openai/embedder.hpp` already uses.
 

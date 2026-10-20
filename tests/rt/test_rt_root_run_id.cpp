@@ -1,4 +1,4 @@
-// Proves decisions/ADR-241-egress-proxy-async-path-on-rt-http.md §8.4 (S2 step 1): `EffectContext::root_run_id`
+// Proves decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md §8.4 (S2 step 1): `EffectContext::root_run_id`
 // plumbing -- the run identity the egress proxy's admission buckets are keyed on. No admission exists yet at this
 // step; what is proven here is that every place a run starts hands its calls the right ROOT run id, host-derived
 // and never client- or model-chosen (I3).

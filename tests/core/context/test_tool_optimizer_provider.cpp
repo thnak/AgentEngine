@@ -1,5 +1,5 @@
 // Implements docs/planning/tool-optimizer-provider-design-draft.md (issue #15) and
-// decisions/ADR-065-tool-optimizer-provider.md. Proves core/tool_optimizer_provider.hpp's
+// decisions/archive/ADR-065-tool-optimizer-provider.md. Proves core/tool_optimizer_provider.hpp's
 // ToolOptimizerProvider:
 //   R1 -- state/tool behavior in isolation, driven entirely through the provider's own real,
 //         production tool-descriptor closures (never a private-method reach-in).

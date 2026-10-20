@@ -8,7 +8,7 @@
 # the first time ComposedContextProvider<Ms...> is driven through a real session.start_run() anywhere
 # in this codebase.
 #
-# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# Portable across Windows and Linux (2026-08-29, decisions/archive/ADR-105-sandbox-tool-provider-composed-
 # linux-parity.md) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as
 # test_mediated_shell_runner_no_process_creation above: `agentengine::mediated_shell_runner`
 # (SandboxToolProvider/SessionShellSandbox/MediatedFileSystemAdapter) has built on both platforms

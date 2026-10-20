@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS (ADR-013)";
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS (ADR-013)";
 // "HTTP/1.1 + SSE ... rewritten as coroutines") -- the https transport of rt/http.hpp: `rt::tls_connector()`
 // wraps the connected TCP stream in an `rt::TlsStream` (rt/tls.hpp) and hands rt/http.hpp an `HttpTransport`.
 //

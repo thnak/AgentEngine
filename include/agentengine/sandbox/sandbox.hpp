@@ -160,7 +160,7 @@ namespace sandbox_detail {
 // (capability_detail::path_prefix_covers) has no defense against a '..' segment lexically escaping a
 // granted prefix with no filesystem access at all -- this check closes that at the string level, the
 // same "reject the injection surface outright" move KataBackend::create() already uses for a literal
-// comma in its own --mount grammar (decisions/ADR-086-kata-backend-slice-2-enforcement.md).
+// comma in its own --mount grammar (decisions/archive/ADR-086-kata-backend-slice-2-enforcement.md).
 [[nodiscard]] inline bool has_dot_or_dotdot_component(std::string const& path) {
     std::size_t start = 0;
     for (std::size_t i = 0; i <= path.size(); ++i) {
@@ -345,7 +345,7 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     // unpopulated" convention `result_repr` above already documents for exactly this reason (a
     // `Runner` that never implements `agent.ask()` never sets this field either).
     std::string ask_prompt;
-    // decisions/ADR-154-agent-output-codeact-module.md (026 §5's `agent.output`): the JSON-encoded
+    // decisions/archive/ADR-154-agent-output-codeact-module.md (026 §5's `agent.output`): the JSON-encoded
     // value a script's `agent.output.set(value)` call declared, if any -- empty means "never called,"
     // the SAME "empty means legitimately absent" convention `result_repr`/`ask_prompt` above already
     // establish (a JSON-encoded value is never the literal empty string: `json.dumps("")` is `'""'`,
@@ -364,7 +364,7 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     std::string structured_output_json;
 };
 
-// concept, not a base class (008 §2). decisions/ADR-237 §5.1 (Phase D, #173): `create`/`exec` return
+// concept, not a base class (008 §2). decisions/archive/ADR-237 §5.1 (Phase D, #173): `create`/`exec` return
 // `ae::task<result<T>>` and `destroy` returns `ae::task<void>` -- a backend may be remote (a microVM host,
 // a container daemon), so every call can suspend. The handle and the context are borrowed and must
 // outlive the returned task; callers await it in place. `T::traits` is 008 §2's "static constexpr ProfileTraits traits" line,
@@ -379,7 +379,7 @@ concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& ha
     { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 
-// 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/ADR-012-sandbox-
+// 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/archive/ADR-012-sandbox-
 // profile-template-parameter-kind.md corrects both the RFC text and this symbol together) — "the
 // named alias meaning 'the strongest profile available on this platform, never `none`'", the default
 // for every agent (002 §3). A resolution SELECTOR, not a backend itself: it has no `create`/`exec`/

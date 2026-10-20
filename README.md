@@ -15,7 +15,7 @@ runtime configuration objects.
 > recorded as an ADR in [`decisions/`](decisions/README.md). What is built, and what is not, changes
 > weekly: read [`docs/planning/`](docs/planning/) for the live per-milestone status rather than trusting a
 > summary here. One scope decision up front: AgentEngine does **not** run an HTTP listener. Your host code
-> owns the socket and hands the engine parsed requests ([ADR-061](decisions/ADR-061-host-provided-inbound-transport.md)).
+> owns the socket and hands the engine parsed requests ([ADR-061](decisions/archive/ADR-061-host-provided-inbound-transport.md)).
 
 ## An agent is a type
 

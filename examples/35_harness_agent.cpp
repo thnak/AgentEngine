@@ -2,7 +2,7 @@
 //
 // Mirrors Microsoft Agent Framework's `chatClient.AsHarnessAgent()` / `create_harness_agent()`
 // (docs/research/2026-10-01-agent-harness.md): `make_harness_session<Writer>()` (core/harness.hpp,
-// decisions/ADR-234, 002 §2.2) runs the ADR-226 run bridge -- so the session enforces exactly what `Writer`
+// decisions/archive/ADR-234, 002 §2.2) runs the ADR-226 run bridge -- so the session enforces exactly what `Writer`
 // declares and holds only the authority the caller passes -- and adds the harness's default pieces:
 //   - harness operating instructions ahead of the agent's own;
 //   - a todo list (todos_* tools, ADR-166);

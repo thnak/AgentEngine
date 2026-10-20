@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 step 2 (design) as
+// Implements decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §3 step 2 (design) as
 // real code -- Milestone 2 Phase C task C2. One AppContainer profile per deployment, not per
 // session ("One profile, reused across sessions -- the SID is stable identity, not per-session
 // state," ADR-004 §3): `ensure()` is idempotent (ERROR_ALREADY_EXISTS from
@@ -8,7 +8,7 @@
 //
 // Grants (RX)/(M) ACEs on host paths per 008 §2's mount contract -- this is 008 §4's "bind/junction
 // mounts + path canonicalization + FS restrictions" row for `native-jail`'s ACL layer specifically.
-// It is explicitly NOT the primary filesystem boundary (decisions/ADR-004-appcontainer-native-jail-
+// It is explicitly NOT the primary filesystem boundary (decisions/archive/ADR-004-appcontainer-native-jail-
 // windows-backend.md §6 finding 1 / §8.1: a curated set of OS files carry `ALL (RESTRICTED)
 // APPLICATION PACKAGES` read ACEs by Windows' own default, independent of what this profile grants
 // or withholds) -- it is the §1b layer-3 backstop, real and load-bearing for paths AgentEngine

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- `NativeShellSessionProvider`: a
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- `NativeShellSessionProvider`: a
 // HELD native `pwsh` (native_shell_session.hpp) whose cwd, environment and processes persist across
 // `native_shell_session_exec` calls. Windows only, `AGENTENGINE_WITH_NATIVE_PROCESS=ON`, like every native
 // provider (ADR-071).

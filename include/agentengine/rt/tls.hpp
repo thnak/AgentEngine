@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS (ADR-013). Its
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 ("TLS: keep mbedTLS (ADR-013). Its
 // non-blocking BIO callbacks are driven by reactor socket readiness ... Handshake, read and write are all
 // cancellable"; "TLS context ownership"; "TLS details") with §4.2/§4.4's rules -- `rt::TlsStream`, an
 // asynchronous TLS client over an already-connected `pal::TcpStream`, on mbedTLS (D1 keeps mbedTLS for TLS):

@@ -1,4 +1,4 @@
-// Proof + red-team for decisions/ADR-006-agent-spawn-depth-budget-bound.md
+// Proof + red-team for decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md
 // (trust/spawn_budget.hpp), resolving the depth-bound half of 026 §9 Q1 / OQ-14. S-C4 and the
 // static_asserts below are positive controls (022 §5): they prove the boundary actually fires and
 // that the type system actually blocks the constructions it claims to, not just that every "happy"

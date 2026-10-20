@@ -30,7 +30,7 @@ struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaff
 // see the M2 breakdown's "what's explicitly deferred" list), so this carries no pipeline logic yet.
 struct Parallelizable {};  // ae-naming-lint: allow Parallelizable — pre-existing M0 scaffolding, reconcile at owning milestone
 
-// decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: a DISTINCT, alternative concurrency
+// decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: a DISTINCT, alternative concurrency
 // claim from `Parallelizable` above, not layered on top of it -- a tool declares EITHER bare
 // `Parallelizable` (unconditional: safe alongside every other tool) OR `ExclusivityGroup<Name>`
 // (narrower: safe alongside any call outside group `Name`, but must serialize with any other
@@ -54,7 +54,7 @@ struct ExclusivityGroup {  // ae-naming-lint: allow ExclusivityGroup — ADR-158
 // default every other undeclared policy in this file already has.
 struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b names this concept normatively; 027 has not been updated to list it
 
-// decisions/ADR-212-deterministic-tool-output-declaration.md: "running this again returns the same
+// decisions/archive/ADR-212-deterministic-tool-output-declaration.md: "running this again returns the same
 // thing" -- orthogonal to `EffectClass` below, which says whether running it again is safe. Two
 // successful calls with equal Args, reading equal content through their granted capabilities, return
 // replies whose `schema::to_json` values are `json_value_equal` (ADR-212 §3.2). A declaration only: the
@@ -62,7 +62,7 @@ struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b 
 // an explicit `EffectClass<pure>` (the static_assert in `Tool<>`, §3.3).
 struct Deterministic {};
 
-// decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md: "this tool enforces the quantity
+// decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md: "this tool enforces the quantity
 // caps of the capability it is bound to (or of the held grant, via `CapabilitySet::find_fs_read`/
 // `find_fs_write`/`find_net_out`), never a number from its own declaration." With it, admission binds
 // each ceiling entry with `CapabilitySet::bind_clamped()`, so a quota- or size-capped grant admits the
@@ -73,7 +73,7 @@ struct Deterministic {};
 // shipped example (the mediated shell's own per-operation lookups).
 struct EnforcesGrantedCaps {};  // ae-naming-lint: allow EnforcesGrantedCaps — ADR-217 policy tag; 027 has not been updated to list it
 
-// decisions/ADR-237-async-extension-points-and-io-reactor.md §5.2: "this tool's invoke captures
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §5.2: "this tool's invoke captures
 // session-scoped state." The explicit declaration `ToolDescriptor::captures_session_state` reads; it is
 // what the now-deleted `make_tool_descriptor_with_invoke` used to set implicitly. A tool with it may not
 // be backgrounded (`background_job_runner`) and is not re-run
@@ -225,7 +225,7 @@ struct policy_exclusivity_group<ExclusivityGroup<Name>> {
 // and its static registration path were deleted (#175; ADR-237 §5.2, "one way to declare a tool").
 template <class Derived, class... Policies>
 struct Tool {
-    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
+    // decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
     // `ExclusivityGroup<Name>` are two DIFFERENT, MUTUALLY EXCLUSIVE concurrency claims (MUST-FIX
     // 1) -- declaring both would silently make two contradictory promises about the same tool
     // (unconditionally safe with everyone, vs. safe with everyone except its own group). At most
@@ -258,10 +258,10 @@ struct Tool {
     static_assert(!(kHasParallelizable && kExclusivityGroupCount > 0),
                   "ADR-158: a tool must declare either Parallelizable (unconditional concurrency) "
                   "or ExclusivityGroup<Name> (group-scoped concurrency), never both -- see "
-                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4");
+                  "decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4");
     static_assert(kExclusivityGroupCount <= 1,
                   "ADR-158: a tool may declare at most one ExclusivityGroup<Name> -- see "
-                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §5");
+                  "decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §5");
 
     // ADR-212 §3.3: `Deterministic` is only ever checked by running the call again, and only a
     // `pure` tool may be re-run freely on another node: `at_most_once` needs operator acknowledgement
@@ -287,7 +287,7 @@ struct Tool {
     }();
     static_assert(!kHasDeterministic || kEffectClass == effect_class::pure,
                   "ADR-212: a Deterministic tool must declare EffectClass<effect_class::pure> -- see "
-                  "decisions/ADR-212-deterministic-tool-output-declaration.md §3.3");
+                  "decisions/archive/ADR-212-deterministic-tool-output-declaration.md §3.3");
 
     [[nodiscard]] static std::string args_schema() {
         return schema::json_schema_of<typename Derived::Args>();
@@ -364,7 +364,7 @@ struct Tool {
         return has;
     }
 
-    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
+    // decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
     // declared no `ExclusivityGroup<Name>` (including every tool that instead declares bare
     // `Parallelizable`, or declares neither -- both leave this unset). `kExclusivityGroupCount <= 1`
     // is already enforced above, so at most one iteration of this fold ever assigns.

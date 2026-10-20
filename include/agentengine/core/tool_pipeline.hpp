@@ -145,7 +145,7 @@ struct IdempotencyKey {
 // "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
 // policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
 // that ignores it behaves exactly as before.
-// decisions/ADR-237 §5.1 (Phase G): `task`-shaped -- an approval may need real I/O (a human channel, a
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped -- an approval may need real I/O (a human channel, a
 // policy service), so the seam lets a decider suspend. A decider cannot fail: a throwing body is caught
 // by `task`'s own `unhandled_exception` and rethrown at the caller's `co_await`, exactly how it
 // propagated before. An unset decider is the same fail-closed default, now an immediately-ready task
@@ -154,7 +154,7 @@ struct IdempotencyKey {
 using ApprovalDecider = std::function<task<bool>(Principal const& caller, std::string_view tool_name,
                                                  std::string const& canonical_args_json)>;
 
-// Delegated Decision Seam (decisions/ADR-070-host-configurable-responsibility-boundary.md): a
+// Delegated Decision Seam (decisions/archive/ADR-070-host-configurable-responsibility-boundary.md): a
 // SECOND, optional host seam, consulted ONLY for `approval_mode::policy_driven` -- unlike
 // `ApprovalDecider` above (a binary yes/no over one already-pending call), this lets a host resolve
 // `policy_driven`'s existing fail-closed degrade (file-top comment: "policy_driven degrades to
@@ -171,7 +171,7 @@ using ApprovalDecider = std::function<task<bool>(Principal const& caller, std::s
 // ADR-192's unattended mode additionally asks it about every call that reaches the decider.
 // `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
-// decisions/ADR-237 §5.1 (Phase G): `task`-shaped, on the same reasoning as `ApprovalDecider` above --
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped, on the same reasoning as `ApprovalDecider` above --
 // a policy consult may reach a network service, so the seam can suspend. It cannot fail; an unset
 // decider is the same fail-closed default, now an immediately-ready task (ADR-070 "unset = today's
 // behaviour").
@@ -266,7 +266,7 @@ namespace tool_pipeline_detail {
 // exactly -- `needs_decider` wherever that function would have returned `true`, `proceed` otherwise
 // -- so every existing caller that never wires a `PolicyDecider` sees byte-identical behavior.
 //
-// decisions/ADR-237 §5.1 (Phase G): `task`-shaped, because it `co_await`s the now-`task` deciders. It
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped, because it `co_await`s the now-`task` deciders. It
 // still never fails (both deciders are infallible), so the return is `task<approval_outcome>`, not
 // `task<result<...>>`.
 enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint: allow approval_outcome — ADR-070, same idiom as call_provenance/approval_mode
@@ -306,7 +306,7 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
     }
 }
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 1 (resolve), 4/7 (authorize+bind),
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5: steps 1 (resolve), 4/7 (authorize+bind),
 // 5 (approve) extracted out of `invoke_tool()` below into their own callable, byte-for-byte the
 // same logic -- so the parallel-batch admission path (`AgentSession`, rt/agent_session.hpp) can
 // share EXACTLY this admission logic rather than carry a second, independently-drifting copy of a
@@ -323,7 +323,7 @@ struct AdmittedCall {
                                                     ApprovalDecider const& approve,
                                                     PolicyDecider const& policy);
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
 // (account) extracted from invoke_tool() below, alongside admit_call() above -- returns the raw
 // outcome without touching any audit bookkeeping, DELIBERATELY: `invoke_tool()`'s own audit
 // measures duration from before admission even starts, while the parallel-batch fan-out path
@@ -374,7 +374,7 @@ struct AdmittedCallOutcome {
                                            // deferred to a real human.
                                            PolicyDecider const& policy = {});
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
 // the batch of requests actually being dispatched (the caller has already filtered out anything a
 // hook denied) and the table used to resolve each one, decides whether the batch is fan-out-eligible
 // at all and, if so, partitions it into concurrency classes -- no I/O, no admission, no invocation;

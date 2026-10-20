@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 "Processes" (and "Handle hygiene
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 "Processes" (and "Handle hygiene
 // becomes mandatory", round-1 G4), §4.4 "Process cancellation", §2 H-e and §8.2 gates 1d and 4: child processes
 // on the reactor (pal/reactor_process.hpp, src/backends/reactor_asio/reactor_process_asio.cpp) and the
 // awaitables over them (rt/process.hpp). Children are tests/rt/process_child_helper.cpp, whose every mode is

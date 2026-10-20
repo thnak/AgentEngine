@@ -1,5 +1,5 @@
 #pragma once
-// decisions/ADR-193 §9 (red team round 3, GitHub issue #113): the one rule every delegated body follows -- a body
+// decisions/archive/ADR-193 §9 (red team round 3, GitHub issue #113): the one rule every delegated body follows -- a body
 // that runs another agent or workflow charges that run's whole spend to its caller exactly once, on every exit
 // path: success (in its outcome's usage), failure (through `EffectContext::charge_delegated_usage`), and a throw
 // (through the same hook, from a guard's destructor). These are the two guards that make the throw path and the

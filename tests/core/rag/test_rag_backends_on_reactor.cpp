@@ -1,4 +1,4 @@
-// decisions/ADR-237 §5.1 (#172, Phase C slice 2): `OpenAIEmbedder` and `QdrantVectorIndex` run their exchange
+// decisions/archive/ADR-237 §5.1 (#172, Phase C slice 2): `OpenAIEmbedder` and `QdrantVectorIndex` run their exchange
 // on `rt::http` (`provider_wire::exchange_async`) instead of the blocking `perform_provider_https_exchange` --
 // they were "async in name only" (decision A8). Driven offline against a loopback server.
 //

@@ -79,7 +79,7 @@ struct ProcessOutcome {
 // child only inherits fds the parent hasn't marked `FD_CLOEXEC`), but this backend still opens every
 // pipe end with `O_CLOEXEC` explicitly and closes the child-side ends in the parent immediately after
 // spawn, rather than relying on that platform default alone -- the same "don't rely on the platform
-// default being safe, make it explicit" posture `decisions/ADR-004-...md` §12 Finding 6 named on the
+// default being safe, make it explicit" posture `decisions/archive/ADR-004-...md` §12 Finding 6 named on the
 // Windows side of this project after a real, reproduced ambient-authority leak there.
 //
 // Both pipes are drained via `poll()`, interleaved, rather than sequentially (stdout to EOF, then

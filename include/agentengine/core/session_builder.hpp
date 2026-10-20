@@ -34,7 +34,7 @@
 // so `.max_turns()`/`.token_budget()` were completely bypassed by a non-converging CodeAct ask loop.
 // This facade's OWN `max_turns_`/`token_budget_` wiring was always correct; what it wires into had the
 // gap. Fixed at the root, in `rt/agent_session.hpp` -- see that file's own comment at the fix site, and
-// `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8 for the addendum, and this facade's own
+// `decisions/archive/ADR-057-agent-ask-suspend-without-deadlock.md` §8 for the addendum, and this facade's own
 // design draft §0i for the full account. Regression-proofed: `tests/test_rt_agent_session_codeact_ask_
 // max_turns.cpp`, not this file's own test file, since the bug and its fix are both in `AgentSession`.
 //
@@ -100,7 +100,7 @@
 //    reaches the raw session via `Bundle::session()` and calls `start_run()`/`resolve_interaction()`
 //    directly, concurrently with `.ask()` -- that bypasses `ask_mutex_` entirely and inherits
 //    `AgentSession`'s own ordinary I1 single-executor obligation, same as any other direct use.
-//    SUPERSEDED BY decisions/ADR-175: the bounded single `resume()` had issue #78's shape -- a run that
+//    SUPERSEDED BY decisions/archive/ADR-175: the bounded single `resume()` had issue #78's shape -- a run that
 //    parked could already have been handed the lock and be running on the releasing thread when it was
 //    destroyed. `ask()`/`ask_stream()` now drive with `rt::block_on()`; see `ask()`'s own comment.
 // 2. `api_key_from_env()` pushed a NEW `cap::Secret` grant into `grants_` on every call, unconditionally
@@ -306,7 +306,7 @@
 // reset; a strong-exception-guarantee `engage()`) were carried forward VERBATIM into
 // `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` itself
 // (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
-// decisions/ADR-074-composed-context-provider-consolidation.md), closing finding 9's own disclosed
+// decisions/archive/ADR-074-composed-context-provider-consolidation.md), closing finding 9's own disclosed
 // residual ("the underlying shared_ptr-aliasing mechanism in `ComposedContextProvider` itself is
 // UNCHANGED") at the source. `ComposedQuickstartSessionBuilder::HistoryProviderT` below now names
 // `agentengine::ComposedContextProvider<Ms...>` directly, using its `engage()` the same way this
@@ -356,7 +356,7 @@
 // ever instantiated (namespace-qualified name lookup for `agentengine::openai::...` is non-dependent,
 // resolved at parse time, not instantiation time).
 //
-// decisions/ADR-226 (issue #46): this guard used to cover the WHOLE file, on the reasoning that every
+// decisions/archive/ADR-226 (issue #46): this guard used to cover the WHOLE file, on the reasoning that every
 // symbol here existed only to wire those two backends up. That stopped being true when
 // `RawQuickstartSessionBuilder` (a caller-supplied `ChatClientT`, no backend, no network) landed, and
 // ADR-226's `make_agent_session<A>()` (core/agent_session_bridge.hpp) needs `Bundle` in the default,
@@ -469,7 +469,7 @@ public:
     [[nodiscard]] agentengine::CapabilitySet const& capabilities() const noexcept { return *capabilities_; }
 
     // Design draft §4 -- the one-shot round-trip sugar. Serializes against itself via `ask_mutex_`.
-    // Driven by `rt::block_on()` (decisions/ADR-175). It used to resume the run exactly once and, if that
+    // Driven by `rt::block_on()` (decisions/archive/ADR-175). It used to resume the run exactly once and, if that
     // did not finish it -- most likely a concurrent caller holding `session_mutex_` via the raw
     // `session()` accessor -- return `quickstart_bundle.ask_would_block` and destroy the run. That
     // destruction is issue #78's shape: the run may already have been handed the lock and be running on
@@ -484,7 +484,7 @@ public:
         return agentengine::text_of(r->message);
     }
 
-    // decisions/ADR-226 (002 §2.1 as amended): `ask()` with the whole `AgentResponse` instead of only its
+    // decisions/archive/ADR-226 (002 §2.1 as amended): `ask()` with the whole `AgentResponse` instead of only its
     // text -- usage, and `structured_output_json` for an agent that declared `OutputSchema<T>`. Same
     // `ask_mutex_` serialization and the same `rt::block_on()` drive as `ask()`, for the same reasons.
     [[nodiscard]] agentengine::result<agentengine::rt::AgentResponse> run(std::string text) {
@@ -493,7 +493,7 @@ public:
             session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
     }
 
-    // decisions/ADR-234 (issue #60): drive any session coroutine `fn(session)` under the SAME `ask_mutex_`
+    // decisions/archive/ADR-234 (issue #60): drive any session coroutine `fn(session)` under the SAME `ask_mutex_`
     // serialization and the same `rt::block_on()` drive as `ask()`/`run()`. The harness (core/harness.hpp)
     // uses it for its bounded-reflection run (several `start_run()`s that must not interleave with another
     // caller's `ask()`) and for `resolve_interaction()`; going through the raw `session()` accessor instead
@@ -505,7 +505,7 @@ public:
     }
 
     // unified-streaming-design-draft.md §4 (Piece D), Rev 7. Drives the run exactly as `ask()` does
-    // (`rt::block_on()` since decisions/ADR-175; the design's bounded single `resume()` is superseded,
+    // (`rt::block_on()` since decisions/archive/ADR-175; the design's bounded single `resume()` is superseded,
     // see `ask()`'s comment) -- just moved onto a background thread, because this call will legitimately
     // block for the run's whole real-world duration and the caller wants to consume text live. Two
     // cooperating threads, not a resume loop (the 4th red-team pass's Finding 3: a resume loop is what
@@ -599,7 +599,7 @@ public:
                 }
             });
 
-            // decisions/ADR-175: driven to completion by block_on(), as `ask()` is -- this used to resume
+            // decisions/archive/ADR-175: driven to completion by block_on(), as `ask()` is -- this used to resume
             // once and fail the stream with `quickstart_bundle.ask_stream_would_block` if the run parked,
             // destroying a run that might already be running on the releasing thread. The relay above
             // observes this run's own terminal event either way. A run that parks waits here; `~Bundle`
@@ -913,7 +913,7 @@ template <Provider P, class Store>
 }
 
 // 2026-08-23 consolidation (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
-// decisions/ADR-074-composed-context-provider-consolidation.md): this used to be a separate,
+// decisions/archive/ADR-074-composed-context-provider-consolidation.md): this used to be a separate,
 // `quickstart::detail`-local type, `LazyComposedContextProvider<Ms...>`, that existed only because
 // `core/composed_context_provider.hpp`'s `ComposedContextProvider<Ms...>` required every `Ms` to be
 // default-constructible to occupy `AgentSession<...>::history_provider_` (a plain, always-default-

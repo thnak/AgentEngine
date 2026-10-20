@@ -1,7 +1,7 @@
 # Where Claude Code, GitHub Copilot, and OpenAI Codex CLI store `SKILL.md` skills
 
 **Date:** 2026-08-21 · **Sources:** cited inline, fetched via web search, not asserted from memory.
-Requested while designing `decisions/ADR-072-external-host-discovered-skill-sources.md` — needed the
+Requested while designing `decisions/archive/ADR-072-external-host-discovered-skill-sources.md` — needed the
 real, current per-tool/per-scope directory conventions before writing
 `include/agentengine/core/external_skill_discovery.hpp`'s `kKnownRoots` table, per this project's own
 "research is dated and cited" rule (`CLAUDE.md`).

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-237-async-extension-points-and-io-reactor.md §4.3 (lanes, I1 and the session strand;
+// Proof for decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §4.3 (lanes, I1 and the session strand;
 // scheduling) and §4.2 (a strand is the home of engine work; final_suspend posts across strands) --
 // rt::LanePool / rt::StrandGroup / rt::Strand / rt::on_strand / rt::reschedule (rt/lanes.hpp), the strand home in
 // rt/resume_home.hpp and the cross-strand final_suspend in rt/task.hpp. Each claim names how it would fail.

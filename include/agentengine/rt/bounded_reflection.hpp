@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-168-bounded-reflection-loop.md, closing issue #55 ("No lightweight
+// Implements decisions/archive/ADR-168-bounded-reflection-loop.md, closing issue #55 ("No lightweight
 // agent-level bounded reflection/self-loop -- Looping only reachable via full Reflection/critic
 // workflow, 014 §3"). MAF's Harness offers this as `LoopEvaluators`: "optional bounded
 // re-invocation driven by evaluators or predicates" on a single agent.

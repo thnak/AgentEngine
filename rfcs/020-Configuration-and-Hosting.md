@@ -54,7 +54,7 @@ turn off the sandbox through an environment variable does not have a sandbox.
 
 **Amendment (ADR-061, applied 2026-09-04).** Project-owner direction of 2026-08-15, Judged
 2026-08-20, removed the assumption every row above was written under —
-`decisions/ADR-061-host-provided-inbound-transport.md` §0: *"**AgentEngine will not implement HTTP
+`decisions/archive/ADR-061-host-provided-inbound-transport.md` §0: *"**AgentEngine will not implement HTTP
 networking at all.** The engine exposes a protocol-handler API; consumer code owns the socket, TLS,
 HTTP framing, and routing"*, and, in the same section, *"the reactor question is moot **if no
 first-party listener is ever built**."* That ADR's §2a conflict table names this section's two
@@ -87,7 +87,7 @@ like the rest of this RFC, not a description of shipped code. 020 is an M9 RFC
 (`docs/planning/v1-implementation-roadmap.md:207-227`), and the facade's absence is already tracked
 where it bites: `docs/planning/milestone-6-multi-agent-orchestration-breakdown.md` decision 2 builds
 030 §6's four project verbs as engine-level operations *beneath* the facade rather than waiting for
-it, and `decisions/ADR-053-schedule-wakeup-standing-effect.md` §"does not design" names the missing
+it, and `decisions/archive/ADR-053-schedule-wakeup-standing-effect.md` §"does not design" names the missing
 facade as why the host-side wake poller is out of its own scope. The individual primitives this
 subsection composes — `start_run`, `agentengine::stream<RunEvent>`, `std::stop_token` cancellation —
 are real and usable today; only the bring-up object that packages them is not.
@@ -124,7 +124,7 @@ coroutine without marshaling (`winrt::resume_foreground(dispatcherQueue)`
 or equivalent) has a host bug, not an engine defect. Stated plainly so it doesn't get discovered by
 a flaky WinUI reference app: this has to be documented, not assumed away.
 
-**Hosting inside another runtime: who runs a woken AgentEngine coroutine** (`decisions/ADR-219`,
+**Hosting inside another runtime: who runs a woken AgentEngine coroutine** (`decisions/archive/ADR-219`,
 GitHub issue #79). A parked AgentEngine coroutine — one waiting on an `rt::AsyncMutex` or an
 `rt::channel<T>` — is woken by whichever thread releases the lock or pushes the item. Who then
 *runs* it depends on what drives it:
@@ -249,7 +249,7 @@ now gone. See §8.
 **Historical note (ADR-037):** this section describes multi-node cluster placement as it was
 originally designed, riding Quark's own cluster/placement machinery. ADR-037 (2026-08-13) removed
 Quark as a dependency entirely and audited zero real cluster footprint in AgentEngine's build even
-before removal (`decisions/ADR-037-remove-quark-as-core-runtime.md` §2) — `agentengine::rt::` has
+before removal (`decisions/archive/ADR-037-remove-quark-as-core-runtime.md` §2) — `agentengine::rt::` has
 no multi-node cluster placement mechanism at all. The concerns below are retained as an honest
 record of unbuilt, currently out-of-scope future work, not a description of anything that exists
 today.

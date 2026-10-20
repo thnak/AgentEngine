@@ -284,7 +284,7 @@ decision (I2/I3).
   — one checkpoint story, one replay mechanism — is achieved at the 019/013 layer instead (turn
   boundaries and superstep boundaries are peer checkpoint-boundary kinds), without collapsing the
   execution models themselves. **Same reasoning applied directly, not just by analogy (issue #54,
-  decisions/ADR-167-plan-execute-mode.md, 2026-09-03):** single-agent Plan/Execute mode (MAF's
+  decisions/archive/ADR-167-plan-execute-mode.md, 2026-09-03):** single-agent Plan/Execute mode (MAF's
   Harness "Agent modes" row) does NOT route through §3's Planner (Magentic) pattern as a degenerate
   one-node case — it's built at the 002/005 layer instead (`ContextProvider` + `PolicyDecider`
   composition, `core/plan_execute_mode.hpp`), the identical "don't pay supervising-actor/typed-edge

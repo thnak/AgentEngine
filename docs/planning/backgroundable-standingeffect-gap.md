@@ -53,7 +53,7 @@ detailed enough to implement directly — nothing here is an open design questio
   completion" are a separate, also-unbuilt residual — they need 012/A2A, M7's RFC, not this one.)
   **Superseded note (ADR-037):** the Timer/schedule row's wiring depended on a live `quark::Engine`'s
   `ReminderService` (`rt/agent_session.hpp`'s own file banner names this explicitly as a residual NOT
-  yet migrated, unlike the rest of `AgentSession`) — `decisions/ADR-037-remove-quark-as-core-runtime.md`
+  yet migrated, unlike the rest of `AgentSession`) — `decisions/archive/ADR-037-remove-quark-as-core-runtime.md`
   removed Quark entirely, so this row needs a standalone `rt::`-based replacement design before it can
   be considered wired again, not just re-verified.
 - **Proof obligations already named**, not yet attempted: **G6** (a run that calls `schedule_wakeup`/

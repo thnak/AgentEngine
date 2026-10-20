@@ -1,5 +1,5 @@
 // ADR-037 Phase 2: porting the real behavioral claims from the OLD, Quark-actor-based
-// test_agent_session_real_backend.cpp (decisions/ADR-018) and test_agent_session_skills_real_backend.cpp
+// test_agent_session_real_backend.cpp (decisions/archive/ADR-018) and test_agent_session_skills_real_backend.cpp
 // (009 §8 + ADR-018) onto agentengine::rt::AgentSession (rt/agent_session.hpp) directly. Both old files
 // share the identical "canned local HTTP server, real OpenAIChatClient, real socket" shape -- fully
 // portable and CI-safe (no live network egress, no live API key), just no longer wired through
@@ -245,7 +245,7 @@ struct OneWeatherTool : agentengine::Tool<OneWeatherTool> {
 
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
     // HasContextProviderName, needed to compose via HistoryAndSkillsProvider below.
     static constexpr std::string_view name = "real-backend-history";
 
@@ -270,7 +270,7 @@ static_assert(agentengine::ContextProvider<ToolDeclaringHistoryProvider>,
 // `ContextProvider` conformer).
 class BuiltinSkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "real-backend-skills";
 
     BuiltinSkillsProvider() : inner_({agentengine::make_builtin_skills_source()}) {}

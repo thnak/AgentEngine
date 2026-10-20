@@ -256,7 +256,7 @@ table is used both for what is declared to the model and for every `invoke_tool(
 schemas) and Anthropic's/OpenAI's own "container" model (tool declarations stay static; only the
 underlying file/skill content varies), neither of which scopes tool visibility this way. A tool not
 named by any resolved skill is genuinely unreachable this run, not merely undeclared — see
-`decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md` for the recorded reasoning, including why the
+`decisions/archive/ADR-024-skill-scoped-tool-and-mount-wiring.md` for the recorded reasoning, including why the
 two tables (declared, invocable) must be the same object rather than independently constructed. (Phase
 2's "every resolved skill" is unconditional/all-on-by-default; see the Phase 3 amendment immediately
 below for the narrowing to an agent-selected subset.)
@@ -284,7 +284,7 @@ construction (one approval gate for the whole `run_skill_script` dispatcher, not
 same shape of gap, one level down, from the load-before-use gap ADR-024 already found and built
 `MountedSkillsState` to close.
 
-**Amendment (host pre-mount, `decisions/ADR-224-host-premounted-builtin-skills.md`, Proposed).** A
+**Amendment (host pre-mount, `decisions/archive/ADR-224-host-premounted-builtin-skills.md`, Proposed).** A
 *host* may also mount a skill, before the run's first model call, from its own configuration — in
 practice the §8f built-in skill paired with a tool the host itself declares into the session
 (`core/skill_premount.hpp`: `run_shell`/`run_command` → `shell-pipelines`, `execute_code` →
@@ -366,7 +366,7 @@ These ship in this repo, not as a separate download, and are mounted by default 
 per-session grant model as any skill (§8c) — "built-in" means "shipped and trusted by default," not
 "ungoverned."
 
-### 8g. External, host-discovered skill sources (`decisions/ADR-072-external-host-discovered-skill-
+### 8g. External, host-discovered skill sources (`decisions/archive/ADR-072-external-host-discovered-skill-
 sources.md`)
 
 §8a's format choice (`SKILL.md`) is also the interchange format several other AI coding tools
@@ -437,7 +437,7 @@ dimension so a misbehaving plugin is visible without code changes.
   otherwise have to reach on its own. **What AgentEngine builds is a minimal pull-only client**
   (token exchange, manifest fetch, blob fetch by digest, SHA-256 verify — a few hundred lines against
   an existing HTTP capability, the same "system-API, not a third-party dependency" framing as
-  Windows CNG/BCrypt in `decisions/ADR-005-capability-bearer-tokens-cross-process.md`) — push,
+  Windows CNG/BCrypt in `decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`) — push,
   garbage collection, and chunked resumable upload are out of scope entirely, because AgentEngine is
   never the publisher: whoever authors a plugin publishes it with existing standard tooling (`oras`,
   `docker`, `skopeo`). **One concrete detail this decision surfaces, not solved here**: the blob fetch

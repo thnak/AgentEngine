@@ -1,4 +1,4 @@
-// This file MUST NOT compile (decisions/ADR-158-tool-concurrency-exclusivity-policy.md §5) — see
+// This file MUST NOT compile (decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §5) — see
 // tests/compile_fail/CMakeLists.txt's compile-fail gate. Declaring more than one `ExclusivityGroup<Name>` on
 // the same tool must fail to compile, not silently keep only the LAST-declared group the way the
 // ordinary policy-tag fold (e.g. `declared_approval()`) does for other tags — silently narrowing a

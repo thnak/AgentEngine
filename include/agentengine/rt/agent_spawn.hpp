@@ -22,7 +22,7 @@
 // is a separate file's own change -- see `session_builder.hpp`'s own top comment.
 //
 // -- §4.4c SpawnPump, built here (bounded to this file, not a separate design/red-team/prove pass) --
-// (decisions/ADR-175 replaced that drive loop with `rt::block_on()`, and a parked waiter is now posted
+// (decisions/archive/ADR-175 replaced that drive loop with `rt::block_on()`, and a parked waiter is now posted
 // back to its own `block_on()` rather than resumed on the unlocking thread; the reasoning below is the
 // pump's original justification and is left as written.)
 // The design doc's own RC-2/WT-2 findings are real and load-bearing, not merely theoretical: a naive
@@ -603,7 +603,7 @@ template <agentengine::rt::AppendLogStore StoreT>
 template <agentengine::rt::AppendLogStore StoreT>
 class AgentSpawnToolProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- every conformer wrapped by
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 -- every conformer wrapped by
     // ComposedContextProvider needs this (HasContextProviderName), the same "name" convention
     // HistoryProvider<Window<N>>/ScheduleWakeupTool's own precedents already establish.
     static constexpr std::string_view name = "agent_spawn";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-190-summarizer-prompt-contract.md's tests: the request both declared
+// Implements decisions/archive/ADR-190-summarizer-prompt-contract.md's tests: the request both declared
 // summarizers receive (a fixed instruction plus a JSON Lines transcript, no tools), what a memory
 // extraction reply must look like to be stored, what a compaction reply must contain, and both providers end
 // to end with a mock summarizer that CAPTURES what it is sent -- the thing every earlier mock ignored, which

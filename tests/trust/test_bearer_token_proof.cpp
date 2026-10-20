@@ -1,4 +1,4 @@
-// ADR-021 prove phase (decisions/ADR-021-inbound-protocol-trust-boundary.md). Proves
+// ADR-021 prove phase (decisions/archive/ADR-021-inbound-protocol-trust-boundary.md). Proves
 // trust/bearer_token.hpp -- the inbound bearer-token mechanism Design A (first-party TLS+auth
 // termination) depends on -- against the specific findings ADR-021's own red-team pass named:
 // algorithm confusion (closed by construction, no runtime test possible -- see the header's own

@@ -64,7 +64,7 @@ explicitly, and revocable.
 | `Schedule<max_horizon, max_active>` | Register a durable wake condition that outlives the current turn (006 §6b, 019 §2) | max horizon into the future, max concurrently-active registrations |
 | `Background<max_concurrent>` | Detach a `Backgroundable` tool call (006 §5) from the turn that invoked it (006 §6b) | max concurrently-running detached calls |
 
-**The depth budget is proven, in-process only, by `decisions/ADR-006-agent-spawn-depth-budget-bound.md`**
+**The depth budget is proven, in-process only, by `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md`**
 (`trust/spawn_budget.hpp`) — resolves the depth half of 026 §9 Q1 / OQ-14 (OpenQuestions.md).
 
 **Properties:**
@@ -136,7 +136,7 @@ Every approval decision, background paths included, goes through `tool_call_requ
 "auto-declassifies" as "needs no approval", so a `text_derived` call to a pure, capability-free
 `always_require` tool ran with no human at all.
 
-**Amendment (`decisions/ADR-070-host-configurable-responsibility-boundary.md`).** That ADR names a
+**Amendment (`decisions/archive/ADR-070-host-configurable-responsibility-boundary.md`).** That ADR names a
 formal, bounded pattern — the "Delegated Decision Seam" — for shifting part of AgentEngine's own
 enforcement responsibility to the consumer dev (capability/sandbox defaults, approval grading,
 `ContextProvider`/`Workflow` configuration), explicitly so that request does not become an argument
@@ -240,7 +240,7 @@ duration, trace/span id}`.
 - ~~**Q1** — Whether capabilities should be representable as **bearer tokens** (macaroon-style, with
   caveats) so they can cross a process boundary to a remote sandbox without a bespoke protocol.
   Attractive for the `remote` profile (008); adds a crypto dependency and a revocation problem.~~
-  **Resolved by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`: yes, for the
+  **Resolved by `decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`: yes, for the
   `ExpiresAt`/`PathPrefix` caveat classes proven there** — accepted narrowly, not as a blanket
   replacement for host-side state. The revocation problem this question anticipated is real and
   confirmed (a minted token is valid until its own caveats lapse, with no way to unmint it early);
@@ -251,7 +251,7 @@ duration, trace/span id}`.
   red-teamed, ASan-clean implementation is real code at `include/agentengine/trust/capability_token.hpp`
   and `src/trust/capability_token.cpp` (macaroon-style HMAC-chain, narrow caveats).
 - ~~**Q2** — Span-level taint (003 Q3) would make declassification far more precise.~~ **Resolved,
-  No (OQ-5, 2026-08-04):** see 003 §8 Q3 and `decisions/ADR-007-span-level-taint-vs-per-item.md`.
+  No (OQ-5, 2026-08-04):** see 003 §8 Q3 and `decisions/archive/ADR-007-span-level-taint-vs-per-item.md`.
   The decisive reason lives here, not there: G2's compile-fail proof that `Tainted<T>` has no
   implicit conversion is a whole-value, compile-time property. Span-level taint would need a
   runtime interval check instead, weakening I3's static half for every text-touching path in

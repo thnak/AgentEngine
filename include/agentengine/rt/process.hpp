@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-237-async-extension-points-and-io-reactor.md §6.3 "Processes", §4.4 "Process
+// Implements decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §6.3 "Processes", §4.4 "Process
 // cancellation" and "Deadlines are timers", §2 H-e -- coroutine awaitables over pal/reactor_process.hpp, and
 // `rt::run_process`, the whole-child convenience every spawner moves onto in later steps of the ADR.
 //

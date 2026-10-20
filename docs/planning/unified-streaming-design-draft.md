@@ -1,6 +1,6 @@
 # Unified streaming design — gateway `call_stream`, tool-call argument/result streaming, `Bundle::ask_stream()`
 
-**JUDGED (2026-08-22) — see `decisions/ADR-073-unified-streaming-gateway-call-stream-tool-argument-
+**JUDGED (2026-08-22) — see `decisions/archive/ADR-073-unified-streaming-gateway-call-stream-tool-argument-
 result-streaming-ask-stream.md` for the compressed, judged record.** This document remains the full,
 uncompressed working history (every finding from all five red-team rounds, every revision) — the ADR is
 the authoritative decision record; this doc is its evidence trail.
@@ -143,7 +143,7 @@ not happened.
 **Supersedes/merges:** `docs/planning/quickstart-builder-streaming-gap.md`, `docs/planning/model-call-
 gateway-routing-design-draft.md` Finding 2, `docs/planning/tool-call-argument-streaming-gap.md`,
 `docs/planning/tool-call-result-streaming-gap.md`, `docs/planning/tool-call-argument-streaming-validation-
-design-draft.md`, and (Piece E, added after Rev 2) `decisions/ADR-060-tool-call-progress-reporting.md`
+design-draft.md`, and (Piece E, added after Rev 2) `decisions/archive/ADR-060-tool-call-progress-reporting.md`
 §7's named "structured/typed progress payloads" residual. **Research:** `docs/research/2026-08-22-tool-
 call-streaming-validation-landscape.md`.
 

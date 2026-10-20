@@ -1,6 +1,6 @@
 # ADR-241 red-team record (rounds 1-4, 2026-10-20)
 
-The adversarial reviews of `decisions/ADR-241-egress-proxy-async-path-on-rt-http.md`, kept verbatim as the ADR's evidence. Round 1: 0 FATAL / 8 MAJOR / 8 MINOR; round 2: 0 / 2 / 8; round 3: 0 / 2 / 6 (S1 cleared for the prove step; S2's blockers resolved in the round-4 revision); round 4 (S2 only): 0 / 2 / 4, resolved in the round-5 revision. The reviews read code only; nothing was built.
+The adversarial reviews of `decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md`, kept verbatim as the ADR's evidence. Round 1: 0 FATAL / 8 MAJOR / 8 MINOR; round 2: 0 / 2 / 8; round 3: 0 / 2 / 6 (S1 cleared for the prove step; S2's blockers resolved in the round-4 revision); round 4 (S2 only): 0 / 2 / 4, resolved in the round-5 revision. The reviews read code only; nothing was built.
 
 ## ADR-241 red-team, round 1
 

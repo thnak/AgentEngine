@@ -21,7 +21,7 @@
 //
 // REQUIRES: a running Docker daemon reachable via the `docker` CLI on PATH
 // (MandatorySandboxProvider<DockerExecutionSurface>). Portable across Windows and Linux (2026-08-29,
-// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md) -- this comment previously said
+// decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md) -- this comment previously said
 // "REQUIRES Windows (SandboxToolProvider/SessionShellSandbox's own current platform scope)", which was
 // already stale by the time it was written: `agentengine::mediated_shell_runner`
 // (SandboxToolProvider's own dependency chain) has built on both platforms since ADR-103. Verified:

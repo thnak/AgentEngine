@@ -1,4 +1,4 @@
-// MANUAL measurement, NOT a CI gate: decisions/ADR-241-egress-proxy-async-path-on-rt-http.md R12 / SS8.2 ("the 64 x 16 MiB
+// MANUAL measurement, NOT a CI gate: decisions/archive/ADR-241-egress-proxy-async-path-on-rt-http.md R12 / SS8.2 ("the 64 x 16 MiB
 // over 2 lanes figure is a prove-step measurement, not an argument").
 //
 // Claim measured: sync-edge (WASM) calls run their continuations on the 2 egress lanes, so a flood of `fetch_blocking`
