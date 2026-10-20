@@ -31,11 +31,13 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <thread>
 
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
@@ -67,14 +69,13 @@ template <class Pred>
 // same rule test_rt_agent_session.cpp's own drive<T>() documents.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // task<void> has no take_value() (see rt/task.hpp's void specialization) -- a separate helper rather
 // than trying to make drive<T>() above generic over T=void.
 void drive_void(agentengine::rt::task<void> t) {
-    while (!t.done()) t.resume();
+    agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;

@@ -68,6 +68,7 @@
 // (exit 0) if either is missing. Nondeterministic by nature: nothing below asserts on model CONTENT,
 // only on structure, turn counts, and the real usage numbers the provider reports.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -164,8 +165,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using RealClient  = openai::OpenAIChatClient<InMemorySecretStore>;

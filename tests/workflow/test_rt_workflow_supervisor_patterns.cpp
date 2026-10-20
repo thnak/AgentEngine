@@ -30,6 +30,7 @@
 //
 // MACHINE SAFETY (CLAUDE.md): bounded round counts; sleeps (fan-in ordering probe only) are tens of ms.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ExecutorBody;
@@ -71,8 +73,7 @@ void note(char const* label, std::string const& value) {
 // the whole chain resolves on ONE resume() call in this single-caller test file.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

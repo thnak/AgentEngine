@@ -50,6 +50,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
@@ -99,8 +100,7 @@ void note(char const* label, std::string const& value) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Was `stealth/ox-alpha`, which is GONE: OpenRouter retires a stealth alias when its testing

@@ -17,6 +17,7 @@
 //         actor-restart budget needed) actually works end to end, not just in the file banner's prose.
 //   C5 -- a request-port suspend/resume round-trip.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -59,8 +60,7 @@ void note(char const* label, std::string const& value) {
 // whole chain resolves on ONE resume() call. See workflow_supervisor.hpp's own file banner.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -471,6 +471,7 @@ int main() {
         sup.initialize(wf, bodies);
 
         agentengine::rt::task<WorkflowResult> run_task = sup.run_workflow(RunWorkflow{text_message("in")});
+        // #178: deliberate step-driving (observes a suspended state): two tasks resumed by hand across threads
         std::thread driver([&run_task] { run_task.resume(); });
 
         while (!round_started.load(std::memory_order_acquire)) std::this_thread::yield();

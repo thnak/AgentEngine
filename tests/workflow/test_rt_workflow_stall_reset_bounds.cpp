@@ -18,11 +18,13 @@
 //         5 -- the bug a red-team pass found in this feature's own safety valve before any of this
 //         compiled).
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ContinueWorkflow;
@@ -50,8 +52,7 @@ void check(bool cond, char const* what) {
 // is a single-node (or two-node) fan-out with no genuinely suspending co_await anywhere in the chain.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

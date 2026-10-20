@@ -30,6 +30,7 @@
 #include "agentengine/sandbox/real_io_filesystem.hpp"
 #include "agentengine/rt/block_on.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <filesystem>
 #include <random>
@@ -56,8 +57,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string const& s) {

@@ -36,9 +36,11 @@
 // fail; where it cannot (a POSIX process running as root ignores the directory permissions this uses
 // as its blocker) W2/W3 are skipped out loud rather than silently passing.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -72,8 +74,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string const& s) {

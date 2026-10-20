@@ -50,6 +50,7 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ExecutorBody;
@@ -80,8 +81,7 @@ void note(char const* label, std::string const& value) {
 // std::future::get(), an ordinary blocking call, so the whole chain resolves on one resume().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

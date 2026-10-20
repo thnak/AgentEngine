@@ -82,6 +82,7 @@
 #include <utility>
 
 #include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/delegated_run_guard.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
@@ -171,12 +172,27 @@ namespace workflow_as_executor_detail {
     // Issue #156 (ADR-214): the outer workflow's cancel (`ctx.cancellation`) is linked into the inner run, so a
     // wrapped workflow stops at its own next check instead of running to completion first.
     // ADR-237 §5.1 (Phase G): the inner run is awaited here -- this is a coroutine now, so no `drive()`.
+    // ADR-193 §9 / issue #196: a throw from, or a drop (destruction while suspended) during, the inner run must still
+    // charge what it spent, exactly once. `inner.usage()` is reset when a run STARTS, so before the run has started
+    // it still holds the PREVIOUS run's total: the guard charges only if `run_id()` moved off the value read here
+    // (the same test the agent adapter makes with `last_run_id()`). `run_workflow` bumps `run_id_` and resets
+    // `total_usage_` together with no suspension between, and the guard runs after the inner run has unwound (throw)
+    // or its frame was destroyed (drop, temporaries go before locals), so the read is not concurrent with the run.
+    std::string const previous_run = inner.run_id();
+    auto const charge_unfinished_run = [&inner, &ctx, &previous_run] {
+        if (inner.run_id() == previous_run) return;
+        ctx.charge_delegated_usage(inner.usage(), 0);
+    };
+    delegated_run_detail::ChargeOnUnwind charge_if_unfinished{charge_unfinished_run};
     WorkflowResult r = co_await inner.run_workflow(RunWorkflow{in, std::nullopt, ctx.cancellation});
     if (r.status == workflow_status::completed) {
         ExecutorOutcome outcome{r.output};
         outcome.usage = r.usage;
+        // Disarmed only once the outcome (which carries the usage) is built: a throw from the copy above is charged.
+        charge_if_unfinished.completed();
         co_return outcome;
     }
+    charge_if_unfinished.completed();
     ctx.charge_delegated_usage(r.usage, 0);
     co_return std::unexpected(agentengine::error{
         inner_run_failure_class(r.status),  // ADR-237 D6: cancelled -> canceled, bound_deadline -> resource

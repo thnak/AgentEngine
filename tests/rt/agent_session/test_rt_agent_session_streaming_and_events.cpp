@@ -60,12 +60,14 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentResponse;
 using agentengine::rt::AgentSession;
@@ -90,8 +92,7 @@ void check(bool cond, char const* what) {
 // every chat_stream() pushes its whole scripted round synchronously before closing.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;

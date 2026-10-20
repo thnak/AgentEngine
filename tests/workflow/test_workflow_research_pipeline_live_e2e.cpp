@@ -56,6 +56,7 @@
 // asserts on model CONTENT, only on structure (which node ran, how many times, what shape the final
 // report has, which real failure class a real response produced).
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -147,8 +148,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;

@@ -303,8 +303,11 @@ class BatchableModelCall {
 public:
     using Build    = std::function<agentengine::result<agentengine::ChatRequest>(agentengine::Message const&,
                                                                                   agentengine::EffectContext&)>;
-    using Call     = std::function<agentengine::result<agentengine::ChatResponse>(agentengine::ChatRequest const&,
-                                                                                   agentengine::EffectContext&)>;
+    // ADR-237 §5.1 (Phase G slice 5): `Call` is `task`-shaped -- it is the one model-I/O step. Its arguments are
+    // references, so the awaiter must keep `request`/`ctx` alive until the task completes (every call site here
+    // awaits it in the same full expression chain).
+    using Call     = std::function<agentengine::task<agentengine::result<agentengine::ChatResponse>>(
+        agentengine::ChatRequest const&, agentengine::EffectContext&)>;
     using Complete = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const& input,
                                                                          agentengine::ChatResponse const& response)>;
 
@@ -313,13 +316,12 @@ public:
 
     // The synchronous path: what this node does whenever it is not batched.
     // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped, so this is a coroutine -- it still
-    // completes without suspending (`build`/`call_request` stay synchronous; converting the
-    // `Build`/`Call`/`Complete` callables themselves is a separate slice).
+    // completes without suspending unless `Call` does (`Build`/`Complete` stay synchronous, ADR-239).
     agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
                                                                       agentengine::EffectContext& ctx) const {
         auto request = build(in, ctx);
         if (!request) co_return std::unexpected(request.error());
-        co_return call_request(in, *request, ctx);
+        co_return co_await call_request(in, *request, ctx);
     }
 
     [[nodiscard]] agentengine::result<agentengine::ChatRequest> build(agentengine::Message const& in,
@@ -330,13 +332,14 @@ public:
 
     // `call` + `finish` on an already-built request -- the synchronous fallback sends exactly the request that
     // was admitted, never a rebuilt one (ADR-235 §3.3 step 5).
-    [[nodiscard]] agentengine::result<ExecutorOutcome> call_request(agentengine::Message const& in,
-                                                                   agentengine::ChatRequest const& request,
-                                                                   agentengine::EffectContext& ctx) const {
-        if (!call_) return std::unexpected(missing("call"));
-        auto response = call_(request, ctx);
-        if (!response) return std::unexpected(response.error());
-        return finish(in, *response);
+    // Lazy task: `in`, `request`, `ctx` are references and must outlive the awaited task.
+    [[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> call_request(
+        agentengine::Message const& in, agentengine::ChatRequest const& request,
+        agentengine::EffectContext& ctx) const {
+        if (!call_) co_return std::unexpected(missing("call"));
+        auto response = co_await call_(request, ctx);
+        if (!response) co_return std::unexpected(response.error());
+        co_return finish(in, *response);
     }
 
     // `complete`, with the response's own usage added to the outcome -- one accounting rule for the batched

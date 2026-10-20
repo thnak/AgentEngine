@@ -64,8 +64,7 @@ void check(bool cond, char const* what) {
 // to observe an in-flight state, not a run-to-completion helper.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -288,6 +287,7 @@ int main() {
         // agentengine::rt::AgentSession members and return agentengine::rt::task<T>.
         agentengine::rt::task<agentengine::result<AgentResponse>> run_task =
             session.start_run(StartRun{user_message("hi")});
+        // #178: deliberate step-driving (observes a suspended state)
         run_task.resume();
         check(!run_task.done(),
               "P6: start_run() is genuinely in flight (parked inside chat() on the gate), not finished");

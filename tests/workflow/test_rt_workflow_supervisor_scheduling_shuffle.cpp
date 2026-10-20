@@ -21,6 +21,7 @@
 // whole 1000-seed sweep (four concurrent branches per round) completes in low single-digit seconds,
 // not a machine-taxing duration.
 
+#include <utility>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -30,6 +31,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ExecutorBody;
@@ -56,8 +58,7 @@ void note(char const* label, std::string const& value) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

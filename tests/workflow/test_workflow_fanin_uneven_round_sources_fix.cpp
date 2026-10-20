@@ -46,11 +46,13 @@
 // state (a real, if perhaps unintended, form of partial-resume). Left as a disclosed residual, not
 // fixed here.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -101,8 +103,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 }  // namespace

@@ -5,6 +5,7 @@
 // Every negative claim here was also run against a mutated guard (ADR-235 §6) -- a check that cannot fail
 // proves nothing.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -13,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -57,8 +59,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text, role r = role::user) {
@@ -124,12 +125,12 @@ struct Calls {
             r.messages.push_back(text_message(name + ":" + all_text_of(in)));
             return r;
         },
-        [calls](ChatRequest const& req, EffectContext&) -> result<ChatResponse> {
+        [calls](ChatRequest const& req, EffectContext&) -> agentengine::task<result<ChatResponse>> {
             ++calls->sync;
             ChatResponse resp;
             resp.message = text_message("sync(" + all_text_of(req.messages.front()) + ")", role::assistant);
             resp.usage.input_tokens = 10;
-            return resp;
+            co_return resp;
         },
         [name, calls](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
             ++calls->complete;
@@ -816,7 +817,7 @@ spec:
         wf.bound.max_rounds = 2;
         BatchableModelCall body{
             [](Message const&, EffectContext&) -> result<ChatRequest> { throw std::runtime_error("build boom"); },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;
@@ -846,7 +847,7 @@ spec:
                 r.messages.push_back(text_message("q"));
                 return r;
             },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;

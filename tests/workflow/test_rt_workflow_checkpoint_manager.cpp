@@ -15,6 +15,7 @@
 //   C5 -- the same attach()/resume_or_start() round-trip works against FileSessionStore, a REAL
 //         on-disk store, not just the in-memory one.
 
+#include <utility>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -65,8 +66,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

@@ -50,6 +50,7 @@
 // MACHINE SAFETY (CLAUDE.md): bounded round counts throughout; the one real sleep (IQ1) is 200ms,
 // tens-of-ms scale like the rest of this migration's timing checks, not unbounded.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -57,6 +58,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ContinueWorkflow;
@@ -86,8 +88,7 @@ void check(bool cond, char const* what) {
 // blocking call. One resume() call resolves the whole chain in this single-caller test file.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;

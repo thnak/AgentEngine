@@ -38,6 +38,7 @@
 #include <memory_resource>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
@@ -45,6 +46,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "../../support/run_task_sync.hpp"
 
@@ -69,8 +71,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session_suspend_approval.cpp's own "no cross-test-file coupling" precedent.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 template <class Pred>

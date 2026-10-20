@@ -166,13 +166,11 @@ int main() {
                 r.messages.push_back(user_text(question + " Answer in at most five words."));
                 return r;
             },
-            [sync_client, sync_calls](ChatRequest const& req, EffectContext& ctx) -> result<ChatResponse> {
+            [sync_client, sync_calls](ChatRequest const& req, EffectContext& ctx) -> agentengine::task<result<ChatResponse>> {
                 ++*sync_calls;
-                auto t = sync_client->chat(req, ctx);
-                while (!t.done()) t.resume();
-                auto resp = t.take_value();
+                auto resp = co_await sync_client->chat(req, ctx);
                 if (!resp) std::fprintf(stderr, "  sync call failed: %s\n", resp.error().message.c_str());
-                return resp;
+                co_return resp;
             },
             [](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
                 return ExecutorOutcome{resp.message};

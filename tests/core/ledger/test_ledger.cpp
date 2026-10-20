@@ -42,6 +42,7 @@
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/rt/block_on.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -60,8 +61,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string_view s) {

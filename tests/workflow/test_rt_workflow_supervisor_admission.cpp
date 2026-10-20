@@ -44,6 +44,7 @@
 // MACHINE SAFETY (CLAUDE.md): every graph here is 2-3 nodes with `bound.max_rounds` set; no sleeps,
 // no unbounded loops, no subprocesses.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <memory_resource>
@@ -51,6 +52,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -85,8 +87,7 @@ void check(bool cond, char const* what) {
 // only suspension points are run_mutex_'s uncontended fast path and a nested co_await execute().
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text) {
