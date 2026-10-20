@@ -402,6 +402,8 @@ private:
             // ADR-237 §4.4 (#180): the backoff SUSPENDS this coroutine on the reactor instead of blocking
             // the thread it runs on, and it is cancellable: a stop on `ctx.cancellation` ends the wait
             // early and the call fails `canceled` (not retryable, D6) rather than sleeping out the delay.
+            // Residual: a call driven by a raw resume() with no home (no block_on, strand or host Resumer) parks forever
+            // here -- rt::sleep_until refuses homeless waiters (ADR-237 §4.2), as every rt::http-based primary already does.
             if (co_await rt::sleep_for(backoff_reactor(), delay, ctx.cancellation) == rt::sleep_status::canceled) {
                 co_return std::unexpected(error{failure_class::canceled,
                                                  "model call canceled during retry backoff", "gateway.canceled"});
