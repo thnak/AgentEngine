@@ -41,9 +41,10 @@ negotiable here either.
      heavy host dependency should be evaluated as a plugin first.
 - **No .NET / managed-runtime vocabulary** in names, comments, or design. MAF supplies the *shape*
   of the developer model, not its spelling.
-- **No RTTI, no reflection, no `virtual` for policy on the hot path.** Policies are CRTP template
-  parameters resolved to metadata at startup (002). Type erasure is permitted only at declared
-  seams (provider, sandbox backend, store) and never inside a turn's hot loop.
+- **No RTTI, no reflection, no `virtual` on a *measured* hot path** (a 023 budget). Per-turn,
+  I/O-bound surfaces (chat clients, sessions, tool dispatch) may be type-erased; CRTP is optional
+  authoring sugar that compiles to descriptors, not the required shape of the public API
+  ([ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R5, 2026-10-20).
 
 ## Security rules (these are tested, not trusted — 007, 008)
 

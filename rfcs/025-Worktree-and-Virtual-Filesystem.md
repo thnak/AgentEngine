@@ -1,6 +1,6 @@
 # 025 — Worktree and Virtual Filesystem
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 003, 005, 007, 008, 010, 019 · **Gate:** §9
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (R8: every `SandboxBackend` hosts the worktree; D4 unchanged) · **Depends on:** 003, 005, 007, 008, 010, 019 · **Gate:** §9
 
 ## Goal
 

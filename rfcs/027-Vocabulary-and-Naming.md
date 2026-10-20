@@ -1,6 +1,6 @@
 # 027 — Vocabulary and Naming
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** all · **Gate:** §8 · **Normative for:** every public identifier
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (adds `microvm`, `NoSandboxBackend`) · **Depends on:** all · **Gate:** §8 · **Normative for:** every public identifier
 
 ## Goal
 

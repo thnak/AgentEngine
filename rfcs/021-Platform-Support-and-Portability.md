@@ -1,6 +1,6 @@
 # 021 — Platform Support and Portability
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 008, 009 (historical: originally also Quark 019 — ADR-037 removed Quark as a dependency) · **Gate:** §6
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (§2: Linux is the primary server target) · **Depends on:** 008, 009 (historical: originally also Quark 019 — ADR-037 removed Quark as a dependency) · **Gate:** §6
 
 ## Goal
 
@@ -20,9 +20,9 @@ falsifiable rather than aspirational.
 
 | Platform | Tier (intent) | Notes |
 |---|---|---|
-| Windows 11 / x86-64 | **Supported** | The v1 target — primary and, for now, only platform under active implementation; MSVC + clang-cl |
-| Linux / x86-64 | **Next** (not yet gated) | Taken up once the Windows implementation reaches a stable state — a sequenced follow-on, not simultaneous v1 work (historical: originally framed as "Quark's own reference target" before ADR-037 removed Quark as a dependency) |
-| Linux / arm64 | CI-verified (deferred with Linux/x86-64) | Budgets not re-baselined (historical: "Quark runs its matrix here" before ADR-037) |
+| Windows 11 / x86-64 | **Supported (development and desktop)** | ADR-242 R1 (2026-10-20); MSVC + clang-cl |
+| Linux / x86-64 | **Supported (server, primary)** once CI proves it | ADR-242 R1 (2026-10-20): the primary server target. The tier is what CI proves (honesty requirement below), so it reads "Supported" once Linux gcc **and** clang legs are required checks (ADR-242 G-R1); today only gcc runs |
+| Linux / arm64 | CI-verified | Budgets not re-baselined |
 | Windows / arm64 | Best-effort | — |
 | macOS (any arch) | **Unsupported — not a target** | No macOS PAL backend exists and none is planned; no AgentEngine RFC may claim macOS support. Resolved 2026-08-03 (see OpenQuestions.md); previously listed here as Supported on the reasoning that dropping `microvm` (008 §1) removed the only profile-specific gap — that reasoning never addressed the PAL gap itself, which is the actual blocker (historical: originally reasoned from "Quark has no macOS PAL backend"; unaffected by ADR-037 since `agentengine::pal` never had a macOS backend either) |
 
