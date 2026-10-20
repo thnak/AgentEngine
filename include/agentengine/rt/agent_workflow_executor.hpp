@@ -158,8 +158,9 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // code); the supervisor classes the throw as a transient fault and may retry. ADR-237 §5.1
             // (Phase G): the body is a coroutine now, so `start_run()` is awaited directly; the unwind
             // guard still spans the await, so a throwing client charges this node's spend here.
-            delegated_run_detail::ChargeOnUnwind const charge_if_thrown{charge_unfinished_run};
+            delegated_run_detail::ChargeOnUnwind charge_if_unfinished{charge_unfinished_run};
             agentengine::result<AgentResponse> driven = co_await session.start_run(StartRun{input});
+            charge_if_unfinished.completed();  // returned normally: the error path below charges for itself
 
             if (!driven) {
                 charge_unfinished_run();

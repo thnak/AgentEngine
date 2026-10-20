@@ -241,8 +241,9 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     // and `WorkflowChatClient` (rt/delegated_run_guard.hpp, ADR-193 §9).
     std::optional<agentengine::result<agentengine::rt::AgentResponse>> run_result;
     {
-        delegated_run_detail::ChargeOnUnwind const guard{charge};
+        delegated_run_detail::ChargeOnUnwind guard{charge};
         run_result.emplace(co_await child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
+        guard.completed();  // the normal path charges below; a throw or a dropped (suspended) frame charges here
     }
     agentengine::result<agentengine::rt::AgentResponse>& response = *run_result;
     agentengine::Usage const spent = charge();

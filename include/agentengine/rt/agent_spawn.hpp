@@ -410,6 +410,8 @@ private:
 // takes an explicit mount id rather than guessing one from a Ref.
 // ---------------------------------------------------------------------------------------------
 
+// A coroutine taking REFERENCE parameters: every argument must outlive the awaited task (all current callers
+// co_await/block_on it within the same full expression).
 template <agentengine::rt::AppendLogStore StoreT>
 [[nodiscard]] agentengine::rt::task<agentengine::result<AgentSpawnReply>> perform_agent_spawn(
     AgentSpawnArgs const& args, agentengine::EffectContext& ctx, SpawnTargetRegistry const& registry,

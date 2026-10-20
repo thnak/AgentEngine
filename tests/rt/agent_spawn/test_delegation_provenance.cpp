@@ -36,6 +36,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <coroutine>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -625,6 +626,29 @@ public:
     task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
         if (calls++ == 0) co_return ChatResponse{assistant_call("t0", "danger", R"({"what":"x"})"), Usage{50, 50, 0, 0, 0.0}};
         throw std::runtime_error("chat client blew up");
+    }
+    agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
+};
+
+// ADR-193 §9 / ADR-237 §4.5: a client whose SECOND call parks on an awaiter nobody resumes (a run suspended
+// mid-flight), after its first call spent 50+50. `g_park_enabled = false` makes the second call answer at once
+// (spending another 50+50) -- the normal-completion control.
+bool g_park_enabled = true;
+bool g_parked = false;
+struct ParkAwaiter {
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
+    void await_suspend(std::coroutine_handle<>) const noexcept { g_parked = true; }
+    void await_resume() const noexcept {}
+};
+class ParkClient {
+public:
+    std::size_t calls = 0;
+    [[nodiscard]] ChatClientCapabilities capabilities() const { return {}; }
+    task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
+        if (calls++ == 0)
+            co_return ChatResponse{assistant_call("p0", "danger", R"({"what":"x"})"), Usage{50, 50, 0, 0, 0.0}};
+        if (g_park_enabled) co_await ParkAwaiter{};
+        co_return ChatResponse{assistant_text("done"), Usage{50, 50, 0, 0, 0.0}};
     }
     agentengine::stream<ChatResponseUpdate> chat_stream(ChatRequest, EffectContext&) { return {}; }
 };
@@ -1297,6 +1321,88 @@ int main() {
         check(threw && charged.input_tokens == 50 && charged.output_tokens == 50,
               "R2-E1: a child whose chat client throws mid-run still charges its spend (100) before the exception "
               "propagates");
+    }
+    {
+        // ADR-193 §9 / ADR-237 §4.5 -- the charge guard on every exit, a frame destroyed while suspended included.
+        // agent.spawn, DROPPED mid child-run: the parent's task is destroyed while the child parks. No exception is in
+        // flight, yet the child's 100 tokens must be charged to the caller, once.
+        auto make_spawn_req = [](Usage& charged, int& charges) {
+            ChildSpawnRequest req;
+            req.input = make_delegated_message(DelegationSource{"agent.spawn", "p-d", 1}, "task");
+            req.principal = Principal{"p-d", "t"};
+            req.capabilities = CapabilitySet::grant_root({});
+            req.token_budget = 1'000'000;
+            req.charge_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
+                ++charges;
+                charged.input_tokens += u.input_tokens;
+                charged.output_tokens += u.output_tokens;
+            };
+            return req;
+        };
+        {
+            Usage charged{};
+            int charges = 0;
+            g_park_enabled = true;
+            g_parked = false;
+            {
+                auto t = run_child_agent_session<ParkClient>("child-d", make_spawn_req(charged, charges),
+                                                             [](ParkClient&) {});
+                t.resume();  // runs the child until its second model call parks
+                check(g_parked && !t.done() && charges == 0,
+                      "R4-D0: setup -- the child is suspended mid-run and nothing is charged yet");
+            }  // the task is destroyed while suspended
+            check(charges == 1 && charged.input_tokens == 50 && charged.output_tokens == 50,
+                  "R4-D1: an agent.spawn child run dropped while suspended is charged to the caller exactly once "
+                  "(100 tokens)");
+        }
+        {
+            Usage charged{};
+            int charges = 0;
+            g_park_enabled = false;
+            auto const r = rt::block_on(run_child_agent_session<ParkClient>(
+                "child-n", make_spawn_req(charged, charges), [](ParkClient&) {}));
+            check(r.has_value() && charges == 1 && charged.input_tokens == 100 && charged.output_tokens == 100,
+                  "R4-D2: an agent.spawn child run that completes normally is charged exactly once (200 tokens)");
+        }
+        {
+            // The workflow agent-node adapter, dropped mid-run.
+            Usage charged{};
+            int charges = 0;
+            g_park_enabled = true;
+            g_parked = false;
+            AgentSession<ParkClient> node;
+            node.initialize("r4-park-node", Principal{"p-r4", ""}, std::optional<std::uint64_t>{1'000'000});
+            rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
+            EffectContext ctx;
+            ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
+                ++charges;
+                charged.input_tokens += u.input_tokens;
+                charged.output_tokens += u.output_tokens;
+            };
+            {
+                auto t = body(r3_user("go"), ctx);
+                t.resume();
+                check(g_parked && !t.done() && charges == 0,
+                      "R4-D3: setup -- the agent node is suspended mid-run and nothing is charged yet");
+            }
+            check(charges == 1 && charged.input_tokens == 50 && charged.output_tokens == 50,
+                  "R4-D4: a workflow agent-node run dropped while suspended is charged to the caller exactly once "
+                  "(100 tokens)");
+        }
+        {
+            // The agent-node adapter, completing normally: its outcome carries the usage, so the hook is never called.
+            int charges = 0;
+            g_park_enabled = false;
+            AgentSession<ParkClient> node;
+            node.initialize("r4-ok-node", Principal{"p-r4", ""}, std::optional<std::uint64_t>{1'000'000});
+            rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
+            EffectContext ctx;
+            ctx.charge_delegated_usage = [&charges](Usage const&, std::uint64_t) { ++charges; };
+            auto const out = rt::block_on(body(r3_user("go"), ctx));
+            check(out.has_value() && charges == 0 && out->usage.input_tokens == 100 && out->usage.output_tokens == 100,
+                  "R4-D5: a workflow agent-node run that completes normally is charged once, through its outcome "
+                  "(200 tokens), never also through the hook");
+        }
     }
     {
         // L1 (X6): the host-line label is cut on a character boundary and carries no line/bidi controls.
