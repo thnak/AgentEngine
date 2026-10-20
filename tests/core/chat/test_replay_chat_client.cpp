@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <memory>
 #include <thread>
 #include <variant>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/replay_chat_client.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 
 #include "../../support/run_task_sync.hpp"
@@ -431,6 +433,111 @@ int main() {
                       "(9) the replayed response is otherwise the recorded one");
             }
         }
+    }
+
+    // ---- (11) ADR-237 §4.4/§4.5 (#180): the optional-runtime path --------------------------------------
+    {
+        using namespace std::chrono_literals;
+        rt::Runtime runtime(rt::RuntimeConfig{});
+        auto const now = [] { return std::chrono::steady_clock::now(); };
+
+        // (11a) order + closed terminal; (11b) pacing really waits (control: a recorded 200 ms gap).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 200ms, false));
+            rec.chunks.push_back(make_chunk("c", 200ms, true));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            auto const t0 = now();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            auto const took = now() - t0;
+            check(received == std::vector<std::string>{"a", "b", "c"} && saw_final,
+                  "(11a) the runtime path replays every chunk in order");
+            check(s.terminal() == stream_terminal::closed, "(11a) the runtime path closes on a closed recording");
+            check(took >= 180ms, "(11b) the recorded 200 ms gap is really waited on the runtime path");
+        }
+        // (11a) failed terminal keeps the recorded error (ADR-177).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "failed";
+            rec.stream_error = error{failure_class::transient, "recorded boom", "recorded.code"};
+            rec.chunks.push_back(make_chunk("x", 0ms, false));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            check(received == std::vector<std::string>{"x"}, "(11a) the chunk before the failure replays");
+            check(s.terminal() == stream_terminal::failed, "(11a) the runtime path fails a failed recording");
+            auto const e = s.fail_error();
+            check(e.klass == failure_class::transient && e.code == "recorded.code" && e.message == "recorded boom",
+                  "(11a) the recorded error replays exactly (class, code, message)");
+        }
+        // (11b) a stop during a long recorded gap ends the stream promptly.
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 10s, true));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::this_thread::sleep_for(100ms);  // let the worker reach the 10 s gap
+            auto const t0 = now();
+            s.cancel();
+            while (!s.done() && now() - t0 < 3s) { while (s.next()) {} std::this_thread::yield(); }
+            check(s.done() && now() - t0 < 1s, "(11b) cancelling during a 10 s recorded gap ends the stream < 1 s");
+        }
+        // (11c) an injected SleepFn forces the thread path (and is called with the recorded deltas).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 5s, true));
+            auto deltas = std::make_shared<std::vector<std::chrono::milliseconds>>();
+            ReplayChatClient client(rec, {}, [deltas](std::chrono::milliseconds d) { deltas->push_back(d); },
+                                    &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            check(deltas->size() == 2 && (*deltas)[1] == 5s,
+                  "(11c) an injected SleepFn is honoured (thread path) even with a runtime supplied");
+        }
+        // (11d) the runtime path runs no detached thread of its own: the lane count is the Runtime's, and the
+        // worker is a root the Runtime joins -- destroying the Runtime with a stream mid-gap must return
+        // promptly (a detached thread sleeping 10 s would have outlived it; a joined root is stopped).
+    }
+    {
+        using namespace std::chrono_literals;
+        ChatCallRecording rec;
+        rec.mode = recording_mode::streaming;
+        rec.stream_terminal = "closed";
+        rec.chunks.push_back(make_chunk("a", 0ms, false));
+        rec.chunks.push_back(make_chunk("b", 10s, true));
+        auto const t0 = std::chrono::steady_clock::now();
+        {
+            auto runtime = std::make_unique<rt::Runtime>(rt::RuntimeConfig{});
+            ReplayChatClient client(rec, {}, {}, runtime.get());
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::this_thread::sleep_for(100ms);
+            runtime.reset();  // shutdown requests stop on the owned root and joins it
+            while (s.next()) {}
+            check(s.done(), "(11d) Runtime shutdown stopped and joined the replay root (no detached worker)");
+        }
+        check(std::chrono::steady_clock::now() - t0 < 2s, "(11d) Runtime shutdown with a replay mid-gap is prompt");
     }
 
     if (g_failures == 0) {
