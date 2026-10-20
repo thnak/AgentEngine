@@ -304,13 +304,27 @@ void s3_failure(Runtime& rt) {
 struct S4State {
     std::mutex       m;
     std::vector<int> completion;
+    bool             timed_out = false;
 };
 
 task<int> s4_item(Runtime* rt, S4State* st, int i, int n) {
-    (void)co_await sleep_for(rt->reactor(), std::chrono::milliseconds(10 + 12 * (n - i)));
-    {
-        std::lock_guard lock(st->m);
-        st->completion.push_back(i);
+    // #198: finish order is ENFORCED by events, not durations: item i may only finish once every item
+    // with a higher index has (item n-1 goes first). Short polling sleeps, bounded deadline.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    for (;;) {
+        {
+            std::lock_guard lock(st->m);
+            if (static_cast<int>(st->completion.size()) == n - 1 - i) {
+                st->completion.push_back(i);
+                break;
+            }
+            if (std::chrono::steady_clock::now() > deadline) {
+                st->timed_out = true;  // fail loudly via the controls, never hang
+                st->completion.push_back(i);
+                break;
+            }
+        }
+        (void)co_await sleep_for(rt->reactor(), std::chrono::milliseconds(1));
     }
     co_return i * 10;
 }
@@ -345,7 +359,12 @@ void s4_order(Runtime& rt) {
     for (std::size_t i = 0; in_order && i < o.values.size(); ++i) in_order = o.values[i] == static_cast<int>(i) * 10;
     check(in_order, "S4 when_all returned the 16 values in the order the tasks were given");
     bool reversed = st.completion.size() == 16 && st.completion.front() == 15 && st.completion.back() == 0;
-    check(reversed, "S4 positive control: they finished in reverse order");
+    check(reversed && !st.timed_out, "S4 positive control: they finished in reverse order");
+    {
+        bool strict = st.completion.size() == 16;
+        for (std::size_t k = 0; strict && k < 16; ++k) strict = st.completion[k] == 15 - static_cast<int>(k);
+        check(strict, "S4 positive control: completion order is exactly 15,14,...,0");
+    }
     check(o.a == 7 && o.b == "seven" && o.c_is_monostate, "S4 variadic when_all: tuple<int, string, monostate>");
 }
 

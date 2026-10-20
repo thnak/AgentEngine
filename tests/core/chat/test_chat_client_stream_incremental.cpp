@@ -58,13 +58,18 @@ void check(bool cond, char const* what) {
 
 constexpr std::uint32_t kLoopbackHostOrder = (127u << 24) | 1u;
 constexpr int kChunkCount = 6;
-constexpr auto kInterChunkDelay = std::chrono::milliseconds(120);  // ~600ms of pacing after the first
+// #198: the server HOLDS after the chunk that yields the first update until the test's consumer reports
+// it observed that update (or this bound expires). Incremental delivery is therefore proven by ORDER,
+// not by wall-clock ratios: a client that buffered the whole body can never show the consumer an update
+// before the release, so the hold times out and the test fails loudly instead of hanging.
+constexpr auto kHoldBound = std::chrono::seconds(5);
 
 // A plain-HTTP server that sends chunked SSE events one at a time, pausing between them. Whether the
 // client is incremental is directly observable as when its first item appears relative to this pacing.
 class DripSseServer {
 public:
-    DripSseServer(std::vector<std::string> events) : events_(std::move(events)) {
+    DripSseServer(std::vector<std::string> events, std::size_t hold_after)
+        : events_(std::move(events)), hold_after_(hold_after) {
         auto listen_r = agentengine::pal::tcp_listen(static_cast<std::uint64_t>(kLoopbackHostOrder), 0);
         ok_ = listen_r.has_value();
         if (ok_) {
@@ -84,6 +89,11 @@ public:
 
     [[nodiscard]] bool ok() const { return ok_; }
     [[nodiscard]] std::uint16_t port() const { return port_; }
+    // The consumer calls this once it has observed the first update.
+    void release() { released_.store(true); }
+    // True when the hold expired without the consumer's release, i.e. the client did not deliver
+    // an update while the server was still holding the rest of the body.
+    [[nodiscard]] bool hold_timed_out() const { return timed_out_.load(); }
 
 private:
     void run(std::stop_token st) {
@@ -138,12 +148,22 @@ private:
             char size_buf[32];
             std::snprintf(size_buf, sizeof(size_buf), "%zx\r\n", events_[i].size());
             if (!write_all(fd, std::string(size_buf) + events_[i] + "\r\n")) return;
-            if (i + 1 < events_.size()) std::this_thread::sleep_for(kInterChunkDelay);
+            if (i == hold_after_) {
+                auto const deadline = std::chrono::steady_clock::now() + kHoldBound;
+                while (!released_.load() && !st.stop_requested() &&
+                       std::chrono::steady_clock::now() < deadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if (!released_.load()) timed_out_.store(true);
+            }
         }
         write_all(fd, "0\r\n\r\n");
     }
 
     std::vector<std::string> events_;
+    std::size_t hold_after_ = 0;
+    std::atomic<bool> released_{false};
+    std::atomic<bool> timed_out_{false};
     bool ok_ = false;
     agentengine::pal::fd_t listen_fd_{};
     std::uint16_t port_ = 0;
@@ -163,22 +183,19 @@ private:
 }
 
 struct DrainTiming {
-    std::chrono::steady_clock::duration to_first{};
-    std::chrono::steady_clock::duration total{};
     int text_updates = 0;
     std::string text;
     stream_terminal terminal = stream_terminal::open;
 };
 
 // Drains a live stream, recording when the FIRST item landed and when the stream ended.
-[[nodiscard]] DrainTiming drain_timed(stream<ChatResponseUpdate>& s) {
-    auto const t0 = std::chrono::steady_clock::now();
+[[nodiscard]] DrainTiming drain_timed(stream<ChatResponseUpdate>& s, DripSseServer& server) {
     DrainTiming out;
     bool first_seen = false;
     while (!s.done()) {
         while (auto update = s.next()) {
             if (!first_seen) {
-                out.to_first = std::chrono::steady_clock::now() - t0;
+                server.release();  // the first update was observed while the server still holds the rest
                 first_seen = true;
             }
             if (auto const* t = std::get_if<Text>(&update->delta.value)) {
@@ -188,13 +205,8 @@ struct DrainTiming {
         }
         if (!s.done()) std::this_thread::yield();
     }
-    out.total = std::chrono::steady_clock::now() - t0;
     out.terminal = s.terminal();
     return out;
-}
-
-[[nodiscard]] long long ms(std::chrono::steady_clock::duration d) {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
 }
 
 }  // namespace
@@ -220,7 +232,9 @@ int main() {
         }
         events.push_back("data: [DONE]\n\n");
 
-        DripSseServer server(events);
+        // The accumulator holds ONE completed update back (ADR-019, so `is_final` stays exact): update N is
+        // released when N+1 arrives. So the server sends two text events, then holds.
+        DripSseServer server(events, /*hold_after=*/1);
         check(server.ok(), "OpenAI: drip server started");
         if (server.ok()) {
             openai::OpenAIChatClient client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
@@ -229,7 +243,7 @@ int main() {
                                              /*x_title=*/std::string{}, /*end_user=*/std::string{},
                                              /*seed=*/std::nullopt, ProviderTransport::plaintext_http);
             stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
-            DrainTiming const t = drain_timed(s);
+            DrainTiming const t = drain_timed(s, server);
 
             check(t.terminal == stream_terminal::closed,
                   "G1 (OpenAI): the incremental stream reaches the success terminal");
@@ -237,19 +251,13 @@ int main() {
                   "G1 (OpenAI): every text delta is delivered exactly once, with no loss and no "
                   "duplication -- incremental decoding did not drop an event straddling a read boundary");
 
-            // The load-bearing comparison. A buffered implementation cannot produce a first item
-            // before the server's last write; an incremental one produces it after ~one interval.
-            auto const pacing = kInterChunkDelay * (kChunkCount - 1);
-            check(t.to_first < t.total / 2,
-                  "G2 (OpenAI): the FIRST update arrived in well under half the stream's total "
-                  "duration. Before ADR-019 the first item could not appear until the whole body had "
-                  "been read, so this ratio was ~1.0 by construction -- it is the measurement that "
-                  "distinguishes incremental delivery from replay-after-buffering");
-            check(t.to_first < pacing,
-                  "G2 (OpenAI): the first update also beat the server's own total pacing outright -- "
-                  "the consumer was reading while the server was still writing");
-            std::fprintf(stderr, "  .. OpenAI: first item %lld ms | total %lld ms | server pacing %lld ms\n",
-                         ms(t.to_first), ms(t.total), static_cast<long long>(pacing.count()));
+            // The load-bearing check, by ORDER: the server held the rest of the body until the consumer
+            // saw the first update. A buffered implementation cannot deliver one before the body ends.
+            check(!server.hold_timed_out(),
+                  "G2 (OpenAI): the FIRST update was delivered while the server was still holding the rest "
+                  "of the body (consumer released it). Before ADR-019 the first item could not appear until "
+                  "the whole body had been read, so the hold would expire -- this distinguishes incremental "
+                  "delivery from replay-after-buffering");
         }
     }
 
@@ -264,7 +272,9 @@ int main() {
         }
         events.push_back("event: message_stop\ndata: {}\n\n");
 
-        DripSseServer server(events);
+        // event 0 is content_block_start (no update); events 1 and 2 are the first two deltas (one-item
+        // hold-back, see the OpenAI block), so hold after event 2.
+        DripSseServer server(events, /*hold_after=*/2);
         check(server.ok(), "Anthropic: drip server started");
         if (server.ok()) {
             anthropic::AnthropicChatClient client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
@@ -274,19 +284,17 @@ int main() {
                                                    /*end_user=*/std::string{}, /*cache_ttl=*/std::string{},
                                                    ProviderTransport::plaintext_http);
             stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
-            DrainTiming const t = drain_timed(s);
+            DrainTiming const t = drain_timed(s, server);
 
             check(t.terminal == stream_terminal::closed,
                   "G3 (Anthropic): the incremental stream reaches the success terminal");
             check(t.text_updates == kChunkCount && t.text == std::string(kChunkCount, 'y'),
                   "G3 (Anthropic): every text_delta is delivered exactly once through the named-event "
                   "decoder");
-            check(t.to_first < t.total / 2,
-                  "G3 (Anthropic): the first update arrived in well under half the total duration -- "
-                  "the named-event decoder is incremental too, proven separately rather than assumed "
-                  "from the OpenAI result");
-            std::fprintf(stderr, "  .. Anthropic: first item %lld ms | total %lld ms\n", ms(t.to_first),
-                         ms(t.total));
+            check(!server.hold_timed_out(),
+                  "G3 (Anthropic): the first update was delivered while the server still held the rest of "
+                  "the body -- the named-event decoder is incremental too, proven separately rather than "
+                  "assumed from the OpenAI result");
         }
     }
 
