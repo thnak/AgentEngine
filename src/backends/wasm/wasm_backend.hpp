@@ -60,9 +60,27 @@ struct ToolInvokeRequest {
 };
 
 // ADR-241 follow-up (G7/G17 on the WASM edge): the type-erased, blocking egress call the guest's `http-request` import
-// makes. Built ONLY by `erase_egress_backend` below, from a `NetEgressBackend` conformer.
-using EgressBlockingFetch =
-    std::function<result<sandbox::NetEgressResponse>(sandbox::NetEgressRequest, cap::NetOut, sandbox::EgressCallControl)>;
+// makes. Its constructor is private and `erase_egress_backend` is the only way to build one, so what it wraps is always a
+// `NetEgressBackend` conformer (which runs the allowlist gate itself) -- never an arbitrary callable that could skip it.
+class EgressBlockingFetch {
+public:
+    EgressBlockingFetch() = default;  // empty = the production HostEgressProxy
+    [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(fn_); }
+    result<sandbox::NetEgressResponse> operator()(sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) const {
+        return fn_(std::move(r), std::move(g), std::move(c));
+    }
+
+private:
+    using Fn = std::function<result<sandbox::NetEgressResponse>(sandbox::NetEgressRequest, cap::NetOut, sandbox::EgressCallControl)>;
+    explicit EgressBlockingFetch(Fn fn) : fn_(std::move(fn)) {}
+    template <class B>
+        requires sandbox::NetEgressBackend<B> &&
+                 requires(B const& b, sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+                     { b.fetch_blocking(std::move(r), std::move(g), std::move(c)) } -> std::same_as<result<sandbox::NetEgressResponse>>;
+                 }
+    friend EgressBlockingFetch erase_egress_backend(std::shared_ptr<B const> backend);
+    Fn fn_;
+};
 
 // Wraps one host-owned conformer (anything with `fetch_blocking`, as `HostEgressProxy` and `TestEgressProxy` have).
 template <class B>
@@ -71,9 +89,9 @@ template <class B>
                  { b.fetch_blocking(std::move(r), std::move(g), std::move(c)) } -> std::same_as<result<sandbox::NetEgressResponse>>;
              }
 [[nodiscard]] EgressBlockingFetch erase_egress_backend(std::shared_ptr<B const> backend) {
-    return [backend = std::move(backend)](sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+    return EgressBlockingFetch([backend = std::move(backend)](sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
         return backend->fetch_blocking(std::move(r), std::move(g), std::move(c));
-    };
+    });
 }
 
 class WasmBackend {

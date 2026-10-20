@@ -410,7 +410,7 @@ whose HTTP library sets `Host`/`Content-Length`, and the error was misleading); 
 - **R9** The v4 blocklist omits 192.0.0.0/24, 198.18.0.0/15, documentation ranges, own public addresses (6).
 - **R10** No per-egress audit record (10).
 - **R11** `perform_http[s]_exchange*` remain for `ProviderHttpClient`; their removal is that client's slice.
-- **R12 [R4-m6]** The sync edge occupies the 2 egress lanes only for continuation slices; a flood of sync-edge calls serialises their parsing on them (bounded by the 64 admission cap). The queueing figure (worst case 64 x 16 MiB of parsing over 2 lanes) is measured in the prove step, not asserted here.
+- **R12 [R4-m6]** The sync edge occupies the 2 egress lanes only for continuation slices; a flood of sync-edge calls serialises their parsing on them (bounded by the 64 admission cap). **Measured 2026-10-20** (`tests/sandbox/bench_net_egress_r12.cpp`, manual, Debug MSVC, loopback, 16 MiB bodies, per-call admission keys, limits raised to 256): at N = 8 / 32 / 64 the batch takes 0.9 / 3.8 / 8.1 s (~125 ms per body), peak RSS is 196 / 684 / 1357 MiB (~21 MiB per in-flight body), a small extra fetch issued meanwhile takes a median 16.8 / 18.2 / 36.1 ms (idle 15.7; worst 174 ms at 64), and a stop returns `canceled` in a median 1.0 / 2.4 / 5.5 ms (idle 0.7-1.0; worst probe ~90 ms). Contention, not starvation; no change. Revisit if a Release or Linux measurement disagrees.
 
 - **R13 [R3-6]** DELETE with a body is allowed (some real APIs send one); a CL.0-style desync through a DELETE body on an origin that ignores it remains possible.
 - **R14 [R4-1][R5-2]** Two gaps in root-run identity if the implementation cannot close them cleanly: (a) the workflow supervisor lacking its run id at node-context stamping time (the nodes then fall into the unattributed run bucket, fail closed); (b) a restored session record that cannot take additive `root_run_id` and `delegation_root` fields (a restored delegated child then gets a fresh run bucket AND, because the principal level keys on `root_id()`, its own principal bucket of 32; blast radius: 32 extra slots per restore, still under the global 64).
@@ -488,15 +488,40 @@ supersede the sections they name:
 - **Nested `sub_workflow`.** An inner supervisor stamps its own run id, so a nested sub-workflow is its own admission root
   (same class as R14).
 
-**Not yet proven (follow-up, tracked on #180):**
-- G7 and G17 rows for the WASM edge. The code is in place (the guest's `wall_ms` and `ctx.deadline` reach `EgressCallControl`;
-  the request size is checked before `reserve`), but `WasmBackend` constructs `HostEgressProxy` itself, whose production policy
-  refuses loopback, and the fixture plugin sends a fixed bodiless request. The rows need a `NetEgressBackend` seam on
-  `WasmBackend` (host-supplied, defaulting to `HostEgressProxy`) and a fixture tool that takes a body size.
-- G11's certificate-for-the-wrong-name row through both entry points and the broken-CA row (the TLS class carry-through itself is
-  proven in `test_rt_https`).
-- G13g (ASan) and G13d under TSan: Linux sanitizer trees.
-- R12: the 64 x 16 MiB over 2 lanes measurement.
+**Follow-ups after S2 (2026-10-20), proven:**
+- **WASM edge seam.** `WasmBackend(EgressBlockingFetch)` is an optional host-supplied egress backend for the `http-request` import;
+  unset (the default constructor) is `HostEgressProxy`, behaviour unchanged. `EgressBlockingFetch` has a private constructor and is
+  built only by `erase_egress_backend` from a `NetEgressBackend` conformer, so it always runs the allowlist gate; a raw callable
+  cannot become one (static rows in `test_wasm_backend`; mutant "public constructor" fails them). It receives the load-time grant
+  narrowed by `net_bytes` and the values-only `EgressCallControl`, never an `EffectContext`, so it cannot mint or widen authority.
+  Residual: choosing the backend is not itself audited (it is a construction-time host decision, like choosing the backend class).
+- **G7 on the WASM edge.** `wall_ms = 2000` parked against a silent loopback peer returns `timeout` in ~2.0 s; cancelling the call's
+  token releases it in ~0.3 s (`network-error`). Mutant: the import passes `EgressCallControl{}` -> both rows hang until the test's
+  60 s guard trips.
+- **G17 on the WASM edge, corrected.** wasmtime's hostcall fuel traps a guest-to-host list copy of ~4 MiB or more before the import
+  runs (measured: 2 MiB passes, 4 MiB traps; not configurable through the C API), so the import's 16 MiB request check is unreachable
+  from a real guest at the default cap and wasmtime is the effective bound. The check is proven with `max_request_bytes` lowered to
+  1 MiB (2 MiB body -> `byte-cap-exceeded`, the gate never reached, nothing connects; mutant "check removed" fails). A real 17 MiB
+  body traps and is never gated or connected.
+- **G11** wrong name, broken CA and IP-literal entry through both entry points (`test_net_egress_tls`): wrong name ->
+  `net.tls_certificate_rejected`/`policy` with no request bytes at the peer; unparseable CA -> `net.tls_setup_failed`/`fatal`;
+  valid-but-unrelated CA -> rejected/`policy`; `127.0.0.1:<port>:https` rejects a DNS-only certificate and accepts an IP SAN.
+  Mutants: `tls_failed -> transient` (8 class rows), verify target = address text (the positive control fails; the wrong-name row
+  cannot see this mutant on loopback), `VERIFY_REQUIRED -> OPTIONAL` (12 rows). Measured, not a goal: mbedTLS also matches a DNS SAN
+  whose text is the IP literal against an IP-literal name; the row pins it.
+- **G13g** (`test_net_egress_admission`): 60 iterations each park a fetch with a 40 ms deadline and destroy its host Runtime at
+  40 ms +/- 5 ms. Under gcc-15 ASan+UBSan on Linux: no use-after-free, no UBSan report, every call ends canceled or on its deadline,
+  every slot returns. LeakSanitizer did report a leak, traced to a PRE-EXISTING runtime defect, not to egress: `GroupCore`/`StrandCore`
+  own the `Scheduler` while the scheduler's `watched_`/`ready_groups_` own them, so a Runtime destroyed with work listed leaks its
+  scheduler (~2.3 KB; `test_rt_runtime` alone leaks 24 KB). Fixed separately (rt, own commit).
+- **R12** measured (see R12 above).
+
+- **G13d under TSan** (gcc-15 `-fsanitize=thread`, Linux; `-Wmaybe-uninitialized` demoted from error for a gcc false positive
+  inside `std::optional<stop_callback>` in `rt/http.hpp`): 16 concurrent first calls, both first-use modes and the admission rows
+  run with no ThreadSanitizer report. Positive control: the "lazy init without the mutex" mutant gives 4-9 data-race reports and
+  fails the one-context row in 3/3 runs.
+
+**Still not proven:** the m1 allocation-failure path (no allocation-failure hook).
 
 **Implementation red-team (round 5, the code): 0 FATAL / 2 MAJOR / 8 MINOR, all addressed in this PR.**
 - M1: the WASM edge's whole path is executed end to end with no new seam -- a single-entry loopback grant passes the gate and the
@@ -520,6 +545,4 @@ supersede the sections they name:
 - m8: G13d's "lazy init without the mutex" mutant was killed 5/5 on Windows at 16 threads (reduced from 64 so the test fits its
   512 MiB RLIMIT_DATA cap on Linux, where each thread's stack counts against it); it is not TSan-proven.
 
-Still unproven after round 5 (follow-ups on #180): G17 and the G7 timing rows on the WASM edge (need a fixture tool that sends a
-body and a reachable silent peer), G11's wrong-name and broken-CA rows, G13g (ASan) and G13d (TSan), R12. Note: the WASM rows run
-only in builds with `AGENTENGINE_WITH_WASM=ON`.
+Still unproven after round 5 was closed by the follow-ups above, except m1.

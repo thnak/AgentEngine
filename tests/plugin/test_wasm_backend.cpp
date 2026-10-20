@@ -46,6 +46,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <functional>
+#include <type_traits>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -53,6 +55,17 @@
 
 using namespace agentengine;
 using namespace agentengine::wasm;
+
+// The host egress seam takes only a NetEgressBackend conformer (which runs the allowlist gate itself): an arbitrary callable
+// -- one that could skip the gate -- cannot become an EgressBlockingFetch. Mutant: make its constructor public -> fails.
+namespace seam_shape {
+using Erased = std::function<agentengine::result<agentengine::sandbox::NetEgressResponse>(
+    agentengine::sandbox::NetEgressRequest, agentengine::cap::NetOut, agentengine::sandbox::EgressCallControl)>;
+static_assert(!std::is_constructible_v<agentengine::wasm::EgressBlockingFetch, Erased>,
+              "a raw callable must not be accepted as the WASM egress backend");
+static_assert(!std::is_convertible_v<Erased, agentengine::wasm::EgressBlockingFetch>,
+              "a raw callable must not convert to the WASM egress backend");
+}  // namespace seam_shape
 
 namespace {
 
