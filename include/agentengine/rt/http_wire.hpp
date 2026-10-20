@@ -85,6 +85,13 @@ enum class http_error : std::uint8_t {
     busy,                // a second next() while one is outstanding on the same reader (nothing was touched)
 };
 
+// ADR-241 S2 step 2: the TLS client's own failure class, carried through the HTTP client so a consumer can classify a
+// handshake failure without guessing from `http_error::tls_failed` alone (a name mismatch or MITM is `policy`, a broken CA
+// bundle `fatal`; mapping every `tls_failed` to `transient` would make retry sites retry a refused certificate). Set ONLY for
+// `tls_failed`; `unspecified` everywhere else. The provider plane ignores it (`http_error_to_error` is unchanged).
+// ae-naming-lint: allow http_failure — ADR-241 S2: new reactor vocabulary, 027 row added when the ADR is Judged
+enum class http_failure : std::uint8_t { unspecified, transient, policy, fatal };
+
 // True for the errors the engine classifies `resource` (§6.3 / §9 D6, as net.byte_cap_exceeded is today).
 [[nodiscard]] constexpr bool is_resource_error(http_error e) noexcept {
     return e == http_error::body_too_large || e == http_error::response_too_large || e == http_error::header_too_large ||
@@ -150,6 +157,7 @@ struct WireError {
     http_error  error = http_error::none;
     std::string code;     // stable net.* code
     std::string message;  // human-readable detail
+    http_failure failure = http_failure::unspecified;  // ADR-241 S2: set only for `tls_failed`
 
     [[nodiscard]] bool ok() const noexcept { return error == http_error::none; }
 };

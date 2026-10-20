@@ -584,6 +584,33 @@ int main() {
         check(t.r.error == http_error::tls_failed && t.r.code == "net.tls_certificate_rejected",
               "S2: a certificate for another name is tls_failed (net.tls_certificate_rejected)");
         check(srv.request().empty(), "S2: no HTTP request was sent before verification");
+        // ADR-241 S2 step 2 (G11): the TLS client's own class is carried through, not guessed from tls_failed.
+        check(t.r.failure == http_failure::policy,
+              "S2/G11: a refused certificate carries failure == policy (a retry site must not retry it)");
+    }
+
+    // S2b -- ADR-241 S2 step 2 (G11): a broken CA bundle is a setup failure, class FATAL ---------------------------
+    {
+        HttpsServer srv(leaf, Script{{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"}, true, false, false});
+        Timed       t = bounded_request(context(reactor.get(), &dns, "this is not a PEM certificate bundle"),
+                                        get(srv.port()));
+        check(t.r.error == http_error::tls_failed && t.r.code == "net.tls_setup_failed",
+              "S2b/G11: an unparsable CA bundle is tls_failed (net.tls_setup_failed)");
+        check(t.r.failure == http_failure::fatal,
+              "S2b/G11: ... with failure == fatal, not policy and not transient");
+    }
+
+    // S2c -- ADR-241 S2 step 2: the class mapping itself, every TLS error (a unit row beside the end-to-end ones) ---
+    {
+        using rt::tls_error;
+        check(rt::http_detail::tls_failure_of(tls_error::certificate_rejected) == http_failure::policy &&
+                  rt::http_detail::tls_failure_of(tls_error::handshake_failed) == http_failure::policy,
+              "S2c: certificate_rejected and handshake_failed are policy");
+        check(rt::http_detail::tls_failure_of(tls_error::setup_failed) == http_failure::fatal,
+              "S2c: setup_failed is fatal");
+        check(rt::http_detail::tls_failure_of(tls_error::transport) == http_failure::transient &&
+                  rt::http_detail::tls_failure_of(tls_error::closed) == http_failure::transient,
+              "S2c: a broken transport is transient");
     }
 
     // S3 ------------------------------------------------------------------------------------------------------

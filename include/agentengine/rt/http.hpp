@@ -242,6 +242,9 @@ struct HttpTlsHandshake {
     http_io                        status = http_io::failed;  // ok / canceled / failed
     std::string                    code;
     std::string                    message;
+    // ADR-241 S2 step 2: the TLS client's class for a `failed` handshake (certificate/handshake -> policy, setup ->
+    // fatal, transport -> transient); `unspecified` when the connector does not say. Carried to `HttpResponse::failure`.
+    http_failure                   failure = http_failure::unspecified;
 };
 // ae-naming-lint: allow HttpTlsConnector — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 using HttpTlsConnector =
@@ -289,6 +292,7 @@ struct HttpResponse {
     http_error     error = http_error::none;
     std::string    code;     // net.* code when error != none
     std::string    message;  // human-readable detail
+    http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;  // set once a head was parsed (also when the body then failed)
     std::string    reason;
     HttpHeaders    headers;
@@ -635,6 +639,7 @@ struct HttpStreamResponse {
     http_error     error = http_error::none;  // the head phase's outcome; body errors come from `body.next()`
     std::string    code;
     std::string    message;
+    http_failure   failure = http_failure::unspecified;  // ADR-241 S2: the TLS client's class, set only for tls_failed
     std::uint16_t  status = 0;
     std::string    reason;
     HttpHeaders    headers;
@@ -650,6 +655,7 @@ inline void set_error(HttpStreamResponse& r, http_wire::WireError const& e) {
     r.error   = e.error;
     r.code    = e.code;
     r.message = e.message;
+    r.failure = e.failure;
 }
 
 inline http_wire::WireError from_connect(ConnectedStream const& c) {
@@ -736,7 +742,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
             tcp->close();
             set_error(out, h.status == http_io::canceled
                                ? op.why(stop)
-                               : http_wire::fail(http_error::tls_failed, h.code, h.message));
+                               : http_wire::WireError{http_error::tls_failed, h.code, h.message, h.failure});
             co_return out;
         }
         transport = std::move(h.transport);
@@ -833,6 +839,7 @@ inline task<HttpResponse> request_buffered(HttpContext ctx, HttpRequest req, std
     out.error   = s.error;
     out.code    = std::move(s.code);
     out.message = std::move(s.message);
+    out.failure = s.failure;
     out.status  = s.status;
     out.reason  = std::move(s.reason);
     out.headers = std::move(s.headers);
