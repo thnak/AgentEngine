@@ -1,10 +1,10 @@
 name: Cache watch
 
-# Weekly health check of the Actions cache (tools/ci_cache_watch.sh). A threshold breach fails the run,
-# and GitHub emails the repo owner about a failed scheduled workflow, so there is no separate alerting.
+# Daily upkeep of the Actions cache (tools/ci_cache_watch.sh): deletes leaked PR entries and outdated ones. What it
+# cannot fix fails the run, and GitHub emails the repo owner about a failed scheduled workflow (no separate alerting).
 on:
   schedule:
-    - cron: "17 3 * * 1"
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
