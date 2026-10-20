@@ -20,6 +20,7 @@
 
 #include "agentengine/core/token_estimate.hpp"
 #include "agentengine/eval/eval_gross_harm_screen.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -37,8 +38,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- The same ScriptedChatClient/ScriptStep shape test_eval_trial_driver.cpp uses, adapted, not

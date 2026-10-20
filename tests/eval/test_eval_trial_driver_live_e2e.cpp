@@ -21,6 +21,8 @@
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 
@@ -43,8 +45,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kSecretName = "eval-trial-live-api-key";

@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "agentengine/eval/eval_follow_rate_screen.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace {
 
@@ -33,8 +35,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- The same ScriptedChatClient/ScriptStep shape test_eval_trial_driver.cpp uses, adapted, not
