@@ -42,6 +42,7 @@
 //   H15 Truncation: a body short of its Content-Length, a chunked body with no final chunk, a cut head --
 //       `truncated`, with status kept. Mutant "eof always ends cleanly".
 //   H16 Interim 1xx responses are skipped; HEAD and 204 have no body whatever Content-Length says.
+//   H18 (ADR-241 S1) interim bound (8), shared head budget, request-level wire-byte total (R1-R5) + derivation unit row.
 //   H17 Differential (framing): the existing SseEventFramer's blocks and the new decoder's events agree on every
 //       generated single-data-line stream at fuzzed splits (the full field-level differential against the vendor
 //       parsers is in test_rt_https.cpp, which links them).
@@ -57,6 +58,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -799,6 +801,89 @@ int main() {
             big.limits.max_body_bytes = std::uint64_t{1} << 40;
             check(big.limits.effective_body_cap() == HttpLimits::kHardBodyCeilingBytes,
                   "H3: max_body_bytes can only narrow the 16 MiB hard ceiling, never widen it");
+        }
+
+        // H18 (ADR-241 S1 / G0 R1-R5): interim bound, shared head budget, request-level wire-byte total ------------
+        {
+            // R1: an endless 100-Continue stream is refused after the 8th, promptly (not at total_timeout).
+            std::vector<Step> flood;
+            for (int i = 0; i < 400; ++i) flood.push_back(say("HTTP/1.1 100 Continue\r\n\r\n"));
+            flood.push_back(hold(3000));
+            ScriptServer fsrv(flood);
+            Timed        f = bounded_request(context(reactor.get(), &dns), get(fsrv.port()), 5s);
+            check(f.r.error == http_error::header_too_large && f.r.code == "net.too_many_interim_responses" &&
+                      is_resource_error(f.r.error) && f.took < 2500ms,
+                  "H18 R1: an endless 100 Continue stream fails with the resource error promptly");
+            std::vector<Step> eight;
+            for (int i = 0; i < 8; ++i) eight.push_back(say("HTTP/1.1 100 Continue\r\n\r\n"));
+            eight.push_back(say("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"));
+            ScriptServer e8(eight);
+            Timed        t8 = bounded_request(context(reactor.get(), &dns), get(e8.port()));
+            check(t8.r.ok() && t8.r.body == "ok", "H18 R1: exactly 8 interims then the final response succeeds");
+
+            // R2: interim heads + final head together over the head budget fail; each alone is under it.
+            std::string const interim = "HTTP/1.1 102 Processing\r\nX-Pad: " + std::string(60, 'p') + "\r\n\r\n";
+            std::string const fin     = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-P: " + std::string(60, 'q') + "\r\n\r\n";
+            HttpOptions       tight;
+            tight.limits.max_header_bytes = 300;
+            ScriptServer r2({say(interim + interim + interim + fin), hold(2000)});
+            Timed        t2 = bounded_request(context(reactor.get(), &dns, tight), get(r2.port()));
+            check(t2.r.error == http_error::header_too_large && t2.r.code == "net.header_too_large",
+                  "H18 R2: interim heads + the final head over one shared head budget are header_too_large");
+            ScriptServer r2ok({say(fin), hold(2000)});
+            check(bounded_request(context(reactor.get(), &dns, tight), get(r2ok.port())).r.ok(),
+                  "H18 R2 control: the final head alone fits the same budget");
+
+            // R3: a total-bytes flood, each part under its own cap, over an explicit small total.
+            // Head and body+trailers are separate writes (separate reads): a counter that misses the head, or
+            // counts only the body phase, passes this flood.
+            std::string const flood_head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Pad: " + std::string(800, 'h') + "\r\n\r\n";
+            std::string const flood_rest = chunked({std::string(900, 'b')}, "X-T: " + std::string(600, 't') + "\r\n");
+            HttpOptions small;
+            small.limits.max_response_bytes = 2000;
+            ScriptServer r3({say(flood_head), wait_ms(100), say(flood_rest), hold(2000)});
+            Timed        t3 = bounded_request(context(reactor.get(), &dns, small), get(r3.port()));
+            check(t3.r.error == http_error::response_too_large && t3.r.code == "net.response_too_large" &&
+                      is_resource_error(t3.r.error) && t3.r.message.find("2000") != std::string::npos,
+                  "H18 R3: head + body + trailers over an explicit total fail (counted on the client)");
+            HttpOptions roomy;
+            roomy.limits.max_response_bytes = 100000;
+            ScriptServer r3ok({say(flood_head), wait_ms(100), say(flood_rest), hold(2000)});
+            check(bounded_request(context(reactor.get(), &dns, roomy), get(r3ok.port())).r.ok(),
+                  "H18 R3 control: the same flood under a roomy total succeeds");
+
+            // R4: a raw UINT64_MAX body cap must not wrap the derived total.
+            HttpOptions huge;
+            huge.limits.max_body_bytes = std::numeric_limits<std::uint64_t>::max();
+            check(huge.limits.effective_response_cap() ==
+                      HttpLimits::kHardBodyCeilingBytes + 2u * huge.limits.max_header_bytes,
+                  "H18 R4: the derived total is computed from the clamped cap (no wrap)");
+            ScriptServer r4({say("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")});
+            Timed        t4 = bounded_request(context(reactor.get(), &dns, huge), get(r4.port()));
+            check(t4.r.ok() && t4.r.body == "hello", "H18 R4: a normal response succeeds under max_body_bytes = UINT64_MAX");
+
+            // R5: 0 means 0.
+            HttpOptions zero;
+            zero.limits.max_response_bytes = 0;
+            ScriptServer r5({say("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), hold(2000)});
+            Timed        t5 = bounded_request(context(reactor.get(), &dns, zero), get(r5.port()));
+            check(t5.r.error == http_error::response_too_large, "H18 R5: max_response_bytes = 0 fails any response");
+            ScriptServer r5ok({say("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")});
+            check(bounded_request(context(reactor.get(), &dns), get(r5ok.port())).r.ok(),
+                  "H18 R5 control: a normal response under the default limits succeeds");
+
+            // Unit row: the derivation.
+            HttpLimits d;
+            check(d.effective_response_cap() == 16u * 1024u * 1024u + 128u * 1024u, "H18: default derived total is 16 MiB + 128 KiB");
+            d.max_header_bytes = std::numeric_limits<std::size_t>::max();
+            d.max_body_bytes   = std::numeric_limits<std::uint64_t>::max();
+            check(d.effective_response_cap() == std::numeric_limits<std::uint64_t>::max(),
+                  "H18: the derivation saturates instead of wrapping");
+            d.max_response_bytes = 0;
+            check(d.effective_response_cap() == 0, "H18: an explicit 0 stays 0");
+            http_wire::WireBudget wb;
+            wb.limit = 10;
+            check(wb.charge(10) && !wb.charge(1), "H18: WireBudget allows exactly its limit");
         }
 
         // H4 end to end ------------------------------------------------------------------------------------------

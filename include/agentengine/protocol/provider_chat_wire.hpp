@@ -94,6 +94,7 @@ struct ProviderReactorOptions {
         case rt::http_error::consumer_stalled:
         case rt::http_error::header_too_large:
         case rt::http_error::body_too_large:
+        case rt::http_error::response_too_large:
         case rt::http_error::event_too_large: klass = failure_class::fatal; break;
     }
     return error{klass, std::string(message), std::string(code)};

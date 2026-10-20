@@ -33,6 +33,15 @@
 //   - The body byte cap: min(`HttpLimits::max_body_bytes`, 16 MiB hard ceiling) on the body's WIRE bytes, enforced
 //     during the read loop, never after buffering (ADR-011 claim C8), for buffered AND streamed bodies (the
 //     blocking streaming path caps them too). `body_too_large` carries `net.byte_cap_exceeded`.
+//   - ADR-241 S1: the request-level wire-byte total. `HttpLimits::max_response_bytes` (unset: derived as
+//     effective_body_cap() + 2 * max_header_bytes, saturating, from the CLAMPED body cap) bounds EVERYTHING the
+//     transport's read_some returns: head, interim heads, body, chunk framing and trailers. It is counted ONCE, in
+//     `http_detail::read_counted`, never at a decode point. 0 means 0 bytes. Over it: `response_too_large`
+//     (net.response_too_large, a resource error). TLS-layer records are NOT counted (they sit below read_some;
+//     bounded by `total_timeout`). The provider plane thus now gets 16 MiB + 128 KiB derived; existing streams are
+//     unaffected because the decoder already caps the body's wire bytes at the body cap and the head and trailers
+//     at max_header_bytes each, so a well-formed response cannot reach the derived total. Interim 1xx heads (other
+//     than 101) are bounded by `max_interim_responses` (8) and share the final head's max_header_bytes budget.
 //   - A 2xx/4xx body cut short of its Content-Length is `truncated` (`net.stream_truncated`); a head cut short is
 //     `truncated` with `net.protocol_error`; the status and headers stay readable on the result.
 //   - The idle bound defaults to the blocking client's 90 s (`sandbox::kDefaultIoTimeoutMs`); the switch-over passes
@@ -115,7 +124,7 @@ namespace agentengine::rt {
 // ---- the transport seam (plain TCP here; TLS in rt/http_tls.hpp) -----------------------------------------------
 
 // ae-naming-lint: allow http_io — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
-enum class http_io : std::uint8_t { ok, eof, canceled, failed };
+enum class http_io : std::uint8_t { ok, eof, canceled, failed, over_budget };
 
 // ae-naming-lint: allow HttpIo — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 struct HttpIo {
@@ -405,11 +414,28 @@ private:
 };
 
 // The body side of one exchange, shared by the reader handle and every next() in flight.
+// ADR-241 S1: the ONE place wire bytes are counted. A read that pushes the total past the budget is `over_budget`
+// (its data dropped); callers map that to `response_too_large`.
+inline task<HttpIo> read_counted(HttpTransport& t, http_wire::WireBudget& budget, std::size_t n, std::stop_token stop) {
+    HttpIo r = co_await t.read_some(n, std::move(stop));
+    if (r.status == http_io::ok && !budget.charge(r.data.size())) {
+        r.status = http_io::over_budget;
+        r.data.clear();
+    }
+    co_return r;
+}
+
+[[nodiscard]] inline http_wire::WireError response_too_large_error(http_wire::WireBudget const& b) {
+    return http_wire::fail(http_error::response_too_large, "net.response_too_large",
+                           "the response exceeded " + std::to_string(b.limit) + " total wire bytes");
+}
+
 struct BodyState {
     pal::Reactor*                      reactor = nullptr;
     std::shared_ptr<Exchange>          exchange;
     std::shared_ptr<HttpTransport>     transport;
     http_wire::BodyDecoder             decoder;
+    http_wire::WireBudget              budget;    // ADR-241 S1: carried from the head read
     std::string                        leftover;  // wire bytes that arrived with the head
     HttpOptions                        options;
     std::atomic<bool>                  busy{false};
@@ -523,7 +549,11 @@ inline task<HttpBodyChunk> body_next(std::shared_ptr<BodyState> st, std::stop_to
             co_return st->fail(http_wire::fail(http_error::canceled, "net.cancelled", "canceled by the caller"));
         }
         OpGuard op(*st->exchange, stop, st->options.idle_timeout);
-        HttpIo  r = co_await st->transport->read_some(st->options.read_chunk_bytes, op.token());
+        HttpIo  r = co_await read_counted(*st->transport, st->budget, st->options.read_chunk_bytes, op.token());
+        if (r.status == http_io::over_budget) {
+            guard.completed = true;
+            co_return st->fail(response_too_large_error(st->budget));
+        }
         if (r.status == http_io::canceled) {
             guard.completed = true;
             co_return st->fail(st->is_stalled() ? stalled_error() : op.why(stop));
@@ -730,12 +760,16 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
 
     // 6. Read the head (skipping interim 1xx responses other than 101).
     http_wire::HeadParser parser(ctx.options.limits);
+    http_wire::WireBudget budget;
+    budget.limit = ctx.options.limits.effective_response_cap();
     for (;;) {
         while (!parser.done()) {
             OpGuard op(*ex, stop, ctx.options.idle_timeout);
-            HttpIo  r = co_await transport->read_some(ctx.options.read_chunk_bytes, op.token());
+            HttpIo  r = co_await read_counted(*transport, budget, ctx.options.read_chunk_bytes, op.token());
             http_wire::WireError e;
-            if (r.status == http_io::canceled) {
+            if (r.status == http_io::over_budget) {
+                e = response_too_large_error(budget);
+            } else if (r.status == http_io::canceled) {
                 e = op.why(stop);
             } else if (r.status == http_io::failed) {
                 e = http_wire::fail(http_error::transport, r.code, r.message);
@@ -752,9 +786,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
         }
         std::uint16_t const status = parser.head().status;
         if (status >= 100 && status < 200 && status != 101) {
-            std::string rest = std::move(parser.leftover());
-            parser           = http_wire::HeadParser(ctx.options.limits);
-            if (auto e = parser.feed(rest); !e.ok()) {
+            if (auto e = parser.next_after_interim(); !e.ok()) {
                 transport->close();
                 set_error(out, e);
                 co_return out;
@@ -787,6 +819,7 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
     st->exchange  = std::move(ex);
     st->transport = std::move(transport);
     st->decoder   = http_wire::BodyDecoder(framing, ctx.options.limits);
+    st->budget    = budget;
     st->leftover  = std::move(parser.leftover());
     st->options   = ctx.options;
     if (arm) st->arm_stall();

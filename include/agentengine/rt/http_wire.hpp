@@ -49,6 +49,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -77,6 +78,7 @@ enum class http_error : std::uint8_t {
     malformed_response,  // the status line, a header line or the chunked framing is not valid HTTP/1.1
     ambiguous_framing,   // Content-Length + Transfer-Encoding, conflicting Content-Lengths, an unsupported coding
     header_too_large,    // the head exceeded `max_header_bytes` or `max_header_count`
+    response_too_large,  // ADR-241 S1: total wire bytes read exceeded `max_response_bytes` (a `resource` error)
     body_too_large,      // the body exceeded the byte cap (a `resource` error, as net.byte_cap_exceeded)
     event_too_large,     // one SSE event exceeded `max_event_bytes` (a `resource` error)
     truncated,           // the connection ended before the head, the declared length or the final chunk
@@ -85,7 +87,7 @@ enum class http_error : std::uint8_t {
 
 // True for the errors the engine classifies `resource` (§6.3 / §9 D6, as net.byte_cap_exceeded is today).
 [[nodiscard]] constexpr bool is_resource_error(http_error e) noexcept {
-    return e == http_error::body_too_large || e == http_error::header_too_large ||
+    return e == http_error::body_too_large || e == http_error::response_too_large || e == http_error::header_too_large ||
            e == http_error::event_too_large || e == http_error::consumer_stalled;
 }
 
@@ -102,13 +104,44 @@ struct HttpLimits {
     std::size_t   max_header_bytes = 64u * 1024u;  // status line + fields + the blank line; trailers count too
     std::size_t   max_header_count = 100;
     std::uint64_t max_body_bytes   = kHardBodyCeilingBytes;  // wire bytes of the body, framing included
+    // ADR-241 S1: 1xx heads (other than 101, which is refused) that may precede the final head. They share the
+    // final head's `max_header_bytes` budget; the (N+1)th is `header_too_large` / net.too_many_interim_responses.
+    std::size_t   max_interim_responses = 8;
+    // ADR-241 S1: the request-level total of wire bytes returned by the transport's read_some. Unset: derived,
+    // see `effective_response_cap()`. An explicit (or derived) 0 means ZERO bytes allowed, never "unlimited".
+    std::optional<std::uint64_t> max_response_bytes{};
 
     [[nodiscard]] std::uint64_t effective_body_cap() const noexcept {
         return std::min<std::uint64_t>(max_body_bytes, kHardBodyCeilingBytes);
     }
+
+    // ADR-241 S1: the total-wire-bytes cap. Derived default = effective_body_cap() + 2 * max_header_bytes (the
+    // final head, plus the trailers), SATURATING and from the CLAMPED body cap, never the raw `max_body_bytes`.
+    [[nodiscard]] std::uint64_t effective_response_cap() const noexcept {
+        if (max_response_bytes) return *max_response_bytes;
+        constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t const     hdr  = static_cast<std::uint64_t>(max_header_bytes);
+        std::uint64_t const     two  = hdr > kMax / 2 ? kMax : hdr * 2;
+        std::uint64_t const     body = effective_body_cap();
+        return body > kMax - two ? kMax : body + two;
+    }
 };
 
 namespace http_wire {
+
+// ADR-241 S1: the request-level wire-byte counter. `charge` is called ONCE per transport read (http.hpp's
+// read_counted), never at a decode point, so head, interim heads, body, chunk framing and trailers are all in it.
+// ae-naming-lint: allow WireBudget — ADR-241 S1: new reactor vocabulary
+struct WireBudget {
+    std::uint64_t limit = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t used  = 0;
+    // False (and `used` saturated) once the total exceeds `limit`.
+    [[nodiscard]] bool charge(std::uint64_t n) noexcept {
+        constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+        used = n > kMax - used ? kMax : used + n;
+        return used <= limit;
+    }
+};
 
 // ---- verdicts ---------------------------------------------------------------------------------------------
 
@@ -276,6 +309,10 @@ struct ResponseHead {
 // Incremental head parser: feed bytes until `done()`; whatever followed the head is in `leftover()`.
 // ae-naming-lint: allow HeadParser — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 class HeadParser {
+    std::size_t consumed_ = 0;  // bytes of earlier (interim) heads, charged to the same budget
+    std::size_t interim_  = 0;
+    std::size_t head_len_ = 0;
+
 public:
     explicit HeadParser(HttpLimits limits = {}) : limits_(limits) {}
 
@@ -283,20 +320,22 @@ public:
     [[nodiscard]] WireError feed(std::string_view bytes) {
         if (!error_.ok() || done_) return error_;
         std::size_t const from = buf_.size() >= 3 ? buf_.size() - 3 : 0;
+        std::size_t const budget = limits_.max_header_bytes - std::min(consumed_, limits_.max_header_bytes);
         buf_.append(bytes);
         std::size_t const end = buf_.find("\r\n\r\n", from);
         if (end == std::string::npos) {
-            if (buf_.size() > limits_.max_header_bytes) {
+            if (buf_.size() > budget) {
                 error_ = fail(http_error::header_too_large, "net.header_too_large",
                               "the response head exceeded " + std::to_string(limits_.max_header_bytes) + " bytes");
             }
             return error_;
         }
-        if (end + 4 > limits_.max_header_bytes) {
+        if (end + 4 > budget) {
             error_ = fail(http_error::header_too_large, "net.header_too_large",
                           "the response head exceeded " + std::to_string(limits_.max_header_bytes) + " bytes");
             return error_;
         }
+        head_len_ = end + 4;
         leftover_ = buf_.substr(end + 4);
         buf_.resize(end + 2);  // keep the last line's CRLF: every line is CRLF-terminated
         error_ = parse(buf_);
@@ -304,6 +343,23 @@ public:
         buf_.shrink_to_fit();
         if (error_.ok()) done_ = true;
         return error_;
+    }
+
+    // ADR-241 S1: after an interim 1xx head: count it, charge its bytes to the SAME head budget (the final head
+    // gets what the interim heads left), and feed the bytes that followed it. The (max_interim_responses+1)th fails.
+    [[nodiscard]] WireError next_after_interim() {
+        if (!done_) return error_;
+        if (++interim_ > limits_.max_interim_responses) {
+            error_ = fail(http_error::header_too_large, "net.too_many_interim_responses",
+                          "more than " + std::to_string(limits_.max_interim_responses) + " interim (1xx) responses");
+            return error_;
+        }
+        consumed_ += head_len_;
+        std::string rest = std::move(leftover_);
+        leftover_.clear();
+        head_ = ResponseHead{};
+        done_ = false;
+        return feed(rest);
     }
 
     [[nodiscard]] bool                done() const noexcept { return done_; }
