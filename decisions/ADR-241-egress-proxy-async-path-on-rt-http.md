@@ -1,15 +1,16 @@
 # ADR-241: the ADR-011 egress proxy's async path on `rt::http`
 
-Status: **Proposed** (2026-10-20) -- designed and red-teamed in four rounds (r1: 0 FATAL/8 MAJOR/8 MINOR; r2: 0/2/8; r3: 0/2/6;
-S1 passed the final round, S2 was blocked until this revision); not proven, not Judged.
+Status: **Proposed** (2026-10-20) -- designed and red-teamed in 4 rounds (r1: 0 FATAL/8 MAJOR/8 MINOR; r2: 0/2/8; r3: 0/2/6;
+r4, S2 only: 0/2/4). S1 passed the red-team; S2's round-4 blockers (empty identity failing open, the principal level keyed on
+the wrong id) are resolved in round 5, tagged [R5-n]. Not proven, not Judged.
 Issue: #180 (slice E1 of `docs/planning/2026-10-20-issue180-sandbox-conversion-design.md` section 7).
 Builds on: ADR-011 (egress proxy, gates C1-C11), ADR-013 (HTTPS), ADR-016 (provider address policy), ADR-193 (delegation
 lineage), ADR-237 (4.4-4.6, steps 43-57: `rt::http`, `rt::dns`, `rt::Runtime`), ADR-239 (seams narrowed to synchronous).
 Supersedes in part: ADR-011 section 3's "IPv4-only resolve through `resolve_and_validate`" for `HostEgressProxy` only.
-Records: the red-team reports of this ADR, rounds 1-3: `docs/planning/2026-10-20-adr241-egress-redteam.md`.
+Records: the red-team reports of this ADR, rounds 1-4: `docs/planning/2026-10-20-adr241-egress-redteam.md`.
 Invariants: I2 (no ambient authority), I3 (model output is data), I8 (budgets enforced). I4 is NOT extended here beyond what
 exists today (section 10).
-Review tags in the body: **[R2-n]**/**[R3-n]**/**[R4-n]** = the red-team finding that caused the change ("L" = a team-lead
+Review tags in the body: **[R2-n]**/**[R3-n]**/**[R4-n]**/**[R5-n]** = the red-team finding that caused the change ("L" = a team-lead
 decision); strip them when the ADR is Judged.
 
 ## 1. Problem
@@ -86,7 +87,8 @@ counting (R1 fails); `max_response_bytes` counted at decode instead of at the `r
 ## 4. D1 -- the seam: stop, scope, deadline [R2-3]
 
 ```cpp
-struct AdmissionKey { std::string tenant; std::string principal; std::string root_run; };   // [R4-1] STRUCTURED, never joined
+struct AdmissionKey { std::string tenant; std::string principal; std::string root_run; };   // [R4-1] STRUCTURED, never joined;
+                                                                                             // [R5-2] `principal` = principal.root_id()
 struct EgressCallControl {                       // values only; none of them is authority (I2)
     std::stop_token stop;
     std::chrono::steady_clock::time_point deadline{};   // default (epoch) = unset
@@ -107,11 +109,15 @@ concept NetEgressBackend = requires(T b, cap::NetOut const& g, NetEgressRequest 
 - `effective_total = min(total_timeout, deadline - now)` when `deadline` is set; an already-expired deadline fails
   `net.deadline_exceeded` before any resolve. The pure function `effective_total_timeout(configured, deadline, now)` is exposed
   for tests (clamp `<= 0` -> default **[R2-12]**).
-- **[R4-1]** `admission_of(ctx)` = `{ctx.principal.tenant_id, ctx.principal.id, ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id}`:
-  all host-derived, never model-derived (the principal comes from the session or the ADR-061 bridge, `agent_session_core.cpp:945,951`;
-  `root_run_id` is new, 8.4). It replaces round 3's `tenant + "/" + root_id()`, which collapsed every single-principal or
-  anonymous deployment into one bucket (`make_embedded_principal`, `trust/principal.hpp:70`; an unset `Principal{}` has empty id
-  and tenant, `agent_session_core.cpp:714`) and whose unescaped `/` let tenant `a/b`+root `c` collide with tenant `a`+root `b/c`.
+- **[R4-1][R5-1][R5-2]** `admission_of(ctx)` = `{ctx.principal.tenant_id, ctx.principal.root_id(), ctx.root_run_id.empty() ?
+  ctx.run_id : ctx.root_run_id}`: all host-derived, never model-derived (the principal comes from the session or the ADR-061
+  bridge, `agent_session_core.cpp:945,951`; `root_run_id` is new, 8.4). **[R5-2]** The principal component is `root_id()`
+  (`trust/principal.hpp:47-50`), NOT `principal.id`: an `agent.spawn` child runs as a *derived* principal with a fresh id
+  (`derive_on_behalf_of`, `trust/principal.hpp:111-125`; `derive_spawn_child_id`, `rt/agent_spawn.hpp:381-382`), so keying the
+  principal level on `id` gave every child its own 32-slot bucket and let fan-out evade the principal cap. **[R5-1]** An
+  empty component is passed through as the empty string and the admission step maps it to the UNATTRIBUTED bucket of that
+  level (8.2); it never skips a level. Round 3's joined `tenant + "/" + id` string is gone: its unescaped `/` collided tenant
+  `a/b`+root `c` with tenant `a`+root `b/c`.
 - Call sites/fakes updated: 2 production, 3 fakes, ~17 direct test/live calls (`EgressCallControl{}` written explicitly).
 
 ## 5. D2 -- one gate, one code path [R2-6,8,9,10]
@@ -238,22 +244,33 @@ before the first `co_await`.
   for them. Two, not one, **[R4-m6]**: with 64 sync-edge roots each parsing up to 16 MiB on a single lane, every continuation
   (a delivered cancel included) would queue behind up to ~1 GiB of parsing; two lanes halve that and cost an idle thread. The
   real figure is a prove-step measurement (R12), not an argument.
-- **Admission [R3-2][R4-1][R4-m5]: two levels under a global cap, structured keys, host-configurable.** Per ROOT RUN 8 (key
-  `(tenant, principal, root_run_id)`), per PRINCIPAL 32 (key `(tenant, principal)`), global 64; `EgressLimits{per_run, per_principal,
-  global, max_request_bytes}` is a host-set value on the context (atomics, adjustable at any time; host code, never model output).
-  The key components only select which bucket to debit, so they can only narrow, exactly like the stop token (I2-neutral).
-  - A host that never sets a principal (`Principal{}`: empty id and tenant) still gets per-root-run isolation; the principal level is
-    **not applied to an empty principal** (it would be a hidden global 32 for every anonymous session). A host that uses ONE
-    service principal for everything gets per-run isolation (8) under an effective global 32 -- it should raise
-    `per_principal` (honest consequence, documented).
-  - A child of `agent.spawn`, a background job, or a workflow node charges the ROOT run's bucket (8.4), so fan-out cannot multiply
-    the quota. Two runs of one principal have separate run buckets, so one saturated run cannot starve its sibling run.
-  - Implementation: `std::mutex` + `std::map<AdmissionTuple, std::uint32_t>` per level with **erase-when-zero** (a never-shrinking
-    map would grow with every inbound principal); the RAII slot decrements and erases under the lock; keys are tuples of the
-    three strings, never concatenated. Two atomic counters alone cannot implement per-key, as round 3 noted.
-  - **Bounded wait [R4-m5]:** on exhaustion the call waits, up to 1 s capped by `control.deadline` and `stop`, retrying admission
-    every 25 ms with `rt::sleep_for` on the egress reactor, before failing `resource` / `net.egress_busy` with the message
-    "egress is busy; retry after a short delay" (so a model reading it does not spin). Transient saturation is then invisible.
+- **Admission [R3-2][R4-1][R4-m5][R5-1,2]: two levels under a global cap, structured keys, host-configurable.** Per ROOT RUN 8 (key
+  `(tenant, root_id, root_run_id)`), per PRINCIPAL 32 (key `(tenant, root_id)`), global 64, plus two UNATTRIBUTED buckets, default 8
+  each; `EgressLimits{per_run, per_principal, global, unattributed_run, unattributed_principal, max_request_bytes}` is a host-set
+  value on the context (atomics, adjustable at any time; host code, never model output). The key components only select which
+  bucket to debit, so they can only narrow, exactly like the stop token (I2-neutral).
+  - **[R5-1] An empty identity never skips a level.** An empty run identity (`root_run_id` and `run_id` both empty) charges the
+    unattributed RUN bucket; an empty principal (`root_id()` empty) charges the unattributed PRINCIPAL bucket. All callers with
+    that gap share one small bucket instead of the whole pool, so the table in 8.4 need not be complete to be safe: a future
+    start site nobody listed fails closed into 8, not open into 64. (Round 4 found the opposite rule -- skip -- let an
+    unauthenticated MCP client hold the entire global cap.) A host that uses ONE service principal for everything gets per-run
+    isolation (8) under an effective per-principal 32 -- it should raise `per_principal` (honest consequence, documented).
+  - A child of `agent.spawn`, a background job or a workflow node charges the ROOT run's bucket AND the root principal's bucket
+    (8.4), so fan-out multiplies neither. Two runs of one principal have separate run buckets (one saturated run cannot starve
+    its sibling) but share the principal's 32 **[R5-2]**: 5 root runs of one principal fanning out through spawned children are
+    held to 32 in total.
+  - **[R5-impl] Implementation conditions** (S2 must satisfy all four; each has a gate row): (1) **one `std::mutex` guards the
+    global count and both maps, and all three levels are admitted in ONE step, all-or-nothing** (no run-level increment followed
+    by a principal-level rollback, which would show other callers a transient over-count as spurious `egress_busy`); (2) the
+    RAII slot holds COPIES OF THE KEYS (the tuples), never map iterators, and looks the entries up under the lock on release, so
+    lowering a limit at run time still decrements normally; (3) maps are `std::map<tuple, uint32_t>` with **erase-when-zero**
+    (decrement-and-erase and admit are under the same lock, and a live slot holds a count >= 1, so its entry cannot be erased
+    under it); (4) keys are tuples of the strings, never concatenated.
+  - **Bounded wait [R4-m5][R5-n3]:** on exhaustion the call waits, up to 1 s capped by `control.deadline` and `stop`, retrying
+    admission every 25 ms with `rt::sleep_for` on the egress reactor, before failing `resource` / `net.egress_busy` with the
+    message "egress is busy; retry after a short delay" (so a model reading it does not spin). There is no FIFO among waiters: a
+    late arrival can take a slot ahead of an earlier one -- acceptable under a 1 s bound, stated. **Order:** the wait sits AFTER
+    the gate and BEFORE resolve, so a gate-rejected call neither waits nor charges a bucket (G13b).
   - **Residual R1:** many *distinct* root runs of *distinct* principals can still exhaust the global 64; blast radius = other
     principals' egress for up to `total_timeout`, never the provider plane (separate pool). The caps bound the otherwise unbounded
     DNS queue (`rt/offload.hpp:303-309`).
@@ -279,21 +296,30 @@ callers; `rt::http`'s chunk/TE/CL/obs-fold strictness now applies to the WASM ed
 now fails `net.protocol_error`-class, transient). `resolve_and_validate*` stay for Kata (`kata_backend.cpp:259`) and the relay
 (`native_jail_handle_relay.cpp:361`) (R6).
 
-### 8.4 `EffectContext::root_run_id` -- every place a run starts [R4-1]
-`EffectContext` gains `std::string root_run_id`: **host-set only, never model-derived**, default empty (empty -> `admission_of` falls
-back to `run_id`; both empty -> the run level is skipped, global/principal levels still apply). Rule: a *root* run's value is its own
-`run_id`; every descendant carries the root's. Every place a run or an `EffectContext` is created, and how it is filled:
+### 8.4 `EffectContext::root_run_id` -- every place a run starts [R4-1][R5-1]
+`EffectContext` gains `std::string root_run_id`: **host-set only, never model-derived**, default empty. **[R5-1]** An empty value
+falls back to `run_id`; if both are empty the call charges the UNATTRIBUTED run bucket (8.2) -- it is never skipped. Rule: a *root*
+run's value is its own `run_id`; every descendant carries the root's. Every place a run or an `EffectContext` is created, and how
+each is filled (the sweep for round 5: `grep` of every `EffectContext x;`/`x{}` outside `core/` found `protocol/mcp/server.hpp:370,430`,
+`rt/background_job_runner.hpp:630`, `rt/workflow_supervisor.hpp:737` and `rt/workflow_supervisor_batch.cpp:170` (fresh
+`EffectContext{}` for a missing node context), `src/rt/agent_session_core.cpp:690,721`, `src/backends/native_jail/
+mediated_python_runner.cpp:73` (an init ctx, no egress), `tools/batch_infer.cpp:142` and `tools/test_driver/test_driver.hpp:3359`
+(host tools/tests, no egress grant), and the `examples/` and `devsim/` hand-built contexts; **no** `EffectContext` is built in
+`protocol/a2a/` or `protocol/agui/`, which reach tools through sessions, and the eval harness runs sessions):
 
 | Where | How `root_run_id` is filled |
 |---|---|
-| Session core, a run starts: `src/rt/agent_session_core.cpp:211` (`effect_context_.run_id = session_id_ + ":run:" + n`) -- reached by `start_run`, `resolve_interaction`, the MCP/A2A request path (ADR-061 Tier 3), quickstart sessions and eval trials alike | `effect_context_.root_run_id = inherited_root_run_id_.empty() ? run_id : inherited_root_run_id_`. `inherited_root_run_id_` is a session member, empty for a top-level session, set once for a child/node session (rows below). Two runs of one top-level session are sequential (I1) and each is its own root. |
+| Session core, a run starts: `src/rt/agent_session_core.cpp:211` (`effect_context_.run_id = session_id_ + ":run:" + n`) -- reached by `start_run`, `resolve_interaction`, the MCP/A2A request path (ADR-061 Tier 3), quickstart sessions and eval trials alike | `effect_context_.root_run_id = inherited_root_run_id_.empty() ? run_id : inherited_root_run_id_`. `inherited_root_run_id_` is a session member, empty for a top-level session, set once for a child/node session (rows below). Two runs of one top-level session are sequential (I1) and each is its own root. **[R5-impl]** `fork_from` (`agent_session_core.cpp:673`) copies `inherited_root_run_id_` together with `principal_`; `clear_in_process_state` (`:714`, which resets `principal_`) does NOT reset `inherited_root_run_id_` for a child session (resetting it would make the child its own root). Both are G13h rows. |
+| **MCP server `tools/call`** [R5-1]: `protocol/mcp/server.hpp:370` (synchronous) and `:430` (task-augmented) build a fresh `EffectContext ctx; ctx.principal = caller;` and go straight to `invoke_tool`/`background_task` (`rt::block_on`, a genuinely-sync edge), never through `agent_session_core.cpp:211`. `run_id`/`root_run_id` are empty today; `caller.id` is empty for an unauthenticated request (the server already treats that as unauthenticated, `server.hpp:258-264`, ADR-061 SS7 R13) | The server mints `ctx.run_id = ctx.root_run_id = "mcp:" + <server-side monotonic counter>` per request (NEVER the JSON-RPC request id, which the client chooses). An authenticated caller is therefore bounded per request (8) and per principal (32); an UNAUTHENTICATED caller has an empty principal and is bounded by the **unattributed principal bucket (8) shared by all unauthenticated callers**, whatever run id it carries. This is reachable: a WASM tool's NetOut comes from the plugin's operator grant (`inst.operator_grant.bind`, `wasm_backend.cpp:835-838`), not from `ctx.capabilities`, so an anonymous remote client calling an exposed WASM tool can reach egress. |
 | `agent.spawn` child: `perform_agent_spawn` builds `ChildSpawnRequest` (`rt/agent_spawn.hpp:~531-535`, struct at `rt/agent_spawn_child_run.hpp:72`) next to `child_request.principal = ctx.principal` | New field `ChildSpawnRequest::root_run_id`, set from `ctx.root_run_id`; `run_child_agent_session` passes it to the child session's `inherited_root_run_id_` before `start_run`. Nested spawns propagate it unchanged (the root, not the parent). |
 | Background job: `rt/background_job_runner.hpp:625-640` builds `EffectContext ctx` from the allowlisted `job.spec` (`BackgroundJobOwner{session_id, run_id, turn_index}`, `:107-111`) | New field `BackgroundJobOwner::root_run_id`, filled by the session core when it submits (`agent_session_core.cpp:~880-893`, beside `owner_run_id`) from `effect_context_.root_run_id`; the runner copies `ctx.root_run_id = job.spec.owner.root_run_id` next to `ctx.run_id = job.spec.owner.run_id` (`:634`). |
-| Workflow agent node: `agent_session_as_executor_body` (`rt/agent_workflow_executor.hpp:~101-135`) runs `session.start_run()` under the node's `ctx` | Before `start_run`, `session.set_inherited_root_run_id(ctx.root_run_id)`; the supervisor's per-node contexts (`workflow_supervisor.hpp:737-760`, a missing entry is a fresh `EffectContext{}`) have `root_run_id` stamped by the supervisor with the **workflow run's id** when empty (a workflow run id exists, `rt/workflow_run_state_record.hpp:404-416`), or inherited when the workflow is itself driven from a tool of an outer run. A top-level workflow's N agent nodes therefore share one bucket. Implementation must confirm the supervisor has the id at stamping time; if not, the host stamps it into `contexts[i]` and the gap is R14. |
+| Workflow agent node: `agent_session_as_executor_body` (`rt/agent_workflow_executor.hpp:~101-135`) runs `session.start_run()` under the node's `ctx` | Before `start_run`, `session.set_inherited_root_run_id(ctx.root_run_id)`; the supervisor's per-node contexts (`workflow_supervisor.hpp:737-760`, a missing entry is a fresh `EffectContext{}`) have `root_run_id` stamped by the supervisor with the **workflow run's id** when empty (a workflow run id exists, `rt/workflow_run_state_record.hpp:404-416`), or inherited when the workflow is itself driven from a tool of an outer run. A top-level workflow's N agent nodes therefore share one run bucket. **[R5-n2]** This is a prove-step check with a gate (G13h): the supervisor stamps the id before the first node runs, and N agent nodes of one workflow are held to one run bucket of 8. If the supervisor cannot supply the id, the nodes fall into the unattributed run bucket (fail closed), and that is R14(a). |
 | Workflow function / moderator node tool calls | They receive the node `ctx` directly: the stamped value. |
 | Standing effects (`rt/standing_effect_registry.hpp:174`) | Not an `EffectContext` creator: they fire through background jobs (row 3). |
-| Direct tool dispatch with no session (tests, `HostEgressProxy` called by host code) | Empty -> `run_id` fallback -> if also empty, run level skipped. |
-| `restore_from_record` (`agent_session_core.cpp:790-802`) | `root_run_id` is persisted as an additive optional field in the same session record that already holds `principal_id`/`principal_tenant_id`/`run_counter` (`:790-801`); absent (old records) = the run's own id. `delegation_root` is NOT persisted today (the principal rebuilt at `:800` drops it, `principal.hpp:51-54`); this ADR does not change that and notes the consequence: a restored delegated child's principal-level bucket is its own id's. The record-schema/version check is an explicit S2 step; if the record type cannot take an additive field cleanly, R14 stays open. |
+| Direct tool dispatch with no session (tests, examples, host code, `tools/batch_infer.cpp`, `tools/test_driver/test_driver.hpp`) | Empty -> `run_id` fallback -> if also empty, the UNATTRIBUTED run bucket **[R5-1]**. |
+| `restore_from_record` (`agent_session_core.cpp:790-802`) | `root_run_id` is persisted as an additive optional field in the same session record that already holds `principal_id`/`principal_tenant_id`/`run_counter` (`:790-801`); absent (old records) = the run's own id. `delegation_root` is dropped on restore today (the principal rebuilt at `:800` omits it, `principal.hpp:51-54`); with the principal level now keyed on `root_id()` **[R5-2]** this is a real, narrow escape for a restored delegated child (it would get its own 32). The same additive record change persists `delegation_root` if the schema check passes; otherwise R14(b). The record-schema/version check is an explicit S2 step. |
+
+Not egress-reachable today, recorded as residuals (R15, R16): an approval resume (`resolve_interaction`) of a top-level session starts a NEW root; delegation across an A2A boundary starts a new root on the receiving side.
 
 ## 9. Error and audit codes [R2-2 rebuilt from the code]
 
@@ -355,7 +381,7 @@ W = Windows-provable; L = needs Linux (WSL2); H = needs `AGENTENGINE_WITH_HTTPS`
 | G10 (W) | 3xx returned unmodified, `Location` target `accept_count()==0` on both entry points | redirect-following |
 | G11 (W+H) **[R2-2]** | Cert for name A, allowlist host B: `net.tls_certificate_rejected`, class **policy**, through BOTH `fetch` and `fetch_blocking`, no response; matching name with CA override -> 200 (control); broken CA bundle -> `net.tls_setup_failed` **fatal**; IP-literal https allowlist entry row; fake resolver sees exactly the allowlisted string | `tls_failed` mapped transient; `failure` not carried; host replaced by address text |
 | G12 (W) | Error table (9): each reachable row produced by a scripted peer/resolver on both entry points with the tabled class and code; WASM mapping test adds `net.invalid_request`, `net.header_too_large`, `net.deadline_exceeded`/`net.idle_timeout` -> `timeout` | a row in the wrong class; mapping unextended |
-| G13 (W, L) **[R2-4,5][R3-3,8][R4-1,m5]** | (a) **timing:** drop the `fetch` frame while a fake resolver sleeps 5 s -> the dropping thread returns in < 100 ms; (b) 20 gate-rejected calls start zero threads and never touch the context; (d) 64 concurrent first calls create exactly one context (TSan, L); (e) global cap: the 65th concurrent call waits up to 1 s then `net.egress_busy` (not instantly), and succeeds if a slot frees within the wait; (f) construction failure injected -> `net.egress_unavailable`, next call retries; (g) ASan, L: a fetch whose per-attempt timer fires as its frame is destroyed, after its host Runtime is gone -> no use-after-free; **(h) admission, run level:** two runs of the SAME principal -- run A saturates its 8 with trickling peers, run B (same principal, different `root_run_id`) still fetches to a fast peer; a child of A (`agent.spawn`, a background job, a workflow node) charges A's bucket; **(i) principal level:** one principal's 4 runs x 8 hit 32 and the 33rd fails while another principal still succeeds; an empty principal is not subject to the principal level but its sessions are isolated per run; **(j) key structure:** tenant `a/b` + root `c` and tenant `a` + root `b/c` get separate buckets; the maps are empty again after every slot is released (erase-when-zero) | per-proxy holder / destructor join; lazy init without the mutex; no cap; **key on principal only** (h fails: run B starved); **joined-string key** (j fails); no erase-when-zero (j fails); child keyed on its own run id (h child row fails); wait removed (e fails). Old G13c dropped [R3-8] |
+| G13 (W, L) **[R2-4,5][R3-3,8][R4-1,m5]** | (a) **timing:** drop the `fetch` frame while a fake resolver sleeps 5 s -> the dropping thread returns in < 100 ms; (b) 20 gate-rejected calls start zero threads and never touch the context; (d) 64 concurrent first calls create exactly one context (TSan, L); (e) global cap: the 65th concurrent call waits up to 1 s then `net.egress_busy` (not instantly), and succeeds if a slot frees within the wait; (f) construction failure injected -> `net.egress_unavailable`, next call retries; (g) ASan, L: a fetch whose per-attempt timer fires as its frame is destroyed, after its host Runtime is gone -> no use-after-free; **(h) admission, run level:** two runs of the SAME principal -- run A saturates its 8 with trickling peers, run B (same principal, different `root_run_id`) still fetches to a fast peer; a child of A (`agent.spawn`, a background job, a workflow node) charges A's bucket; **(i) principal level:** one principal's 4 runs x 8 hit 32 and the 33rd fails while another principal still succeeds; **[R5-2]** the principal level keys on `root_id()`: 5 root runs of one principal, each fetching through a spawned child, are held to 32 in TOTAL (mutant: key on `principal.id` -> 40+ admitted); **[R5-1]** an empty principal charges the unattributed principal bucket: 9 concurrent empty-identity calls -> the 9th waits ~1 s then `net.egress_busy`, while an attributed principal's fetch still succeeds (mutant: empty skips the level); **(h2) lineage conditions [R5-impl]:** a child session made by `fork_from` keeps `inherited_root_run_id_`; after `clear_in_process_state` a child is still charged to the root (mutant: reset it -> child is its own root); a workflow's N agent nodes share one run bucket; **(h3) single-step admission [R5-impl]:** under 64 threads hammering one run key and one principal key, the observed in-flight never exceeds the caps and no call fails `egress_busy` while counts are below the caps (mutant: per-level locks with rollback -> spurious busy); a slot released after `EgressLimits` is lowered still decrements (mutant: slot holds an iterator); **(k) MCP [R5-1]:** an unauthenticated (empty-principal) `tools/call` flood of a NetOut WASM tool is held to the unattributed principal bucket (8), and a session's own fetch still succeeds (mutant: empty identity skips the level; mutant: the server uses the client's JSON-RPC id as `root_run_id`); the task-augmented path (`:430`) the same; **(j) key structure:** tenant `a/b` + root `c` and tenant `a` + root `b/c` get separate buckets; the maps are empty again after every slot is released (erase-when-zero) | per-proxy holder / destructor join; lazy init without the mutex; no cap; **key on principal only** (h fails: run B starved); **principal level on `principal.id`** (fan-out row fails); **empty skips the level** (i and k fail); **joined-string key** (j fails); no erase-when-zero (j fails); child keyed on its own run id (h child row fails); wait removed (e fails). Old G13c dropped [R3-8] |
 | G14 (W) | `static_assert(NetEgressBackend<HostEgressProxy>)`; the 3-arg fakes compile; a fake with the old 2-arg `fetch` fails the `static_assert` (negative compile row) | concept left at 2 args |
 | G15 (W) **[R2-11][R3-5]** | Compile-negative: the production `HostEgressProxy` has no setter, friend or seam member; `TestEgressProxy` exists only in the testing header and satisfies `NetEgressBackend`; lint: no file under `include/`, `src/` or `examples/` outside `sandbox/testing/` includes that header | a public `address_policy` field or a friend |
 | G16 (W) **[R3-6]** | GET, HEAD, TRACE and OPTIONS with a non-empty body -> `contract` `net.invalid_request`, 0 resolver calls, nothing on the wire; POST/PUT/PATCH/DELETE with a body pass (DELETE recorded as R13) | gate check removed (server sees a body on GET) |
@@ -385,7 +411,11 @@ whose HTTP library sets `Host`/`Content-Length`, and the error was misleading); 
 - **R10** No per-egress audit record (10).
 - **R11** `perform_http[s]_exchange*` remain for `ProviderHttpClient`; their removal is that client's slice.
 - **R12 [R4-m6]** The sync edge occupies the 2 egress lanes only for continuation slices; a flood of sync-edge calls serialises their parsing on them (bounded by the 64 admission cap). The queueing figure (worst case 64 x 16 MiB of parsing over 2 lanes) is measured in the prove step, not asserted here.
-  serialises their parsing on it (bounded by the 64 admission cap).
+
+- **R13 [R3-6]** DELETE with a body is allowed (some real APIs send one); a CL.0-style desync through a DELETE body on an origin that ignores it remains possible.
+- **R14 [R4-1][R5-2]** Two gaps in root-run identity if the implementation cannot close them cleanly: (a) the workflow supervisor lacking its run id at node-context stamping time (the nodes then fall into the unattributed run bucket, fail closed); (b) a restored session record that cannot take additive `root_run_id` and `delegation_root` fields (a restored delegated child then gets a fresh run bucket AND, because the principal level keys on `root_id()`, its own principal bucket of 32; blast radius: 32 extra slots per restore, still under the global 64).
+- **R15 [R5]** An approval resume (`resolve_interaction`) of a top-level session starts a NEW root run; background work from the earlier run keeps charging the earlier bucket. Not reachable today: no egress tool is backgroundable (`read_content`), and WASM descriptors are `captures_session_state` and refused for backgrounding (`tool_pipeline.cpp:415-419`, `wasm_tool_bridge.hpp:131`). To be revisited with the first backgroundable egress tool.
+- **R16 [R5]** Delegation across a protocol boundary (an in-process A2A server serving a delegating local agent) starts a NEW top-level root on the receiving side; the principal level, keyed on the delegation root through the ADR-061 bridge principal, is what bounds it.
 
 ## 14. Implementation slices [R4-L, R4-2] (in order; each independently shippable)
 
@@ -409,6 +439,8 @@ the wit mapping extension; (h) the old blocking exchange removed from the proxy 
 G5, G6, G7 (tool rows and the WASM row), G8 (both entry points, plain and under H), G9, G10, G11 (both entry points), G12, G13 a-j,
 G14, G15, G16, G17. Because the gate, the strip and both entry points move together, no intermediate state rejects a request the
 old WASM path accepted or loses the sync edge's test seam.
+
+**S2 internal order [R5-n1]** (one PR, each step green before the next): (1) (a) `root_run_id` plumbing, the MCP minting, the record fields, G13h/h2 rows (no behaviour change yet); (2) (e)'s TLS `failure` carry-through + G11; (3) (d)/(f) gate, strip, refusal, request cap, `TestEgressProxy` with G1-G6, G16, G17; (4) (b)/(c)/(g)/(h) the context, admission, both entry points, with G7-G13. **[R5-n4]** The TLS `failure` field added to `rt::HttpResponse` is ignored by the provider plane: `provider_chat_wire.hpp:72` is unchanged, so no model-call class moves. The admission conditions of 8.2 ([R5-impl]) and the empty-identity rule ([R5-1]) are part of step 4.
 
 **S3 -- remainder.** The write-vector move (the wire string is moved into the step-5 `std::vector<std::byte>` instead of copied:
 body peak copies 3 -> 2), the `wit/ae-tool.wit` note (managed headers are stripped and recomputed; GET/HEAD/TRACE/OPTIONS bodies

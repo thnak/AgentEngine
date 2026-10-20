@@ -1,6 +1,6 @@
-# ADR-241 red-team record (rounds 1-3, 2026-10-20)
+# ADR-241 red-team record (rounds 1-4, 2026-10-20)
 
-The adversarial reviews of `decisions/ADR-241-egress-proxy-async-path-on-rt-http.md`, kept verbatim as the ADR's evidence. Round 1: 0 FATAL / 8 MAJOR / 8 MINOR; round 2: 0 / 2 / 8; round 3: 0 / 2 / 6 (S1 cleared for the prove step; S2's blockers resolved in the round-4 revision). The reviews read code only; nothing was built.
+The adversarial reviews of `decisions/ADR-241-egress-proxy-async-path-on-rt-http.md`, kept verbatim as the ADR's evidence. Round 1: 0 FATAL / 8 MAJOR / 8 MINOR; round 2: 0 / 2 / 8; round 3: 0 / 2 / 6 (S1 cleared for the prove step; S2's blockers resolved in the round-4 revision); round 4 (S2 only): 0 / 2 / 4, resolved in the round-5 revision. The reviews read code only; nothing was built.
 
 ## ADR-241 red-team, round 1
 
@@ -490,3 +490,186 @@ With 64 sync-edge roots parsing up to 16 MiB each on one egress lane, every sync
 - M1 is resolved: a root-run key (or a per-key cap defaulting to the global one);
 - M2 is resolved: fold stripping into S2 and merge S3 into it, or re-scope S2's gates to the `fetch` half;
 - m1's request-body cap is added to the gate.
+
+## ADR-241 red-team, round 4 (S2 only)
+
+**Result:** 0 FATAL, 2 MAJOR, 4 MINOR.
+- **Round-3 findings:**
+  - M2 is closed by the merged S2.
+  - M1 is partially closed: run-level keying is right, but an empty key skips its level instead of failing closed, and the start-site table misses the MCP server.
+  - m1 and m3-m6 are closed; m2 is closed with a stated residual.
+- **New:** the principal level keys on `principal.id`, so every `agent.spawn` child gets a fresh 32-slot principal bucket. Fixing that, and the empty-key rule, unblocks S2.
+
+### Part 1 -- verdicts on round 3
+
+**M1 (keying collapsed to one bucket of 8): Partially closed.**
+- Right:
+  - the structured `AdmissionKey` (no joined string);
+  - per-root-run buckets;
+  - two runs of one principal isolated (G13h);
+  - children charging the root run (8.4 rows 2-4).
+- Wrong:
+  - an empty key component **skips** its level rather than failing closed (N-M1);
+  - the start-site table omits `protocol/mcp/server.hpp:370,430` (N-M1);
+  - the principal level uses `principal.id`, not `root_id()` (N-M2).
+
+**M2 (S2 not independently shippable): Closed.**
+- S2 now moves both entry points, the strip, the GET-body refusal and the request cap together.
+- Every gate it names is satisfiable inside S2 (Part 3).
+
+**m1 (uncapped request body): Closed.**
+- `max_request_bytes` is checked in the gate.
+- The import checks `byte_list.of.list.size` **before** `reserve` (`wasm_backend.cpp:540-548`), so an oversized body is never copied.
+- The peak is now stated as `<= 3 * max_request_bytes * 64` (2 after S3). G17's mutant is "the import checks after the copy". Good.
+
+**m2 (restore escape, key collision, never-shrinking map): Closed with residual.**
+- G13j covers the collision and erase-when-zero.
+- `root_run_id` is persisted in the session record (8.4, last row).
+- `delegation_root` is still dropped on restore (`agent_session_core.cpp:800`). That is honestly stated; it matters again once N-M2 switches the principal level to `root_id()`.
+
+**m3 (derivation overflow; provider TLS class): Closed.**
+- The derived total uses saturating arithmetic from `effective_body_cap()` (`http_wire.hpp:106-108`), and R6 has unit rows.
+- S1 has no TLS change. The remaining point is minor: S2 adds `failure` to `rt::HttpResponse`, which the provider plane shares, so say in S2 that `provider_chat_wire.hpp:72` ignores it (no class change for model calls).
+
+**m4 (shared free functions are a seam): Closed.** They live in `sandbox/detail/net_egress_impl.hpp`, under the same lint.
+
+**m5 (no retry guidance on `egress_busy`): Closed.** There is a bounded 1 s wait (capped by deadline and stop) and a retry-hint message. G13e checks both "waits" and "succeeds if a slot frees".
+
+**m6 (one lane serialises sync-edge parsing): Closed.** Two lanes, with R12 measured in the prove step. Editorial: R12's last line is duplicated ("serialises their parsing on it ...").
+
+### Part 2 -- attacking `root_run_id` and admission
+
+#### N-M1. MAJOR -- An empty key fails OPEN into the global bucket; the table misses a real start site whose keys are empty
+
+**The rule (8.4):**
+- empty `root_run_id` falls back to `run_id`;
+- if both are empty, **the run level is skipped**;
+- an empty principal **skips the principal level** (8.2).
+- So a call with an empty identity is held only by the global 64.
+
+**The missing start site: the MCP server.**
+- Both `tools/call` handlers build a fresh `EffectContext ctx; ctx.principal = caller;` (`protocol/mcp/server.hpp:370` sync, `:430` task-augmented). They go straight to `invoke_tool`/`background_task`, never through `agent_session_core.cpp:211`.
+- The table's claim that "the MCP/A2A request path (ADR-061 Tier 3)" goes through `:211` is false for MCP `tools/call`.
+- There, `run_id` and `root_run_id` are always empty.
+- `caller` is empty for an unauthenticated request. The server already treats `caller.id.empty()` as unauthenticated (`server.hpp:260-264`, ADR-061 §7 R13).
+
+**Can that reach egress?**
+- `read_content` cannot: on the no-grant path `ctx.capabilities` is null, and the tool refuses.
+- A **WASM tool** can. Its NetOut comes from the plugin's *operator* grant (`inst.operator_grant.bind`, `wasm_backend.cpp:835-838`), not from `ctx.capabilities`.
+- So an unauthenticated remote MCP client calling an exposed WASM tool with a NetOut grant is held only by the global 64. It can deny egress to every session in the process: exactly R1's blast radius, from an anonymous network caller.
+
+**Other paths that fail open the same way:**
+- direct host dispatch with a hand-built ctx (8.4 row 7);
+- a workflow whose supervisor cannot stamp an id ("if not, ... R14", 8.4 row 4);
+- any future start site nobody adds to the table.
+- G13i *enshrines* the skip ("an empty principal is not subject to the principal level").
+
+**Required changes.**
+- **Empty never means "skip".** An empty run identity charges a dedicated **unattributed** run bucket. An empty principal charges a dedicated **unattributed** principal bucket. Both are small and host-configurable (default 8). Unattributed callers then share one small bucket instead of the whole pool. This also covers future start sites, so the table no longer has to be complete to be safe.
+- Add rows for `mcp/server.hpp:370,430`. The server sets `run_id`/`root_run_id` to a per-request id it mints, e.g. `mcp:<request id>`; or leave them empty and rely on the unattributed bucket.
+- **Rewrite G13i:**
+  - an empty principal charges the unattributed principal bucket;
+  - 9 concurrent empty-identity calls means the 9th waits and then gets `egress_busy`, while an attributed principal still succeeds.
+  - **Mutant:** "empty skips the level".
+- Add an MCP row to G13: an unauthenticated `tools/call` of a NetOut WASM tool is bounded by the unattributed bucket.
+
+#### N-M2. MAJOR -- The principal level keys on `principal.id`, so every spawned child gets a fresh 32-slot bucket
+
+**What happens.**
+- `admission_of(ctx) = {tenant_id, principal.id, ...}`.
+- `agent.spawn` children run as a *derived* principal with a fresh id (`derive_on_behalf_of`, `trust/principal.hpp:111-125`; the child id comes from `derive_spawn_child_id`, `agent_spawn.hpp:381-382`).
+- So a child's fetches charge the principal bucket `(tenant, child_id)`, not the root principal's.
+
+**Scenario.**
+- Principal P starts 5 root runs (5 sessions, 40 slots of run budget). Only 32 should be allowed at the principal level.
+- Each run does its fetches through one spawned child.
+- Each child is its own principal at 8 or fewer. P's 32 is never charged.
+- P holds 40 slots, and with more runs the full 64, starving every other principal.
+- The principal cap is evaded by the very fan-out that 8.2 says "cannot multiply the quota". That claim is made only for the run level.
+
+**Required changes.**
+- The principal level keys on `(tenant_id, principal.root_id())` (`trust/principal.hpp:47-50`), the round-3 choice, which is correct **at this level**.
+- Keep `root_run_id` for the run level.
+- The restore residual (`delegation_root` dropped, `agent_session_core.cpp:800`) then becomes a real, if narrow, escape for restored delegated children. Either persist `delegation_root` with `root_run_id` in the same additive record change, or list it as R14.
+- **G13h/i gain a row:** 5 root runs of P, each fetching through a spawned child, are held to 32 in total.
+- **Mutant:** the principal key uses `principal.id`.
+
+#### Other questions from the team lead
+
+**Model-derived input (I3): none found.** Every source of `root_run_id` is host-minted:
+- `session_id_ + ":run:" + counter` (`agent_session_core.cpp:211`);
+- the parent ctx copied into `ChildSpawnRequest` (`agent_spawn.hpp:534`);
+- the job spec owner (`background_job_runner.hpp:634`);
+- the workflow `run_id_` restored from its own record (`workflow_run_state_record.hpp:416`, `workflow_supervisor.cpp:459`).
+
+Child session ids come from `derive_spawn_child_id(caller_ref, caller_principal, seq)`, not model text. `tool_pipeline.cpp:386` `background_task` takes `ctx` by value and only resets callbacks (copy then sanitize), so the field survives into backgrounded calls. `sanitize_for_detached_worker` (`workflow_as_chat_client.hpp:171-185`) also only nulls pointers and callbacks.
+
+**Different root than the lineage.**
+- `agent.spawn`, background jobs, workflow nodes and nested spawns: correct, provided the implementation does three things:
+  - `fork_from` (`agent_session_core.cpp:673`) copies `inherited_root_run_id_` with `principal_`;
+  - `clear_in_process_state` (`:714`, which resets `principal_`) does **not** reset `inherited_root_run_id_` for a child session. If it does, the child becomes its own root.
+  - Add both as G13h rows.
+- Each `resolve_interaction` / approval resume that starts a new `run_counter_` run of a *top-level* session is a new root, by design. Any background work from the earlier run keeps charging the earlier bucket. No egress tool is `Backgroundable` today (`read_content`), and WASM descriptors are `captures_session_state` and refused for backgrounding (`tool_pipeline.cpp:415-419`, `wasm_tool_bridge.hpp:131`). So this is not reachable now. Record it as a residual for the first backgroundable egress tool.
+- Delegation that crosses a protocol boundary starts a new top-level root on the receiving side, for example an in-process A2A server serving a delegating local agent. The principal level (after N-M2, keyed by the delegation root through the ADR-061 bridge principal) is what bounds it. Note it.
+
+**Races between erase-when-zero and admit: none, if implemented as written.** Decrement-and-erase and admit happen under the same lock, and a live slot holds a count of at least 1, so its entry cannot be erased under it. Two requirements:
+- **Admit all three levels atomically.** With one mutex per level, a run-level increment followed by a principal-level failure needs a rollback that also erases-when-zero. In between, other callers see a transient over-count, which shows up as spurious `egress_busy`. Use **one** mutex for both maps and the global count, admitting all or nothing.
+- **The RAII slot must hold the key, not a map iterator, and look it up on release.** If limits are lowered at run time, release must still decrement normally.
+
+**Can an empty principal bypass the global cap? No.** The global 64 is always applied. The problem is the opposite: an empty identity gets *only* the global cap (N-M1).
+
+### Part 3 -- the merged S2
+
+**Coherent and shippable as one slice: yes.**
+- Both entry points, the gate, the strip, the GET-body refusal and the request cap move together. No intermediate state rejects a header the old WASM path accepted, or loses the sync edge's seam.
+- No S2 gate depends on S3. S3 only re-measures G17 at 2 copies and re-runs G2b.
+- G9 depends on S1's D0, which ships first. That ordering is correct.
+
+#### n1. MINOR -- S2 is very large (a-h); give it an internal commit order
+
+S2 changes:
+- `EffectContext`;
+- the session record schema;
+- the session core;
+- `agent.spawn`, the background-job runner and the workflow supervisor;
+- the rt TLS result;
+- the gate, both entry points and the WASM backend.
+
+That is shippable, but a single commit would be hard to bisect. Suggested order inside the PR:
+1. (a) `root_run_id` plumbing plus its G13h rows (no behaviour change yet);
+2. (e) TLS `failure` plus G11;
+3. (d)/(f) gate, strip, refusal, cap and `TestEgressProxy`, with G1-G6, G16 and G17;
+4. (b)/(c)/(g)/(h) the context, admission and both entry points, with G7-G13.
+
+Each step should be green before the next.
+
+#### n2. MINOR -- The workflow-supervisor row is not decided yet
+
+8.4 row 4 says "Implementation must confirm the supervisor has the id at stamping time; if not, ... R14". After N-M1's unattributed bucket this fails closed, so it is safe. But make the row a prove-step check with a gate: a top-level workflow's N agent nodes share one run bucket. Do not leave it as a conditional sentence.
+
+#### n3. MINOR -- Bounded-wait polling has no FIFO
+
+Retrying every 25 ms lets late arrivals take slots ahead of earlier waiters. That is acceptable for a 1 s bound, but state it.
+
+One more requirement: the wait has to sit after the gate and before resolve. Otherwise gate-rejected calls would wait 1 s and count against the bucket. G13b checks that gate-rejected calls never touch the context, which implies the gate runs first; make the order explicit in 8.2.
+
+#### n4. MINOR -- Say the provider plane ignores `HttpResponse::failure` (m3 remainder)
+
+S2's TLS carry-through adds a field to an rt type the provider plane shares. State in S2 that `provider_chat_wire.hpp:72` is unchanged, or flag it if the provider is meant to start using it.
+
+### Checked and sound
+
+- **I3:** no model-derived input reaches `root_run_id` or any admission key.
+- **Lineage propagation** through `agent.spawn`, background jobs and workflow nodes: correct, subject to the `fork_from`/clear requirements above.
+- **Structured keys and erase-when-zero:** no race under a single lock.
+- **Merged S2:** no dependency on S3.
+- **m1's check before the copy**, m3's saturating derivation, m4's lint scope, m5's bounded wait, and m6's two lanes.
+- **Everything marked sound in rounds 1-3:** the SSRF core, refusing by family, TLS class carry-through, the single code path, the leaked context, and strip-then-validate.
+
+### Verdict
+
+**NO, S2 is not ready for the prove step yet. Two design edits unblock it:**
+1. **N-M1:** empty key components charge small "unattributed" buckets instead of skipping their level; add the MCP server rows (`server.hpp:370,430`); rewrite G13i.
+2. **N-M2:** the principal level keys on `principal.root_id()`, with a fan-out-through-children row.
+
+Both are small, local changes. After them, S2 is ready, with n1-n4 handled during the prove step.
