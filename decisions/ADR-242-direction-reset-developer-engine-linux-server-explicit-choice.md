@@ -2,8 +2,8 @@
 
 **Status:** Proposed (2026-10-20) — project-owner direction, drafted from a whole-system design review
 (§1.2). Red-team round 1 (2026-10-20): **rejected** (2 FATAL, 6 MAJOR, 9 MINOR); round 2: **not ready**
-(1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); this revision folds all
-three in (§10). **Binds nothing until the project owner marks it Judged**; on Judged, the
+(1 FATAL, 5 MAJOR, 4 MINOR); round 3: **not ready** (table errors, 6 MAJOR); round 4 (§2/§3a only): **not ready** (7 errors); this
+revision folds all four in (§10). **Binds nothing until the project owner marks it Judged**; on Judged, the
 amendments in §8 are applied in one change, and the follow-on ADRs in §6 carry the mechanisms.
 
 **Supersedes in part:**
@@ -96,12 +96,15 @@ resource the engine manages:
    unset seam reproduces today's behaviour") is **strengthened**: unset is a named startup error, not
    today's behaviour.
 4. **Each resource has one documented seam** for a custom option the engine does not ship.
-5. **Invariants are not options.** A developer chooses *which* backend, *what* budget value, *where*
-   authority comes from; never the *absence* of a boundary check, a budget or an authority. "Own risk"
-   covers the residuals each option discloses in §3a; it never relaxes I1–I8 themselves, which ADR-070
-   §3 rejected and this ADR does not reopen. The weakest options (`none`, ADR-071 native providers)
-   are honest options because their row says so, not exceptions to I2: they still run only with an
-   explicit, audited choice.
+5. **Invariants are not options.** A developer chooses *which* backend and *where* authority comes
+   from; never the *absence* of a boundary check or an authority. "Own risk" covers the residuals each
+   option discloses in §3a; it never relaxes I1–I8 themselves, which ADR-070 §3 rejected and this ADR
+   does not reopen. **Budgets and resource limits** are a separate, policy rule (not I8, which is about
+   benchmark-gated performance budgets): a value is required, chosen by the developer; whether
+   "explicitly unbounded" is an allowed value is an open owner decision (§9). The weakest options
+   (ADR-071 native providers, the Docker/containerd surfaces, and `none` once it exists) are honest
+   options because their row says so, not exceptions to I2: each must be an explicit, audited choice;
+   today only the ADR-071 providers are.
 
 **Today's implicit, permissive choices are defects under this section** (each verified on main
 @ 6c62e611; each is fixed in §6 step 1b):
@@ -109,12 +112,22 @@ resource the engine manages:
 | Implicit today | Where | Becomes |
 |---|---|---|
 | Sandbox mounts are checked only if a `SandboxMount` grant exists; every current call site passes none | `sandbox/sandbox.hpp:208-213` (`authorize_spec`) | Mount authorization is unconditional: a mount with no covering grant is refused |
-| Session authority is optional (`require_authority` off unless set), so construction-time capabilities apply to every caller | `rt/agent_session_core.hpp:311`, `:521`; `agent_session_core.cpp:144` | The developer chooses the authority source: per-request (`require_authority`) or an explicit, named single-trusted-caller mode |
+| Session authority is optional (`require_authority` off unless set), so construction-time capabilities apply to every caller | `rt/agent_session_core.hpp:1369` (member default), `:521` (setter); `agent_session_core.cpp:144` | The developer chooses the authority source: per-request (`require_authority`) or an explicit, named single-trusted-caller mode |
 | `McpServer` falls back to its construction-time capability set | `protocol/mcp/server.hpp:198-207` | Per-request grant required, or the same explicit single-trusted-caller mode |
-| No token budget unless one is set (`nullopt` = no budget) | `core/effect_context.hpp:200-202` | A budget value is required |
+| No token budget unless one is set (`nullopt` = unbounded) | `core/agent_registry.hpp:70` (origin), `core/effect_context.hpp:200-202` (copy) | A budget value is required |
 | `native-jail` (and `wasm`) registered by platform | `default_sandbox_registry.cpp:39-50` | Only chosen backends are registered (R2) |
 | `KataBackend` defaults to `docker.io/library/busybox:latest`, a tag pulled from the network | `kata_backend.hpp:460` | No image default; a digest is required (G-R10) |
 | A provider client builds a private Runtime when none is passed | `protocol/openai/chat_client.hpp:473-478` | The Runtime is required (R6) |
+| Every `ResourceLimits` field defaults to 0 = unlimited; on Kata an unset `disk_bytes` builds an unbounded host `tmpfs` (host memory exhaustion) | `sandbox/sandbox.hpp:113-122`; `kata_backend.cpp:398-407` | Each limit value is required |
+| `KataBackend` also defaults its runtime type and CNI network name | `kata_backend.hpp:459-462` | Required |
+| `EnvSecretSource` defaults its prefix to `QUARK_SECRET_` | `trust/secret.hpp:140` | Source and prefix required |
+| The Docker/containerd surfaces take no `EffectContext` or `CapabilitySet`: the contained command runs with whatever authority the caller holds | `sandbox/execution_surface.hpp:29-33` | Choosing one is an explicit, audited choice, like ADR-071's providers; §6 step 3 replaces them with the one execution surface |
+
+**Restrictive implicit defaults (open owner decision, §9).** These only narrow, never widen, so they are
+not I2 defects, but they are still implicit choices under rule 2: `max_turns = 16`,
+`approval_mode::policy_driven`, `concurrency_mode::sequential`, `telemetry_capture::metadata_only`,
+`SandboxProfileDescriptor` `is_strict = true` (`core/agent_registry.hpp:69-76`). Either they become
+required choices too, or §2 is amended to allow defaults that can only narrow.
 
 **Presets** are optional named bundles of choices (for example "server with Kata"). Picking a preset is
 an explicit choice of every row it bundles; a preset never activates itself.
@@ -369,19 +382,20 @@ What each option enforces **today**, and what the developer must manage until th
 solution. "Engine enforces" lists only what an enforcement test in this repository shows (a smoke test
 that only proves a setting is accepted does not count). Rows move from "you manage" to "engine
 enforces" only under G-R12. Every row is also subject to §2's defect list until §6 step 1b lands.
+**Every resource limit applies only when you set it: an unset limit (0) means none** (`sandbox.hpp:113-122`).
 
 **Execution environment**
 
 | Option | Status today | Engine enforces | You manage until the engine solves it | Engine solution (planned) |
 |---|---|---|---|---|
-| `microvm`: Kata (Linux + KVM) | `SandboxBackend` works; live-verified 2026-10-20. Not yet wired to the shell or CodeAct tools | Hardware VM boundary; mounts are those the `SandboxSpec` lists, checked against `cap::SandboxMount` **only if** one is granted (`sandbox.hpp:208-213`); egress allowlist and `net_bytes` at the host bridge (ADR-240, Proposed); `disk_bytes` (rootfs upper layer), `wall_ms` (exec and destroy only), output cap | **Mounts:** pass `SandboxMount` grants, or nothing checks what you mount; a read-write mount is a live `rbind` with no `nosuid`/`nodev` (`kata_backend_detail.hpp:444`), so whatever a root guest writes (symlinks, setuid files) lands in your host directory. **Limits:** `pids` and `fds` are not proven; OOM is never reported; no CPU-time limit; `quota_bytes` not enforced; `wall_ms` does not bound `create()` (`kata_backend.hpp:36-41`). **Who may create a sandbox:** `cap::Exec` is enforced by no backend (`:362-366`). **Image:** the engine's default is `busybox:latest`, pulled by tag on first use (`:448-450`, `:460`); supply a pinned image with `bash`/`python3`. **Host:** install Kata, containerd, CNI and KVM; set the host firewall (`FORWARD` on the bridge, `docs/guides/thnak-server-runbook.md`); ADR-240's preconditions (a dedicated bridge, nft ≥ 1.0.9, kernel ≥ 6.3); a lost nft table is caught only at the next exec; the host's NAT-hairpin WAN address is not recognised as host-local; allowlist IPs are pinned at `create()`. **Process:** the engine runs as root; guest processes keep running between calls (`sleep infinity` task, `:401`); guest output reaches the model as tool output (data, I3). **Capacity:** no admission cap (~170 MB idle to 2 GiB busy per VM); no reaper for idle VMs or crash leftovers (stale netns were found 2026-10-20); ~6 s cold start; shell state is not kept between calls | §6 step 1b (unconditional mount check, no image default), step 3 (persistent shell, staging volume, pause between runs), privileged helper (G-R11), recycling ADR |
-| `native-jail`, Windows | Works. The CodeAct interpreter exists but is wired only in the dev CLI | AppContainer, Job Object (memory, pids), restricted token; mediated CPython with per-`open()` capability checks and import gating (ADR-003, ADR-004) | Wiring `execute_code` yourself until the library provider exists; CPU time (the Job Object CPU cap fired in 3 of 11 runs, ADR-004:286, 021; rely on `wall_ms`); the same opt-in mount check (`sandbox.hpp:208-213`) | §6 steps 1b, 3 |
-| `native-jail`, Linux | Backend works | Namespaces, `pivot_root`, seccomp-BPF, cgroups v2, `no_new_privs` (ADR-083); any egress request fails closed (`linux_native_jail_backend.cpp:279-284`) | No Python interpreter (commands only); a same-kernel boundary, not hardware; the same opt-in mount check | §6 steps 1b, 3b |
+| `microvm`: Kata (Linux + KVM) | `SandboxBackend` works; live-verified 2026-10-20. Not yet wired to the shell or CodeAct tools | Hardware VM boundary; mounts are those the `SandboxSpec` lists, checked against `cap::SandboxMount` **only if** one is granted (`sandbox.hpp:208-213`); egress allowlist and `net_bytes` at the host bridge (ADR-240, Proposed); `disk_bytes` (rootfs upper layer) and `net_bytes` **when set**, `wall_ms` (exec and destroy only, when set), output cap | **Mounts:** pass `SandboxMount` grants, or nothing checks what you mount; a read-write mount is a live `rbind` with no `nosuid`/`nodev` (`kata_backend_detail.hpp:444`), so whatever a root guest writes (symlinks, setuid files) lands in your host directory. **Limits:** set every limit; an unset `disk_bytes` gives the guest an unbounded host `tmpfs`, which can exhaust host memory (`kata_backend.cpp:398-407`); `pids` and `fds` are not proven; OOM is never reported; no CPU-time limit; `quota_bytes` not enforced; `wall_ms` does not bound `create()` (`kata_backend.hpp:36-41`). **Who may create a sandbox:** `cap::Exec` is enforced by no backend (`:362-366`). **Image:** the engine's default is `busybox:latest`, pulled by tag on first use (`:448-450`, `:460`), and the runtime type and CNI network name are defaulted too (`:459-462`); supply a pinned image with `bash`/`python3`. **Host:** install Kata, containerd, CNI and KVM; set the host firewall (`FORWARD` on the bridge, `docs/guides/thnak-server-runbook.md`); ADR-240's preconditions (a dedicated bridge, nft ≥ 1.0.9, kernel ≥ 6.3); a lost nft table is caught only at the next exec; the host's NAT-hairpin WAN address is not recognised as host-local; allowlist IPs are pinned at `create()`. **Process:** the engine runs as root; guest processes keep running between calls (`sleep infinity` task, `:401`); guest output reaches the model as tool output (data, I3). **Capacity:** no admission cap (~170 MB idle to 2 GiB busy per VM); no reaper for idle VMs or crash leftovers (stale netns were found 2026-10-20); ~6 s cold start; shell state is not kept between calls | §6 step 1b (unconditional mount check, no image default), step 3 (persistent shell, staging volume, pause between runs), privileged helper (G-R11), recycling ADR |
+| `native-jail`, Windows | Works. The CodeAct interpreter exists but is wired only in the dev CLI | AppContainer, Job Object (memory, pids, when set), restricted token; mediated CPython with per-`open()` capability checks and import gating (ADR-003, ADR-004) | Set every limit; the jail can still read OS system paths outside your grants (ADR-004:282, AC-S3); who may create a sandbox (`cap::Exec` is enforced by no backend, `kata_backend.hpp:362-366`); wiring `execute_code` yourself until the library provider exists; CPU time (the Job Object CPU cap fired in 3 of 11 runs, ADR-004:286, 021; rely on `wall_ms`); the same opt-in mount check (`sandbox.hpp:208-213`) | §6 steps 1b, 3 |
+| `native-jail`, Linux | Backend works | Namespaces, `pivot_root`, seccomp-BPF, cgroups v2, `no_new_privs` (ADR-083); any egress request fails closed (`linux_native_jail_backend.cpp:279-284`) | Set every limit (cgroup limits apply only when set); no Python interpreter (commands only); a same-kernel boundary, not hardware; the same opt-in mount check; who may create a sandbox (`cap::Exec` unenforced) | §6 steps 1b, 3b |
 | `remote` | Stub, no logic (`src/backends/remote/README.md`) | Nothing | Everything: bring your own cluster integration through the `SandboxBackend` seam | Not scheduled |
 | `wasm` | Works for WASI components | Capability-based WASI | No shell or Python | — |
-| Docker/containerd shell surfaces (ADR-209) | Works | ADR-209 lifetime limits (idle, age, runs) | Container hardening, resource limits and network: these surfaces "inherit none of RFC 008's guarantees" (`execution_surface.hpp:29`) | §6 step 3 (one execution surface) |
+| Docker/containerd shell surfaces (ADR-209) | Works | ADR-209 lifetime limits (idle, age, runs) | **Authority:** the contained command runs with whatever authority your calling code holds; no capability is checked (`execution_surface.hpp:29-33`). Container hardening, resource limits and network: these surfaces "inherit none of RFC 008's guarantees" | §6 step 3 (one execution surface) |
 | ADR-071 native providers (`NativeBashProvider`, `NativePythonProvider`, ...) | Works, explicit opt-in | The opt-in and its audit only | Everything: code runs on the host as the engine's user | — (by design) |
-| `none` | Works | Refuses T2/T3 code (007 §6) | No boundary at all; first-party code only | — (by design) |
+| `none` | **Not implemented** (spec only, 007 §6; no backend and no T2/T3 enforcement in code) | Nothing | Everything; do not rely on the spec's "refuses T2/T3 code" | §6 step 1b (implement it as an explicit, audited choice, or remove it from the spec) |
 
 **Agent-facing tiers** (R3; each is attached explicitly, on top of one execution option above)
 
@@ -397,7 +411,7 @@ enforces" only under G-R12. Every row is also subject to §2's defect list until
 | Runtime and threads | `rt::Runtime` | Pass one shared Runtime; a provider client builds a private one if you do not (~20 threads per client on a large host). Streaming calls and MCP background tasks each use a detached thread, so bound concurrency yourself | R6, finish ADR-237 |
 | Inbound transport and server | Typed MCP/A2A/AG-UI dispatchers that take already-parsed requests | The socket, HTTP, TLS, authentication, and the wire binding (A2A has no wire dispatch at all) | R4 server module |
 | Identity to authority | Capability checks against the authority given; `set_require_authority(true)` makes a missing or expired per-request authority fail closed (`agent_session_core.hpp:521`, `agent_session_core.cpp:950-958`) | **Turning `require_authority` on**: it is off unless set, and then the session's construction-time capabilities apply to every caller and admission is skipped when no caller is named (`agent_session_core.cpp:144`). **Always passing a per-request grant to `McpServer`**, which otherwise uses its construction-time set. Mapping users and tenants to capabilities (no policy engine, 007 §5); this is your root of trust (R7) | §6 step 1b, R4 server mode, R7 |
-| Secrets | Env and file sources | Per-tenant scoping (the namespace is flat) and vault integration (through the `SecretSource` seam); the env prefix defaults to `QUARK_SECRET_` | R7 |
+| Secrets | Env and file sources | Per-tenant scoping (the namespace is flat) and vault integration (through the `SecretSource` seam); the env prefix defaults to `QUARK_SECRET_` (`secret.hpp:140`) | §6 step 1b, R7 |
 | Budgets and quotas | Per-run token budget (ADR-193) when set; the host egress proxy's concurrent-connection caps per run, per principal and global (8 / 32 / 64, `net_egress_proxy.hpp:221-223`; Kata egress does not pass through this proxy) | **Setting a token budget** (`nullopt` means none, `effect_context.hpp:200-202`); tenant-level quotas; model spend | §6 step 1b, R7 |
 | Task stores | MCP and A2A task stores | The A2A store never evicts; bound it or recycle the process | R4 server module |
 | Sandbox lifetime | ADR-209 limits for Docker/containerd and native shells | Kata VMs are never reaped or recycled; destroy them yourself | Recycling ADR (the 2026-10-19 proposal) |
@@ -438,7 +452,7 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 | **G-R10** | Guest image, guest CPython and host Kata stack are pinned | The image is referenced by digest, and a tag-only reference fails CI; the guest CPython and the embedded CPython (where built) each match one pinned version constant, and a mismatch fails CI; the host-side Kata shim, VMM and virtiofsd versions match a pinned set (they parse guest bytes and are part of the TCB) |
 | **G-R11** | The server process is unprivileged | In the supported internet-facing Kata deployment, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
 | **G-R12** | §3a's table is true | Every "engine enforces" cell cites a tagged enforcement assertion that has both a containment check and a positive control; a CI check fails if a cited test is missing, is only a smoke test, or did not run on its leg within 14 days (self-hosted Kata runners included); such a cell is moved to "you manage". Positive control: a planted cell citing a smoke test is rejected. Today no cell cites a tagged test, so this gate fails until §6 adds them; that is intended |
-| **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail |
+| **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, resource-limit values, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail |
 
 G-R4 depends on ADR-240 reaching Judged. A Kata CI runner needs KVM; the self-hosted path is
 `docs/planning/kata-backend-ci-runner-setup.md` (the server in `docs/guides/thnak-server-runbook.md`
@@ -449,8 +463,9 @@ qualifies).
 1. **This ADR** → Judged → apply §8.
    1b. **Close §2's implicit permissive choices**: unconditional mount authorization; an explicit
    authority source (per-request or a named single-trusted-caller mode) for sessions and `McpServer`;
-   a required token budget; no backend registered by platform; no `KataBackend` image default; a
-   required Runtime. Each is a behaviour change with its own regression test.
+   a required token budget and required resource-limit values; no backend registered by platform; no
+   `KataBackend` image, runtime or network default; a required secret source and prefix; a required
+   Runtime; the Docker/containerd surfaces and `none` as explicit, audited choices. Each is a behaviour change with its own regression test.
 2. **Layer and API redesign ADR**: the public C++ surface, the layer map (session and workflow out of
    `rt/`, worktree and ledger out of `core/`), type-erased chat client and session, the line budget.
 3. **Unified execution surface**: collapse `SandboxBackend` / `ExecutionSurface` /
@@ -532,8 +547,10 @@ Steps 2–4 touch the same headers; they should be sequenced, not run in paralle
   reading of I2 or a quiet weakening of it, and whether rules 1–7 really close every path out.
 - Whether R3 rule 1's "rebuild on any authority change" is affordable for a multi-user server, or
   forces a hot-grant design sooner than §7 admits.
-- Whether §2 rule 5 ("invariants are not options") is drawn in the right place: a required token
-  budget and authority source may feel like defaults the owner said not to have.
+- **Owner decisions left open by §2:** (a) whether "explicitly unbounded" is an allowed budget or limit
+  value; (b) whether restrictive defaults that can only narrow (`max_turns = 16`, policy-driven approval,
+  sequential concurrency, metadata-only telemetry, `is_strict`) stay as defaults or become required
+  choices.
 - Whether "nothing implicit" (§2) makes a developer's first run fail in a way that pushes them to
   pick the weakest option (`none`, ADR-071 providers) just to get started, and whether §3a's table is
   enough to stop that.
@@ -596,3 +613,23 @@ the `busybox:latest` default, `cap::Exec` unenforced, `fds` unverified, `wall_ms
 | MINOR: leftover "default" wording; §6 "process cleanup"; image default vs G-R10; rule 5 cite; root "listed as a choice" | R3 title and text; §6; §2 defect list; rule 5; §3a "Deployment privilege" |
 
 A fourth round is recommended only on §2 and §3a, the parts changed most.
+
+Round 4 (2026-10-20, §2/§3a only, a fresh independent agent): **not ready** (7 errors). The author
+re-checked: `none` has no backend and no T2/T3 enforcement (only a comment at `trust/capability.hpp:146`);
+`ResourceLimits` all default to 0 (`sandbox.hpp:113-122`) and Kata's unset `disk_bytes` is an unbounded
+host `tmpfs` (`kata_backend.cpp:398-407`); the Docker/containerd surfaces take no authority
+(`execution_surface.hpp:29-33`); ADR-004 AC-S3; the restrictive defaults (`agent_registry.hpp:69-76`).
+All held.
+
+| Finding | Disposition |
+|---|---|
+| `none` row claimed "Works" and T2/T3 refusal | Row: not implemented |
+| `ResourceLimits` default 0 = unlimited (unbounded host `tmpfs` on Kata) | §2 defect row; §3a note and cells; step 1b; G-R13 |
+| Docker/containerd authority gap | §2 defect row; rule 5; §3a cell |
+| Rule 5 tied token budgets to I8 | Rule 5: budgets and limits are policy; "explicitly unbounded" left to the owner (§9) |
+| Secret prefix and Kata runtime/CNI defaults | §2 defect rows; step 1b |
+| `cap::Exec` missing from native-jail rows; Windows reads beyond grants | §3a cells |
+| Restrictive implicit defaults | §2 listed as an open owner decision; §9 |
+| Citations: `require_authority` member default, token-budget origin | Corrected |
+
+The two open owner decisions in §9 remain; nothing else from rounds 1–4 is open.
