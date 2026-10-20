@@ -929,15 +929,24 @@ void gate_g12_error_table() {
                      run([](auto fd) { write_all(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort"); }, true),
                      failure_class::transient, "net.stream_truncated");
         expect_error(entry, "G12 address_rejected", run(handle_ok, false), failure_class::policy, "net.address_blocked");
-        expect_error(entry, "G12 response_too_large",
-                     [&] {
-                         TestHttpServer server([](auto fd) { handle_flood(fd, 5000); });
-                         FakeDns dns;
-                         TestEgressProxy p;
-                         wire(p, dns, true);
-                         return go(p, get_root(), make_grant(grant_for("test.invalid", server.port()), std::uint64_t{100}), EgressCallControl{});
-                     }(),
-                     failure_class::resource, "net.byte_cap_exceeded");
+        {  // over the cap. WHICH limit trips first depends on how the bytes arrive: head and body in one read trip the
+           // request-level total (`net.response_too_large`) before the body decoder sees cap+1 body bytes
+           // (`net.byte_cap_exceeded`); a head read alone lets the body cap trip first. Both are correct refusals of the
+           // same `resource` class, so the row pins the class and accepts either code (it failed 2/6 on Linux, 1/1 on
+           // Windows when it demanded one of them).
+            TestHttpServer server([](auto fd) { handle_flood(fd, 5000); });
+            FakeDns        dns;
+            TestEgressProxy p;
+            wire(p, dns, true);
+            auto r = go(p, get_root(), make_grant(grant_for("test.invalid", server.port()), std::uint64_t{100}), EgressCallControl{});
+            check_s(!r.has_value(), std::string(entry) + ": G12 over the cap: the call fails");
+            if (!r.has_value()) {
+                check_s(r.error().code == "net.byte_cap_exceeded" || r.error().code == "net.response_too_large",
+                        std::string(entry) + ": G12 over the cap: code is byte_cap_exceeded or response_too_large (was " +
+                            r.error().code + ")");
+                check_s(r.error().klass == failure_class::resource, std::string(entry) + ": G12 over the cap: class is resource");
+            }
+        }
         {  // connect_failed: a port nothing listens on
             FakeDns dns;
             TestEgressProxy p;
