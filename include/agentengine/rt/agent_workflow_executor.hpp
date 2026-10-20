@@ -160,9 +160,11 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // guard still spans the await, so a throwing client charges this node's spend here.
             delegated_run_detail::ChargeOnUnwind charge_if_unfinished{charge_unfinished_run};
             agentengine::result<AgentResponse> driven = co_await session.start_run(StartRun{input});
-            charge_if_unfinished.completed();  // returned normally: the error path below charges for itself
 
+            // `completed()` is called at each point where the run is charged or handed off, not right after the
+            // await: anything that throws in between (the outcome's copy below) must still be charged by the guard.
             if (!driven) {
+                charge_if_unfinished.completed();
                 charge_unfinished_run();
                 co_return std::unexpected(driven.error());
             }
@@ -177,6 +179,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // exactly this call's own total with no delta needed.
             ExecutorOutcome outcome{driven->message};
             outcome.usage = session.run_usage();
+            charge_if_unfinished.completed();  // the outcome now carries the run's usage to the supervisor
             co_return outcome;
         });
 }
