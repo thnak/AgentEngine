@@ -381,26 +381,56 @@ authority (ADR-070 §4a); it is the developer's root of trust and is documented 
 option may only tighten a budget. This ADR only removes the assumption of one trusted tenant per process that
 `native-jail`'s 008 §3 wording ("trusted-tenant deployments — the default") encodes.
 
-### R8 — Every agent runs inside exactly one `SandboxBackend`, and every backend hosts a worktree
+### R8 — Every agent runs inside a sandbox from a `SandboxBackend`, and every backend hosts a worktree
 
-Owner direction (2026-10-20). Three rules:
+Owner direction (2026-10-20): *"agent always work inside `SandboxBackend`, Backend always have a worktree
+inside it, it is required (no matter what implement of it, no sandbox still an implement of
+SandboxBackend)"*. Three rules:
 
-1. **No agent runs outside a backend.** A session is bound to exactly one `SandboxBackend` instance for
-   its life, chosen by the developer (§2: never implicit). Every file and process effect of the agent
-   (shell, code, file tools, harvest) goes through that backend. Host-side tools that are plain host
-   functions (an HTTP API call, a database query) stay host code under capabilities, as today; they do
-   not run "inside" the backend, but the session they belong to always has one.
+1. **No agent runs outside a sandbox.** Each **agent** (not each session: a session may run several,
+   025 §3) runs in exactly one sandbox, a `SandboxHandle` created by the backend kind the developer
+   chose (§2: never implicit). A backend *instance* may serve many sandboxes and is shared through the
+   registry (`sandbox_backend_registry.hpp:132`); the sandbox is what belongs to the agent.
+   - A child agent (`agent.spawn`, a workflow node) gets its **own** sandbox, unless its sub-worktree
+     mode is `shared` (025 §3), in which case it shares its parent's.
+   - Cross-session reuse stays prohibited (008 §6); `fork_from` and session restore always create a
+     new sandbox.
+   - Creation is lazy: an agent that never runs a shell or code never boots one (no 6 s Kata boot for a
+     chat-only agent), but its binding to a backend kind exists from the start.
+   - Process and code effects go through the sandbox. **File tools operate on the worktree directly**
+     (D4: file semantics do not depend on the backend). Host-side tools that are plain host functions
+     stay host code under capabilities, as today.
 2. **"No sandbox" is a backend, not an absence.** `none` becomes a real conformer, **`NoSandboxBackend`**:
-   no isolation, host processes as the engine's user, the worktree materialised in a host directory. It
-   is the honest weakest option (§2 rule 5): explicitly chosen, audited, listed in §3a. ADR-071's native
-   providers are re-expressed in the step-3 ADR as the shell and code tiers over `NoSandboxBackend`
-   (ADR-071 is Judged; its scope and opt-in stay, only its plumbing moves).
+   no isolation, host processes as the engine's user, the worktree materialised in a host directory.
+   - **It can never be picked by `Strict` (closes round-5 F1).** 008 §3 says `Strict` is "never `none`",
+     but the code does not enforce it: `resolve_strict` ranks only by strength and platform
+     (`sandbox.hpp:94-111`) and `register_backend` defaults to `eligible`
+     (`sandbox_backend_registry.hpp:122-124`). `NoSandboxBackend` therefore registers only through a
+     dedicated `register_unisolated_backend()`, structurally `named_only`, and `resolve_strict` rejects
+     it by type. It is reachable only by `resolve_named`, as an explicit, audited choice (§2 rule 5).
+   - `NoSandboxBackend::exec` checks `cap::NativeExec`, so the "who may run a process" gap (`cap::Exec`
+     unenforced, §3a) does not carry over to it.
+   - **ADR-071's providers keep their tool names, their `cap::NativeExec` checks over structured
+     `{program, args}` and their argv confinement, and spawn through `NoSandboxBackend`** (closes
+     round-5 M5). `NativePythonProvider` is still never a substitute for `execute_code` (ADR-071 §6.5,
+     CLAUDE.md). Whether a CodeAct `execute_code` exists over `NoSandboxBackend` at all is a separate
+     decision for the step-3 ADR.
+   - Under `NoSandboxBackend` the harvest rules confine only the harvest step, not the process: a host
+     process can write anywhere the engine's user can. Disclosed in §3a.
 3. **A worktree is part of the `SandboxBackend` contract, required for every conformer.** The concept
-   (`sandbox/sandbox.hpp:373-378`, today `traits` + `create`/`exec`/`destroy`) gains the worktree verbs:
-   materialise the session's worktree into the backend's working filesystem, and harvest changes back,
-   each taking `EffectContext&` and authorised against `cap::SandboxMount`/`FsRead`/`FsWrite` (ADR-101's
-   `authorize_tree_path()` is the proven pattern). A type without them is not a `SandboxBackend`; no
-   session can be built without one (G-R14).
+   (`sandbox/sandbox.hpp:373-380`, today `traits` + `create`/`exec`/`destroy`) gains the worktree verbs:
+   materialise the agent's granted worktree mounts into the sandbox's working filesystem, and harvest
+   changes back.
+   - **Authorised against `FsRead`/`FsWrite` over the agent's granted mounts (worktree ref, subtree,
+     guest path), per 025 §5** (closes round-5 M2), not by whole tree. Host staging paths stay inside
+     the backend and are never visible to the agent (026 §2). ADR-101's `authorize_tree_path()` remains
+     the pattern for the host-path side only.
+   - The verbs are tied to a handle and run before or at `create()`, because mounts are fixed when the
+     sandbox is created (`docs/planning/proofs/execution_surface/probe_bind_mount_ordering_hazard.sh`).
+   - **`WasmBackend` conforms by materialising only manifest-granted subtrees; an empty grant set
+     conforms** (closes round-5 M3). Plugins never see the session worktree unless granted.
+   - A type without the verbs is not a `SandboxBackend`. `RegisteredSandboxBackend`'s type erasure (today
+     three closures) and every test fake grow to carry them.
 
 **How this reads with D4 (stated so the owner can correct it).** D4 says files belong to the worktree,
 not to the sandbox. R8 keeps that: the worktree stays engine-owned, content-addressed and durable, and
@@ -410,13 +440,14 @@ outlives any sandbox; what R8 adds is that every backend **must host** it as its
 changes.
 
 **Consequences:**
-- The four overlapping execution abstractions (`SandboxBackend`, `ExecutionSurface`,
-  `PersistentShellSurface`, `Runner`) collapse into one: `SandboxBackend` with its worktree. The Docker
-  and containerd surfaces become `SandboxBackend` conformers (ADR-101 already proved
-  `DockerSandboxBackend`), which closes their authority gap, because `create`/`exec` take `EffectContext&`.
+- Three of the four overlapping execution abstractions collapse into one: `ExecutionSurface` and
+  `PersistentShellSurface` fold into `SandboxBackend` with its worktree. **`Runner` stays**: runners run
+  *inside* a sandbox, and the shell and interpreter remain two `Runner`s sharing one `ExecState` (D5,
+  010 §1a; closes round-5 M4). The Docker and containerd surfaces become `SandboxBackend` conformers
+  (ADR-101 already proved `DockerSandboxBackend`), which closes their authority gap, because
+  `create`/`exec` take `EffectContext&`.
 - R3 rule 4's staging volume and harvest are Kata's implementation of the required worktree verbs; the
-  harvest rules (regular files only, `openat2`, name checks) bind every conformer, `NoSandboxBackend`
-  included.
+  harvest rules (regular files only, `openat2`, name checks) bind every conformer.
 - ADR-096's `SandboxToolProvider` scratch directory ("not a 025 worktree") becomes a worktree.
 - ADR-101's `TreeCapableSandboxBackend` stops being a separate, optional refinement: its verbs move into
   `SandboxBackend` itself, which is the "widening" ADR-101 declined.
@@ -498,7 +529,7 @@ Each gate needs a positive control (022 §5): a test that would fail if the prop
 | **G-R11** | The server process is unprivileged | In the supported internet-facing Kata deployment, the engine process holds no `CAP_SYS_ADMIN`/`CAP_NET_ADMIN` and cannot open the containerd socket; sandbox creation still works through the privileged helper; the helper rejects any request that is not a typed sandbox operation; positive control: the same check run against today's root-running process fails |
 | **G-R12** | §3a's table is true | Every "engine enforces" cell cites a tagged enforcement assertion that has both a containment check and a positive control; a CI check fails if a cited test is missing, is only a smoke test, or did not run on its leg within 14 days (self-hosted Kata runners included); such a cell is moved to "you manage". Positive control: a planted cell citing a smoke test is rejected. Today no cell cites a tagged test, so this gate fails until §6 adds them; that is intended |
 | **G-R13** | Nothing implicit, for every resource | With no choice made for execution backend, authority source, token budget, resource-limit values, Runtime, secret source or transport, the engine refuses to start (or to build a session) with a named error listing the options; positive control: a test that starts with any one of them unset must fail |
-| **G-R14** | Every agent has a backend, and every backend hosts the worktree | A session cannot be built without a `SandboxBackend` (compile-time where the API allows, else a named error); a type without the worktree verbs does not satisfy the concept (a `static_assert` probe that must fail to compile); one shared conformance suite runs on every conformer, `NoSandboxBackend` included: a file written inside the backend appears in the worktree after harvest, a worktree change appears inside after materialise, an unauthorised path is refused both ways; positive control: a conformer that skips harvest fails the suite |
+| **G-R14** | Every agent has a sandbox, every backend hosts the worktree, and `NoSandboxBackend` is never implicit | (a) A `try_compile` negative test: a type without the worktree verbs fails the concept, beside a conformer that compiles (ADR-071 §5g's pattern). (b) Building an agent with no backend kind fails with a named error; positive control: the same build with one succeeds. (c) One shared conformance suite on every conformer, `NoSandboxBackend` included: a file written inside appears in the worktree after harvest, a worktree change appears inside after materialise, an ungranted ref or subtree is refused both ways; positive control: a conformer that skips harvest fails the suite. (d) A registry holding only `NoSandboxBackend` fails `resolve_strict`. (e) A forked session and a restored session each get a different handle; a `branch` child gets its own sandbox, a `shared` child its parent's |
 
 G-R4 depends on ADR-240 reaching Judged. A Kata CI runner needs KVM; the self-hosted path is
 `docs/planning/kata-backend-ci-runner-setup.md` (the server in `docs/guides/thnak-server-runbook.md`
@@ -515,7 +546,7 @@ qualifies).
 2. **Layer and API redesign ADR**: the public C++ surface, the layer map (session and workflow out of
    `rt/`, worktree and ledger out of `core/`), type-erased chat client and session, the line budget.
 3. **One execution seam (R8)**: `SandboxBackend` gains the required worktree verbs; `ExecutionSurface` /
-   `PersistentShellSurface` / `Runner` fold into it; Docker/containerd become conformers; `NoSandboxBackend`
+   `PersistentShellSurface` fold into it (`Runner` stays, running inside a sandbox); Docker/containerd become conformers; `NoSandboxBackend`
    is built; ADR-071's providers move onto it; library `execute_code` and
    shell tools on it, with `execute_code` as an opt-in CodeAct `ContextProvider`; Kata guest image (pinned, bash + python3) and `agent.*` guest shim; persistent
    guest shell; authority-bound VM and between-run VMM pause (R3 rules 1–2); quota'd workspace with
@@ -686,3 +717,17 @@ All held.
 | Citations: `require_authority` member default, token-budget origin | Corrected |
 
 The two open owner decisions in §9 remain; nothing else from rounds 1–4 is open.
+
+Round 5 (2026-10-20, R8 only, a fresh independent agent): **not ready** (1 FATAL, 5 MAJOR, 3 MINOR).
+The author re-checked F1 (`sandbox.hpp:94-111`, `sandbox_backend_registry.hpp:122-124`) and M1
+(`rfcs/025:66-78`); both held.
+
+| Finding | Disposition |
+|---|---|
+| F1: `NoSandboxBackend` could win `Strict` resolution | R8 rule 2: `register_unisolated_backend()`, `named_only` by type; G-R14 (d) |
+| M1: "session" where the owner said "agent"; sub-agents and `branch` | R8 rule 1 per agent; child sandboxes by sharing mode; G-R14 (e) |
+| M2: worktree verbs gated by host-path `SandboxMount` | R8 rule 3: `FsRead`/`FsWrite` over granted mounts, 025 §5 |
+| M3: `WasmBackend` has no working filesystem | R8 rule 3: manifest-granted subtrees; empty set conforms |
+| M4: folding `Runner` contradicted D5 | `Runner` stays inside the sandbox; §6 step 3 |
+| M5: ADR-071 would become the code tier | R8 rule 2: providers keep names, checks and scope; `execute_code` over it is a step-3 decision |
+| MINOR: file tools via the backend; lazy creation and fork; concept cite; G-R14 controls | R8 rule 1; rule 3 cite; G-R14 (a)–(e) |
