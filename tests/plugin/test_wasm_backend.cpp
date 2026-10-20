@@ -36,9 +36,15 @@
 // cargo-component toolchain is not assumed present on every machine running this suite.
 
 #include "agentengine/rt/block_on.hpp"
+#include "agentengine/pal/net.hpp"
+#include "agentengine/sandbox/detail/net_egress_impl.hpp"
 #include "backends/wasm/wasm_backend.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -129,6 +135,114 @@ void probe_gated_callback(std::vector<std::uint8_t> const& bytes, std::string co
     }
 
     agentengine::rt::block_on(backend.destroy(*handle));
+}
+
+
+// ADR-241 S2 red-team r5 M1/m3: a loopback listener that ACCEPTS and counts, so "the production policy refused it" is
+// provable as `accept_count() == 0` (a never-accepting listener would let a connect "succeed" from the backlog).
+class AcceptCounter {
+public:
+    AcceptCounter() {
+        auto l = agentengine::pal::tcp_listen(static_cast<std::uint64_t>((127u << 24) | 1u), 0);
+        if (!l) return;
+        fd_ = *l;
+        port_ = *agentengine::pal::local_port(fd_);
+        ok_ = true;
+        thread_ = std::jthread([this](std::stop_token st) {
+            while (!st.stop_requested()) {
+                auto a = agentengine::pal::accept_one(fd_);
+                if (!a) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+                count_.fetch_add(1);
+                agentengine::pal::close_fd(*a);
+            }
+        });
+    }
+    ~AcceptCounter() {
+        thread_.request_stop();
+        if (thread_.joinable()) thread_.join();
+        if (ok_) agentengine::pal::close_fd(fd_);
+    }
+    AcceptCounter(AcceptCounter const&) = delete;
+    [[nodiscard]] bool ok() const { return ok_; }
+    [[nodiscard]] std::uint16_t port() const { return port_; }
+    [[nodiscard]] int accept_count() const { return count_.load(); }
+
+private:
+    bool ok_ = false;
+    agentengine::pal::fd_t fd_{};
+    std::uint16_t port_ = 0;
+    std::atomic<int> count_{0};
+    std::jthread thread_;
+};
+
+// A hung egress call (a latch that is never counted down) must FAIL the test within a bound, not hang the suite:
+// if the guard is not disarmed in time, the process exits non-zero.
+class HangGuard {
+public:
+    explicit HangGuard(std::chrono::seconds limit) {
+        thread_ = std::jthread([limit](std::stop_token st) {
+            std::mutex m;
+            std::condition_variable_any cv;
+            std::unique_lock<std::mutex> lock(m);
+            if (!cv.wait_for(lock, st, limit, [] { return false; }) && !st.stop_requested()) {
+                std::cerr << "FAIL: the WASM egress row hung past " << limit.count() << " s (latch never counted down?)\n";
+                std::_Exit(3);
+            }
+        });
+    }
+    ~HangGuard() { thread_.request_stop(); }
+
+private:
+    std::jthread thread_;
+};
+
+// One `fetch` call from the real fixture guest, through the production HostEgressProxy, against a single-entry loopback
+// grant. Returns the guest's text (it names the WIT http-error case) or "" on a call-level failure.
+std::string fetch_via_loopback_grant(std::vector<std::uint8_t> const& bytes, std::uint16_t port, std::uint64_t wall_ms,
+                                     std::string const& label, std::chrono::milliseconds* elapsed) {
+    WasmBackend backend;
+    SandboxSpec spec;
+    cap::NetOut net;
+    net.host_allowlist = {"127.0.0.1:" + std::to_string(port) + ":http"};
+    std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
+    spec.capabilities = CapabilitySet::grant_root(order);
+    spec.limits.wall_ms = wall_ms;
+    EffectContext ctx = make_ctx();
+    auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
+    AE_CHECK(handle.has_value(), label + ": create() succeeds");
+    if (!handle) return "";
+    PluginManifest manifest;
+    manifest.id = "test.egress." + label;
+    manifest.version = "0.1.0";
+    manifest.world = plugin_world::tool;
+    manifest.requested_capabilities = order;
+    auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
+    AE_CHECK(loaded.has_value(), label + ": load_component() succeeds");
+    std::string text;
+    if (loaded) {
+        auto const started = std::chrono::steady_clock::now();
+        auto result = backend.invoke_tool(*handle, ToolInvokeRequest{"fetch", ""}, ctx);
+        if (elapsed != nullptr) {
+            *elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        }
+        if (!result) std::cerr << "  (" << label << " error: " << result.error().code << ": " << result.error().message << ")\n";
+        AE_CHECK(result.has_value() && !result->is_error && result->content.size() == 1, label + ": the call returns a structured result");
+        if (result && !result->content.empty()) {
+            if (auto const* t = std::get_if<Text>(&result->content[0].value)) text = t->text;
+        }
+    }
+    agentengine::rt::block_on(backend.destroy(*handle));
+    return text;
+}
+
+void check_admission_idle(std::string const& label) {
+    auto const snap = sandbox::egress_detail::egress_admission_snapshot();
+    AE_CHECK(snap.global == 0 && snap.runs == 0 && snap.principals == 0 && snap.unattributed_run == 0 &&
+                 snap.unattributed_principal == 0,
+             label + ": every admission counter is back to 0 afterwards");
 }
 
 }  // namespace
@@ -378,7 +492,7 @@ int main() {
                               "http-request/right-kind: fetch call succeeds structurally (no trap -- a real Err value, not a stub)");
                     if (result && !result->content.empty()) {
                         auto const* text = std::get_if<Text>(&result->content[0].value);
-                        AE_CHECK(text != nullptr && text->text == "fetch: http-error returned",
+                        AE_CHECK(text != nullptr && text->text.rfind("fetch: http-error returned", 0) == 0,
                                   "http-request/right-kind: the real gate rejected the ambiguous (allowlist-empty) NetOut grant");
                     }
                 }
@@ -433,6 +547,43 @@ int main() {
         std::cout << "  (spin interrupted after " << elapsed_ms << "ms, limit was 200ms)\n";
 
         agentengine::rt::block_on(backend.destroy(*handle));
+    }
+
+
+    // -- 7. ADR-241 S2 red-team r5 M1 / m3: the WASM edge's whole egress path, end to end, through the PRODUCTION proxy ----
+    // A single-entry grant of a loopback listener passes the gate, so `cb_http_request` builds the context, admits with
+    // `call->egress`'s key, spawns and parks on the latch, resolves, and the production policy refuses loopback -- the guest
+    // sees `host-not-allowlisted` (net.address_blocked), never a connect. Nothing here is a test seam on the backend.
+    {
+        AcceptCounter listener;
+        AE_CHECK(listener.ok(), "egress e2e: loopback listener started");
+        if (listener.ok()) {
+            HangGuard guard(std::chrono::seconds(90));
+            AE_CHECK(sandbox::egress_detail::egress_context_constructions() == 0,
+                     "egress e2e: no earlier row built the egress I/O context (the gate rejects before it)");
+
+            // m3: UINT64_MAX means "unbounded" to some hosts; it must clamp, never overflow into a past deadline. A past
+            // deadline fails `net.deadline_exceeded` (the guest sees `Timeout`) BEFORE the context is ever built.
+            std::chrono::milliseconds took{0};
+            auto const huge = fetch_via_loopback_grant(bytes, listener.port(), UINT64_MAX, "wall_ms=UINT64_MAX", &took);
+            std::cerr << "  (wall_ms=UINT64_MAX guest saw: " << huge << ")\n";
+            AE_CHECK(huge.find("\"host-not-allowlisted\"") != std::string::npos,
+                     "m3: wall_ms=UINT64_MAX still lets the call proceed to the policy (not an immediate Timeout)");
+            AE_CHECK(sandbox::egress_detail::egress_context_constructions() == 1,
+                     "m3: the call got past the deadline step and built the egress I/O context");
+            AE_CHECK(listener.accept_count() == 0, "m3: the listener was never connected to");
+            check_admission_idle("m3");
+
+            // M1: a normal limit, measured.
+            auto const normal = fetch_via_loopback_grant(bytes, listener.port(), 5000, "wall_ms=5000", &took);
+            AE_CHECK(normal.find("\"host-not-allowlisted\"") != std::string::npos,
+                     "M1: the guest sees host-not-allowlisted (net.address_blocked) from the production policy");
+            AE_CHECK(listener.accept_count() == 0, "M1: accept_count() == 0 -- the production policy refused loopback, nothing connected");
+            AE_CHECK(took < std::chrono::milliseconds(3000),
+                     "M1: the call returns well inside its timeout (took " + std::to_string(took.count()) + " ms)");
+            AE_CHECK(sandbox::egress_detail::egress_context_constructions() == 1, "M1: one process-wide egress I/O context");
+            check_admission_idle("M1");
+        }
     }
 
     if (g_failures == 0) {

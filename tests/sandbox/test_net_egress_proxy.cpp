@@ -562,10 +562,10 @@ void gate_g3_policy() {
     }
 }
 
-void gate_g3_encodings_never_connect() {
-    // C5: every encoding of a blocked address a resolver might hand back is refused, and NOTHING connects. The names
-    // are the classic literal encodings; the injected resolver answers 127.0.0.1 for each (what getaddrinfo does for the
-    // decimal / hex / octal forms), through the production policy.
+void gate_g3_any_resolver_answer_of_loopback_is_refused() {
+    // C5, as far as THIS row goes: whatever name the grant carries, ANY resolver answer of 127.0.0.1 is refused through the
+    // production policy and nothing connects. The injected resolver answers 127.0.0.1 for every name, so the names never
+    // reach a parser here; the real encodings go through the production proxy in `gate_g3b_real_encodings`.
     for (auto const& [entry, go] : kEntries) {
         TestHttpServer server(handle_ok);
         for (char const* name : {"2130706433", "0x7f.0.0.1", "017700000001", "127.1", "0177.0.0.1"}) {
@@ -1061,12 +1061,118 @@ void gate_g17_request_cap() {
     }
 }
 
+// ---- red-team r5 m4/m5: the PRODUCTION proxy (real resolver, real policy), loopback only, no network ------------------
+using ProdEntry = result<NetEgressResponse> (*)(HostEgressProxy const&, NetEgressRequest, NetOut, EgressCallControl);
+result<NetEgressResponse> prod_fetch(HostEgressProxy const& p, NetEgressRequest r, NetOut g, EgressCallControl c) {
+    return agentengine::rt::block_on(p.fetch(std::move(r), std::move(g), std::move(c)));
+}
+result<NetEgressResponse> prod_blocking(HostEgressProxy const& p, NetEgressRequest r, NetOut g, EgressCallControl c) {
+    return p.fetch_blocking(std::move(r), std::move(g), std::move(c));
+}
+constexpr std::array<std::pair<char const*, ProdEntry>, 2> kProdEntries{{{"fetch", prod_fetch}, {"fetch_blocking", prod_blocking}}};
+
+// The resolver is the OS's `getaddrinfo` here (production_host_resolver), which this row finally exercises: the NAME is
+// allowlisted, the answer is loopback, and the production policy refuses it before any connect. The positive control
+// proves the same listener IS reachable (a TestEgressProxy with permit-all and the same 127.0.0.1 answer connects).
+void gate_m4_production_localhost() {
+    TestHttpServer server(handle_ok);
+    check(server.ok(), "m4 server started");
+    if (!server.ok()) return;
+    {
+        FakeDns dns;
+        TestEgressProxy p;
+        wire(p, dns, true);
+        auto r = via_fetch(p, get_root(), make_grant(grant_for("localhost", server.port())), EgressCallControl{});
+        check_s(r.has_value() && r->status == 200, "m4 positive control: the loopback listener is reachable when the policy permits it");
+    }
+    int const before = server.accept_count();
+    HostEgressProxy const prod;
+    for (auto const& [entry, go] : kProdEntries) {
+        auto r = go(prod, get_root(), make_grant(grant_for("localhost", server.port())), EgressCallControl{});
+        expect_error(entry, "m4 production localhost", r, failure_class::policy, "net.address_blocked");
+        check_s(server.accept_count() == before, std::string(entry) + ": m4 production localhost never connected");
+    }
+}
+
+// Numeric literals skip the resolver and hit the policy (strict forms) or go through getaddrinfo (the non-strict
+// decimal / hex / octal / short forms): either way a loopback answer is refused and nothing connects. Where an OS's
+// getaddrinfo does not understand a spelling, the call still fails closed (resolve failure) and nothing connects.
+void gate_g3b_real_encodings() {
+    TestHttpServer server(handle_ok);
+    check(server.ok(), "g3b server started");
+    if (!server.ok()) return;
+    HostEgressProxy const prod;
+    for (auto const& [entry, go] : kProdEntries) {
+        for (char const* name : {"127.0.0.1", "2130706433", "0x7f000001", "0177.0.0.1", "127.1"}) {
+            auto r = go(prod, get_root(), make_grant(grant_for(name, server.port())), EgressCallControl{});
+            check_s(!r.has_value(), std::string(entry) + ": g3b the encoding " + name + " fails");
+            if (!r) {
+                bool const blocked    = r.error().code == "net.address_blocked" && r.error().klass == failure_class::policy;
+                bool const unresolved = r.error().code == "net.host_unresolvable";
+                check_s(blocked || unresolved, std::string(entry) + ": g3b " + name + " is refused by the policy or unresolvable (was " + r.error().code + ")");
+                std::fprintf(stderr, "  (g3b %s %s -> %s)\n", entry, name, r.error().code.c_str());
+            }
+            check_s(server.accept_count() == 0, std::string(entry) + ": g3b no connect for the encoding " + name);
+        }
+    }
+}
+
+// ---- red-team r5 M2: egress_error's TLS branch, on synthetic responses -------------------------------------------------
+void gate_g12b_tls_class() {
+    using agentengine::rt::http_error;
+    using agentengine::rt::http_failure;
+    auto const mk = [](http_error e, char const* code, http_failure f) {
+        agentengine::rt::HttpResponse r;
+        r.error   = e;
+        r.code    = code;
+        r.message = "synthetic";
+        r.failure = f;
+        return r;
+    };
+    auto const klass = [&](agentengine::rt::HttpResponse const& r) { return egress::egress_error(r).klass; };
+    check(klass(mk(http_error::tls_failed, "net.tls_certificate_rejected", http_failure::policy)) == failure_class::policy,
+          "M2 cert rejected + failure=policy -> policy");
+    check(klass(mk(http_error::tls_failed, "net.tls_certificate_rejected", http_failure::unspecified)) == failure_class::policy,
+          "M2 cert rejected, only the code -> policy");
+    check(klass(mk(http_error::tls_failed, "net.tls_handshake_failed", http_failure::policy)) == failure_class::policy,
+          "M2 handshake failed + failure=policy -> policy");
+    check(klass(mk(http_error::tls_failed, "net.tls_setup_failed", http_failure::fatal)) == failure_class::fatal,
+          "M2 setup failed + failure=fatal -> fatal");
+    check(klass(mk(http_error::tls_failed, "net.tls_setup_failed", http_failure::unspecified)) == failure_class::fatal,
+          "M2 setup failed, only the code -> fatal");
+    check(klass(mk(http_error::transport, "net.connection_reset", http_failure::unspecified)) == failure_class::transient,
+          "M2 transport -> transient");
+    check(klass(mk(http_error::truncated, "net.stream_truncated", http_failure::unspecified)) == failure_class::transient,
+          "M2 closed/truncated -> transient");
+    check(egress::egress_error(mk(http_error::tls_failed, "net.tls_certificate_rejected", http_failure::policy)).code ==
+              "net.tls_certificate_rejected",
+          "M2 the TLS code is carried through unchanged");
+}
+
+// ---- red-team r5 m3: a huge wall_ms never puts the deadline in the past -------------------------------------------------
+void gate_m3_wall_clamp() {
+    using clock = std::chrono::steady_clock;
+    auto const now = clock::now();
+    for (std::uint64_t wall : {std::uint64_t{UINT64_MAX}, std::uint64_t{INT64_MAX}, std::uint64_t{INT64_MAX} / 1000 + 1}) {
+        auto const deadline = agentengine::sandbox::egress_wall_deadline(now, wall);
+        check(deadline > now + std::chrono::hours(1), "m3 a huge wall_ms is a far-future deadline, not the past");
+        auto const budget = egress::effective_total_timeout(agentengine::sandbox::kDefaultEgressTotalTimeout, deadline, now);
+        check(budget.has_value(), "m3 a huge wall_ms still lets the call proceed (no immediate deadline_exceeded)");
+    }
+    check(agentengine::sandbox::egress_wall_deadline(now, 0) == clock::time_point{}, "m3 wall_ms 0 stays 'unset'");
+    check(agentengine::sandbox::egress_wall_deadline(now, 250) == now + std::chrono::milliseconds(250), "m3 a normal wall_ms is exact");
+}
+
 void run_gate_rows() {
     gate_g1();
     gate_g2();
     gate_g2b();
     gate_g3_policy();
-    gate_g3_encodings_never_connect();
+    gate_g3_any_resolver_answer_of_loopback_is_refused();
+    gate_g3b_real_encodings();
+    gate_m4_production_localhost();
+    gate_g12b_tls_class();
+    gate_m3_wall_clamp();
     gate_g4_v6();
     gate_g5_ipv4_only_resolver();
     gate_g6_positive_controls();
