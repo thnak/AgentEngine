@@ -62,6 +62,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
 
 using agentengine::AgentMetadata;
@@ -319,7 +320,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(reply.has_value(), "T1: perform_agent_spawn() succeeds end-to-end");
         if (reply.has_value()) {
             check(reply->output == "helper-said-done",
@@ -357,7 +358,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T2: fails closed -- caller holds no AgentCall grant for \"helper\"");
         if (!reply.has_value()) {
             check(reply.error().code == "agent_spawn.not_available",
@@ -392,7 +393,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T3: fails closed at max depth (I8)");
         if (!reply.has_value()) {
             check(reply.error().code == "spawn_budget.depth_exhausted",
@@ -425,7 +426,7 @@ int main() {
         agentengine::Ref const caller_ref{"session:caller-t4", ""};
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T4: fails closed -- \"helper\" was never registered");
         if (!reply.has_value()) {
             check(reply.error().code == "agent_spawn.not_available",
@@ -631,7 +632,7 @@ int main() {
 
         agentengine::Ref const caller_ref{"session:caller-t8", ""};
         AgentSpawnArgs const   args{"policy-helper", "do it"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "T8: perform_agent_spawn() succeeds end-to-end");
         check(policy_gated_child_invoked(),
@@ -669,7 +670,7 @@ int main() {
         agentengine::Ref const caller_ref{"session:caller-t9", ""};
 
         AgentSpawnArgs const args{"policy-helper-unwired", "do it"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "T9: the outer spawn mechanism still succeeds -- the child's own turn "
                                   "loop absorbs the denied tool call as an ordinary tool-result error, "

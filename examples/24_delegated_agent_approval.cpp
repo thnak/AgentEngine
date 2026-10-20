@@ -40,6 +40,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -229,7 +230,7 @@ int main() {
 
         Ref const caller_ref{"session:example-19", ""};
         AgentSpawnArgs const args{"reviewer-child", "review and act"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "(B) perform_agent_spawn() succeeds");
         check(action_invoked(),

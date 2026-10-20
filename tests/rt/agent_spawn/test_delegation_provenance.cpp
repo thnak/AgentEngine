@@ -58,6 +58,7 @@
 #include "agentengine/protocol/agui/projection.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
@@ -683,11 +684,11 @@ struct DirectSpawn {
         pump = std::make_unique<SpawnPump<InMemoryAppendLogStore>>(pool, store);
         SpawnTargetDescriptor d;
         d.worktree_mode = sharing_mode::scratch;
-        d.run_child = [this](std::string, ChildSpawnRequest) -> result<rt::AgentResponse> {
+        d.run_child = [this](std::string, ChildSpawnRequest) -> rt::task<result<rt::AgentResponse>> {
             ++child_runs;
             rt::AgentResponse r;
             r.message = assistant_text("X-final");
-            return r;
+            co_return r;
         };
         (void)registry.register_target("X", std::move(d));
     }
@@ -696,8 +697,10 @@ struct DirectSpawn {
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         ctx.principal = std::move(p);
         ctx.remaining_token_budget = remaining;
-        return rt::perform_agent_spawn(rt::AgentSpawnArgs{"X", "task"}, ctx, registry, *pump, SpawnQuota{quota},
-                                       tracker, Ref{"session:direct", ""}, "/caller");
+        rt::AgentSpawnArgs const args{"X", "task"};
+        SpawnQuota const         q{quota};
+        Ref const                caller_ref{"session:direct", ""};
+        return rt::block_on(rt::perform_agent_spawn(args, ctx, registry, *pump, q, tracker, caller_ref, "/caller"));
     }
 };
 
@@ -1287,7 +1290,7 @@ int main() {
         };
         bool threw = false;
         try {
-            (void)run_child_agent_session<ThrowClient>("child-e", std::move(req), [](ThrowClient&) {});
+            (void)rt::block_on(run_child_agent_session<ThrowClient>("child-e", std::move(req), [](ThrowClient&) {}));
         } catch (std::runtime_error const&) {
             threw = true;
         }
