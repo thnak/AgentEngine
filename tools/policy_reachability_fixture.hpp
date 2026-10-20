@@ -58,7 +58,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static result<Reply> invoke(Args args, EffectContext&) { return Reply{"echo: " + args.message}; }
+    agentengine::task<result<Reply>> invoke(Args args, EffectContext&) const { co_return Reply{"echo: " + args.message}; }
 };
 
 struct ReaderArgs {
@@ -74,7 +74,7 @@ struct ReaderTool : Tool<ReaderTool, Capabilities<cap::decl::FsRead<"data">>> {
     static constexpr std::string_view description = "Read a file under the data mount.";
     using Args = ReaderArgs;
     using Reply = ReaderReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{"stub"}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{"stub"}; }
 };
 
 struct WriterArgs {
@@ -91,7 +91,7 @@ struct WriterTool : Tool<WriterTool, Capabilities<cap::decl::FsWrite<"scratch">>
     static constexpr std::string_view description = "Write a file under the scratch mount.";
     using Args = WriterArgs;
     using Reply = WriterReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 struct SecretArgs {
@@ -107,7 +107,7 @@ struct SecretTool : Tool<SecretTool, Capabilities<cap::decl::Secret<"api-key">>>
     static constexpr std::string_view description = "Resolve the api-key secret.";
     using Args = SecretArgs;
     using Reply = SecretReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{"stub"}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{"stub"}; }
 };
 
 struct FetcherArgs {
@@ -123,7 +123,7 @@ struct FetcherTool : Tool<FetcherTool, Capabilities<cap::decl::NetOut<"api.examp
     static constexpr std::string_view description = "Fetch from api.example.com.";
     using Args = FetcherArgs;
     using Reply = FetcherReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{200}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{200}; }
 };
 
 struct ClockArgs {
@@ -139,7 +139,7 @@ struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<0>>> {
     static constexpr std::string_view description = "Read the current time.";
     using Args = ClockArgs;
     using Reply = ClockReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{0}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{0}; }
 };
 
 // ADR-209 §9 (I6): a tool requiring a HELD native shell -- the `live_session` opt-in plus both caps.
@@ -156,7 +156,7 @@ struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"p
     static constexpr std::string_view description = "Run a command in a held native shell.";
     using Args = LiveShellArgs;
     using Reply = LiveShellReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{0}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{0}; }
 };
 
 // -- one fixture agent registered through the real path, for round-trip parity -------------------
@@ -189,7 +189,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
 
     // reader-agent-covering: hand-built ceiling that covers ReaderTool's own real requirement.
     {
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<ReaderTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(ReaderTool{})};
         std::vector<Capability> ceiling{cap::FsRead{"data", "", std::nullopt}};
         agents.push_back(trust::ReachabilityAgent{"reader-agent-covering", ceiling, tools});
         oracle.push_back({"reader-agent-covering", "read-data", capability_kind::fs_read, true});
@@ -197,7 +197,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
 
     // reader-agent-too-narrow: same tool, an empty ceiling -- proves the DENY path.
     {
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<ReaderTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(ReaderTool{})};
         std::vector<Capability> ceiling{};
         agents.push_back(trust::ReachabilityAgent{"reader-agent-too-narrow", ceiling, tools});
         oracle.push_back({"reader-agent-too-narrow", "read-data", capability_kind::fs_read, false});
@@ -205,8 +205,8 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
 
     // broad-agent: four more kinds (fs_write, secret, net_out, clock), all covered.
     {
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<WriterTool>(), make_tool_descriptor<SecretTool>(),
-                                           make_tool_descriptor<FetcherTool>(), make_tool_descriptor<ClockTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(WriterTool{}), make_tool_descriptor(SecretTool{}),
+                                           make_tool_descriptor(FetcherTool{}), make_tool_descriptor(ClockTool{})};
         std::vector<Capability> ceiling{
             cap::FsWrite{"scratch", "", std::nullopt, std::nullopt},
             cap::Secret{"api-key", std::chrono::seconds{0}},
@@ -235,19 +235,19 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
                          grant.error().message.c_str());
             std::abort();
         }
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(LiveShellTool{})};
         agents.push_back(trust::ReachabilityAgent{"native-live-declarative", {Capability{*grant}}, tools});
         oracle.push_back({"native-live-declarative", "native-live-shell", capability_kind::native_exec, true});
     }
     {
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(LiveShellTool{})};
         std::vector<Capability> ceiling{
             to_capability(cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>{})};
         agents.push_back(trust::ReachabilityAgent{"native-live-crtp", ceiling, tools});
         oracle.push_back({"native-live-crtp", "native-live-shell", capability_kind::native_exec, true});
     }
     {
-        std::vector<ToolDescriptor> tools{make_tool_descriptor<LiveShellTool>()};
+        std::vector<ToolDescriptor> tools{make_tool_descriptor(LiveShellTool{})};
         std::vector<Capability> ceiling{to_capability(cap::decl::NativeExec<"pwsh", "workdir">{})};
         agents.push_back(trust::ReachabilityAgent{"native-oneshot-only", ceiling, tools});
         oracle.push_back({"native-oneshot-only", "native-live-shell", capability_kind::native_exec, false});
@@ -263,7 +263,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
 // control on top of the clean set and asserting the finding fires exactly as expected.
 inline void add_over_broad_positive_control(std::vector<trust::ReachabilityAgent>& agents,
                                              std::vector<trust::ReachabilityOracleEntry>& oracle) {
-    std::vector<ToolDescriptor> tools{make_tool_descriptor<EchoTool>()};
+    std::vector<ToolDescriptor> tools{make_tool_descriptor(EchoTool{})};
     std::vector<Capability> ceiling{cap::Entropy{}, cap::NetOut{{"unused.example.com"}, std::nullopt, {}}};
     agents.push_back(trust::ReachabilityAgent{"over-broad-agent", ceiling, tools});
     oracle.push_back({"over-broad-agent", "echo", capability_kind::entropy, true});

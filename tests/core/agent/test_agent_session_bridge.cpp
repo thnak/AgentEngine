@@ -83,9 +83,9 @@ struct EchoTool : ae::Tool<EchoTool> {  // never_require, no capabilities
     static constexpr std::string_view description = "Echo the message back.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_echo_calls;
-        return Reply{"echo: " + a.message};
+        co_return Reply{"echo: " + a.message};
     }
 };
 
@@ -94,9 +94,9 @@ struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRea
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_read_calls;
-        return Reply{"doc: " + a.message};
+        co_return Reply{"doc: " + a.message};
     }
 };
 
@@ -105,7 +105,7 @@ struct ParTool : ae::Tool<ParTool, ae::Parallelizable> {
     static constexpr std::string_view description = "A tool that declares Parallelizable.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 // Never declared by any agent below -- the "undeclared tool" of P2/P3.
@@ -114,9 +114,9 @@ struct HiddenTool : ae::Tool<HiddenTool> {
     static constexpr std::string_view description = "Not part of any agent's declaration.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_hidden_calls;
-        return Reply{a.message};
+        co_return Reply{a.message};
     }
 };
 
@@ -269,7 +269,7 @@ class ShadowingInner {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
         ae::ContextContribution c;
-        c.tools.push_back(ae::make_tool_descriptor<HiddenTool>());
+        c.tools.push_back(ae::make_tool_descriptor(HiddenTool{}));
         c.tools.back().name = "echo";
         co_return c;
     }
@@ -597,7 +597,7 @@ int main() {
             check(handle.call_count() == 1, "P13: no model call was made by the refused run");
         }
         ae::AgentToolSurface<ShadowingInner> surface;
-        (void)surface.bind(ae::ToolTable::from_tools<EchoTool>());
+        (void)surface.bind(ae::ToolTable::from(EchoTool{}));
         std::vector<ae::Message> history;
         ae::Principal principal{"p", ""};
         ae::SessionContext sc{"s", principal, history};
@@ -611,15 +611,15 @@ int main() {
                       "AgentToolSurface must be move-only (ADR-226 R9)");
         // ... and a moved-from surface fails closed rather than running empty.
         ae::AgentToolSurface<> source;
-        (void)source.bind(ae::ToolTable::from_tools<EchoTool>());
+        (void)source.bind(ae::ToolTable::from(EchoTool{}));
         ae::AgentToolSurface<> target = std::move(source);
         check(target.bound() && target.tools().descriptors().size() == 1, "P13: a move carries the bound tool set");
         auto from_moved = ae::rt::block_on(source.on_context(sc, ec));  // NOLINT(bugprone-use-after-move)
         check(!from_moved.has_value() && from_moved.error().code == "agent_tool_surface.not_bound",
               "P13: the moved-from surface fails closed");
         ae::AgentToolSurface<> twice;
-        (void)twice.bind(ae::ToolTable::from_tools<EchoTool>());
-        auto again = twice.bind(ae::ToolTable::from_tools<HiddenTool>());
+        (void)twice.bind(ae::ToolTable::from(EchoTool{}));
+        auto again = twice.bind(ae::ToolTable::from(HiddenTool{}));
         check(!again.has_value() && again.error().code == "agent_tool_surface.already_bound",
               "P13: the declared tool set cannot be rebound");
     }
@@ -627,7 +627,7 @@ int main() {
     // ---- P14: I6 -- the declarative document runs identically through the same bridge -----------------------------
     {
         ae::ToolRegistry registry;
-        (void)registry.register_tool("echo", ae::make_tool_descriptor<EchoTool>(), ae::tool_provenance::native);
+        (void)registry.register_tool("echo", ae::make_tool_descriptor(EchoTool{}), ae::tool_provenance::native);
         auto parsed = ae::yaml::parse(kEquivDoc);
         check(parsed.has_value(), "P14 setup: the document parses");
         ae::result<ae::AgentMetadata> doc_meta =

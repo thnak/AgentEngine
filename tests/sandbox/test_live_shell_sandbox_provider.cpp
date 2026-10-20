@@ -320,9 +320,9 @@ struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::p
     static constexpr std::string_view description = "Cancels the run.";
     using Args = NoArgs;
     using Reply = NoArgs;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         if (g_cancel_target != nullptr) g_cancel_target->cancel();
-        return a;
+        co_return a;
     }
 };
 class CancelProvider {
@@ -331,7 +331,7 @@ public:
     task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<CancelTool>().descriptors();
+        c.tools = ToolTable::from(CancelTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

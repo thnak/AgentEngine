@@ -120,7 +120,7 @@ Message text_response(std::string text) {
     return t != nullptr ? t->text : std::string{"<non-text reply>"};
 }
 
-// -- The gated tool: declares Capabilities<cap::decl::Entropy> so make_tool_descriptor<ToolT>()
+// -- The gated tool: declares Capabilities<cap::decl::Entropy> so make_tool_descriptor(ToolT{})
 // -- populates a REAL capability_ceiling, exercised through tool_pipeline.hpp's ordinary held.bind()
 // -- mechanism (not the session-scoped-stateful make_tool_descriptor_with_invoke path) -- also stamps
 // -- the observed EffectContext::principal.id into a shared slot, so T4 can check per-request identity
@@ -137,21 +137,21 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agente
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         g_last_observed_principal_id = ctx.principal.id;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
 // -- ContextProvider offering GatedTool every turn, via the ordinary (not session-scoped-stateful)
-// -- make_tool_descriptor<ToolT>() path.
+// -- make_tool_descriptor(ToolT{}) path.
 class GatedToolProvider {
 public:
     [[nodiscard]] task<agentengine::result<ContextContribution>> on_context(SessionContext& sc,
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor<GatedTool>());
+        c.tools.push_back(agentengine::make_tool_descriptor(GatedTool{}));
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {

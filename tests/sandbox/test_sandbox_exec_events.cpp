@@ -133,10 +133,10 @@ struct SandboxingTool : agentengine::Tool<SandboxingTool> {
     static constexpr std::string_view description = "Brackets a sandbox exec during invoke().";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         SandboxExecScope scope(ctx, "exec-1", "test-backend", "exec");
         scope.succeeded();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -146,7 +146,7 @@ struct SilentTool : agentengine::Tool<SilentTool> {
     static constexpr std::string_view description = "Never opens a SandboxExecScope.";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 // S7's fixture: Backgroundable AND brackets an exec, so the scope runs on background_task()'s own
@@ -157,10 +157,10 @@ struct BackgroundableSandboxingTool
     static constexpr std::string_view description = "Backgroundable; also opens a SandboxExecScope.";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         SandboxExecScope scope(ctx, "exec-bg", "test-backend", "exec");
         scope.succeeded();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -170,7 +170,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<SandboxingTool, SilentTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(SandboxingTool{}, SilentTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {
@@ -427,7 +427,7 @@ int main() {
         CapabilitySet const held = CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableSandboxingTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableSandboxingTool{});
         agentengine::ToolCallRequest const req{"call-bg", "bg_sandboxing_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 

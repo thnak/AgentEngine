@@ -45,7 +45,7 @@
 // `AgentSession::start_run()`'s `session_mutex_` genuinely parks a contended waiter and resumes it
 // from a DIFFERENT thread (a real cross-thread `AsyncMutex` wakeup, agent_session.hpp/
 // async_mutex.hpp), which a naive "resume until done" drive loop cannot survive -- this is exactly
-// why `rt::drive_leaf_task()` (rt/drive_leaf_task.hpp) is NOT used here: that function's own top
+// why `rt::drive_leaf_task()` (rt/drive_leaf_task.hpp, deleted by #175) was NOT used here: that function's own top
 // comment names this precise hazard as the reason its `synchronous_leaf` contract excludes
 // AgentSession. Do not call this adapter's returned callable directly, concurrently, against the
 // same AgentSession from more than one thread outside WorkflowSupervisor's own guarantee.

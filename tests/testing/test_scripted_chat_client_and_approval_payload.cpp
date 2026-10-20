@@ -79,7 +79,7 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.value}; }
 };
 
 struct FreeTool : agentengine::Tool<FreeTool, agentengine::Capabilities<>,
@@ -88,7 +88,7 @@ struct FreeTool : agentengine::Tool<FreeTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Never needs approval.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.value}; }
 };
 
 class ToolsHistoryProvider {
@@ -97,7 +97,7 @@ public:
         agentengine::SessionContext& sc, agentengine::EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool, FreeTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}, FreeTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {

@@ -73,9 +73,6 @@ agentengine_add_test(test_rt_circuit_breaker LIBS agentengine::core agentengine_
 # stops being a quark::Actor.
 agentengine_add_test(test_rt_async_mutex LIBS agentengine::core agentengine_warnings)
 
-# ---- ADR-064 Design B -- agentengine::rt::drive_leaf_task<T>(), the narrow "leaf task" driver
-# VectorRagContextProvider::recall's invoke uses (include/agentengine/rt/drive_leaf_task.hpp).
-agentengine_add_test(test_rt_drive_leaf_task LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-037 -- agentengine::rt::AppendLogStore, the append-only persistence primitive both
 # rt::WorkflowSupervisor's own time-travel gap and rt::ProjectRegistry's own archived-tail gap name

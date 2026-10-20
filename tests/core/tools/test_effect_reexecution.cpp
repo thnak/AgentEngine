@@ -39,7 +39,7 @@ struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengi
     [[maybe_unused]] static constexpr std::string_view description = "A read-only, side-effect-free tool.";
     using Args = PureArgs;
     using Reply = PureReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.x}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.x}; }
 };
 
 struct PaymentArgs {
@@ -57,7 +57,7 @@ struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
     [[maybe_unused]] static constexpr std::string_view description = "A tool that forgot to classify itself.";
     using Args = PaymentArgs;
     using Reply = PaymentReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct MakePaymentTool
@@ -66,7 +66,7 @@ struct MakePaymentTool
     static constexpr std::string_view description = "019 §3's own example of a must-not-repeat effect.";
     using Args = PaymentArgs;
     using Reply = PaymentReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 agentengine::EffectContext make_ctx() {
@@ -110,7 +110,7 @@ int main() {
     // --- A real manually-triggered re-execution: invoke_tool() twice under the SAME idempotency
     // key (a manual rewind-and-replay), gated by authorize_reexecution() BEFORE the second call --
     {
-        auto const table = agentengine::ToolTable::from_tools<MakePaymentTool>();
+        auto const table = agentengine::ToolTable::from(MakePaymentTool{});
         agentengine::CapabilitySet held;
         auto args = *json::parse(R"({"account":"acct-1"})");
         auto ctx = make_ctx();

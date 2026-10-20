@@ -51,7 +51,7 @@ struct StashingTool
     using Args = StashArgs;
     using Reply = StashReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext& ctx) const {
         int slot = ++g_call_index;
         if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) {
             agentengine::BoundCapability const& live_handle = (*ctx.bound_capabilities)[0];
@@ -59,7 +59,7 @@ struct StashingTool
             g_live_during_call[slot] = live_handle.use().has_value();
             g_stash[slot] = live_handle;  // a copy -- shares the same ticket (ADR-009)
         }
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -72,7 +72,7 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    auto const table = ToolTable::from_tools<StashingTool>();
+    auto const table = ToolTable::from(StashingTool{});
     CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
 
     // -- call n ------------------------------------------------------------------------------------

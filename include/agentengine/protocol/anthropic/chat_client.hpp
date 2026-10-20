@@ -181,7 +181,7 @@ struct SplitMessages {
 // (confirmed against the SDK's `Tool.cs`: `input_schema` is a top-level sibling of `name`, not nested).
 // `cache_ttl` (default empty, (7)) is only consulted when `cache_this_one` is true. Issue #13: same
 // re-parse-every-call waste as the OpenAI backend's `translate_tool()` -- `t.args_schema_value_cached`
-// (set once at `make_tool_descriptor<T>()` time, `core/tool_pipeline.hpp`) skips the re-parse when
+// (set once at `make_tool_descriptor(T{})` time, `core/tool_pipeline.hpp`) skips the re-parse when
 // available, falling back to parsing `args_schema_json` for any hand-built descriptor without it.
 [[nodiscard]] result<json::Value> translate_tool(ToolDescriptor const& t, bool cache_this_one,
                                                  std::string const& cache_ttl = {});

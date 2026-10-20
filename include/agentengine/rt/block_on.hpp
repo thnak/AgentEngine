@@ -57,7 +57,7 @@
 // never inside another thread's `unlock()` trampoline (where a nested `block_on` relock livelocked,
 // ADR-175 round 1 finding 2). The wait sleeps on a condition variable once a home exists; a task that never
 // parked through a homing awaiter falls back to the original yield loop. Every synchronous driver in `rt::`
-// now goes through here -- the five resume-until-done `drive()` loops, `drive_leaf_task()`,
+// now goes through here -- the five resume-until-done `drive()` loops, `drive_leaf_task()` (since deleted, #175),
 // `ThreadPool::run_job()` and `Bundle::ask()` each mishandled a task that suspends in its own way.
 //
 // HOLDER. A nested call (a tool closure inside a round that is itself being driven) is a synchronous part

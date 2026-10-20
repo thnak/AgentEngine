@@ -65,9 +65,9 @@ struct WriteNoteTool
     static constexpr std::string_view description = "Writes a note into the work mount.";
     using Args = WriteArgs;
     using Reply = WriteReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         write_tool_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -76,7 +76,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<WriteNoteTool>().descriptors();
+        c.tools = ToolTable::from(WriteNoteTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

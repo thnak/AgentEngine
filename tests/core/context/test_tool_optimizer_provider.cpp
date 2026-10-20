@@ -69,7 +69,7 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
     static constexpr std::string_view description = "The agent's own tool, offered as always_on.";
     using Args = PingArgs;
     using Reply = PingReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 [[nodiscard]] ToolDescriptor make_fixture_tool(std::string name, std::string description) {
@@ -201,7 +201,7 @@ public:
     ThreeWayToolOptimizerProvider()
         : inner_(std::tuple{
               HistoryProvider<Window<0>>{}, SkillsProvider<>(std::vector<SkillSourceDescriptor>{}),
-              ToolOptimizerProvider(ToolTable::from_tools<PingTool>(), no_tool_source(),
+              ToolOptimizerProvider(ToolTable::from(PingTool{}), no_tool_source(),
                                      fetch_one(make_fixture_tool(
                                          "extra_tool", "A plugin-sourced fixture tool.")))}) {}
 
@@ -231,7 +231,7 @@ int main() {
     // ---- R1: state/tool behavior in isolation ---------------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("plugin_tool", "A plugin-sourced fixture tool.")), {"ping"});
 
         auto c1 = on_context_of(provider, session_ctx, ctx);
@@ -279,7 +279,7 @@ int main() {
     // ---- R2: the load-bearing end-to-end proof through the REAL invoke_tool() pipeline -----------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("plugin_tool", "A plugin-sourced fixture tool.")), {"ping"});
 
         // Before any mount: plugin_tool is genuinely unreachable via invoke_tool, not merely
@@ -328,7 +328,7 @@ int main() {
     // ---- R3: collision rejection -------------------------------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("ping", "a colliding MCP tool")), no_tool_source());
         auto c = on_context_of(provider, session_ctx, ctx);
         check(!c.has_value(), "R3: an MCP tool colliding with the agent's own tool name is rejected");
@@ -338,7 +338,7 @@ int main() {
     }
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("mount_tool", "a colliding MCP tool")), no_tool_source());
         auto c = on_context_of(provider, session_ctx, ctx);
         check(!c.has_value(),
@@ -350,7 +350,7 @@ int main() {
     // ---- R4: search_tools -- read-only, no mutation --------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("weather_lookup", "Looks up the current weather.")), {"ping"});
         auto c = on_context_of(provider, session_ctx, ctx);
         check(c.has_value(), "R4 setup: on_context succeeds");
@@ -393,7 +393,7 @@ int main() {
         // description), then confirm mount_tool's error text for an UNRELATED unknown name never
         // echoes it back -- the message is built solely from the caller-supplied args.name.
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("real_tool",
                                          "internal-mcp-host.corp.example:4443 secret-token=xyz")),
             no_tool_source(), {"ping"});

@@ -62,7 +62,7 @@ struct RollDie : Tool<RollDie> {
     using Args  = RollArgs;
     using Reply = RollReply;
     // Deterministic for a repeatable example: a fair die is someone else's problem.
-    static result<Reply> invoke(Args args, EffectContext&) { return Reply{args.sides > 3 ? 4 : 1}; }
+    agentengine::task<result<Reply>> invoke(Args args, EffectContext&) const { co_return Reply{args.sides > 3 ? 4 : 1}; }
 };
 
 // ---- the agent (002 §2): policies are types; register_agent<Joker>() compiles and validates them ------

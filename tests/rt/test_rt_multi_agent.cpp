@@ -139,9 +139,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agente
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         g_last_observed_principal_id = ctx.principal.id;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -151,7 +151,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor<GatedTool>());
+        c.tools.push_back(agentengine::make_tool_descriptor(GatedTool{}));
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {

@@ -173,9 +173,9 @@ struct SendMessageTool
         "Sends a message to a recipient. Requires human approval before it actually sends.";
     using Args = SendArgs;
     using Reply = SendReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         send_invoked_log() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -197,9 +197,9 @@ struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_
     static constexpr std::string_view description = "Get the current weather for a city, in Celsius.";
     using Args = GetWeatherArgs;
     using Reply = GetWeatherReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         weather_invoked_log() = true;
-        return Reply{13.7};
+        co_return Reply{13.7};
     }
 };
 
@@ -208,7 +208,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<SendMessageTool, GetWeatherTool>().descriptors();
+        c.tools = ToolTable::from(SendMessageTool{}, GetWeatherTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }

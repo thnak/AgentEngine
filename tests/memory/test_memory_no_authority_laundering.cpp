@@ -52,7 +52,7 @@ struct TransferFundsTool
     static constexpr std::string_view description = "Moves money -- always requires approval.";
     using Args = TransferArgs;
     using Reply = TransferReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 } // namespace
@@ -141,7 +141,7 @@ int main() {
     // (the worst-case successful prompt injection) still cannot auto-approve anything -- approval
     // is 100% the host decider's own decision, which structurally never observes memory at all ----
     {
-        auto const table = agentengine::ToolTable::from_tools<TransferFundsTool>();
+        auto const table = agentengine::ToolTable::from(TransferFundsTool{});
         agentengine::CapabilitySet held;  // TransferFundsTool declares no capabilities
 
         // The attacker's payload: the exact hostile memory content above, now smuggled into the

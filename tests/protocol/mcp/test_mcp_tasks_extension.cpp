@@ -53,9 +53,9 @@ struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgrounda
     static constexpr std::string_view description = "Sleeps, then succeeds.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(120));
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -67,9 +67,9 @@ struct FailingBackgroundableTool : ae::Tool<FailingBackgroundableTool, ae::Backg
     static constexpr std::string_view description = "Sleeps briefly, then fails.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        return std::unexpected(
+        co_return std::unexpected(
             ae::error{ae::failure_class::contract, "deliberate failure", "test.deliberate_failure"});
     }
 };
@@ -80,7 +80,7 @@ struct ForegroundOnlyTool : ae::Tool<ForegroundOnlyTool> {
     static constexpr std::string_view description = "Never declared Backgroundable.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{true}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{true}; }
 };
 
 json::Value noop_args() { return json::Value::make_object({{"noop", json::Value::make_bool(true)}}); }
@@ -89,7 +89,7 @@ json::Value noop_args() { return json::Value::make_object({{"noop", json::Value:
 
 int main() {
     auto const table =
-        ae::ToolTable::from_tools<SlowBackgroundableTool, FailingBackgroundableTool, ForegroundOnlyTool>();
+        ae::ToolTable::from(SlowBackgroundableTool{}, FailingBackgroundableTool{}, ForegroundOnlyTool{});
     // Background<1>: exactly one concurrent backgrounded call, so C4-6 can prove capacity enforcement
     // reused through the MCP path (G9, Phase B).
     ae::CapabilitySet const held = ae::CapabilitySet::grant_root({ae::cap::Background{1}});

@@ -2696,7 +2696,49 @@ a conformer that blocks a lane is the named residual, as for the file stores.
   has no daemon) and `test_json_dump_escape`'s RLIMIT_DATA self-check, all expected there. naming-lint,
   layering-lint and milestone lint OK.
 
+### Step 51 (2026-10-16): Phase E slice 1 -- one way to declare a tool; `drive_leaf_task` deleted (#175)
+
+- **The static-invoke form is gone.** All **167** `Tool<>` conformers that still declared
+  `static result<Reply> invoke(Args, EffectContext&)` (148 in tests, 11 in `tools/`, 8 in `examples/`; none left
+  in `include/` or `src/`) now declare §5.2's `task<result<Reply>> invoke(Args, EffectContext&) const`. The
+  rewrite was mechanical (signature, `const`, `return` -> `co_return` in the brace-matched body) and compiler-checked:
+  a nested lambda's `return` turned into `co_return` would have failed to compile, and none did. No conformer took
+  `Args` by reference, so no coroutine holds a reference into its caller's frame.
+- **Deleted:** the zero-argument `make_tool_descriptor<ToolT>()` and `ToolTable::from_tools<Ts...>()`. Their 160
+  call sites became `make_tool_descriptor(ToolT{})` / `ToolTable::from(Ts{}...)`, including the declarative
+  `Tools<Ts...>` policy (`core/agent_registry.hpp`), which now default-constructs each tool. That was already the
+  only way a static-invoke tool could be stateless.
+- **Deleted:** `rt/drive_leaf_task.hpp` and `test_rt_drive_leaf_task` (`synchronous_leaf` went in step 44). Its two
+  callers were the two detached background workers, and both now drive `invoke` with `rt::block_on`.
+  - `src/core/tool_pipeline.cpp` (`background_task`'s worker) has no outer `catch`, so it keeps
+    `drive_leaf_task`'s fault translation inline: the same class, message and code (`rt.leaf_task_faulted`,
+    transient). Behaviour unchanged.
+  - `rt/background_job_runner.hpp` already wraps the drive in a `catch`. A coroutine that throws now reaches it
+    and reports `background_job.tool_threw` (fatal), with the tool's own message. Before, it was
+    `rt.leaf_task_faulted` (transient). **This moves behaviour, and is recorded as a finding:** it restores what a
+    throwing tool reported before §5.2 made `invoke` async, and the transient class was wrong for a tool that
+    throws (a retry would throw again). R14 in `test_rt_background_job_runner` now pins the message. Against the
+    old code it fails, because the message was "leaf task faulted".
+- **Not done, and why:** `make_sync_invoke` stays, with its **three** production sites (the RAG pair went in
+  step 44). The two native-process providers wait on **D3** (#176, open). The WASM bridge needs a WASM-enabled
+  build to verify, which `build-dev` does not produce.
+- **Stale user-facing docs, carried to Phase F:** `web/marketing/src` (`data/apiContent.ts`,
+  `data/content.ts`, `components/Api*Reference.tsx`) still shows the static form, which no longer compiles.
+  `docs/architecture/tool-and-skill-context-and-invocation.md` is updated.
+- **Gate.** `build-dev` (MSVC) builds clean. `ctest -LE live-network`: **403/417**. The 14 failures are
+  environmental: 13 fail with "docker API ... daemon is not running", and `test_external_skill_discovery` D6
+  needs real symlinked skills installed on the machine. That matches §14.1's count of 14. (Run without the MSVC
+  developer environment, the 15 `compile_fail` tests also fail, because the compiler cannot find its headers;
+  with `vcvars64` they pass.) naming-lint, layering-lint and milestone-status-lint are OK.
+
 ### §14.1 What is left, and the phases to follow
+
+**Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
+synchronous and must still convert** (`ApprovalDecider`, `PolicyDecider`, `ExecutorBody`, `ChildRunner`, the batch
+`Call`), and **1 is reclassified to stay synchronous** (`SessionFactory`, with the batch `Build`/`Complete`
+narrowed out of the same row). The triage adds **3 seams §5.1 never named** that must also convert
+(`ReplayChatClient::SleepFn`, `RegisteredRunner::invoke`, `EffectContext::blob_sink`): **8 conversions left**.
+The "~27" figure and the step-46-era paragraph below are kept as history; §14.2 supersedes their count.
 
 Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
@@ -2723,8 +2765,11 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 
 **Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
-C, steps 46-49); plus ~15 further `std::function` typedefs that have not been triaged individually yet (#174 --
-among them the shell's `RegisteredRunner` composition typedef, which step 50 left synchronous).
+C, steps 46-49); ~~plus ~15 further `std::function` typedefs that have not been triaged individually yet~~
+(triaged, #174, §14.2). What is left after the triage: `ApprovalDecider`, `PolicyDecider`, `ExecutorBody` (with
+`AgentExecutorBodyTag::Impl`), `ChildRunner`, `BatchableModelCall::Call` and `EffectContext::blob_sink` (**Phase
+G**, §14.2), plus `ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking
+conformer bodies).
 
 **Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
 not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
@@ -2791,12 +2836,113 @@ providers whose destructors still `block_on` a surface close, and Phase E (§5.2
 `make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
 them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
 not produce.
+**Slice 1 DONE (§14 step 51, 2026-10-16, #175):** the static-invoke form (167 conformers, `make_tool_descriptor<T>()`,
+`from_tools`) and `drive_leaf_task` are deleted. Left: `make_sync_invoke` and its three production sites
+(native-process x2 after D3/#176; WASM with a WASM-enabled build).
 
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
+
+**Phase G -- the orchestration and decider seams (found by the #174 triage, §14.2).** `ApprovalDecider`,
+`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`, `BatchableModelCall::Call`,
+`EffectContext::blob_sink`. §5.1 named five of these from the start; §14.1's remaining list dropped them, and
+nothing converted them. The bodies are where engine code `rt::block_on`s from inside a task today
+(`agent_spawn_child_run.hpp:139`, `agent_workflow_executor.hpp:87`, `workflow_supervisor.hpp:1160`), so this
+phase removes those nested drive loops. Order: the two deciders first (`src/core/tool_pipeline.cpp:131,136` for
+the policy decider, `:213,479` for the approval decider; ADR-070's "unset = today's behaviour" kept as an
+immediately-ready task), then
+`ExecutorBody` and `Impl` together (one signature), then `ChildRunner`, then `Call`, then `blob_sink`.
 
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
 OK; layering-lint OK; `ctest -LE live-network` -> 401/415 with the identical 14. Never mark §5.1 or §5.2 done
 on anything less. And the standing behavioural rule: **a seam going async must not move behaviour** -- the
 A2A D4 assertions are the exemplar. If a test has to change, that change is the finding, and it gets
 recorded rather than absorbed.
+
+### §14.2 The `std::function` seam triage (2026-10-16, #174)
+
+**Method.** Every `std::function` / `std::move_only_function` **type alias** in `include/` and `src/`, found by
+grep (`using X = std::function<...>`, single-line and wrapped), not taken from memory: **49 aliases**. Each one was
+read at its definition and at its call sites, then given one of three dispositions:
+
+- **async** -- already returns `task<...>`. Either converted by a §14 step or written async from the start.
+- **stays** -- synchronous by design. The reason is a §5.3 category (pure, accessor, sink, clock) or is
+  stated in the row.
+- **convert** -- synchronous today but does I/O or blocks (directly, or by `rt::block_on` on a nested task
+  inside an engine task). The row names the phase it joins.
+
+Result: **20 async, 22 stay, 7 convert**. Two triage decisions narrow §5.1's list, and the evidence is in their
+rows: `SessionFactory` stays, and of the batch callables only `Call` converts.
+
+| # | Alias | Defined at | Disposition | Reason / phase |
+|---|---|---|---|---|
+| 1 | `OutputValidator` | `core/agent_session_bridge.hpp:250` | async | §14 step 32 |
+| 2 | `ContextProviderDescriptor::OnContextFn` | `core/context_assembly.hpp:128` | async | Born `task`-shaped |
+| 3 | `ContextProviderDescriptor::OnTurnEndFn` | `core/context_assembly.hpp:135` | async | Born `task`-shaped |
+| 4 | `ContextProviderDescriptor::OnRunEndFn` | `core/context_assembly.hpp:145` | async | Born `task`-shaped |
+| 5 | `ReflectionEvaluator` | `core/harness.hpp:223` | async | Born `task`-shaped (ADR-234) |
+| 6 | `ToolCallHook` | `core/tool_call_hook.hpp:79` | async | Born `task`-shaped |
+| 7 | `ToolDescriptor::InvokeFn` | `core/tool_descriptor.hpp:64` | async | §14 step 9 |
+| 8 | `ToolSourceFetch` | `core/tool_optimizer_provider.hpp:113` | async | §14 step 27 |
+| 9 | `TurnMiddlewareHook` | `core/turn_middleware.hpp:271` | async | Born `task`-shaped |
+| 10 | `GraderFn` | `eval/eval_grader.hpp:42` | async | §14 step 30 |
+| 11 | `a2a::CardFetcher` | `protocol/a2a/client.hpp:59` | async | §14 step 28 |
+| 12 | `a2a::RunStarter` | `protocol/a2a/server.hpp:89` | async | §14 step 29 |
+| 13 | `mcp::RequestSender` | `protocol/mcp/client.hpp:61` | async | §14 step 31 |
+| 14 | `mcp::InputRequestHandler` | `protocol/mcp/client.hpp:92` | async | §14 step 31 |
+| 15 | `mcp::RequestSenderWithHeaders` | `protocol/mcp/client.hpp:332` | async | §14 step 31 |
+| 16 | `rt::HttpTlsConnector` | `rt/http.hpp:237` | async | Born `task`-shaped (§14 step 6) |
+| 17 | `ProjectSupervisor` `CheckpointHook` | `rt/project_supervisor.hpp:69` | async | Born `task`-shaped |
+| 18 | `WorkflowSupervisor::CheckpointHook` | `rt/workflow_supervisor.hpp:891` | async | Born `task`-shaped |
+| 19 | `WorkflowSupervisor::MergeOnJoinHook` | `rt/workflow_supervisor.hpp:898` | async | §14 step 48 |
+| 20 | `LiveShellSandboxProvider::SurfaceFactory` | `sandbox/live_shell_sandbox_provider.hpp:137` | async | §14 step 37 |
+| 21 | `DescriptorFilter` | `core/agent_session_bridge.hpp:256` | stays | §5.3: pure, edits an in-memory vector |
+| 22 | `BatchRecorder::Sink` | `core/batch_recording.hpp:123` | stays | §5.3 sink: must not block |
+| 23 | `BatchReplayer::DivergenceHook` | `core/batch_recording.hpp:145` | stays | §5.3 sink |
+| 24 | `ContentReplayTrigger` | `core/content_replay_gateway.hpp:77` | stays | §5.3: pure over a `ChatResponse` |
+| 25 | `ContentReplayTraceHook` | `core/content_replay_gateway.hpp:90` | stays | §5.3 `*TraceHook` |
+| 26 | `MiddlewareTraceHook` | `core/middleware.hpp:99` | stays | §5.3 `*TraceHook` |
+| 27 | `ModelCallGateway::JitterSource` | `core/model_call_gateway.hpp:166` | stays | §5.3: pure |
+| 28 | `RecordingChatClient::RecordingSink` | `core/recording_chat_client.hpp:129` | stays | §5.3 sink |
+| 29 | `BackgroundTaskCompletion` | `core/tool_pipeline.hpp:431` | stays | A completion sink. It fires once from the background worker, and its one production wiring is a self-`tell()` (an enqueue). §5.3's non-blocking rule applies |
+| 30 | `rt::EmitFn` | `rt/agent_session_trust.hpp:31` | stays | §5.3 sink (named there) |
+| 31 | `rt::BackgroundJobSink` | `rt/background_job_runner.hpp:148` | stays | §5.3 sink (named there) |
+| 32 | `rt::HostResolver` | `rt/dns.hpp:84` | stays | The reactor's blocking-resolver **input**. It runs on the DNS pool, never on a strand (§14.1 sizing note) |
+| 33 | `rt::AddressPolicy` | `rt/dns.hpp:99` | stays | Pure predicate over an `IpAddress` (I3: host code) |
+| 34 | `provider_wire::Resolver` | `protocol/provider_chat_wire.hpp:28` | stays | Converted in **placement**, not shape (§14 step 40). `host_resolver_from` runs it on the DNS pool as a `HostResolver` |
+| 35 | `qdrant::detail::Resolver` | `protocol/qdrant/vector_index.hpp:93` | stays | Same as #34 (§14 step 45) |
+| 36 | `LiveShellClock` | `sandbox/live_shell_lifetime.hpp:80` | stays | §5.3 clock (named there) |
+| 37 | `SandboxBackendResolutionAuditHook` | `sandbox/sandbox_backend_registry.hpp:63` | stays | §5.3 `*AuditHook` |
+| 38 | `QuarantineAuditHook` | `trust/secret_quarantine.hpp:111` | stays | §5.3 `*AuditHook` |
+| 39 | `worker::QueryFn` | `src/backends/native_jail/python_worker_mediation.hpp:96` | stays | Runs in the **jailed Python worker process**, not the engine. The worker is single-threaded CPython with no reactor, and the blocking round trip over its framed pipe *is* the protocol. The engine side of that pipe is the `Runner` (Phase D, async) |
+| 40 | `rt::SessionFactory<...>` | `rt/multi_agent.hpp:90` | stays (**narrowed from §5.1**) | It only constructs a fresh `unique_ptr<AgentSession>`. Every in-tree conformer builds an object and does no I/O. Anything that would need I/O (a resume from `SessionStore`, a state load) is a call on the session afterwards, and those are already `task`-shaped (§14 step 47). Making construction async would buy nothing |
+| 41 | `BatchableModelCall::Build` | `rt/workflow_supervisor.hpp:291` | stays (**narrowed from §5.1**) | Pure by contract: "`build` must be deterministic in its input" (ADR-235 §3.1). A failed batch item is rebuilt, and that is only sound because building does nothing |
+| 42 | `BatchableModelCall::Complete` | `rt/workflow_supervisor.hpp:295` | stays (**narrowed from §5.1**) | Pure: `(Message, ChatResponse) -> ExecutorOutcome`, with no `EffectContext` |
+| 43 | `ApprovalDecider` | `core/tool_pipeline.hpp:149` | **convert** -- Phase G | Named in §5.1, never converted. It is called inline from the async pipeline (`src/core/tool_pipeline.cpp:213,479`), so a host decider that asks a policy service blocks the strand. A human wait stays on the session's suspend-for-approval path, which is unchanged |
+| 44 | `PolicyDecider` | `core/tool_pipeline.hpp:170` | **convert** -- Phase G | Named in §5.1. Same reason as #43 (`tool_pipeline.cpp:131,136`). ADR-070's graduated host logic is exactly what tends to be remote |
+| 45 | `ExecutorBody` | `rt/workflow_supervisor.hpp:248` | **convert** -- Phase G | Named in §5.1. The agent-backed body drives a whole `AgentSession` run with `rt::block_on` (`agent_workflow_executor.hpp:87`) from inside the supervisor's `run_executor_job` task, and `sub_workflow` does the same (`workflow_supervisor.hpp:1160`) |
+| 46 | `AgentExecutorBodyTag::Impl` | `rt/workflow_supervisor.hpp:264` | **convert** -- Phase G, with #45 | Same signature as `ExecutorBody`, so it changes in the same slice |
+| 47 | `rt::ChildRunner` | `rt/agent_spawn.hpp:160` | **convert** -- Phase G | Named in §5.1. `agent.spawn` is a `task`-shaped tool, and it calls `run_child` synchronously (`agent_spawn.hpp:552`). The conformer then `rt::block_on`s the child's run (`agent_spawn_child_run.hpp:139`) |
+| 48 | `BatchableModelCall::Call` | `rt/workflow_supervisor.hpp:293` | **convert** -- Phase G | Named in §5.1. It is the synchronous model call, and `ChatClient` is `task`-shaped since §14 steps 33-35 |
+| 49 | `ReplayChatClient::SleepFn` | `core/replay_chat_client.hpp:144` | **convert** -- with #180 | Not named in §5.1. The default `real_sleep` is `std::this_thread::sleep_for` on a detached worker thread (`replay_chat_client.hpp:229`), the shape Phase B removed from the live provider path. It becomes `task<void>(milliseconds)` over `rt::sleep_until` when the replay worker moves onto `rt::` |
+
+**Seams that are not aliases, found by the same sweep.** The issue named `RegisteredRunner` a "typedef", but
+it is a struct with a `std::function` member. The grep for non-alias `std::function` members (89 lines) turned up
+three more seams. Everything else it found is a §5.3 category: `EffectContext`'s event sinks, `on_lane_stall` /
+`on_stuck_run` / `on_overrun` watchdog hooks, `stop_callback` payloads, `now_ns` / `clock()` clocks,
+`is_planning_safe` predicates, and `on_body` chunk sinks.
+
+| Member | Defined at | Disposition | Reason / phase |
+|---|---|---|---|
+| `RegisteredRunner::invoke` (both registries) | `src/backends/native_jail/command_registry.hpp:46`, `mediated_command_registry.hpp:36` | **convert** -- with #180 | Runs a whole `Runner` (`shell_dispatch.cpp:270`), which is `task`-shaped since §14 step 50. Compositions call `run_blocking` today. It converts when the shell dispatcher itself goes async, together with the blocking conformer bodies |
+| `RegisteredTool::invoke` (both registries) | `command_registry.hpp:59`, `mediated_command_registry.hpp:46` | stays | A test stub by its own header comment (ADR-052, gap-audit finding 13), with zero production call sites. A real integration goes through `invoke_tool()`, which is async |
+| `EffectContext::blob_sink` | `core/effect_context.hpp:237` | **convert** -- Phase G | Step 9's oversized-result promotion. Its documented conformer is `WorktreeObjectStore::put_blob`, which is `task`-shaped since §14 step 49, so a real wiring would have to `block_on` inside the pipeline. Only tests wire it today, which makes it cheap to convert now |
+
+Not re-triaged here: `sandbox/provider_http_client.hpp`'s and `net_egress_proxy.hpp`'s `resolver` parameters
+(the same shape as #34). They feed the blocking conformer bodies #180 already owns.
+
+**What this changes.** Nothing in code. This is triage, and the gate is that every row cites the line it was read
+from. §14.1's count is now exact (its header paragraph), and the "~15 untriaged" item there is closed. The two
+**narrowings** (#40 and #41/#42) are triage decisions under this ADR's own §5.3 test ("pure computations over
+in-memory values that no conformer can make remote"). They are proposed for the owner's sign-off as **ADR-239**,
+which amends §5.1's list and ADR-235 §3.1, and adds the contract terms the narrowings need.
 

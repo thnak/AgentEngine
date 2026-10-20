@@ -58,7 +58,7 @@ struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.message}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.message}; }
 };
 
 // Scenario 4's own second tool set -- a DIFFERENT tool from EchoTool, so refreshing to this one
@@ -77,7 +77,7 @@ struct RefreshedTool : Tool<RefreshedTool> {
     static constexpr std::string_view description = "Present only after the second refresh.";
     using Args = RefreshedArgs;
     using Reply = RefreshedReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.label}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.label}; }
 };
 
 }  // namespace
@@ -93,7 +93,7 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
+        bridge.bridged_tools = ToolTable::from(EchoTool{});
         bridge.capabilities = {cap::Entropy{}};
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
@@ -182,7 +182,7 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
+        bridge.bridged_tools = ToolTable::from(EchoTool{});
         bridge.capabilities = {};  // no cap::Entropy granted
         bridge.approved = true;
         cfg.tool_bridge = std::move(bridge);
@@ -264,7 +264,7 @@ int main() {
 
         {
             ToolBridgeConfig bridge_a;
-            bridge_a.bridged_tools = ToolTable::from_tools<EchoTool>();
+            bridge_a.bridged_tools = ToolTable::from(EchoTool{});
             bridge_a.capabilities = {cap::Entropy{}};
             bridge_a.approved = true;
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_a));
@@ -282,7 +282,7 @@ int main() {
 
         {
             ToolBridgeConfig bridge_b;
-            bridge_b.bridged_tools = ToolTable::from_tools<RefreshedTool>();  // note: NO EchoTool this time
+            bridge_b.bridged_tools = ToolTable::from(RefreshedTool{});  // note: NO EchoTool this time
             bridge_b.capabilities = {};
             bridge_b.approved = true;
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_b));

@@ -49,8 +49,8 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agenteng
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
@@ -71,7 +71,7 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Approval<agentengin
     using Args = GatedArgs;
     using Reply = GatedReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // -- ADR-023 §6 point 4 / 007 §4 amendment: two tools for the text_derived declassifier gate --------
@@ -94,7 +94,7 @@ struct PureNoCapTool
     using Args = PureArgs;
     using Reply = PureReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct DangerousArgs {
@@ -119,7 +119,7 @@ struct DangerousNeverRequireTool
     using Args = DangerousArgs;
     using Reply = DangerousReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // -- decisions/ADR-070-host-configurable-responsibility-boundary.md: a capability-bearing tool
@@ -141,7 +141,7 @@ struct PolicyDrivenTool
     using Args = PolicyArgs;
     using Reply = PolicyReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // -- decisions/ADR-184-text-derived-never-laxer-than-vendor-structured.md: two tools that ARE
@@ -155,7 +155,7 @@ struct PureAlwaysTool
     using Args = PureArgs;
     using Reply = PureReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct PurePolicyTool
@@ -166,7 +166,7 @@ struct PurePolicyTool
     using Args = PureArgs;
     using Reply = PureReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // ADR-184 red-team: an inert-but-real ceiling (FsRead is read-only, so still declassifiable) on a
@@ -180,7 +180,7 @@ struct PureReadAlwaysTool
     using Args = PureArgs;
     using Reply = PureReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 // ADR-184 red-team: a Backgroundable never_require tool with a real (non-inert) ceiling, for
@@ -193,7 +193,7 @@ struct BackgroundNetTool
     using Args = PureArgs;
     using Reply = PureReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 agentengine::EffectContext make_ctx() {
@@ -211,9 +211,7 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    auto const table = ToolTable::from_tools<EchoTool, GatedTool, PureNoCapTool, DangerousNeverRequireTool,
-                                              PolicyDrivenTool, PureAlwaysTool, PurePolicyTool, PureReadAlwaysTool,
-                                              BackgroundNetTool>();
+    auto const table = ToolTable::from(EchoTool{}, GatedTool{}, PureNoCapTool{}, DangerousNeverRequireTool{}, PolicyDrivenTool{}, PureAlwaysTool{}, PurePolicyTool{}, PureReadAlwaysTool{}, BackgroundNetTool{});
 
     // -- G2 positive case: capability held, tool succeeds ----------------------------------------
     {
