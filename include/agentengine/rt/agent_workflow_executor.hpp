@@ -50,11 +50,12 @@
 // AgentSession. Do not call this adapter's returned callable directly, concurrently, against the
 // same AgentSession from more than one thread outside WorkflowSupervisor's own guarantee.
 //
-// decisions/ADR-175 changed what the paragraph above depends on: the drive loop is now `rt::block_on()`, and
-// a contended waiter is posted back to its own `block_on()` thread rather than resumed from the releasing
-// thread, so a round that parks -- on `session_mutex_` or anything else -- is waited for correctly. The
-// contract still matters for I1's own sake (two deliveries to one session in one round would queue behind
-// each other on that session's mutex, holding two workers), not for memory safety.
+// decisions/ADR-175 changed what the paragraph above depends on, and ADR-237 §5.1 (Phase G) finished
+// the job: there is no drive loop here any more -- this body is a coroutine and `co_await`s
+// `session.start_run()`, so a round that parks (on `session_mutex_` or anything else) suspends rather
+// than needing a driver. The caller contract still matters for I1's own sake (two deliveries to one
+// session in one round would queue behind each other on that session's mutex, holding two workers),
+// not for memory safety.
 
 #include <atomic>
 #include <functional>
@@ -75,19 +76,10 @@
 
 namespace agentengine::rt {
 
-namespace agent_executor_detail {
-
-// Drives an rt::task<T> to completion from a plain, non-coroutine call site. This was a hand-rolled
-// `while (!t.done()) t.resume();` loop, argued safe under the CONCURRENCY CONTRACT above. The contract
-// covers `session_mutex_` only: a round that contends anything else -- a shared `AsyncQuota` debited by a
-// parallel node -- parks, and the loop resumed the parked handle a second time (decisions/ADR-175 §1).
-// `block_on()` waits for the waker to hand the task back instead.
-template <class T>
-[[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
-}
-
-}  // namespace agent_executor_detail
+// The `drive<T>` trampoline that used to live in an `agent_executor_detail` namespace at this spot is
+// gone: decisions/ADR-237 §5.1 (Phase G) made the executor body `task`-shaped, so
+// `agent_session_as_executor_body`'s lambda below is a coroutine and awaits `session.start_run()`
+// directly -- there is no non-awaiting call site left to drive from.
 
 // The adapter. Capability sourcing (design draft §5): the actual granted CapabilitySet this call
 // runs `session` under comes from `ctx` -- whatever EffectContext
@@ -107,7 +99,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
         AgentSession<ChatClientT, StateT, HistoryProviderT>& session) {
     return AgentExecutorBodyTag(
         [&session](agentengine::Message const& in,
-                   agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+                   agentengine::EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             // Re-affirmed on every call (idempotent when `ctx.capabilities` is unchanged across a
             // run, the common case) rather than once at bind time, so a caller that mutates
             // `WorkflowSupervisor`'s own `contexts_[i]` between rounds (not done by any code in this
@@ -162,16 +154,16 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
                 if (session.last_run_id() == previous_run) return;
                 ctx.charge_delegated_usage(session.run_usage(), session.discarded_tokens_estimate());
             };
-            agentengine::result<AgentResponse> driven = [&] {
-                // A host chat client may throw (CONVENTIONS keeps exceptions off control flow, not out of host
-                // code); the supervisor classes the throw as a transient fault and may retry.
-                delegated_run_detail::ChargeOnUnwind const charge_if_thrown{charge_unfinished_run};
-                return agent_executor_detail::drive(session.start_run(StartRun{input}));
-            }();
+            // A host chat client may throw (CONVENTIONS keeps exceptions off control flow, not out of host
+            // code); the supervisor classes the throw as a transient fault and may retry. ADR-237 §5.1
+            // (Phase G): the body is a coroutine now, so `start_run()` is awaited directly; the unwind
+            // guard still spans the await, so a throwing client charges this node's spend here.
+            delegated_run_detail::ChargeOnUnwind const charge_if_thrown{charge_unfinished_run};
+            agentengine::result<AgentResponse> driven = co_await session.start_run(StartRun{input});
 
             if (!driven) {
                 charge_unfinished_run();
-                return std::unexpected(driven.error());
+                co_return std::unexpected(driven.error());
             }
             // GitHub issue #35 follow-up (ADR-163): `session.run_usage()` -- NOT `driven->usage` --
             // is the real per-call total. `AgentResponse::usage` (`driven->usage`) only ever reflects
@@ -184,7 +176,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             // exactly this call's own total with no delta needed.
             ExecutorOutcome outcome{driven->message};
             outcome.usage = session.run_usage();
-            return outcome;
+            co_return outcome;
         });
 }
 

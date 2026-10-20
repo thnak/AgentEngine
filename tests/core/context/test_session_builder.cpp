@@ -451,9 +451,9 @@ int main() {
             auto const& decide = built->session().approval_decider();
             check(static_cast<bool>(decide), ".approve_tools() installs a real ApprovalDecider");
             if (decide) {
-                check(decide(Principal{"p", ""}, "safe_tool", "{}"),
+                check(agentengine::test_support::run_task_sync<bool>(decide(Principal{"p", ""}, "safe_tool", "{}")),
                       "the named tool is auto-approved");
-                check(!decide(Principal{"p", ""}, "other_tool", "{}"),
+                check(!agentengine::test_support::run_task_sync<bool>(decide(Principal{"p", ""}, "other_tool", "{}")),
                       "an UN-named tool is denied, not silently auto-approved too");
             }
         }
@@ -463,8 +463,8 @@ int main() {
     {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .policy([](Principal const&, ToolDescriptor const&, bool) {
-                             return policy_decision::auto_deny;
+                         .policy([](Principal const&, ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                             co_return policy_decision::auto_deny;
                          })
                          .build();
         check(built.has_value(), "B10 setup: build() succeeds");
@@ -473,7 +473,8 @@ int main() {
             check(static_cast<bool>(policy), ".policy() installs a real PolicyDecider");
             if (policy) {
                 ToolDescriptor td{};
-                check(policy(Principal{"p", ""}, td, false) == policy_decision::auto_deny,
+                check(agentengine::test_support::run_task_sync<policy_decision>(policy(Principal{"p", ""}, td, false)) ==
+                          policy_decision::auto_deny,
                       "the host-authored decision function is genuinely reachable, unmodified, through "
                       "the builder");
             }

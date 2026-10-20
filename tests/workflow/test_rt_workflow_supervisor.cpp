@@ -116,14 +116,14 @@ void record(Span s) {
 
 [[nodiscard]] ExecutorBody tracing_body(std::string name, std::chrono::milliseconds work) {
     return [name = std::move(name), work](Message const& in,
-                                          agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                                          agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         Span span;
         span.executor = name;
         span.entered  = std::chrono::steady_clock::now();
         if (work.count() > 0) std::this_thread::sleep_for(work);
         span.exited = std::chrono::steady_clock::now();
         record(span);
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 
@@ -248,16 +248,16 @@ int main() {
 
         auto call_count = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
-            [call_count](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [call_count](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*call_count;
                 if (*call_count < 2) throw std::runtime_error("flaky failure");
-                return ExecutorOutcome{text_message("recovered")};
+                co_return ExecutorOutcome{text_message("recovered")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -286,12 +286,12 @@ int main() {
         check(validate_workflow(wf).has_value(), "C5: the request-port graph validates");
 
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
             {},  // request_port: never invoked -- reaching it IS the event
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">finish")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">finish")};
             },
         };
         WorkflowSupervisor sup;
@@ -324,16 +324,16 @@ int main() {
         wf.bound.max_rounds = 8;
 
         auto passthrough = [](Message const& in,
-                              agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};
+                              agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};
         };
         std::vector<ExecutorBody> bodies = {
             passthrough,
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">mid")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">mid")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">end")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">end")};
             },
         };
         WorkflowSupervisor sup;
@@ -364,8 +364,8 @@ int main() {
         wf.output_selection.push_back("only");
         wf.bound.max_rounds = 8;
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -408,12 +408,12 @@ int main() {
         wf.bound.max_rounds = 8;
 
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
             {},
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">finish")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">finish")};
             },
         };
         WorkflowSupervisor sup;
@@ -461,10 +461,10 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             [&round_started](Message const& in,
-                             agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                             agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 round_started.store(true, std::memory_order_release);
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;

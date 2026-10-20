@@ -191,8 +191,8 @@ int main() {
     wf.output_selection.push_back("join");
     wf.bound.max_rounds = 8;
 
-    ExecutorBody passthrough = [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    ExecutorBody passthrough = [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
     WorkflowSupervisor sup;
     sup.initialize(wf,

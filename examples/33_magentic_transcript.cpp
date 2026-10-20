@@ -74,20 +74,21 @@ int main() {
     // The manager's ledger: researcher first, then writer, then declare done.
     std::atomic<int> step{0};
     std::vector<ExecutorBody> bodies = {
-        [&step](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [&step](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             int const n = step.fetch_add(1);
             std::vector<std::string> route = n == 0 ? std::vector<std::string>{"researcher"}
                                              : n == 1 ? std::vector<std::string>{"writer"}
                                                       : std::vector<std::string>{"done"};
-            return ExecutorOutcome{text_message(text_of(in)), route};
+            co_return ExecutorOutcome{text_message(text_of(in)), route};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + " | researcher: found 3 sources")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + " | researcher: found 3 sources")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + " | writer: drafted summary")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + " | writer: drafted summary")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&)
+            -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
 
     WorkflowSupervisor sup;

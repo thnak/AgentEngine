@@ -2731,6 +2731,139 @@ a conformer that blocks a lane is the named residual, as for the file stores.
   developer environment, the 15 `compile_fail` tests also fail, because the compiler cannot find its headers;
   with `vcvars64` they pass.) naming-lint, layering-lint and milestone-status-lint are OK.
 
+### Step 52 (2026-10-18): Phase G, slice 1 -- the two deciders are `task`-shaped (#174 triage)
+
+The orchestration/decider seams §5.1 named from the start and the #174 triage confirmed were never converted:
+`ApprovalDecider` and `PolicyDecider` (`core/tool_pipeline.hpp`). This slice converts exactly those two.
+
+- **Signatures.** `ApprovalDecider` becomes `std::function<task<bool>(...)>`, `PolicyDecider`
+  `std::function<task<policy_decision>(...)>` -- **no `result`**: a decider cannot fail, and a throwing body
+  is caught by `task`'s own `unhandled_exception` and rethrown at the caller's `co_await`, exactly how it
+  propagated before. `resolve_approval_outcome` -> `task<approval_outcome>`; `admit_call` ->
+  `task<result<AdmittedCall>>`.
+- **ADR-070's contract held.** "unset = today's behaviour" is preserved: an unset decider is the same
+  fail-closed default, now returned by an immediately-ready task. The ADR-070 regression checks in
+  `test_tool_pipeline` pass unchanged.
+- **The one structural change: `co_await` cannot sit inside `==`.** Both of `resolve_approval_outcome`'s
+  decider consults (`src/core/tool_pipeline.cpp`) and all five of its call sites in
+  `rt/agent_session_core.cpp` (`:1279`, `:1492`, `:1517`, `:2152`, `:2348`) were in expression position; each
+  was hoisted to a statement. All five call sites are already inside coroutines (`resolve_codeact_ask`,
+  `resolve_hook_decision`, `run_rounds`, `dispatch_tool_calls`, `resolve_interaction_locked`), so `co_await`
+  is legal in place. Short-circuit order is unchanged: `policy` is still only consulted when the tool is
+  `policy_driven` AND `policy` is set.
+- **`background_task` keeps its asymmetry.** It takes only `approve`, never a `PolicyDecider` -- ADR-070 §7's
+  named residual, untouched; only its `approve` call became `co_await`.
+- **Conformers.** Production: `quickstart::detail::install_deciders`, `trust::approve_delegated_calls`,
+  `make_plan_execute_policy_decider`, `harness.hpp`'s `after_gate`, `native_jail::bridge_tool_call`'s bundled
+  decider, `rt/agent_session_core.cpp`'s `effective_approval_decider` returned lambda / `one_shot_approve` /
+  `approve_exact`, and `tools/cli_chat.cpp`'s interactive prompt. Each body is the same statements,
+  `co_return`-terminated; none suspends. `cli_chat`'s stdin read stays a blocking read -- the one genuine host
+  edge on this seam, stated in a comment.
+- **Tests.** Every test/devsim conformer became a coroutine. Where a test invokes a decider directly and
+  compares its result (`test_plan_execute_mode.cpp`), it now drives the task through
+  `test_support::run_task_sync` -- a mechanical adaptation, not a behaviour change; no assertion moved.
+- **Lock audit** (the phase's standing instruction). No `std::mutex` is held across a `co_await`: the decider
+  paths take no locks, and the hoists added none.
+- **Verification.** `build-dev` clean (`/W4 /WX`). Named tests pass: `test_tool_pipeline` (the ADR-070 proof),
+  `test_approval_decider_principal`, `test_unattended_approvals`, `test_approval_resume`,
+  `test_agent_tool_invocation`, `test_rt_agent_session_suspend_approval`,
+  `test_rt_agent_session_tool_call_hook`, `test_plan_execute_mode`. `ctest -LE live-network` -> 402/418 with
+  the identical 14 baseline failures (13 need the Docker daemon, `test_external_skill_discovery` needs
+  machine-installed skills). naming-lint, layering-lint and milestone-status-lint OK.
+- **Numbering.** Recorded as step 52 because §14 step 51 (Phase E slice 1, #175) lives on the
+  `phase-e-tool-contract-cleanup` branch; if that branch is dropped rather than merged, renumber this to 51.
+
+Remaining in Phase G (not this slice): `ChildRunner`, `BatchableModelCall::Call`/`Complete`,
+`EffectContext::blob_sink`.
+
+### Step 53 (2026-10-18): Phase G, slice 2 -- the executor body is `task`-shaped (#174 triage)
+
+`ExecutorBody` -- `rt/workflow_supervisor.hpp`'s node-body seam, the largest single seam §5.1 named --
+is now `std::function<task<result<ExecutorOutcome>>(Message const&, EffectContext&)>`, with
+`AgentExecutorBodyTag::Impl` moved in lockstep (the ADR's own "one signature" pairing).
+
+- **Structural detection is unchanged, deliberately.** The agent-kind path's detection
+  (`bodies_[i].target<AgentExecutorBodyTag>()`, `src/rt/workflow_supervisor.cpp:1691`) and the batch
+  path's (`bodies_[i].target<BatchableModelCall>()`, `workflow_supervisor_batch.cpp:151`) still work:
+  both functors remain the concrete types stored in `bodies_`, so only their `operator()`'s return
+  type changed. No variant, no marker enum. `test_rt_agent_workflow_executor`'s T1 positive control
+  (a real agent-backed body detected, a plain function not) passes unchanged.
+- **The runtime's one invocation site now awaits.** `run_executor_job`
+  (`src/rt/workflow_supervisor.cpp`) `co_await`s the body -- this is what finally lets a suspending
+  body suspend THAT job coroutine rather than block the pool worker it was dispatched on. The job was
+  already a `task<void>` that never suspended; it now genuinely can.
+- **The two nested `drive()` trampolines are gone.** `WorkflowSupervisor::drive<T>` (a
+  `rt::block_on` wrapper, `workflow_supervisor.hpp:1158`) and `agent_executor_detail::drive<T>`
+  (`agent_workflow_executor.hpp:86`) are deleted; both call sites were already coroutines, so
+  `resume_workflow_locked` (`:293`, nested `resume_workflow`), `run_sub_workflow_job` (`:649`, nested
+  `run_workflow`) and the agent adapter's `session.start_run()` (`:169`) simply `co_await` in place.
+  That is Phase G's stated goal for this seam -- the nested `block_on` drive loops are removed.
+- **LOCK AUDIT -- one real finding, fixed.** `workflow_as_executor.hpp`'s two bodies serialised calls
+  to one inner supervisor with `std::lock_guard<std::mutex guard(*call_mutex)` held across the inner
+  run. Once that run is awaitable this is a mutex held across a `co_await`, which ADR-237 forbids
+  outright (undefined once the coroutine resumes on another thread). It becomes
+  `rt::AsyncMutex` + `co_await call_mutex->lock()`, the sanctioned replacement. The other lock on this
+  path (`charge_mutex` in `run_executor_job`) is taken only around synchronous work (`add_usage`, a
+  read) and stays `std::mutex`. `run_once` also becomes a coroutine over the inner run.
+- **Conformer sweep: ~311 bodies** across `tests/`, `examples/`, `devsim/` and `tools/test_driver/` --
+  each body's existing statements, `co_return`-terminated; **no body suspends yet** (they are all
+  still synchronous work inside a coroutine frame), so behaviour is unchanged.
+- **The `result<Message>` trap, handled.** 29 bodies were declared `-> result<Message>` and relied on
+  `ExecutorOutcome`'s implicit constructor. `expected<Message,E>` ->
+  `task<expected<ExecutorOutcome,E>>` is two user-defined conversions and does not apply, so those
+  bodies were retyped to `task<result<ExecutorOutcome>>` and the Message wrapped *inside* the
+  `co_return` (`co_return ExecutorOutcome{...};`). The 236 `ExecutorOutcome{...}` construction sites
+  were untouched.
+- **Direct invocations adapted (not behaviour changes).** Where a test or `devsim` program invokes a
+  body variable directly rather than through the supervisor
+  (`test_rt_workflow_as_executor.cpp`'s W1/W2/W4/W6, `test_rt_workflow_batch_coalescing.cpp`'s C18,
+  `test_delegation_provenance.cpp`'s W1-W5/R3-C1b) it now drives the returned task
+  (`rt::block_on(...)` / the file's own `drive(...)`). A bare `(void)body(...)` would have destroyed
+  a lazily-suspended frame and silently never run the body -- found by review, not by the compiler.
+- **DELIBERATE SCOPE CUT, recorded.** `BatchableModelCall::Build`/`Call`/`Complete` are §5.1 seams too
+  (they are `WorkflowSupervisor`'s batch callables), but they are only reached *through*
+  `BatchableModelCall`, not by the body seam -- so `operator()` is a coroutine that still completes
+  without suspending and `Build`/`Call`/`Complete` stay synchronous here. They are their own slice,
+  not smuggled into this one. Named so the next session does not think they were missed.
+- **Two consequences that outlive this slice, both recorded rather than absorbed.**
+  (a) A job dispatched through `ThreadPool` can now genuinely park. That is *supported* --
+  `ThreadPool`'s ADR-175 rev-3 contract drives each job with `block_on()` on the worker that picked it
+  up and hands it back to that same worker when woken -- but the cost is real: a suspended job holds
+  its worker for the suspension's duration. The supervisor's own file-banner comment claimed the
+  opposite ("each job's coroutine body never suspends on anything") and has been corrected. Getting
+  the pool off this path is #179/#182.
+  (b) The tree still has **~190 hand-rolled `while (!t.done()) t.resume();` drive helpers** (tests,
+  examples, devsim). Those are #183's tracked work and were deliberately not swept here. They matter
+  more now: a hand-rolled loop cannot correctly drive a task that genuinely parks (it resumes a parked
+  handle a second time -- ADR-064 §7), so it can no longer drive a *contended* `workflow_as_executor`
+  body. Nothing in the suite contends today, and the three places that drive a wrapped body directly
+  (`test_rt_workflow_as_executor` W1/W2/W4/W6, `test_rt_workflow_batch_coalescing` C18,
+  `test_delegation_provenance` W1-W5/R3-C1b) were switched to `rt::block_on`/`drive`-over-`block_on`
+  for exactly that reason. Relatedly, `examples/16,17,19`'s live bodies call `client.chat()` through
+  such a loop *inside* a body -- already stale since step 35 made `chat()` awaitable; they are live
+  samples (not run in CI, not built by either tree), so they are left to #183 rather than edited blind.
+- **Verification.** `build-dev` clean (`/W4 /WX`) and the extras tree
+  (HTTPS + Python + PDF + WASM + native-process) builds 548/548 clean; the six `devsim` programs
+  compile under `/W4 /WX` (they are separate consumer projects, built by neither tree). All 41
+  workflow tests pass, `test_rt_agent_workflow_executor`'s `.target<>()` control included.
+  `ctest -LE live-network`: build-dev 402/418 and extras 477/492, both the *identical* baseline
+  failures each tree had before this change (build-dev: 13 Docker-daemon + `test_external_skill_discovery`;
+  extras additionally `test_reference_agent_task_corpus`, step 50's recorded worker-environment fault).
+  naming-lint, layering-lint and milestone-status-lint OK. **No pre-existing assertion moved** -- the
+  only test edits are the "now a coroutine" retypes and the direct-invocation drives above.
+
+### Step 54 (2026-10-19): `failure_class` mapping for the rt I/O results (#181)
+
+`core/rt_io_error.hpp` holds the mapping functions (sleep, offload, tcp, dns, connect, tls, process), playing the
+role `http_error_to_error` plays for http; #180's seam conversions call them, and no caller is rewired here.
+Rules: stop -> `canceled`; an engine deadline (process wall deadline, connect attempt deadline) -> `resource` +
+`*.deadline_exceeded`; descriptor exhaustion -> `resource`; refused/reset/unreachable/OS timeout/DNS outage/TLS
+failure/truncation -> `transient` (http's precedent); address-policy refusal -> `policy`; busy/closed/invalid input
+-> `contract`; unclassifiable -> `fatal`. Non-failures (sleep expired, offload completed, any child exit) map to no
+error. Recorded divergence: `http_error_to_error` maps `deadline_exceeded`/`idle_timeout` to `transient` where D6
+says `resource`; left for #180. Proof: `tests/rt/test_rt_io_error_class.cpp` (mutating the stop and deadline rows
+fails it).
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
@@ -2740,7 +2873,14 @@ narrowed out of the same row). The triage adds **3 seams §5.1 never named** tha
 (`ReplayChatClient::SleepFn`, `RegisteredRunner::invoke`, `EffectContext::blob_sink`): **8 conversions left**.
 The "~27" figure and the step-46-era paragraph below are kept as history; §14.2 supersedes their count.
 
-Recorded at session end so the work resumes cold. **Status: §5.1 is 14 of ~27 seams converted**
+**Since then (2026-10-18/19):** Phase G slices 1-2 (steps 52-53) converted `ApprovalDecider`, `PolicyDecider` and
+`ExecutorBody`, so **5 conversions are left**: `ChildRunner`, the batch `Call`, `EffectContext::blob_sink`,
+`ReplayChatClient::SleepFn` and `RegisteredRunner::invoke`. The #174 inventory was triaged twice, independently, on
+two branches merged together: §14.2 (2026-10-16, the Phase E branch) and the "§14.1 triage table" below (2026-10-19,
+the Phase G branch, reconciled with steps 52-53). Both count 49 aliases; where their status differs, the 2026-10-19
+table is current.
+
+Recorded at session end so the work resumes cold. **Status: §5.1's concept seams are converted through Phase D; the `std::function` inventory is now exact -- 49 aliases (the earlier "~27" was an estimate), triaged in the table below**
 (`SkillSource`/`ChunkingPolicy`, `ToolSourceFetch`, the A2A client, the A2A server, `GraderFn`, MCP --
 §14 step 31, `OutputValidator` -- §14 step 32, `ChatClient` -- §14 steps 33-36, `SurfaceFactory` --
 §14 step 37, `Resolver` -- §14 steps 38-41, `BatchBackend` -- §14 step 43, `VectorIndex`/`SparseIndex` -- §14 step 44, qdrant's `Resolver` -- §14 step 45, and `SecretStore` -- §14 step 46). **PHASE B IS COMPLETE** on the conversion side: every one
@@ -2766,14 +2906,98 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 **Remaining §5.1 seams (sync -> `task`):** ~~`Runner`; `SandboxBackend`; `ExecutionSurface`;
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
 C, steps 46-49); ~~plus ~15 further `std::function` typedefs that have not been triaged individually yet~~
-(triaged, #174, §14.2). What is left after the triage: `ApprovalDecider`, `PolicyDecider`, `ExecutorBody` (with
-`AgentExecutorBodyTag::Impl`), `ChildRunner`, `BatchableModelCall::Call` and `EffectContext::blob_sink` (**Phase
-G**, §14.2), plus `ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking
-conformer bodies).
+(triaged, #174: §14.2 and the §14.1 triage table below). What is left after the triage and Phase G slices 1-2:
+`ChildRunner`, `BatchableModelCall::Call` and `EffectContext::blob_sink` (**Phase G**), plus
+`ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking conformer bodies).
 
-**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s **five** production call sites -- counted by grep,
-not recollection: the two RAG tools (`core/hybrid_rag_context_provider.hpp:211`,
-`core/vector_rag_context_provider.hpp:367`), the two native-process providers
+**§14.1 triage table (#174, 2026-10-19, `main` at `16efaa38`; doc-only -- nothing below was converted).**
+Method: `grep` over `include/` and `src/` for every `using X = std::function<...>` (45 single-line + 4
+multi-line) and for function-valued public data members; each verdict was taken from the definition and its
+call site, not the name. **Exact count: 49 alias typedefs -- 22 already `task`-shaped or handled by Phases A-D
+(rows 1-22), 27 triaged here (rows 23-49): 6 convert, 2 needs ADR, 19 stay.** Beyond the aliases, 5 non-alias
+function-valued slots need a verdict (rows 50-54, all convert) and 18 void/clock data-member hooks stay
+(rows 55-72). "Phase G" is the proposed home for converts with no existing phase . Phase G has since landed rows 23, 24, 44 and 45 (steps 52-53); the verdicts above are as taken on `main` and rows marked **done** supersede them.
+
+| # | Seam | file:line | Verdict | Phase / reason |
+|---|---|---|---|---|
+| 1 | `OutputValidator` | core/agent_session_bridge.hpp:250 | done | step 32 |
+| 2 | `ToolSourceFetch` | core/tool_optimizer_provider.hpp:113 | done | step 27 |
+| 3 | `GraderFn` | eval/eval_grader.hpp:42 | done | step 30 |
+| 4 | `CardFetcher` | protocol/a2a/client.hpp:59 | done | step 28 |
+| 5 | `RunStarter` | protocol/a2a/server.hpp:89 | done | step 29 |
+| 6 | `RequestSender` | protocol/mcp/client.hpp:61 | done | step 31 |
+| 7 | `RequestSenderWithHeaders` | protocol/mcp/client.hpp:332 | done | step 31 |
+| 8 | `InputRequestHandler` | protocol/mcp/client.hpp:92 | done | step 31 |
+| 9 | `SurfaceFactory` | sandbox/live_shell_sandbox_provider.hpp:137 | done | step 37 |
+| 10 | `WorkflowSupervisor::MergeOnJoinHook` | rt/workflow_supervisor.hpp:898 | done (task) | `make_merge_on_join_hook`, workflow/worktree_scoping.hpp:245 |
+| 11 | `WorkflowSupervisor::CheckpointHook` | rt/workflow_supervisor.hpp:891 | done | #172 |
+| 12 | `CheckpointHook` (project) | rt/project_supervisor.hpp:69 | done (born `task`) | -- |
+| 13 | `ToolDescriptor::InvokeFn` | core/tool_descriptor.hpp:64 | done | step 9 |
+| 14 | `ToolCallHook` | core/tool_call_hook.hpp:79 | done (born `task`) | -- |
+| 15 | `TurnMiddlewareHook` | core/turn_middleware.hpp:271 | done (born `task`) | -- |
+| 16 | `OnContextFn` | core/context_assembly.hpp:128 | done (born `task`) | -- |
+| 17 | `OnTurnEndFn` | core/context_assembly.hpp:135 | done (born `task`) | -- |
+| 18 | `OnRunEndFn` | core/context_assembly.hpp:145 | done (born `task`) | -- |
+| 19 | `ReflectionEvaluator` | core/harness.hpp:223 | done (born `task`) | -- |
+| 20 | TLS handshake alias | rt/http.hpp:238 | done (reactor-native `task`) | -- |
+| 21 | `Resolver` (provider) | protocol/provider_chat_wire.hpp:28 | stays | blocking by design: the input to `rt::HostResolver`, run on the DNS pool (`host_resolver_from`, :35; steps 40-41) |
+| 22 | `Resolver` (qdrant) | protocol/qdrant/vector_index.hpp:93 | stays | same shape, same reason (step 45) |
+| 23 | `ApprovalDecider` | core/tool_pipeline.hpp:149 | **done** (Phase G slice 1, step 52; was triaged "convert/needs ADR" on `main` 16efaa38) | §5.1 names it for `task`; an approval may wait on a human (I/O), but it is the I2/I3 gate on the hot path -- conversion must preserve ADR-070's fail-closed unset default and `resolve_approval_outcome`'s structure (:165-169) |
+| 24 | `PolicyDecider` | core/tool_pipeline.hpp:170 | **done** (Phase G slice 1, step 52; was triaged "convert/needs ADR" on `main` 16efaa38) | contested: §5.1 names it, but it is a pure host decision that only narrows (:152-167); stay-sync vs `task` is an I2/I3 + hot-path call, not decided here |
+| 25 | `BackgroundTaskCompletion` | core/tool_pipeline.hpp:431 | stays | `void` enqueue, a host self-`tell()` (:428-429); §5.3 sink rule |
+| 26 | `DescriptorFilter` | core/agent_session_bridge.hpp:256 | stays | pure mutation of an in-memory descriptor vector, in `agent_bind_detail`; §5.3 pure rule |
+| 27 | `BatchRecorder::Sink` | core/batch_recording.hpp:123 | stays | `void` event sink; §5.3 |
+| 28 | `DivergenceHook` | core/batch_recording.hpp:145 | stays | `void` hook; §5.3 |
+| 29 | `ContentReplayTrigger` | core/content_replay_gateway.hpp:77 | stays | pure over a `ChatResponse const&`; §5.3 |
+| 30 | `ContentReplayTraceHook` | core/content_replay_gateway.hpp:90 | stays | `*TraceHook`; §5.3 |
+| 31 | `MiddlewareTraceHook` | core/middleware.hpp:99 | stays | `*TraceHook`; §5.3 |
+| 32 | `JitterSource` | core/model_call_gateway.hpp:166 | stays | `double()` draw, no wait; §5.3 |
+| 33 | `RecordingSink` | core/recording_chat_client.hpp:129 | stays | `void` sink; §5.3 |
+| 34 | `SleepFn` | core/replay_chat_client.hpp:144 | **convert** | default `real_sleep` is `std::this_thread::sleep_for` (:68) -- it blocks; becomes `rt::sleep_until`-shaped. Phase G |
+| 35 | `LiveShellClock` | sandbox/live_shell_lifetime.hpp:80 | stays | clock read, not a wait; §5.3 |
+| 36 | `SandboxBackendResolutionAuditHook` | sandbox/sandbox_backend_registry.hpp:63 | stays | `*AuditHook`; §5.3 |
+| 37 | `QuarantineAuditHook` | trust/secret_quarantine.hpp:111 | stays | `*AuditHook`; §5.3 |
+| 38 | `EmitFn` | rt/agent_session_trust.hpp:31 | stays | `void` event emit; §5.3 |
+| 39 | `BackgroundJobSink` | rt/background_job_runner.hpp:148 | stays | `void` sink; §5.3 |
+| 40 | `HostResolver` | rt/dns.hpp:84 | stays | already the reactor's input, run on the DNS pool (comment at :82) |
+| 41 | `AddressPolicy` | rt/dns.hpp:99 | stays | pure predicate over an address (:97) |
+| 42 | `SessionFactory` | rt/multi_agent.hpp:90 | **convert** | §5.1-named; `factory(child_principal)` (:211) builds a session synchronously, and `SurfaceFactory` (row 9) went async for the same reason. Phase G |
+| 43 | `ChildRunner` | rt/agent_spawn.hpp:160 | **convert** | §5.1-named; `target->run_child(...)` (:552) drives a whole child run (model + tool I/O) inline. Phase G |
+| 44 | `ExecutorBody` | rt/workflow_supervisor.hpp:248 | **done** (Phase G slice 2, step 53; was triaged "convert/needs ADR" on `main` 16efaa38) | §5.1-named; runs arbitrary node bodies inline (agent/workflow children block on it). Largest of the six; Phase G |
+| 45 | `AgentExecutorBodyTag::Impl` | rt/workflow_supervisor.hpp:264 | **done** (Phase G slice 2, step 53; was triaged "convert/needs ADR" on `main` 16efaa38) | same shape, called at :271; goes with row 44 |
+| 46 | `BatchableModelCall::Build` | rt/workflow_supervisor.hpp:291 | stays | pure and required deterministic (:285; called at :311) -- §5.1's blanket "`Build`/`Call`/`Complete`" over-claims |
+| 47 | `BatchableModelCall::Call` | rt/workflow_supervisor.hpp:293 | **convert** | performs the synchronous model call (:320). Phase G, with row 44 |
+| 48 | `BatchableModelCall::Complete` | rt/workflow_supervisor.hpp:295 | stays | pure fold of a response into an outcome (:330) |
+| 49 | `QueryFn` | src/backends/native_jail/python_worker_mediation.hpp:96 | stays | runs inside the jailed Python worker process as a blocking framed-pipe round trip (python_worker_main.cpp:50); the worker has no reactor |
+| 50 | `RegisteredRunner::invoke` | src/backends/native_jail/command_registry.hpp:46 | **convert** | called from shell_dispatch.cpp:270; step 50 left it sync -- joins #180 (blocking conformer bodies onto `rt::`) |
+| 51 | `RegisteredTool::invoke` | src/backends/native_jail/command_registry.hpp:59 | **convert** | shell_dispatch.cpp:288; #180 |
+| 52 | `RegisteredRunner::invoke` (mediated) | src/backends/native_jail/mediated_command_registry.hpp:36 | **convert** | mediated_shell_dispatch.cpp:292; #180 |
+| 53 | `RegisteredTool::invoke` (mediated) | src/backends/native_jail/mediated_command_registry.hpp:46 | **convert** | mediated_shell_dispatch.cpp:295; #180 |
+| 54 | `EffectContext::blob_sink` | core/effect_context.hpp:237 | **convert** | writes content-addressed bytes (`result<BlobRef>`) and `WorktreeObjectStore::put_blob` is `task`-shaped since step 49; callers sit inside tool coroutines (tools/read_content.hpp:186, tools/extract_pdf_text.hpp:189, rt/workflow_as_chat_client.hpp:226). Phase G |
+| 55-60 | `EffectContext` `report_progress`, `sandbox_exec_sink`, `agent_turn_sink`, `moderator_delta_sink`, `delegated_event_sink`, `charge_delegated_usage` | core/effect_context.hpp:115,146,172,177,182,188 | stays | `void` sinks / counters; §5.3 |
+| 61-62 | `HarnessOptions` `is_planning_safe`, `telemetry_sink` | core/harness.hpp:238,245 | stays | pure predicate over a descriptor / `void` sink; §5.3 |
+| 63-64 | `event_sink`, `charge_usage` (child run) | rt/agent_spawn_child_run.hpp:113,124 | stays | `void` sinks; §5.3 |
+| 65-66 | `on_lane_stall`, `on_stuck_run` (lanes) | rt/lanes.hpp:91,93 | stays | watchdog-thread callbacks, "must not throw" (:91); §5.3 |
+| 67-69 | `on_shutdown_overrun`, `on_lane_stall`, `on_stuck_run` (runtime) | rt/runtime.hpp:103,106,108 | stays | same watchdog `void` callbacks |
+| 70 | `on_overrun` (offload) | rt/offload.hpp:308 | stays | `void` notification |
+| 71 | `on_engine_call` (TLS) | rt/tls.hpp:121 | stays | `void()` test hook |
+| 72 | `now_ns` | rt/workflow_supervisor.hpp:386 | stays | clock read; §5.3 |
+
+Not counted as seams: `std::function` function parameters (e.g. `sandbox/provider_http_client.hpp:97,113`,
+`sandbox/net_egress_proxy.hpp:165,171,210`, `src/backends/native_jail/native_jail_backend.hpp:255`) --
+they belong to the blocking HTTP/egress helpers and follow those helpers' fate (#180, plus step 41's
+dead-code subtraction note); `tool_descriptor.hpp:182` (`make_sync_invoke`'s argument), deleted by Phase E;
+and the `stop_callback<std::function<void()>>` internals in `rt/background_job_runner.hpp`. Rows 23 and 24 were contested
+(needs ADR) and have since been converted by Phase G slice 1 (step 52).
+Tally as of this merge: 4 alias converts outstanding (rows 34, 42, 43, 47) + 5 non-alias converts (rows 50-54) = 9
+conversions outstanding; 0 needs-ADR; everything else stays.
+
+**Remaining §5.2 cleanup:** delete `make_sync_invoke`'s production call sites. **Re-verified against the
+tree 2026-10-18: THREE remain, not the five first counted.** The two RAG tools were converted off it in
+Phase C (§14 step 44): `core/hybrid_rag_context_provider.hpp` and `core/vector_rag_context_provider.hpp`
+now assign a direct instance lambda -- `d.invoke = [this](json::Value const& args, EffectContext& ctx) {
+return recall_call(args, ctx); };` -- so the `counted by grep: five` this line first recorded was a
+pre-Phase-C state. The three left: the two native-process providers
 (`native_process/native_providers.hpp:230`, `native_process/native_shell_session_provider.hpp:324`, which
 wait on **D3**), and the WASM bridge (`wasm/wasm_tool_bridge.hpp:135`, which needs a WASM-enabled build to
 verify). Then remove the zero-arg `make_tool_descriptor<ToolT>()` / `ToolTable::from_tools<Ts...>()`
@@ -2832,9 +3056,9 @@ production caller awaits them except the stated synchronous edges (the WASM host
 claimed: the blocking conformer bodies moving onto `rt::` (#180), §4.5 rule 3a's asynchronous close for the
 providers whose destructors still `block_on` a surface close, and Phase E (§5.2 cleanup).
 
-**Phase E -- §5.2 cleanup, only after C and D.** The five `make_sync_invoke` sites and the static
-`make_tool_descriptor`/`from_tools` form can only be deleted once nothing synchronous remains downstream of
-them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
+**Phase E -- §5.2 cleanup, only after C and D.** The remaining `make_sync_invoke` sites (three, re-verified
+2026-10-18 -- see the §5.2 cleanup item above) and the static `make_tool_descriptor`/`from_tools` form can
+only be deleted once nothing synchronous remains downstream of them. The WASM site additionally needs a WASM-enabled build to verify, which the current local build does
 not produce.
 **Slice 1 DONE (§14 step 51, 2026-10-16, #175):** the static-invoke form (167 conformers, `make_tool_descriptor<T>()`,
 `from_tools`) and `drive_leaf_task` are deleted. Left: `make_sync_invoke` and its three production sites
@@ -2842,18 +3066,20 @@ not produce.
 
 **Phase F -- the carried threads.** D3/D4/D7, the §10 + 027 + `web/marketing` pass, the §8 gates.
 
-**Phase G -- the orchestration and decider seams (found by the #174 triage, §14.2).** `ApprovalDecider`,
-`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`, `BatchableModelCall::Call`,
-`EffectContext::blob_sink`. §5.1 named five of these from the start; §14.1's remaining list dropped them, and
-nothing converted them. The bodies are where engine code `rt::block_on`s from inside a task today
-(`agent_spawn_child_run.hpp:139`, `agent_workflow_executor.hpp:87`, `workflow_supervisor.hpp:1160`), so this
-phase removes those nested drive loops. Order: the two deciders first (`src/core/tool_pipeline.cpp:131,136` for
-the policy decider, `:213,479` for the approval decider; ADR-070's "unset = today's behaviour" kept as an
-immediately-ready task), then
-`ExecutorBody` and `Impl` together (one signature), then `ChildRunner`, then `Call`, then `blob_sink`.
+**Phase G -- the orchestration and decider seams (surfaced by the #174 triage, §14.2 and the §14.1 table).** `ApprovalDecider`,
+`PolicyDecider`, `ExecutorBody` + `AgentExecutorBodyTag::Impl`, `ChildRunner`,
+`BatchableModelCall::Call`/`Complete`, `EffectContext::blob_sink`. §5.1 named the deciders and
+`ExecutorBody` from the start; the rest the triage added. **Slice 1 (the two deciders) DONE** (§14 step 52,
+2026-10-18). **Slice 2 (`ExecutorBody` + `Impl`, the largest single seam) DONE** (§14 step 53, 2026-10-18):
+the nested drive loops it targeted are gone -- `WorkflowSupervisor::drive<T>` and
+`agent_executor_detail::drive<T>` no longer exist, their call sites `co_await` in place. Remaining:
+`ChildRunner`; `BatchableModelCall::Call`/`Complete` (reached only *through* `BatchableModelCall`, so their
+own slice); `EffectContext::blob_sink`; and the nested drive loop at `agent_spawn_child_run.hpp:139`, which
+belongs with the agent.spawn seam rather than with the executor body.
 
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
-OK; layering-lint OK; `ctest -LE live-network` -> 401/415 with the identical 14. Never mark §5.1 or §5.2 done
+OK; layering-lint OK; `ctest -LE live-network` -> the identical 14 baseline failures (re-measured 402/418 non-live
+on 2026-10-18; the older "401/415" predates several landed slices). Never mark §5.1 or §5.2 done
 on anything less. And the standing behavioural rule: **a seam going async must not move behaviour** -- the
 A2A D4 assertions are the exemplar. If a test has to change, that change is the finding, and it gets
 recorded rather than absorbed.

@@ -67,22 +67,25 @@ Workflow make_graph() {
 
 // Triage picks the route from the complaint text; the case label on the edge decides where it goes.
 ExecutorBody triage_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text  = text_of(in);
         std::string const label = text.find("refund") != std::string::npos ? "kitchen" : "manager";
-        return ExecutorOutcome{text_message(text), {label}};
+        co_return ExecutorOutcome{text_message(text), {label}};
     };
 }
 
 ExecutorBody kitchen_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message("[kitchen] " + text_of(in)), {"done"}};
+    return [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message("[kitchen] " + text_of(in)), {"done"}};
     };
 }
 
 ExecutorBody identity_sink() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 

@@ -227,12 +227,12 @@ static_assert(ContextProvider<PlanExecuteMode>,
     return [gate = std::move(gate), inner = std::move(inner),
             is_planning_safe = std::move(is_planning_safe)](
                Principal const& caller, ToolDescriptor const& tool,
-               bool arguments_tainted) -> policy_decision {
+               bool arguments_tainted) -> task<policy_decision> {
         if (!gate->executing && !is_planning_safe(tool)) {
-            return policy_decision::auto_deny;
+            co_return policy_decision::auto_deny;
         }
-        if (inner) return inner(caller, tool, arguments_tainted);
-        return policy_decision::require_approval;
+        if (inner) co_return co_await inner(caller, tool, arguments_tainted);
+        co_return policy_decision::require_approval;
     };
 }
 

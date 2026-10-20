@@ -121,28 +121,28 @@ int main() {
     std::vector<ExecutorBody> bodies = {
         // Decodes the history envelope this adapter builds from ChatRequest.messages, exactly like
         // example 28's own "greet" -- only the FIRST chat_stream() call in a run ever reaches this.
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             if (in.content.size() != 1) {
-                return std::unexpected(error{failure_class::contract, "expected one envelope item",
-                                              "example.bad_envelope"});
+                co_return std::unexpected(error{failure_class::contract, "expected one envelope item",
+                                                 "example.bad_envelope"});
             }
             auto const* custom = std::get_if<Custom>(&in.content[0].value);
             if (custom == nullptr || custom->type_id != "agentengine.workflow_chat_client_history") {
-                return std::unexpected(error{failure_class::contract, "expected the history envelope",
-                                              "example.bad_envelope_type"});
+                co_return std::unexpected(error{failure_class::contract, "expected the history envelope",
+                                                 "example.bad_envelope_type"});
             }
-            return ExecutorOutcome{text_message("What color would you like?", role::assistant)};
+            co_return ExecutorOutcome{text_message("What color would you like?", role::assistant)};
         },
         {},  // ask_color is a request_port -- no body
         // The resolved port's own answer message flows here directly as `in` -- same fold example
         // 28's run_worker() proves for a single port, chained one hop further here.
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{
                 text_message("Got it, " + text_of(in) + ". Small, medium, or large?", role::assistant)};
         },
         {},  // ask_size is a request_port -- no body
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message("Order noted: " + text_of(in) + ". Thanks!", role::assistant)};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message("Order noted: " + text_of(in) + ". Thanks!", role::assistant)};
         },
     };
 

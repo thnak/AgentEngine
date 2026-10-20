@@ -98,41 +98,47 @@ namespace {
 // with concrete bodies at apiContent.ts:3104-3115.
 // ---------------------------------------------------------------------------------------------
 
-[[nodiscard]] result<Message> source(Message const& in, EffectContext&) {
-    return text_message(text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> source(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(text_of(in))};
 }
 
 // A source that stamps which routed branch it is, so a run's transcript says which case fired.
 [[nodiscard]] ExecutorBody tagged_source(std::string tag) {
-    return [tag](Message const& in, EffectContext&) -> result<Message> {
-        return text_message(tag + ":" + text_of(in));
+    return [tag](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(tag + ":" + text_of(in))};
     };
 }
 
 [[nodiscard]] ExecutorBody worker(std::string name) {
-    return [name](Message const& in, EffectContext&) -> result<Message> {
-        return text_message(name + ":" + upper(text_of(in)));
+    return [name](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(name + ":" + upper(text_of(in)))};
     };
 }
 
 // The aggregator reads the merged delivery: one Text item per contributing branch.
-[[nodiscard]] result<Message> aggregate(Message const& in, EffectContext&) {
-    return text_message(all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(all_text_of(in))};
 }
 
 // `counted` is listed as example-local (ApiSnippetConventions.tsx:33, "wraps a body with an
 // invocation counter"). The docs' own version is at apiContent.ts:3162; this is that idea.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> n) {
-    return [body = std::move(body), n](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+    return [body = std::move(body), n](Message const& in, EffectContext& ctx)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         n->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 
 // A classifier body, exactly the shape the Router pattern is proven with (apiContent.ts:3055-3058).
 [[nodiscard]] ExecutorBody classifier(std::string label) {
-    return [label](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + " -> " + label), {label}};
+    return [label](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + " -> " + label), {label}};
     };
 }
 
@@ -140,25 +146,29 @@ namespace {
 // "rt::ThreadPool::submit() returns a JobOutcome{faulted, fault_ptr} rather than letting the
 // exception propagate raw" (ApiWorkflowReference.tsx:325-327) -- so throwing is the documented way
 // to produce a faulting node without needing an error-construction API.
-[[nodiscard]] result<Message> explode(Message const&, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> explode(
+    Message const&, EffectContext&) {
     throw std::runtime_error("simulated worker failure");
 }
 
 // ---- bodies for the bounded-cycle variant ----------------------------------------------------
-[[nodiscard]] result<Message> writer_body(Message const& in, EffectContext&) {
-    return text_message(all_text_of(in) + ">writer");
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> writer_body(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(all_text_of(in) + ">writer")};
 }
 
 // Never approves -- the docs' own description of the bounded case (apiContent.ts:3078: "a critic
 // that never approves stops CLEANLY at bound.max_rounds").
 [[nodiscard]] ExecutorBody critic_never_approves() {
-    return [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {"revise"}};
+    return [](Message const& in, EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {"revise"}};
     };
 }
 
-[[nodiscard]] result<Message> done_body(Message const& in, EffectContext&) {
-    return text_message(all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> done_body(
+    Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message(all_text_of(in))};
 }
 
 // ---------------------------------------------------------------------------------------------

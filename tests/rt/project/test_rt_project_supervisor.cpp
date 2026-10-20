@@ -180,8 +180,8 @@ int main() {
         check(validate_workflow(wf).has_value(), "Q5 setup: the single-node workflow validates");
 
         std::vector<agentengine::rt::ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> agentengine::result<agentengine::rt::ExecutorOutcome> {
-                return agentengine::rt::ExecutorOutcome{in};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<agentengine::rt::ExecutorOutcome>> {
+                co_return agentengine::rt::ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor wf_sup;

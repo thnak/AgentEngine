@@ -62,10 +62,10 @@ void check(bool cond, char const* what) {
 // A classifier node, same shape as 10_conditional_routing.cpp's triage -- an ordinary function of
 // its input text. A model-backed intake agent would fill this same slot.
 [[nodiscard]] ExecutorBody triage() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text  = text_of(in);
         std::string const label = text.find("invoice") != std::string::npos ? "billing" : "tech";
-        return ExecutorOutcome{text_message(text), {label}};
+        co_return ExecutorOutcome{text_message(text), {label}};
     };
 }
 
@@ -74,29 +74,29 @@ void check(bool cond, char const* what) {
 // bounce it straight back (a real specialist rewriting the ticket for its peer, not forwarding the
 // same text verbatim).
 [[nodiscard]] ExecutorBody billing() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = text_of(in);
         if (text.find("crash") != std::string::npos) {
-            return ExecutorOutcome{text_message("[billing->tech handoff] please look into this outage"),
-                                    {"tech"}};
+            co_return ExecutorOutcome{text_message("[billing->tech handoff] please look into this outage"),
+                                      {"tech"}};
         }
-        return ExecutorOutcome{text_message("[resolved by billing] " + text), {"done"}};
+        co_return ExecutorOutcome{text_message("[resolved by billing] " + text), {"done"}};
     };
 }
 
 // tech: resolves directly, hands off to billing when the ticket is really a billing matter, or
 // escalates to a human via the `escalate` request_port when it names one explicitly.
 [[nodiscard]] ExecutorBody tech() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = text_of(in);
         if (text.find("invoice") != std::string::npos || text.find("charge") != std::string::npos) {
-            return ExecutorOutcome{text_message("[tech->billing handoff] please check this charge"),
-                                    {"billing"}};
+            co_return ExecutorOutcome{text_message("[tech->billing handoff] please check this charge"),
+                                      {"billing"}};
         }
         if (text.find("escalate") != std::string::npos || text.find("human") != std::string::npos) {
-            return ExecutorOutcome{text_message(text), {"escalate"}};
+            co_return ExecutorOutcome{text_message(text), {"escalate"}};
         }
-        return ExecutorOutcome{text_message("[resolved by tech] " + text), {"done"}};
+        co_return ExecutorOutcome{text_message("[resolved by tech] " + text), {"done"}};
     };
 }
 
@@ -134,8 +134,8 @@ T drive(agentengine::rt::task<T> t) {
     // Parallel to `wf.executors` by index: triage, billing, tech, escalate (no body -- request_port),
     // done (identity sink).
     return {triage(), billing(), tech(), {},
-            [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             }};
 }
 

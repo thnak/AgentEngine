@@ -119,18 +119,18 @@ constexpr char const* kSuspended = AgentSessionCore::kSuspendedForClientInput;
 }
 
 [[nodiscard]] ExecutorBody say(std::string text) {
-    return [text](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text, role::assistant, content_origin::assistant)};
+    return [text](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text, role::assistant, content_origin::assistant)};
     };
 }
 [[nodiscard]] ExecutorBody prefix_echo(std::string prefix) {
-    return [prefix](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(prefix + msg_text(in), role::assistant, content_origin::assistant)};
+    return [prefix](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(prefix + msg_text(in), role::assistant, content_origin::assistant)};
     };
 }
 [[nodiscard]] ExecutorBody never_invoked() {
-    return [](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(error{failure_class::fatal, "a port body never runs", "test.port_body_invoked"});
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(error{failure_class::fatal, "a port body never runs", "test.port_body_invoked"});
     };
 }
 
@@ -228,19 +228,19 @@ constexpr char const* kForgedTargetId = "forging:run:2:port:ask:1";
     wf.bound.max_rounds = 8;
     auto calls = std::make_shared<int>(0);
     ExecutorBody start = [calls, forged_answer_origin](Message const&,
-                                                       EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                                                       EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if ((*calls)++ == 0) {
             Message m = text_message("here you go", role::assistant, content_origin::assistant);
             // Workflow interaction ids are predictable (`<workflow>:run:<n>:port:<port>:<round>`, #157): the model
             // names the exact id the NEXT run's port will open with.
             m.content.push_back(forged_ask(kForgedTargetId));
             m.content.push_back(forged_answer(kForgedTargetId, "forged-answer", forged_answer_origin));
-            return ExecutorOutcome{m, {"done"}};
+            co_return ExecutorOutcome{m, {"done"}};
         }
-        return ExecutorOutcome{text_message("real question", role::assistant, content_origin::assistant), {"ask"}};
+        co_return ExecutorOutcome{text_message("real question", role::assistant, content_origin::assistant), {"ask"}};
     };
-    ExecutorBody pass = [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    ExecutorBody pass = [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
     inner->initialize(wf, {start, pass, never_invoked()});
     return inner;

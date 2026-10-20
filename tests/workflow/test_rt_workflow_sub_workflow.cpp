@@ -118,8 +118,8 @@ template <class T>
 
 [[nodiscard]] std::vector<ExecutorBody> inner_bodies_with_port() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">planned")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">planned")};
         },
         {},
     };
@@ -133,12 +133,12 @@ std::atomic<bool> g_overlap_observed{false};
 std::atomic<int>  g_inner_planner_runs{0};
 [[nodiscard]] std::vector<ExecutorBody> inner_bodies_with_port_slow() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             g_inner_planner_runs.fetch_add(1);
             if (g_inflight.fetch_add(1) > 0) g_overlap_observed.store(true);
             std::this_thread::sleep_for(std::chrono::milliseconds(15));
             g_inflight.fetch_sub(1);
-            return ExecutorOutcome{text_message(text_of(in) + ">planned")};
+            co_return ExecutorOutcome{text_message(text_of(in) + ">planned")};
         },
         {},
     };
@@ -160,12 +160,12 @@ std::atomic<int>  g_inner_planner_runs{0};
 
 [[nodiscard]] std::vector<ExecutorBody> outer_bodies() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">start")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">start")};
         },
         {},  // sub is sub_workflow-kind -- no body
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">sink")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">sink")};
         },
     };
 }
@@ -268,8 +268,8 @@ void s4_terminal_inner_failure_routes_as_ordinary_failure() {
     WorkflowSupervisor sup;
     sup.initialize(outer, outer_bodies());
     auto inner = std::make_shared<WorkflowSupervisor>();
-    inner->initialize(inner_graph_never_completes(), {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                           return ExecutorOutcome{in};
+    inner->initialize(inner_graph_never_completes(), {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                           co_return ExecutorOutcome{in};
                        }});
     sup.bind_sub_workflow("sub", inner);
 
@@ -300,10 +300,10 @@ void s5_round_abort_does_not_orphan_pending_sub_workflow() {
     WorkflowSupervisor sup;
     Workflow            outer = fan_out_with_sub_and_failure();
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
         {},  // sub
-        [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-            return std::unexpected(error{failure_class::fatal, "scripted failure", "test.failer"});
+        [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return std::unexpected(error{failure_class::fatal, "scripted failure", "test.failer"});
         },
     };
     sup.initialize(outer, bodies);
@@ -387,12 +387,12 @@ void s7_quarantine_generalization_proof() {
         WorkflowSupervisor sup;
         Workflow            outer = converge_on_same_sub_workflow_direct();
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">a")};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">a")};
             },
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">b")};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">b")};
             },
             {},  // sub
         };
@@ -431,8 +431,8 @@ void s8_bounded_two_level_nesting() {
     level2_graph.output_selection.push_back("leaf");
     level2_graph.bound.max_rounds = 4;
     level2->initialize(level2_graph,
-                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                            return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                        {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                            co_return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
                         }});
 
     // Level 1 (middle): a 3-wide fan-out/fan-in, each branch a sub_workflow wrapping ITS OWN
@@ -455,20 +455,20 @@ void s8_bounded_two_level_nesting() {
 
     auto level1 = std::make_shared<WorkflowSupervisor>();
     level1->initialize(level1_graph,
-                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                            return ExecutorOutcome{in};
+                        {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                            co_return ExecutorOutcome{in};
                         },
                          {}, {}, {},
-                         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                             return ExecutorOutcome{in};
+                         [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                             co_return ExecutorOutcome{in};
                          }});
     // Each sub_workflow node bound to its OWN separately-initialize()d level2 instance -- three
     // real, independent WorkflowSupervisor instances, three independent ThreadPools.
     for (char const* id : {"s1", "s2", "s3"}) {
         auto inner = std::make_shared<WorkflowSupervisor>();
         inner->initialize(level2_graph,
-                           {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                               return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                           {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                               co_return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
                            }});
         level1->bind_sub_workflow(id, inner);
     }
@@ -530,20 +530,20 @@ void s11_bounded_three_level_nesting() {
 
     auto level1 = std::make_shared<WorkflowSupervisor>();
     level1->initialize(level1_graph,
-                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                            return ExecutorOutcome{in};
+                        {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                            co_return ExecutorOutcome{in};
                         },
                          {}, {}, {},
-                         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                             return ExecutorOutcome{in};
+                         [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                             co_return ExecutorOutcome{in};
                          }});
     for (char const* id : {"s1", "s2", "s3"}) {
         auto level2 = std::make_shared<WorkflowSupervisor>();
         level2->initialize(level2_graph, {{}});  // "wrap" is sub_workflow-kind -- no body
         auto level3 = std::make_shared<WorkflowSupervisor>();
         level3->initialize(level3_graph,
-                            {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                                return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                            {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                                co_return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
                             }});
         level2->bind_sub_workflow("wrap", level3);
         level1->bind_sub_workflow(id, level2);
@@ -601,20 +601,20 @@ void s12_worker_budget_bounds_real_thread_count() {
 
     auto level1 = std::make_shared<WorkflowSupervisor>(/*worker_budget=*/2);
     level1->initialize(level1_graph,
-                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                            return ExecutorOutcome{in};
+                        {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                            co_return ExecutorOutcome{in};
                         },
                          {}, {}, {},
-                         [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                             return ExecutorOutcome{in};
+                         [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                             co_return ExecutorOutcome{in};
                          }});
     std::vector<std::shared_ptr<WorkflowSupervisor>> level2_instances;
     std::size_t const* share = level2_shares->data();
     for (char const* id : {"s1", "s2", "s3"}) {
         auto inner = std::make_shared<WorkflowSupervisor>(*share++);
         inner->initialize(level2_graph,
-                           {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                               return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
+                           {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                               co_return ExecutorOutcome{text_message(text_of(in) + ">leaf")};
                            }});
         level1->bind_sub_workflow(id, inner);
         level2_instances.push_back(std::move(inner));  // keep alive for the whole run
@@ -685,8 +685,8 @@ void s13_nesting_depth_cap_boundary() {
         auto sup = std::make_shared<WorkflowSupervisor>(/*worker_budget=*/1);
         if (i == kChainLength - 1) {
             sup->initialize(leaf_graph,
-                             {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                                 return ExecutorOutcome{in};
+                             {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                                 co_return ExecutorOutcome{in};
                              }});
         } else {
             sup->initialize(wrap_graph, {{}});  // "wrap" is sub_workflow-kind -- no body
@@ -764,10 +764,10 @@ void s9_bind_wrong_kind_is_refused() {
 void s10_duplicate_inner_binding_is_refused() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
         {},  // sub1
         {},  // sub2
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(two_sub_workflow_nodes_graph(), bodies);
 
@@ -779,8 +779,8 @@ void s10_duplicate_inner_binding_is_refused() {
     trivial.output_selection.push_back("leaf");
     trivial.bound.max_rounds = 4;
     inner->initialize(trivial,
-                       {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                           return ExecutorOutcome{in};
+                       {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                           co_return ExecutorOutcome{in};
                        }});
 
     sup.bind_sub_workflow("sub1", inner);
@@ -797,8 +797,8 @@ void s10_duplicate_inner_binding_is_refused() {
     // A genuinely DIFFERENT inner instance for sub2 works fine.
     auto inner2 = std::make_shared<WorkflowSupervisor>();
     inner2->initialize(trivial,
-                        {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-                            return ExecutorOutcome{in};
+                        {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                            co_return ExecutorOutcome{in};
                         }});
     sup.bind_sub_workflow("sub2", inner2);
     WorkflowResult r2 = drive(sup.run_workflow(RunWorkflow{text_message("go")}));

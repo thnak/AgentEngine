@@ -133,8 +133,8 @@ using ScriptedSession = AgentSession<ScriptedChatClient>;
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](Message const& in,
-                                    EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+                                    EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 
@@ -163,8 +163,8 @@ int main() {
         check(agent_body.target<AgentExecutorBodyTag>() != nullptr,
               "T1: a genuinely agent-backed body IS detected via std::function::target<>()");
 
-        ExecutorBody plain_body = [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{in};
+        ExecutorBody plain_body = [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};
         };
         check(plain_body.target<AgentExecutorBodyTag>() == nullptr,
               "T1: an ordinary function body is NOT mistaken for an agent-backed one");

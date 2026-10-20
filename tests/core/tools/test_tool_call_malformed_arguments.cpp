@@ -221,8 +221,8 @@ int main() {
     {
         g_probe_runs = 0;
         ae::CapabilitySet const held;
-        auto admitted = ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
-                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{});
+        auto admitted = agentengine::test_support::run_task_sync<agentengine::result<agentengine::AdmittedCall>>(ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
+                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{}));
         check(!admitted && admitted.error().code == "tool.malformed_arguments",
               "T5: admit_call() refuses the malformed call before binding anything");
 

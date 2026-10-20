@@ -279,9 +279,9 @@ int main() {
         ToolCallRequest req{"call-5", "gated_action", *json::parse(R"({"action":"go"})"), false};
         bool decider_called = false;
         agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
-                                                  std::string const&) {
+                                                  std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return false;
+            co_return false;
         };
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, deny));
         check(result.is_error, "approval denied blocks the call");
@@ -295,10 +295,10 @@ int main() {
         ToolCallRequest req{"call-6", "gated_action", *json::parse(R"({"action":"go"})"), false};
         std::string seen_args;
         agentengine::ApprovalDecider allow = [&](agentengine::Principal const&, std::string_view tool_name,
-                                                   std::string const& args_json) {
+                                                   std::string const& args_json) -> agentengine::task<bool> {
             check(tool_name == "gated_action", "decider sees the correct tool name");
             seen_args = args_json;
-            return true;
+            co_return true;
         };
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, allow));
         check(!result.is_error, "approval granted allows the call");
@@ -332,10 +332,10 @@ int main() {
                               .provenance = call_provenance::text_derived};
         bool decider_called = false;
         agentengine::ApprovalDecider tripwire = [&](agentengine::Principal const&, std::string_view,
-                                                       std::string const&) {
+                                                       std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return false;  // if this ever runs, the call MUST still fail -- proving auto-declassify
-                            // isn't secretly routing through a permissive decider
+            co_return false;  // if this ever runs, the call MUST still fail -- proving auto-declassify
+                              // isn't secretly routing through a permissive decider
         };
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, tripwire));
         check(!result.is_error,
@@ -375,9 +375,9 @@ int main() {
 
         bool decider_called = false;
         agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
-                                                  std::string const&) {
+                                                  std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return false;
+            co_return false;
         };
         auto result_denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, deny));
         check(result_denied.is_error && decider_called,
@@ -386,7 +386,7 @@ int main() {
               "a 'no' from it still blocks the call");
 
         agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
-                                                  std::string const&) { return true; };
+                                                  std::string const&) -> agentengine::task<bool> { co_return true; };
         auto result_approved = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, allow));
         check(!result_approved.is_error,
               "ADR-023 P2-T2: an EXPLICIT human/policy approval still lets a text_derived call to a "
@@ -456,13 +456,13 @@ int main() {
         ToolCallRequest req{"call-13", "policy_action", *json::parse(R"({"action":"go"})"), false};
         bool decider_called = false;
         agentengine::ApprovalDecider tripwire = [&](agentengine::Principal const&, std::string_view,
-                                                       std::string const&) {
+                                                       std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return false;
+            co_return false;
         };
         agentengine::PolicyDecider approve_all =
-            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             };
         agentengine::ToolInvocationAudit audit;
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, tripwire, &audit, approve_all));
@@ -482,13 +482,13 @@ int main() {
         ToolCallRequest req{"call-14", "policy_action", *json::parse(R"({"action":"go"})"), false};
         bool decider_called = false;
         agentengine::ApprovalDecider tripwire_allow = [&](agentengine::Principal const&, std::string_view,
-                                                             std::string const&) {
+                                                             std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return true;
+            co_return true;
         };
         agentengine::PolicyDecider deny_all =
-            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_deny;
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_deny;
             };
         agentengine::ToolInvocationAudit audit;
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, tripwire_allow, &audit, deny_all));
@@ -507,13 +507,13 @@ int main() {
         ToolCallRequest req{"call-15", "policy_action", *json::parse(R"({"action":"go"})"), false};
         bool decider_called = false;
         agentengine::ApprovalDecider allow = [&](agentengine::Principal const&, std::string_view,
-                                                    std::string const&) {
+                                                    std::string const&) -> agentengine::task<bool> {
             decider_called = true;
-            return true;
+            co_return true;
         };
         agentengine::PolicyDecider ask =
-            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::require_approval;
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::require_approval;
             };
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, allow, nullptr, ask));
         check(!result.is_error, "ADR-070: require_approval falls through to the ApprovalDecider");
@@ -527,8 +527,8 @@ int main() {
         auto ctx = make_ctx();
         ToolCallRequest req{"call-16", "policy_action", *json::parse(R"({"action":"go"})"), false};
         agentengine::PolicyDecider approve_all =
-            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             };
         agentengine::ToolInvocationAudit audit;
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr, &audit, approve_all));
@@ -552,9 +552,9 @@ int main() {
                               .provenance = call_provenance::text_derived};
         bool policy_called = false;
         agentengine::PolicyDecider tripwire =
-            [&](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
+            [&](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
                 policy_called = true;
-                return agentengine::policy_decision::auto_approve;
+                co_return agentengine::policy_decision::auto_approve;
             };
         agentengine::ToolInvocationAudit audit;
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr, &audit, tripwire));
@@ -594,15 +594,15 @@ int main() {
             auto ctx = make_ctx();
             bool consulted = false;
             agentengine::ApprovalDecider deny = [&](agentengine::Principal const&, std::string_view,
-                                                      std::string const&) {
+                                                      std::string const&) -> agentengine::task<bool> {
                 consulted = true;
-                return false;
+                co_return false;
             };
             auto denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req_for("pure_always", call_provenance::text_derived), ctx, deny));
             check(denied.is_error && consulted,
                   "ADR-184 T2: the decider IS consulted for it, and a 'no' blocks the call");
             agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
-                                                      std::string const&) { return true; };
+                                                      std::string const&) -> agentengine::task<bool> { co_return true; };
             auto ctx2 = make_ctx();
             auto approved = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req_for("pure_always", call_provenance::text_derived), ctx2, allow));
             check(!approved.is_error, "ADR-184 T2: an explicit approval lets it through -- a gate, not a block");
@@ -619,8 +619,8 @@ int main() {
         {
             auto ctx = make_ctx();
             agentengine::PolicyDecider approve_all =
-                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                    return agentengine::policy_decision::auto_approve;
+                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                    co_return agentengine::policy_decision::auto_approve;
                 };
             agentengine::ToolInvocationAudit audit;
             auto r = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req_for("pure_policy", call_provenance::text_derived), ctx, nullptr,
@@ -629,7 +629,7 @@ int main() {
                   "ADR-184 T4: a text_derived call to a pure, capability-free policy_driven tool is refused "
                   "with no ApprovalDecider, even though the PolicyDecider says auto_approve");
             agentengine::ApprovalDecider allow = [](agentengine::Principal const&, std::string_view,
-                                                      std::string const&) { return true; };
+                                                      std::string const&) -> agentengine::task<bool> { co_return true; };
             auto ctx2 = make_ctx();
             auto ok = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req_for("pure_policy", call_provenance::text_derived), ctx2, allow,
                                   nullptr, approve_all));
@@ -665,14 +665,14 @@ int main() {
         // approved what the policy refuses outright for the vendor_structured twin.
         {
             agentengine::PolicyDecider deny_all =
-                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) {
-                    return agentengine::policy_decision::auto_deny;
+                [](agentengine::Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                    co_return agentengine::policy_decision::auto_deny;
                 };
             bool approver_called = false;
             agentengine::ApprovalDecider allow_all = [&](agentengine::Principal const&, std::string_view,
-                                                           std::string const&) {
+                                                           std::string const&) -> agentengine::task<bool> {
                 approver_called = true;
-                return true;
+                co_return true;
             };
             for (call_provenance const prov : {call_provenance::vendor_structured, call_provenance::text_derived}) {
                 auto ctx = make_ctx();

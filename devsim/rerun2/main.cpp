@@ -569,22 +569,22 @@ int run_threshold() {
             co_return result<std::monostate>{};
         });
         session.set_approval_decider([](Principal const&, std::string_view tool_name,
-                                        std::string const& canonical_args_json) {
+                                        std::string const& canonical_args_json) -> task<bool> {
             std::printf("  ....    decider called: tool=%.*s args=%s\n",
                         static_cast<int>(tool_name.size()), tool_name.data(),
                         canonical_args_json.c_str());
             // The rule the pizza-order page points at: read the amount out of the args.
             auto parsed = json::parse(canonical_args_json);
-            if (!parsed) return false;
+            if (!parsed) co_return false;
             json::Value const* amount = parsed->find("amount_cents");
-            if (amount == nullptr) return false;
+            if (amount == nullptr) co_return false;
             auto cents = json::as_bounded_integer(*amount);
-            if (!cents.has_value()) return false;
+            if (!cents.has_value()) co_return false;
             std::printf("  ....    decider saw amount_cents=%llu, threshold=%llu -> %s\n",
                         static_cast<unsigned long long>(*cents),
                         static_cast<unsigned long long>(kRefundApprovalThresholdCents),
                         (*cents <= kRefundApprovalThresholdCents) ? "approve" : "deny");
-            return *cents <= kRefundApprovalThresholdCents;
+            co_return *cents <= kRefundApprovalThresholdCents;
         });
 
         auto r1 = agentengine::rt::block_on(session.start_run(StartRun{user_message("Refund ORD-77001.")}));
@@ -605,10 +605,10 @@ int run_threshold() {
         if (!made) return 1;
         auto& session = made->session();
         session.set_suspend_for_approval(true);
-        session.set_policy_decider([](Principal const&, ToolDescriptor const& tool, bool tainted) {
+        session.set_policy_decider([](Principal const&, ToolDescriptor const& tool, bool tainted) -> task<policy_decision> {
             std::printf("  ....    policy decider called: tool=%s tainted=%s (no argument values are passed)\n",
                         tool.name.c_str(), tainted ? "true" : "false");
-            return policy_decision::require_approval;
+            co_return policy_decision::require_approval;
         });
         auto r1 = agentengine::rt::block_on(session.start_run(StartRun{user_message("Refund ORD-77002.")}));
         check(!r1.has_value() && r1.error().code == std::string(AgentSessionCore::kSuspendedForApproval),

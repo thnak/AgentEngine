@@ -169,20 +169,21 @@ int main() {
         if (handle.has_value()) {
             ExecRequest allowed_req;
             allowed_req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://example.com/ || echo FAILED";
+                "echo | nc -w 5 example.com 443 >/dev/null 2>&1 && echo CONNECTED || echo FAILED";
             auto allowed_out = agentengine::rt::block_on(backend.exec(*handle, allowed_req, ctx));
             check(allowed_out.has_value() && allowed_out->klass == exec_outcome_class::ok &&
-                      allowed_out->stdout_text.find("FAILED") == std::string::npos,
+                      allowed_out->stdout_text.find("CONNECTED") != std::string::npos,
                   "REAL enforcement: the guest can reach the allowlisted destination "
                   "(example.com:443) -- /etc/hosts pin + nftables ACCEPT rule both actually work, "
                   "not just accepted and silently ignored");
 
             ExecRequest blocked_req;
             blocked_req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://1.1.1.1/ || echo FAILED";
+                "echo | nc -w 5 1.1.1.1 443 >/dev/null 2>&1 && echo CONNECTED || echo FAILED";
             auto blocked_out = agentengine::rt::block_on(backend.exec(*handle, blocked_req, ctx));
             check(blocked_out.has_value() &&
-                      blocked_out->stdout_text.find("FAILED") != std::string::npos,
+                      blocked_out->stdout_text.find("FAILED") != std::string::npos &&
+                      blocked_out->stdout_text.find("CONNECTED") == std::string::npos,
                   "REAL enforcement: the guest CANNOT reach a destination NOT on the allowlist "
                   "(1.1.1.1) -- the default-deny nftables policy actually blocks traffic, proving "
                   "this is a real allowlist and not an allow-everything netns with cosmetic rules");
@@ -278,17 +279,41 @@ int main() {
         check(handle.has_value(), "create(): a real NetPolicy::allowlist entry WITH net_bytes creates "
                                    "cleanly (SLICE 11 -- named nft quota object on output+input chains)");
         if (handle.has_value()) {
+            // busybox has no curl; wget over its ssl_client carries a real HTTPS payload.
             ExecRequest req;
             req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://example.com/ || echo "
-                "FAILED";
+                "wget -q -T 5 -O /dev/null https://example.com/ && echo CONNECTED || echo FAILED";
             auto out = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             check(out.has_value() &&
-                      (out->stdout_text.find("FAILED") != std::string::npos ||
+                      (out->stdout_text.find("CONNECTED") == std::string::npos ||
                        out->klass != exec_outcome_class::ok),
                   "REAL enforcement: a request whose response alone exceeds the tiny 256-byte "
                   "net_bytes budget is cut off by the shared nft quota -- proves net_bytes counts "
                   "real INBOUND bytes (the input chain), not merely egress");
+            agentengine::rt::block_on(backend.destroy(*handle));
+        }
+    }
+
+    // ---- 9b. POSITIVE CONTROL for case 9: the identical request, allowlist and grant WITHOUT
+    //          net_bytes must succeed. Without it, case 9's "cut off" check passes just as well when
+    //          the request could never have worked (no client in the image, no route) -- a test that
+    //          cannot fail proves nothing.
+    {
+        KataBackend backend;
+        SandboxSpec spec;
+        spec.net.allowlist.push_back("example.com:443:https");
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxNetOut{{"example.com:443:https"}}}});
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
+        check(handle.has_value(), "create(): case 9b's allowlist-only instance (no net_bytes) creates cleanly");
+        if (handle.has_value()) {
+            ExecRequest req;
+            req.source =
+                "wget -q -T 5 -O /dev/null https://example.com/ && echo CONNECTED || echo FAILED";
+            auto out = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
+            check(out.has_value() && out->stdout_text.find("CONNECTED") != std::string::npos,
+                  "positive control for case 9: the same HTTPS request WITHOUT net_bytes succeeds, "
+                  "so case 9's cut-off is the quota and not an unusable client or route");
             agentengine::rt::block_on(backend.destroy(*handle));
         }
     }

@@ -116,9 +116,9 @@ constexpr int kNegativeControlSeedCount = 200;
 // delayed_appender() shape.
 [[nodiscard]] ExecutorBody shuffled_appender(std::string name, std::chrono::microseconds const* delay_slot) {
     return [name = std::move(name), delay_slot](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (delay_slot->count() > 0) std::this_thread::sleep_for(*delay_slot);
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -131,10 +131,10 @@ constexpr int kNegativeControlSeedCount = 200;
 [[nodiscard]] ExecutorBody order_leaking_appender(std::string name, std::chrono::microseconds const* delay_slot,
                                                     std::atomic<int>* completion_counter) {
     return [name = std::move(name), delay_slot, completion_counter](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (delay_slot->count() > 0) std::this_thread::sleep_for(*delay_slot);
         int const real_completion_position = completion_counter->fetch_add(1);
-        return ExecutorOutcome{
+        co_return ExecutorOutcome{
             text_message(all_text_of(in) + ">" + name + "#" + std::to_string(real_completion_position))};
     };
 }
@@ -155,8 +155,8 @@ constexpr int kNegativeControlSeedCount = 200;
 }
 
 [[nodiscard]] ExecutorBody aggregator() {
-    return [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in))};
+    return [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in))};
     };
 }
 
@@ -177,8 +177,8 @@ int main() {
         check(validate_workflow(wf).has_value(), "G3 setup: the fan-out/fan-in graph validates");
 
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(all_text_of(in) + "in")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(all_text_of(in) + "in")};
             },
             shuffled_appender("w1", &delays[0]),
             shuffled_appender("w2", &delays[1]),
@@ -227,8 +227,8 @@ int main() {
         Workflow wf = fan_out_in_graph();
 
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(all_text_of(in) + "in")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(all_text_of(in) + "in")};
             },
             order_leaking_appender("w1", &delays[0], &completion_counter),
             order_leaking_appender("w2", &delays[1], &completion_counter),

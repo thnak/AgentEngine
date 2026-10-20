@@ -98,8 +98,8 @@ using agentengine::role;
 }
 
 [[nodiscard]] ExecutorBody forward_body() {
-    return [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 

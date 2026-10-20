@@ -123,15 +123,17 @@ template <class T>
 // ================================================================================================
 
 [[nodiscard]] ExecutorBody worker_summarize() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = ae::text_of(in);
         std::string       body = text.size() > 56 ? text.substr(0, 56) + "..." : text;
-        return text_message("summary{" + body + "}");
+        co_return ExecutorOutcome{text_message("summary{" + body + "}")};
     };
 }
 
 [[nodiscard]] ExecutorBody worker_keywords() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = ae::text_of(in);
         std::string       out;
         std::string       word;
@@ -151,12 +153,13 @@ template <class T>
         }
         flush();
         if (out.empty()) out = "<none>";
-        return text_message("keywords{" + out + "}");
+        co_return ExecutorOutcome{text_message("keywords{" + out + "}")};
     };
 }
 
 [[nodiscard]] ExecutorBody worker_sentiment() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string  text = ae::text_of(in);
         std::transform(text.begin(), text.end(), text.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -169,14 +172,15 @@ template <class T>
             for (std::size_t p = text.find(w); p != std::string::npos; p = text.find(w, p + 1)) ++negative;
         }
         char const* label = positive > negative ? "positive" : (negative > positive ? "negative" : "neutral");
-        return text_message(std::string("sentiment{") + label + "}");
+        co_return ExecutorOutcome{text_message(std::string("sentiment{") + label + "}")};
     };
 }
 
 // The fan-out source: a plain pass-through, like examples/09_concurrent_workflow.cpp:85-87.
 [[nodiscard]] ExecutorBody source() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
-        return text_message(ae::text_of(in));
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(ae::text_of(in))};
     };
 }
 
@@ -197,52 +201,57 @@ template <class T>
 }
 
 [[nodiscard]] ExecutorBody classifier() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ExecutorOutcome> {
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text  = ae::text_of(in);
         std::string const label = classify_document(text);
-        return ExecutorOutcome{text_message(text), {label}};
+        co_return ExecutorOutcome{text_message(text), {label}};
     };
 }
 
 // A classifier that names a label no edge in the graph carries -- the routing_failed demonstration.
 [[nodiscard]] ExecutorBody classifier_naming_an_undeclared_route() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(ae::text_of(in)), {"legal_review"}};  // never declared
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(ae::text_of(in)), {"legal_review"}};  // never declared
     };
 }
 
 // The aggregator: fan-in delivers ONE message carrying one ContentItem per contributing branch, and
 // the aggregator runs exactly ONCE for the round. This is the single answer the pipeline produces.
 [[nodiscard]] ExecutorBody aggregate() {
-    return [](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
-        return text_message(all_text_of(in));
+    return [](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in))};
     };
 }
 
 // Wraps a body with an invocation counter so the "aggregator ran exactly once" property is MEASURED,
 // not inferred from plausible-looking output -- examples/09_concurrent_workflow.cpp:96-106.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> n) {
-    return [body = std::move(body), n](ae::Message const& in,
-                                       ae::EffectContext& ctx) -> ae::result<ExecutorOutcome> {
+    return [body = std::move(body), n](ae::Message const& in, ae::EffectContext& ctx)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         n->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 
 // A body that fails with an ENGINE error, not an exception.
 [[nodiscard]] ExecutorBody worker_that_fails() {
-    return [](ae::Message const&, ae::EffectContext&) -> ae::result<ExecutorOutcome> {
-        return std::unexpected(ae::error{ae::failure_class::fatal,
-                                         "summarize: the document could not be parsed as text",
-                                         "pipeline.document_unparseable"});
+    return [](ae::Message const&, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(ae::error{ae::failure_class::fatal,
+                                            "summarize: the document could not be parsed as text",
+                                            "pipeline.document_unparseable"});
     };
 }
 
 // Appends a tag to the message. Used by the bounded cycle, where the message must grow every round
 // so the run cannot converge on its own.
 [[nodiscard]] ExecutorBody appender(std::string tag) {
-    return [tag = std::move(tag)](ae::Message const& in, ae::EffectContext&) -> ae::result<ae::Message> {
-        return text_message(ae::text_of(in) + ">" + tag);
+    return [tag = std::move(tag)](ae::Message const& in, ae::EffectContext&)
+        -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(ae::text_of(in) + ">" + tag)};
     };
 }
 

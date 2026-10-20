@@ -110,11 +110,11 @@ using agentengine::role;
 
 [[nodiscard]] std::vector<ExecutorBody> two_step_inner_bodies() {
     return {
-        [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">greet")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">greet")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">shout")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">shout")};
         },
     };
 }
@@ -133,7 +133,7 @@ int main() {
         check(wrapped.has_value(), "W1: construction succeeds for a request_port-free graph");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("in"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(out.has_value(), "W1: the wrapped call succeeds");
             if (out) {
                 check(text_of(out->payload) == "in>greet>shout",
@@ -153,8 +153,8 @@ int main() {
         check(wrapped.has_value(), "W2 setup: construction succeeds");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> first  = (*wrapped)(text_message("call"), ctx);
-            result<ExecutorOutcome> second = (*wrapped)(text_message("call"), ctx);
+            result<ExecutorOutcome> first  = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
+            result<ExecutorOutcome> second = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
             check(first.has_value() && second.has_value(), "W2: both calls succeed");
             if (first && second) {
                 check(text_of(first->payload) == text_of(second->payload),
@@ -208,11 +208,11 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             // Succeeds, but names a label NO declared edge carries -> routing_failed, not a crash.
-            [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("x"), {"unknown"}};
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("x"), {"unknown"}};
             },
-            [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -221,7 +221,7 @@ int main() {
         check(wrapped.has_value(), "W4 setup: construction succeeds (no request_port here)");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("in"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(!out.has_value(), "W4: a routing_failed inner run fails closed, not a default value");
             if (!out) {
                 check(out.error().code ==
@@ -242,10 +242,10 @@ int main() {
 
         auto call_count = std::make_shared<std::atomic<int>>(0);
         std::vector<ExecutorBody> inner_bodies = {
-            [call_count](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
+            [call_count](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 call_count->fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(15));  // widen the race window
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
 
@@ -272,14 +272,14 @@ int main() {
             outer_wf.bound.max_rounds = 10;
 
             std::vector<ExecutorBody> outer_bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{in};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{in};
                 },
-                [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message("fromA")};
+                [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message("fromA")};
                 },
-                [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message("fromB")};
+                [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message("fromB")};
                 },
                 *wrapped,
             };
@@ -311,7 +311,7 @@ int main() {
         check(wrapped.has_value(), "W6: the factory returns successfully");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("factory"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("factory"), ctx));
             check(out.has_value() && text_of(out->payload) == "factory>greet>shout",
                   "W6: the body still works correctly after its local WorkflowSupervisor's own "
                   "variable went out of scope -- the shared_ptr overload owns a real keep-alive, no "
@@ -338,8 +338,8 @@ int main() {
             check(validate_workflow(outer_wf).has_value(), "W7: the outer graph validates");
 
             std::vector<ExecutorBody> outer_bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message(text_of(in) + ">prep")};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message(text_of(in) + ">prep")};
                 },
                 *wrapped,  // the whole inner Workflow, reused as an ORDINARY outer participant
             };

@@ -145,9 +145,14 @@ struct IdempotencyKey {
 // "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
 // policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
 // that ignores it behaves exactly as before.
+// decisions/ADR-237 §5.1 (Phase G): `task`-shaped -- an approval may need real I/O (a human channel, a
+// policy service), so the seam lets a decider suspend. A decider cannot fail: a throwing body is caught
+// by `task`'s own `unhandled_exception` and rethrown at the caller's `co_await`, exactly how it
+// propagated before. An unset decider is the same fail-closed default, now an immediately-ready task
+// (ADR-070's "unset = today's behaviour").
 // ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
-                                            std::string const& canonical_args_json)>;
+using ApprovalDecider = std::function<task<bool>(Principal const& caller, std::string_view tool_name,
+                                                 std::string const& canonical_args_json)>;
 
 // Delegated Decision Seam (decisions/ADR-070-host-configurable-responsibility-boundary.md): a
 // SECOND, optional host seam, consulted ONLY for `approval_mode::policy_driven` -- unlike
@@ -166,9 +171,13 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // ADR-192's unattended mode additionally asks it about every call that reaches the decider.
 // `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
+// decisions/ADR-237 §5.1 (Phase G): `task`-shaped, on the same reasoning as `ApprovalDecider` above --
+// a policy consult may reach a network service, so the seam can suspend. It cannot fail; an unset
+// decider is the same fail-closed default, now an immediately-ready task (ADR-070 "unset = today's
+// behaviour").
 // ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
-using PolicyDecider = std::function<policy_decision(Principal const& caller, ToolDescriptor const& tool,
-                                                     bool arguments_tainted)>;
+using PolicyDecider = std::function<task<policy_decision>(Principal const& caller, ToolDescriptor const& tool,
+                                                          bool arguments_tainted)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
@@ -256,13 +265,17 @@ namespace tool_pipeline_detail {
 // apart. With `policy` unset (`{}`) this reproduces `tool_call_requires_approval()`'s own boolean
 // exactly -- `needs_decider` wherever that function would have returned `true`, `proceed` otherwise
 // -- so every existing caller that never wires a `PolicyDecider` sees byte-identical behavior.
+//
+// decisions/ADR-237 §5.1 (Phase G): `task`-shaped, because it `co_await`s the now-`task` deciders. It
+// still never fails (both deciders are infallible), so the return is `task<approval_outcome>`, not
+// `task<result<...>>`.
 enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint: allow approval_outcome — ADR-070, same idiom as call_provenance/approval_mode
 
-[[nodiscard]] approval_outcome resolve_approval_outcome(ToolDescriptor const& tool,
-                                                        call_provenance provenance,
-                                                        Principal const& caller,
-                                                        bool arguments_tainted,
-                                                        PolicyDecider const& policy);
+[[nodiscard]] task<approval_outcome> resolve_approval_outcome(ToolDescriptor const& tool,
+                                                              call_provenance provenance,
+                                                              Principal const& caller,
+                                                              bool arguments_tainted,
+                                                              PolicyDecider const& policy);
 
 // ADR-029 needs this outside `invoke_tool()` too, to build a denial `ToolResult` for a pending call
 // a human explicitly rejected (`AgentSession::handle()`'s resume-and-deny path) in exactly the same
@@ -304,11 +317,11 @@ struct AdmittedCall {
     std::vector<BoundCapability> bound;
 };
 
-[[nodiscard]] result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& held,
-                                              ToolCallRequest const& request,
-                                              Principal const& caller,
-                                              ApprovalDecider const& approve,
-                                              PolicyDecider const& policy);
+[[nodiscard]] task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet const& held,
+                                                    ToolCallRequest const& request,
+                                                    Principal const& caller,
+                                                    ApprovalDecider const& approve,
+                                                    PolicyDecider const& policy);
 
 // decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
 // (account) extracted from invoke_tool() below, alongside admit_call() above -- returns the raw

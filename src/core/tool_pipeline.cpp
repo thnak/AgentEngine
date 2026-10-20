@@ -116,52 +116,60 @@ bool tool_call_requires_approval(ToolDescriptor const& tool,
     return tool_requires;
 }
 
-approval_outcome resolve_approval_outcome(ToolDescriptor const& tool,
-                                          call_provenance provenance,
-                                          Principal const& caller,
-                                          bool arguments_tainted,
-                                          PolicyDecider const& policy) {
+task<approval_outcome> resolve_approval_outcome(ToolDescriptor const& tool,
+                                                call_provenance provenance,
+                                                Principal const& caller,
+                                                bool arguments_tainted,
+                                                PolicyDecider const& policy) {
     // `text_derived` never gets a policy APPROVAL -- 007 §4's closed declassifier list is untouched
     // by ADR-070; `is_auto_declassifiable_text_derived_call` (via `tool_call_requires_approval`
     // below) stays the sole gate that can lift approval for that provenance. ADR-184: the policy IS
     // consulted for a text_derived call, but only its `auto_deny` is honoured. A deny only narrows,
     // and without it a call the host's policy refuses outright as vendor_structured would instead
     // reach the ApprovalDecider as text_derived -- lower trust, laxer gate.
+    //
+    // ADR-237 §5.1 (Phase G): the policy consult `co_await`s a now-`task` decider. The decider call
+    // is hoisted out of its `if`/`switch` condition (a `co_await` cannot sit inside `==`), preserving
+    // the exact short-circuit order: `policy` is still only consulted when the tool is `policy_driven`
+    // and `policy` is set.
     if (tool.approval == approval_mode::policy_driven && provenance == call_provenance::text_derived &&
-        policy && policy(caller, tool, arguments_tainted) == policy_decision::auto_deny) {
-        return approval_outcome::deny;
+        policy) {
+        if ((co_await policy(caller, tool, arguments_tainted)) == policy_decision::auto_deny) {
+            co_return approval_outcome::deny;
+        }
     }
     if (tool.approval == approval_mode::policy_driven &&
         provenance != call_provenance::text_derived && policy) {
-        switch (policy(caller, tool, arguments_tainted)) {
+        policy_decision const verdict = co_await policy(caller, tool, arguments_tainted);
+        switch (verdict) {
             case policy_decision::auto_approve:
-                return approval_outcome::proceed;
+                co_return approval_outcome::proceed;
             case policy_decision::auto_deny:
-                return approval_outcome::deny;
+                co_return approval_outcome::deny;
             case policy_decision::require_approval:
                 break;  // fall through to the unchanged ApprovalDecider path below
         }
     }
-    return tool_call_requires_approval(tool, provenance) ? approval_outcome::needs_decider
+    co_return tool_call_requires_approval(tool, provenance) ? approval_outcome::needs_decider
                                                             : approval_outcome::proceed;
 }
 
-result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& held,
-                                ToolCallRequest const& request,
-                                Principal const& caller,
-                                ApprovalDecider const& approve,
-                                PolicyDecider const& policy) {
+task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet const& held,
+                                      ToolCallRequest const& request,
+                                      Principal const& caller,
+                                      ApprovalDecider const& approve,
+                                      PolicyDecider const& policy) {
     // -- step 1: resolve -------------------------------------------------------------------------
     ToolDescriptor const* tool = table.find(request.tool_name);
     if (!tool) {
-        return std::unexpected(
+        co_return std::unexpected(
             error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
     }
 
     // -- step 2: validate (+ step 3: taint, recorded not deeply propagated) ----------------------
     // ADR-197: argument text that did not parse is refused here, never coerced to `{}` -- a tool
     // whose arguments are all optional would otherwise run on garbage. Nothing is bound yet.
-    if (!request.arguments_parse_error.empty()) return std::unexpected(malformed_arguments_error(request));
+    if (!request.arguments_parse_error.empty()) co_return std::unexpected(malformed_arguments_error(request));
     // Shape checking is deferred to `tool->invoke`'s call into schema::from_json<Args> below -- a
     // single point of truth for "does this JSON match the declared shape", never a second,
     // hand-rolled check here that could drift from what actually gets parsed.
@@ -180,7 +188,7 @@ result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& hel
         if (!handle) {
             // No leaked capability: the error names neither what's missing nor what IS held.
             error e{failure_class::policy, "required capability not held", "tool.capability_not_held"};
-            return std::unexpected(e);
+            co_return std::unexpected(e);
         }
         bound.push_back(std::move(*handle));
     }
@@ -201,26 +209,29 @@ result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& hel
     // `policy_driven`'s existing fail-closed degrade; an unset `policy` reproduces
     // `tool_call_requires_approval()`'s own boolean exactly (see `resolve_approval_outcome`'s own
     // comment), so this is a strict extension of, not a change to, the pre-ADR-070 behavior.
-    approval_outcome const outcome = resolve_approval_outcome(*tool, request.provenance, caller,
-                                                                request.arguments_tainted, policy);
+    approval_outcome const outcome = co_await resolve_approval_outcome(*tool, request.provenance, caller,
+                                                                       request.arguments_tainted, policy);
     if (outcome == approval_outcome::deny) {
         for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
         error e{failure_class::policy, "denied by policy", "tool.policy_denied"};
-        return std::unexpected(e);
+        co_return std::unexpected(e);
     }
     if (outcome == approval_outcome::needs_decider) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(caller, request.tool_name, canonical_args);
+        // ADR-237 §5.1 (Phase G): the approval `co_await`s a now-`task` decider; an unset decider is
+        // still the fail-closed default (deny), exactly as the old `approve && approve(...)` was.
+        bool approved = false;
+        if (approve) approved = co_await approve(caller, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();  // never bind authority we then refuse to use
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};
-            return std::unexpected(e);
+            co_return std::unexpected(e);
         }
     }
 
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
-    return AdmittedCall{tool, std::move(bound)};
+    co_return AdmittedCall{tool, std::move(bound)};
 }
 
 task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
@@ -315,7 +326,7 @@ task<ToolResult> invoke_tool(ToolTable const& table, CapabilitySet const& held,
     };
 
     // -- steps 1, 4/7, 5 (resolve, authorize+bind, approve): `admit_call()` above, ADR-160 §5 -------
-    auto admission = admit_call(table, held, request, ctx.principal, approve, policy);
+    auto admission = co_await admit_call(table, held, request, ctx.principal, approve, policy);
     if (!admission) {
         error const& e = admission.error();
         co_return finish(make_error_result(request.call_id, e), &e);
@@ -476,7 +487,9 @@ task<result<void>> background_task(ToolTable const& table, CapabilitySet const& 
     // ADR-023's override on this path only.
     if (tool_call_requires_approval(*tool, request.provenance)) {
         std::string canonical_args = json::dump(request.arguments);
-        bool approved = approve && approve(ctx.principal, request.tool_name, canonical_args);
+        // ADR-237 §5.1 (Phase G): `co_await` the now-`task` decider; unset stays the fail-closed deny.
+        bool approved = false;
+        if (approve) approved = co_await approve(ctx.principal, request.tool_name, canonical_args);
         if (!approved) {
             for (auto const& b : bound) b.revoke();
             error e{failure_class::policy, "approval required and not granted", "tool.approval_denied"};

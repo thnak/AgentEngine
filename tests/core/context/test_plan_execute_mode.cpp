@@ -177,16 +177,19 @@ int main() {
         check(!gate2->executing, "setup: gate2 starts closed");
 
         auto decider = ae::make_plan_execute_policy_decider(gate2);
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R6a: a non-planning-safe, policy_driven tool is auto-denied while the gate is closed");
-        check(decider(principal, readonly_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, readonly_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R6b: a planning-safe tool falls through to require_approval (== 'no opinion, use the "
               "normal path') while the gate is closed, never auto_deny -- read-only reconnaissance "
               "stays available during planning");
 
         open_gate_for_real(todo2, mode2);
         check(gate2->executing, "setup: gate2 opened for real via todos_add + plan_ready");
-        check(decider(principal, execute_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R7: once the gate opens, the SAME tool that was auto-denied now falls through to "
               "require_approval (== behaves as if no PolicyDecider were wired at all) -- the gate "
               "never grants anything on its own, it only ever withholds");
@@ -204,17 +207,19 @@ int main() {
         auto gate3 = mode3.gate_handle();
 
         ae::PolicyDecider always_approve = [](ae::Principal const&, ae::ToolDescriptor const&,
-                                               bool) { return ae::policy_decision::auto_approve; };
+                                               bool) -> agentengine::task<agentengine::policy_decision> { co_return ae::policy_decision::auto_approve; };
         auto decider = ae::make_plan_execute_policy_decider(gate3, always_approve);
 
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R8a: the gate overrides even an inner policy that would auto_approve -- composition "
               "only ever narrows toward less authority, never widens toward more (002 §9 Q2's "
               "narrowing-only rule, applied to decider composition)");
 
         open_gate_for_real(todo3, mode3);
         check(gate3->executing, "setup: gate3 opened for real via todos_add + plan_ready");
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_approve,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_approve,
               "R8b: once the gate opens, control genuinely passes through to inner -- composition "
               "isn't a permanent override, only a precondition");
     }
@@ -232,13 +237,15 @@ int main() {
         auto gate4 = mode4.gate_handle();
 
         auto default_decider = ae::make_plan_execute_policy_decider(gate4);
-        check(default_decider(principal, search_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(default_decider(principal, search_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R9a: the default is_planning_safe bar denies an idempotent (non-pure) tool while "
               "closed");
 
         auto widened_decider = ae::make_plan_execute_policy_decider(
             gate4, {}, [](ae::ToolDescriptor const& t) { return t.name == "web_search"; });
-        check(widened_decider(principal, search_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(widened_decider(principal, search_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R9b: a host-supplied is_planning_safe predicate can widen the planning-phase floor for "
               "a specific tool without waiting for the gate to open");
     }

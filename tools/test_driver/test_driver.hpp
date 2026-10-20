@@ -1680,7 +1680,8 @@ namespace workflow_fixture_detail {
 }
 // Joins every text item of the input and appends ">name": what ran, in what order, is visible in the output.
 [[nodiscard]] inline rt::ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
+    return [name = std::move(name)](Message const& in,
+                                    EffectContext&) -> rt::task<result<rt::ExecutorOutcome>> {
         std::string out;
         for (ContentItem const& c : in.content) {
             if (auto const* t = std::get_if<Text>(&c.value)) {
@@ -1688,7 +1689,7 @@ namespace workflow_fixture_detail {
                 out += t->text;
             }
         }
-        return rt::ExecutorOutcome{user_message(out + ">" + name)};
+        co_return rt::ExecutorOutcome{user_message(out + ">" + name)};
     };
 }
 

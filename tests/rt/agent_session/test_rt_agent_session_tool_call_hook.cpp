@@ -324,9 +324,9 @@ int main() {
 
         bool decider_called = false;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view, std::string const&) {
+            [&](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
                 decider_called = true;  // must NEVER fire -- a hook denial is already-decided
-                return true;
+                co_return true;
             });
 
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
@@ -433,10 +433,10 @@ int main() {
 
         std::string seen_args;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view tool_name, std::string const& args_json) {
+            [&](Principal const&, std::string_view tool_name, std::string const& args_json) -> agentengine::task<bool> {
                 check(tool_name == "send_email", "H2b: decider sees the correct tool name");
                 seen_args = args_json;
-                return false;
+                co_return false;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
@@ -471,7 +471,7 @@ int main() {
             CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
         session.set_capabilities(&held);
         session.set_approval_decider(
-            [](Principal const&, std::string_view, std::string const&) { return true; });
+            [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> { co_return true; });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
                 hctx.rewritten_arguments = *agentengine::json::parse(R"({"account":"rewritten-by-hook"})");
@@ -778,8 +778,8 @@ int main() {
         // finish_hook_processed_round()'s invoke_tool() call, this call is misclassified as
         // needs_decider and denied with no decider present. That IS the bug this test guards.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "policy_gated_tool") hctx.needs_external_dispatch = true;

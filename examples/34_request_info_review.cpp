@@ -72,8 +72,9 @@ template <class T>
 }
 
 [[nodiscard]] ExecutorBody step(std::string what) {
-    return [what = std::move(what)](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(what + "(" + text_of(in) + ")")};
+    return [what = std::move(what)](Message const& in, EffectContext&)
+               -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(what + "(" + text_of(in) + ")")};
     };
 }
 
@@ -147,8 +148,10 @@ bool run_concurrent() {
     }
     // Bodies: dispatcher, participants in order, aggregator, then one empty body per review port.
     WorkflowSupervisor sup;
-    sup.initialize(*built, {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-                            step("legal"), step("finance"), step("tech"), step("merge"), {}, {}});
+    sup.initialize(*built,
+                   {[](Message const& in, EffectContext&)
+                        -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+                    step("legal"), step("finance"), step("tech"), step("merge"), {}, {}});
 
     WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("acquire X?")}));
     std::printf("suspended with %zu open reviews:\n", r.open_interactions.size());

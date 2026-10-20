@@ -136,23 +136,23 @@ int main() {
         auto slow_round = std::make_shared<int>(0);
         auto agg_calls  = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-            [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("FAST")};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+            [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("FAST")};
             },
-            [slow_round](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [slow_round](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 int const i = (*slow_round)++;
                 ExecutorOutcome out{};
                 out.payload = in;
                 out.routes  = {i < kSlowRounds ? "continue" : "finish"};
-                return out;
+                co_return out;
             },
-            [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("SLOW-DONE")};
+            [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("SLOW-DONE")};
             },
-            [agg_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
 

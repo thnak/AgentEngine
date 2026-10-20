@@ -78,12 +78,12 @@ namespace agentengine::trust {
 // have from whatever `ApprovalDecider`/suspend behavior it configured for everything this policy
 // doesn't recognize as delegated-and-in-bounds.
 [[nodiscard]] inline PolicyDecider approve_delegated_calls(std::optional<std::uint32_t> max_depth = std::nullopt) {
-    return [max_depth](Principal const& caller, ToolDescriptor const&, bool /*arguments_tainted*/) -> policy_decision {
-        if (caller.on_behalf_of.empty()) return policy_decision::require_approval;
+    return [max_depth](Principal const& caller, ToolDescriptor const&, bool /*arguments_tainted*/) -> task<policy_decision> {
+        if (caller.on_behalf_of.empty()) co_return policy_decision::require_approval;
         if (max_depth.has_value() && caller.delegation_depth > *max_depth) {
-            return policy_decision::require_approval;
+            co_return policy_decision::require_approval;
         }
-        return policy_decision::auto_approve;
+        co_return policy_decision::auto_approve;
     };
 }
 

@@ -1,13 +1,18 @@
 ﻿// Implements kata_backend.hpp -- see that file's header comment for full scope/residuals.
 #include "backends/kata/kata_backend.hpp"
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -20,6 +25,7 @@
 #include <random>
 #include <sstream>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <variant>
 #include <vector>
@@ -82,6 +88,47 @@ constexpr std::string_view kKataWorkdirRoot = "/run/agentengine-kata";
 [[nodiscard]] std::string trim_trailing_newline(std::string s) {
     while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
     return s;
+}
+
+// SLICE 13 (ADR-239): the injected command runner every egress step shells through -- one place, so a test
+// can put a failing `nft`/`tc`/`bridge` first on PATH and prove each step fails create() closed.
+[[nodiscard]] egress::HostEgress make_host_egress() {
+    return egress::HostEgress([](std::vector<std::string> const& argv) -> result<egress::CommandOutcome> {
+        auto outcome = run_ctr(argv);
+        if (!outcome) return std::unexpected(outcome.error());
+        return egress::CommandOutcome{outcome->exit_code, outcome->timed_out, std::move(outcome->stdout_text),
+                                       std::move(outcome->stderr_text)};
+    });
+}
+
+// SLICE 13 (ADR-239 §4.4): an allowlist entry resolving to ANY address of this host would turn the allowlist
+// into a grant over host services through the INPUT path, and resolve_and_validate() only blocks private/
+// loopback ranges, not the host's own public address. getifaddrs() covers every configured interface address.
+[[nodiscard]] bool is_host_local_ipv4(std::uint32_t host_order) {
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) != 0) return true;  // cannot prove it is not local: fail closed
+    bool local = false;
+    for (ifaddrs* a = list; a != nullptr; a = a->ifa_next) {
+        if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) continue;
+        auto const* sin = reinterpret_cast<sockaddr_in const*>(a->ifa_addr);
+        if (ntohl(sin->sin_addr.s_addr) == host_order) {
+            local = true;
+            break;
+        }
+    }
+    ::freeifaddrs(list);
+    return local;
+}
+
+// SLICE 13: reverse-order release of one sandbox's egress policy. The policy must OUTLIVE the port: when the
+// veth is still there (cnitool del failed, the shim still holds the netns) it is removed explicitly, and when it
+// cannot be removed the policy is KEPT (HostEgress::remove refuses) -- never the other way round.
+void release_egress(egress::HostEgress& host, std::string const& tag, std::string const& veth) {
+    if (egress::HostEgress::port_exists(veth)) (void)run_ctr({"ip", "link", "delete", veth});
+    auto removed = host.remove(tag, veth);
+    if (!removed) {
+        std::fprintf(stderr, "kata_backend: egress policy of %s not removed: %s\n", tag.c_str(), removed.error().message.c_str());
+    }
 }
 
 }  // namespace
@@ -192,7 +239,12 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // resolve_and_validate() HostEgressProxy itself uses (SSRF-safe: blocks loopback/link-local/
     // RFC1918/CGNAT/multicast/reserved/metadata-address ranges) -- reused, not re-implemented. Any
     // entry that fails to parse or resolve fails create() closed, before any resource is acquired.
-    std::vector<std::tuple<std::string, std::string, std::uint16_t>> resolved;  // host, ip, port
+    //
+    // SLICE 13 (ADR-239): an entry now yields EVERY validated A record (capped at
+    // egress::kMaxEndpointsPerEntry, resolver order; the first is pinned in /etc/hosts), and an entry that
+    // resolves to an address of this host itself is rejected. Resolution happens here, once, in backend code,
+    // from the host-authored entry that cap::SandboxNetOut already covered -- never from guest or model output.
+    std::vector<egress::Endpoint> allowed_endpoints;
     std::ostringstream hosts_content;
     hosts_content << "127.0.0.1 localhost\n::1 localhost\n";
     if (wants_network) {
@@ -204,7 +256,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
                             // field is recorded in the allowlist entry for the caller's own
                             // documentation, matching HostEgressProxy's own posture of trusting a
                             // grant's scheme field rather than re-deriving it here.
-            auto verified = agentengine::sandbox::resolve_and_validate(host, port);
+            auto verified = agentengine::sandbox::resolve_and_validate_all(host, port);
             if (!verified.has_value()) {
                 return std::unexpected(error{
                     failure_class::policy,
@@ -212,9 +264,29 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
                         "' failed to resolve to a permitted address: " + verified.error().message,
                     "kata_backend.allowlist_entry_blocked"});
             }
-            std::string const ip = ipv4_to_dotted(verified->ipv4_host_order);
-            resolved.emplace_back(host, ip, verified->port);
-            hosts_content << ip << ' ' << host << '\n';
+            if (verified->size() > egress::kMaxEndpointsPerEntry) verified->resize(egress::kMaxEndpointsPerEntry);
+            for (auto const& v : *verified) {
+                if (is_host_local_ipv4(v.ipv4_host_order)) {
+                    return std::unexpected(error{
+                        failure_class::policy,
+                        "kata_backend: NetPolicy::allowlist entry '" + raw_entry + "' resolves to " +
+                            ipv4_to_dotted(v.ipv4_host_order) +
+                            ", an address of this host itself -- an allowlist entry must never be a grant "
+                            "over host services",
+                        "kata_backend.allowlist_entry_blocked"});
+                }
+                egress::Endpoint const ep{v.ipv4_host_order, v.port};
+                if (std::find(allowed_endpoints.begin(), allowed_endpoints.end(), ep) == allowed_endpoints.end()) {
+                    allowed_endpoints.push_back(ep);
+                }
+            }
+            hosts_content << ipv4_to_dotted(verified->front().ipv4_host_order) << ' ' << host << '\n';
+        }
+        if (allowed_endpoints.size() > egress::kMaxEndpointsTotal) {
+            return std::unexpected(error{failure_class::policy,
+                                          "kata_backend: NetPolicy::allowlist expands to more than " +
+                                              std::to_string(egress::kMaxEndpointsTotal) + " (address, port) pairs",
+                                          "kata_backend.allowlist_too_large"});
         }
     }
 
@@ -249,6 +321,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
                                     // unwind identically (a plain `umount rootfs_dir`).
     std::optional<std::string> netns_path_for_cleanup;
     std::string loop_device;
+    std::string egress_veth_for_cleanup;  // SLICE 13: set BEFORE install() runs (it may leave partial state)
     auto const cleanup_partial = [&]() {
         if (cni_added) {
             (void)run_ctr({"cnitool", "del", cni_network_name_, *netns_path_for_cleanup},
@@ -256,6 +329,11 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
                            cni_env(cni_plugin_dir_, cni_conf_dir_));
         }
         if (netns_created) (void)run_ctr({"ip", "netns", "delete", id});
+        if (!egress_veth_for_cleanup.empty()) {
+            // after the port is gone (above), never before: the policy outlives the port
+            egress::HostEgress host = make_host_egress();
+            release_egress(host, id, egress_veth_for_cleanup);
+        }
         if (overlay_mounted) (void)run_ctr({"umount", rootfs_dir.string()});
         if (loop_mounted) (void)run_ctr({"umount", quota_root.string()});
         if (loop_attached) (void)run_ctr({"losetup", "-d", loop_device});
@@ -594,6 +672,7 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
 
     std::optional<std::string> netns_path;
     std::optional<std::string> hosts_file_path;
+    std::optional<egress::InstalledPolicy> installed_egress;
 
     if (wants_network) {
         fs::path const hosts_file = workdir / "hosts";
@@ -679,72 +758,41 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
         }
         cni_added = true;
 
-        // Default-deny egress inside the netns; loopback and the resolved allowlist IP:port pairs
-        // only. Rules live in this netns's own nftables namespace -- deleting the netns (destroy(),
-        // or this function's own cleanup_partial() on a later failure) discards them with it, no
-        // separate `nft delete` step needed. NOT independently verified against a live deployment
-        // this session (none reachable) -- the exact `nft` argv tokenization below (each clause as
-        // its own argv entry) is assumed to parse the same as a space-joined command line, matching
-        // every other `ctr` CLI assumption this file already discloses rather than hides.
-        std::vector<std::vector<std::string>> nft_cmds;
-        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "table", "inet", "ae_netpolicy"});
-        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "chain", "inet", "ae_netpolicy",
-                             "output", "{", "type", "filter", "hook", "output", "priority", "0", ";",
-                             "policy", "drop", ";", "}"});
-        nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
-                             "output", "oif", "lo", "accept"});
-        // SLICE 11 (docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md §4):
-        // `net_bytes` -- a NAMED quota object shared by a rule on BOTH `output` (egress, this table's
-        // pre-existing chain) and a NEW `input` chain (ingress) -- total bidirectional bytes, not
-        // egress-only (an egress-only counter would miss a large inbound response). Red-team finding
-        // (BLOCKING), fixed before landing: the quota-definition command needs `{ }` braces around
-        // the quota spec (`nft(8)`'s own grammar) -- a first draft that omitted them would have been
-        // a silent no-op (nft rejects it, create() correctly fails closed via nft_setup_failed below,
-        // but net_bytes would ship completely non-functional). Ordering matters and is the actual
-        // enforcement mechanism, not a style choice: nftables evaluates rules top-to-bottom per chain
-        // and stops at the first terminal verdict -- `quota over` only matches once the counter has
-        // ALREADY exceeded the budget, so the quota-drop rule must be added BEFORE the per-destination
-        // `accept` rules (while under budget, it doesn't match and falls through to them; once
-        // exceeded, it matches and drops before the allowlist rule below is ever reached). `input`'s
-        // policy is `accept` (not `drop`) deliberately: `NetPolicy` is a *destination* allowlist,
-        // already fully enforced by `output`'s own per-destination rules -- `input` here exists ONLY
-        // to feed the shared byte counter, not to filter a second time (and, as `output` already does
-        // today, this does not add any source/connection-tracking filter to `input` -- a pre-existing,
-        // unchanged gap, not a new one this rule introduces).
-        if (spec.limits.net_bytes > 0) {
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "chain", "inet", "ae_netpolicy",
-                                 "input", "{", "type", "filter", "hook", "input", "priority", "0", ";",
-                                 "policy", "accept", ";", "}"});
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "quota", "inet", "ae_netpolicy",
-                                 "ae_net_budget", "{", "over", std::to_string(spec.limits.net_bytes),
-                                 "bytes", "}"});
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
-                                 "input", "iif", "lo", "accept"});
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
-                                 "output", "quota", "name", "ae_net_budget", "drop"});
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
-                                 "input", "quota", "name", "ae_net_budget", "drop"});
+        // SLICE 13 (ADR-239): the egress policy lives on the host end of the veth CNI just created -- a
+        // bridge port in the HOST namespace -- NOT inside this netns: Kata's tc mirred datapath never
+        // traverses the netns's netfilter hooks (the ADR-093/095 `ae_netpolicy` table that used to be
+        // installed here enforced nothing for a microVM guest; live finding 2). Installed after `cnitool
+        // add` (the veth exists) and before `ctr run` (no guest yet), so the guest never runs unpoliced.
+        // net_bytes (a named quota shared by both directions, the `in_`/`out_` chains of the shared table)
+        // is part of the same transaction. Any failure here unwinds everything acquired so far and
+        // returns an error: never a half policy.
+        auto attachment = egress::parse_cni_result(cni_outcome->stdout_text);
+        if (!attachment.has_value()) {
+            cleanup_partial();
+            return std::unexpected(attachment.error());
         }
-        for (auto const& [host, ip, port] : resolved) {
-            (void)host;
-            nft_cmds.push_back({"ip", "netns", "exec", id, "nft", "add", "rule", "inet", "ae_netpolicy",
-                                 "output", "ip", "daddr", ip, "tcp", "dport", std::to_string(port),
-                                 "accept"});
+        egress::HostEgress egress_host = make_host_egress();
+        auto port = egress_host.locate_port(attachment->host_interface_candidates);
+        if (!port.has_value()) {
+            cleanup_partial();
+            return std::unexpected(port.error());
         }
-        for (auto const& cmd : nft_cmds) {
-            auto nft_outcome = run_ctr(cmd);
-            if (!nft_outcome.has_value() || nft_outcome->exit_code != 0) {
-                cleanup_partial();
-                return std::unexpected(error{
-                    failure_class::fatal,
-                    "kata_backend: nftables allowlist rule setup failed -- refusing to boot a guest "
-                    "with a requested network policy this backend could not actually install (fail "
-                    "closed, never fall back to unrestricted or silently-unenforced egress): " +
-                        (nft_outcome.has_value() ? nft_outcome->stderr_text
-                                                  : nft_outcome.error().message),
-                    "kata_backend.nft_setup_failed"});
-            }
+        egress::SandboxPlan plan;
+        plan.tag = id;
+        plan.veth = port->first;
+        plan.bridge = port->second;
+        plan.guest_mac = attachment->guest_mac;
+        plan.guest_ip = attachment->guest_ip;
+        plan.gateway_ip = attachment->gateway_ip;
+        plan.allowed = allowed_endpoints;
+        plan.net_bytes = spec.limits.net_bytes;
+        egress_veth_for_cleanup = plan.veth;  // before install(): it may leave partial state to remove
+        auto installed = egress_host.install(plan);
+        if (!installed.has_value()) {
+            cleanup_partial();
+            return std::unexpected(installed.error());
         }
+        installed_egress = std::move(*installed);
     }
 
     OciSpecInputs const spec_inputs{rootfs_dir.string(),
@@ -804,21 +852,56 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
                   lower_dir.string(),
                   loop_device,
                   disk_quota_active,
-                  netns_created};
-    instances_.emplace(id, std::move(inst));
+                  netns_created,
+                  std::move(installed_egress),
+                  false};
+    {
+        std::lock_guard<std::mutex> const lock(instances_mutex_);
+        instances_.emplace(id, std::move(inst));
+    }
     return SandboxHandle{id};
 }
 
 result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                        EffectContext& /*ctx*/) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end()) {
+    Instance* inst_ptr = nullptr;
+    {
+        std::lock_guard<std::mutex> const lock(instances_mutex_);
+        auto found = instances_.find(handle.opaque_id);
+        if (found != instances_.end()) inst_ptr = &found->second;
+    }
+    if (inst_ptr == nullptr) {
         return std::unexpected(error{failure_class::contract,
                                       "kata_backend: exec() on a handle this instance never created "
                                       "(or already destroyed)",
                                       "kata_backend.unknown_handle"});
     }
-    Instance& inst = it->second;
+    Instance& inst = *inst_ptr;
+    // SLICE 13 (ADR-239): re-verify the egress policy before running anything in the guest. A lost or
+    // altered policy (nft flush, table delete, tampered chain, tc filters removed, port flags reset) kills
+    // the guest and refuses this and every later exec(): the policy's quota cannot be re-created with a fresh
+    // budget, so recovery is destroy() + create(), never an in-place reinstall.
+    if (inst.egress.has_value()) {
+        auto const refuse = [&](std::string const& why) {
+            return std::unexpected(error{failure_class::fatal, "kata_backend: exec() refused: " + why,
+                                          "kata_backend.egress_policy_missing"});
+        };
+        if (inst.egress_failed) {
+            return refuse("this sandbox's egress policy failed verification earlier and its guest was killed");
+        }
+        egress::HostEgress host = make_host_egress();
+        auto verified = host.verify(*inst.egress);
+        if (!verified.has_value()) {
+            // one retry: a transient netlink hiccup must not kill a healthy guest, a real loss fails twice
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            verified = host.verify(*inst.egress);
+        }
+        if (!verified.has_value()) {
+            inst.egress_failed = true;
+            (void)run_ctr({"ctr", "task", "kill", "--signal", "SIGKILL", inst.container_id});
+            return refuse(verified.error().message + " -- the guest was killed (fail closed)");
+        }
+    }
     std::string const exec_id = "e" + std::to_string(++inst.exec_seq);
     int const timeout_seconds =
         inst.wall_ms > 0 ? static_cast<int>((inst.wall_ms + 999) / 1000) : kProcessTimeoutSeconds;
@@ -881,10 +964,14 @@ result<ExecOutcome> KataBackend::exec_blocking(SandboxHandle& handle, ExecReques
 }
 
 void KataBackend::destroy_blocking(SandboxHandle& handle) {
-    auto it = instances_.find(handle.opaque_id);
-    if (it == instances_.end()) return;  // destroy() on an unknown/already-destroyed handle is a
-                                          // silent no-op, matching LinuxNativeJailBackend's own
-                                          // destroy() posture (idempotent, never throws).
+    std::unordered_map<std::string, Instance>::iterator it;
+    {
+        std::lock_guard<std::mutex> const lock(instances_mutex_);
+        it = instances_.find(handle.opaque_id);
+        if (it == instances_.end()) return;  // destroy() on an unknown/already-destroyed handle is a
+                                              // silent no-op, matching LinuxNativeJailBackend's own
+                                              // destroy() posture (idempotent, never throws).
+    }
     std::string const id = it->second.container_id;
     int const timeout_seconds = it->second.wall_ms > 0
                                      ? static_cast<int>((it->second.wall_ms + 999) / 1000)
@@ -988,9 +1075,18 @@ void KataBackend::destroy_blocking(SandboxHandle& handle) {
                           "possible leaked host network namespace, see host state directly\n",
                           id.c_str());
         }
+        // SLICE 13: the egress policy goes LAST, after the port: it outlives the veth, never the reverse.
+        // release_egress() deletes a still-present veth and KEEPS the policy if that fails.
+        if (it->second.egress.has_value()) {
+            egress::HostEgress host = make_host_egress();
+            release_egress(host, id, it->second.egress->plan.veth);
+        }
     }
 
-    instances_.erase(it);
+    {
+        std::lock_guard<std::mutex> const lock(instances_mutex_);
+        instances_.erase(it);
+    }
 }
 
 }  // namespace agentengine::kata

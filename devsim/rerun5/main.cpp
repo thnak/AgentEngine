@@ -531,7 +531,7 @@ int run_decider_probe() {
     int decider_calls = 0;
     bool saw_amount   = false;
     session.set_approval_decider(
-        [&](Principal const&, std::string_view tool_name, std::string const& canonical_args_json) {
+        [&](Principal const&, std::string_view tool_name, std::string const& canonical_args_json) -> task<bool> {
             ++decider_calls;
             std::int64_t amount = 0;
             if (result<json::Value> parsed = json::parse(canonical_args_json); parsed) {
@@ -546,7 +546,7 @@ int run_decider_probe() {
                         canonical_args_json.c_str(),
                         amount <= kApprovalThresholdCents ? "true (allow in-process)"
                                                           : "false (deny in-process)");
-            return amount <= kApprovalThresholdCents;
+            co_return amount <= kApprovalThresholdCents;
         });
 
     int const before = g_refund_invocations;

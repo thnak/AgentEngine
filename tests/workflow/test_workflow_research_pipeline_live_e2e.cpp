@@ -139,9 +139,9 @@ void check(bool cond, char const* what) {
 // `FunctionExecutor::invocations()` actor state every other example/test file in this suite uses.
 [[nodiscard]] ExecutorBody counted(ExecutorBody body, std::shared_ptr<std::atomic<std::uint32_t>> tally) {
     return [body = std::move(body), tally](Message const& in,  // NOLINT(clang-analyzer-core.StackAddressEscape)
-                                           EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+                                           EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         tally->fetch_add(1, std::memory_order_relaxed);
-        return body(in, ctx);
+        co_return co_await body(in, ctx);
     };
 }
 
@@ -171,7 +171,7 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 // ---- Bodies -------------------------------------------------------------------------------------
 
 [[nodiscard]] ExecutorBody planner_body(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const goal = text_of(in);
         auto resp = live_call(
             client, ctx,
@@ -180,17 +180,17 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
             "specialist, and a Competitive-landscape specialist should each look into. Do not answer "
             "the question yourself.",
             goal);
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) co_return std::unexpected(resp.error());
         std::string const plan = text_of(resp->message);
         std::printf("[planner] %s\n", plan.c_str());
-        return text_message("Research brief: " + plan + "\n\nOriginal question: " + goal);
+        co_return ExecutorOutcome{text_message("Research brief: " + plan + "\n\nOriginal question: " + goal)};
     };
 }
 
 [[nodiscard]] ExecutorBody specialist_body(std::string label, std::string system_prompt,
                                             RealClient& client, EffectContext& ctx) {
     return [label, system_prompt, &client, &ctx](Message const& in,
-                                                  EffectContext&) -> agentengine::result<Message> {
+                                                  EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         auto const t0   = std::chrono::steady_clock::now();
         auto        resp = live_call(client, ctx, system_prompt, text_of(in));
         auto const  ms   = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -199,11 +199,11 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
             std::fprintf(stderr, "[%s] FAILED after %lldms: %s (%s)\n", label.c_str(),
                          static_cast<long long>(ms), resp.error().message.c_str(),
                          resp.error().code.c_str());
-            return std::unexpected(resp.error());
+            co_return std::unexpected(resp.error());
         }
         std::string const reply = text_of(resp->message);
         std::printf("[%s] (%lldms) %s\n", label.c_str(), static_cast<long long>(ms), reply.c_str());
-        return text_message(label + " findings: " + reply);
+        co_return ExecutorOutcome{text_message(label + " findings: " + reply)};
     };
 }
 
@@ -212,7 +212,7 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 // produced -- reads the real classification/message out of it for a slightly more informative
 // degraded report, exactly what a real caller's recovery node would do, but doesn't need to (a fixed
 // degraded message would work just as well for this test's own assertions).
-[[nodiscard]] agentengine::result<Message> competitive_fallback_body(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> competitive_fallback_body(Message const& in, EffectContext&) {
     std::string reason = "live lookup failed";
     for (auto const& item : in.content) {
         if (auto const* e = std::get_if<Error>(&item.value)) {
@@ -221,49 +221,49 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
         }
     }
     std::printf("[competitive_fallback] recovering from: %s\n", reason.c_str());
-    return text_message(
+    co_return ExecutorOutcome{text_message(
         "competitive findings: UNAVAILABLE (" + reason + ") -- using cached baseline: no major "
-        "competitor announcements on file. Treat this section as low-confidence.");
+        "competitor announcements on file. Treat this section as low-confidence.")};
 }
 
-[[nodiscard]] agentengine::result<Message> aggregate_body(Message const& in, EffectContext&) {
-    return text_message("Aggregated findings:\n" + all_text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> aggregate_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("Aggregated findings:\n" + all_text_of(in))};
 }
 
 [[nodiscard]] ExecutorBody writer_body(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         auto resp = live_call(
             client, ctx,
             "You are a report writer. Using ONLY the findings given, draft a 3-4 sentence go/no-go "
             "recommendation. If any finding is marked low-confidence or unavailable, explicitly say "
             "the recommendation carries a disclosed gap.",
             text_of(in));
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) co_return std::unexpected(resp.error());
         std::string const report = text_of(resp->message);
         std::printf("[writer] %s\n", report.c_str());
-        return text_message("REPORT:\n" + report);
+        co_return ExecutorOutcome{text_message("REPORT:\n" + report)};
     };
 }
 
 // publish_review is a request_port -- never dispatched to a body (matches
 // examples/22_magentic_plan_signoff_checkpoint.cpp's identical convention).
 
-[[nodiscard]] agentengine::result<ExecutorOutcome> publish_decision_body(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> publish_decision_body(Message const& in, EffectContext&) {
     std::string const decision = text_of(in);
     bool const approved = decision.find("approved") != std::string::npos;
-    return ExecutorOutcome{in, {approved ? "approved" : "rejected"}};
+    co_return ExecutorOutcome{in, {approved ? "approved" : "rejected"}};
 }
 
-[[nodiscard]] agentengine::result<Message> publish_body(Message const& in, EffectContext&) {
-    return text_message("PUBLISHED:\n" + text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> publish_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("PUBLISHED:\n" + text_of(in))};
 }
 
-[[nodiscard]] agentengine::result<Message> abandon_body(Message const& in, EffectContext&) {
-    return text_message("ABANDONED:\n" + text_of(in));
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> abandon_body(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{text_message("ABANDONED:\n" + text_of(in))};
 }
 
-[[nodiscard]] agentengine::result<ExecutorOutcome> identity_sink(Message const& in, EffectContext&) {
-    return ExecutorOutcome{in};
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> identity_sink(Message const& in, EffectContext&) {
+    co_return ExecutorOutcome{in};
 }
 
 #if defined(_WIN32)
@@ -343,18 +343,18 @@ int main() {
         auto bad_calls = std::make_shared<std::atomic<std::uint32_t>>(0);
         std::vector<ExecutorBody> bodies = {
             counted(
-                [&bad_client, &ctx](Message const& in, EffectContext&) -> agentengine::result<Message> {
+                [&bad_client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                     auto resp = live_call(bad_client, ctx, "irrelevant", text_of(in));
                     if (!resp.has_value()) {
                         std::fprintf(stderr, "[bad_call] real failure: %s (klass=%d, code=%s)\n",
                                      resp.error().message.c_str(), static_cast<int>(resp.error().klass),
                                      resp.error().code.c_str());
-                        return std::unexpected(resp.error());
+                        co_return std::unexpected(resp.error());
                     }
-                    return resp->message;
+                    co_return ExecutorOutcome{resp->message};
                 },
                 bad_calls),
-            [](Message const& in, EffectContext&) -> agentengine::result<Message> { return in; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
         };
 
         WorkflowSupervisor sup;

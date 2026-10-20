@@ -897,7 +897,7 @@ int main() {
         EffectContext ctx;
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
-        (void)body(assistant_text("upstream agent said: " + kInjection), ctx);
+        (void)rt::block_on(body(assistant_text("upstream agent said: " + kInjection), ctx));
         Message const* u = nullptr;
         if (!seen.empty()) {
             for (auto const& m : seen.front().messages) {
@@ -925,7 +925,7 @@ int main() {
         ui.origin = content_origin::user;
         ui.value = Text{"the workflow's input"};
         user_in.content.push_back(ui);
-        (void)body2(user_in, ctx);
+        (void)rt::block_on(body2(user_in, ctx));
         bool passthrough = false;
         if (!seen2.empty()) {
             for (auto const& m : seen2.front().messages) {
@@ -1005,7 +1005,7 @@ int main() {
         agent_item.origin = content_origin::assistant;
         agent_item.value = Text{"agent said: " + kInjection};
         merged.content.push_back(agent_item);
-        (void)body(merged, ctx);
+        (void)rt::block_on(body(merged, ctx));
         Message const* u = seen.empty() ? nullptr : first_user_in(seen.front());
         bool w3 = false;
         // Round 2 order: the host's items, then the host line, then the agent's -- the host line says everything after
@@ -1029,7 +1029,7 @@ int main() {
         // Round 2: the node's fence is OFF (a target's `fence_disabled_by`), so text left in the system channel would be
         // sent as system instructions. The merge must come out as a user-role delegated message instead.
         (void)node.disable_system_channel_fence("op-wf");
-        (void)body(sys_merge, ctx);
+        (void)rt::block_on(body(sys_merge, ctx));
         bool agent_text_in_system = false;
         bool agent_text_delegated = false;
         bool host_marker_plain = false;
@@ -1060,7 +1060,7 @@ int main() {
         cu.origin = content_origin::assistant;
         cu.value = Custom{"app/structured", R"({"k":1})"};
         custom_reply.content.push_back(cu);
-        (void)body(custom_reply, ctx);
+        (void)rt::block_on(body(custom_reply, ctx));
         bool custom_kept = false;
         if (!seen.empty()) {
             for (auto const& m : seen.front().messages) {
@@ -1347,8 +1347,8 @@ int main() {
         wf.bound.max_rounds = 4;
         std::vector<rt::ExecutorBody> bodies;
         bodies.push_back(rt::agent_session_as_executor_body(node));
-        bodies.push_back([](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
-            return rt::ExecutorOutcome{in};
+        bodies.push_back([](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<rt::ExecutorOutcome>> {
+            co_return rt::ExecutorOutcome{in};
         });
         sup.initialize(wf, std::move(bodies));
         auto const r = rt::block_on(sup.run_workflow(rt::RunWorkflow{r3_user("go")}));
@@ -1379,7 +1379,7 @@ int main() {
         };
         bool threw = false;
         try {
-            (void)body(r3_user("go"), ctx);
+            (void)rt::block_on(body(r3_user("go"), ctx));
         } catch (std::runtime_error const&) {
             threw = true;
         }

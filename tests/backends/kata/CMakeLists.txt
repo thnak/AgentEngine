@@ -11,6 +11,10 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
   option(AGENTENGINE_KATA_SANDBOX_TESTS
     "Build/run the KataBackend end-to-end test (needs a running containerd + Kata Containers deployment with a kata-clh runtime class already configured)"
     OFF)
+  # Host-free: the egress policy generators/parsers and HostEgress's fail-closed ordering through a scripted
+  # runner (ADR-239). Needs no VM, root or nft, so it is not behind the sandbox gate.
+  agentengine_add_test(test_kata_egress_policy_render
+    LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
   if(AGENTENGINE_KATA_SANDBOX_TESTS)
     agentengine_add_test(test_kata_backend_linux
       LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
@@ -42,5 +46,27 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
     # Real VM boots plus real netns/CNI/nftables setup and two live HTTPS exec() round trips
     # (allowed + blocked) -- generous but bounded, same posture as this suite's other Kata tests.
     set_tests_properties(test_kata_backend_slice9_10_linux PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+
+    # ---- Egress policy acceptance (ADR-239, GitHub #194): allowlist + L2/L3 containment + net_bytes, each with a
+    # positive control. Needs root, python3, the python:3.12-alpine image pulled and operator FORWARD accepts for
+    # aekata0 <-> aepvw0 (comment ae-prove-temp) -- see tests/backends/kata/egress_test_support.hpp.
+    agentengine_add_test(test_kata_backend_egress_linux
+      LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
+    target_include_directories(test_kata_backend_egress_linux PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(test_kata_backend_egress_linux PROPERTIES TIMEOUT 1500 RUN_SERIAL TRUE)
+
+    # Lifecycle and fail-closed behaviour (table loss, tampering, teardown, sweep, parallelism, injected create
+    # failures, idempotent install, A-record cap). Same preconditions as above; also edits /etc/hosts temporarily.
+    agentengine_add_test(test_kata_backend_egress_lifecycle_linux
+      LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
+    target_include_directories(test_kata_backend_egress_lifecycle_linux PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(test_kata_backend_egress_lifecycle_linux PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE)
+
+    # Scaling of the shared table with N bridge ports (netns+veth lab guests, not microVMs) plus the per-sandbox-table
+    # layout as the positive control. Needs FORWARD accepts for aepvbr0 <-> aepvw0 (comment ae-prove-temp).
+    agentengine_add_test(test_kata_egress_scale_linux
+      LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
+    target_include_directories(test_kata_egress_scale_linux PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(test_kata_egress_scale_linux PROPERTIES TIMEOUT 1500 RUN_SERIAL TRUE)
   endif()
 endif()

@@ -156,8 +156,8 @@ int main() {
         // signature is (caller, tool_name, canonical_args_json) -> bool (ADR-061 §46 widened it to
         // also carry the calling Principal, but nothing memory-shaped is reachable from it at all).
         // This one represents "no real confirmation happened" and returns false.
-        ApprovalDecider denies = [](Principal const&, std::string_view, std::string const&) {
-            return false;
+        ApprovalDecider denies = [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
+            co_return false;
         };
         auto denied_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, denies));
         check(denied_result.is_error,
@@ -168,8 +168,8 @@ int main() {
         // Positive control: a decider that DOES say yes (representing a genuine, SEPARATE
         // operator confirmation -- never derived from the smuggled text itself) succeeds normally,
         // proving the denial above was real gating, not an unrelated pipeline failure.
-        ApprovalDecider approves = [](Principal const&, std::string_view, std::string const&) {
-            return true;
+        ApprovalDecider approves = [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
+            co_return true;
         };
         auto approved_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, approves));
         check(!approved_result.is_error,

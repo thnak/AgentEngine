@@ -91,9 +91,9 @@ int main() {
 
         ae::Principal observed_by_decider;
         ae::ApprovalDecider const capturing = [&](ae::Principal const& caller, std::string_view,
-                                                     std::string const&) {
+                                                     std::string const&) -> agentengine::task<bool> {
             observed_by_decider = caller;
-            return true;
+            co_return true;
         };
 
         ae::EffectContext ctx_a;
@@ -127,8 +127,8 @@ int main() {
     // denies one tenant and allows another on the SAME server instance -----------------------------
     {
         ae::ApprovalDecider const tenant_gated = [](ae::Principal const& caller, std::string_view,
-                                                       std::string const&) {
-            return caller.tenant_id == "trusted-tenant";
+                                                       std::string const&) -> agentengine::task<bool> {
+            co_return caller.tenant_id == "trusted-tenant";
         };
         ae::ToolTable const sync_table = ae::ToolTable::from(AlwaysApproveTool{});
         mcp::McpServer server(sync_table, held, tenant_gated, "approval-decider-principal-test-server");
@@ -165,10 +165,10 @@ int main() {
         std::thread::id const   calling_thread                   = std::this_thread::get_id();
 
         ae::ApprovalDecider const capturing = [&](ae::Principal const& caller, std::string_view,
-                                                     std::string const&) {
+                                                     std::string const&) -> agentengine::task<bool> {
             observed_by_decider              = caller;
             decider_called_on_calling_thread = (std::this_thread::get_id() == calling_thread);
-            return true;
+            co_return true;
         };
 
         ae::EffectContext ctx;

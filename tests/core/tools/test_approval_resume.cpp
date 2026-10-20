@@ -464,8 +464,8 @@ int a1_policy_tool_runs(ae::policy_decision verdict) {
                                         text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
     s.set_suspend_for_approval(true);
-    s.set_policy_decider([verdict](ae::Principal const&, ae::ToolDescriptor const& td, bool) {
-        return td.name == "policy_tool" ? verdict : ae::policy_decision::require_approval;
+    s.set_policy_decider([verdict](ae::Principal const&, ae::ToolDescriptor const& td, bool) -> agentengine::task<agentengine::policy_decision> {
+        co_return td.name == "policy_tool" ? verdict : ae::policy_decision::require_approval;
     });
     (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
     if (!s.has_open_interactions()) return -1;

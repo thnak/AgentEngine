@@ -368,6 +368,24 @@ result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16
                                   "net.address_blocked"});
 }
 
+result<std::vector<VerifiedEndpoint>> resolve_and_validate_all(std::string_view host, std::uint16_t port) {
+    auto candidates = resolve_candidates(std::string(host));
+    if (!candidates) return std::unexpected(candidates.error());
+    std::vector<VerifiedEndpoint> accepted;
+    for (std::uint32_t const addr : candidates->addresses) {
+        if (is_blocked_address(addr)) continue;
+        bool const seen = std::any_of(accepted.begin(), accepted.end(), [&](VerifiedEndpoint const& e) { return e.ipv4_host_order == addr; });
+        if (!seen) accepted.push_back(VerifiedEndpoint{addr, port});
+    }
+    if (accepted.empty()) {
+        return std::unexpected(error{failure_class::policy,
+                                      candidates->literal ? "address is in a blocked range"
+                                                           : "every resolved address is in a blocked range",
+                                      "net.address_blocked"});
+    }
+    return accepted;
+}
+
 // Shared between perform_http_exchange and perform_https_exchange (ADR-013) -- the raw HTTP/1.1
 // request text is identical either way; only the transport it travels over differs. CRLF in
 // method/path/headers is rejected by the caller's gate (HostEgressProxy::fetch) before either
