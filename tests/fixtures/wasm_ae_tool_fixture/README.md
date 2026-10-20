@@ -5,7 +5,7 @@ capability-binding.md`'s prove phase (§7.2) and used by `tests/plugin/test_wasm
 and D5). Source owned and reviewed for this proof — not a fetched third-party binary, matching D1's
 provenance standard for anything that ends up linked or loaded.
 
-Seven tools in one component:
+Eight tools in one component:
 
 - **`echo`** — zero capabilities requested, `parallelizable = true`.
 - **`now`** — imports `ae:tool/clock`, calls `now-unix-millis`.
@@ -19,6 +19,8 @@ Seven tools in one component:
   on the current host (`wasm_backend.cpp`), so a real invocation never returns to the guest: it either
   traps with "wrong kind" (the check these tools exist to exercise) or "not implemented in M2's
   minimal host" (proving the kind check passed first).
+- **`fetch-with`** (ADR-241 follow-up) — `http-request` with `args_json = "METHOD SIZE"` (a body of SIZE zero bytes),
+  for the G7 (timing) and G17 (request size) rows on the WASM edge, run through a host-supplied egress backend.
 
 `ae_tool_fixture.wasm` is **not** committed — it's build output, covered by `.gitignore`'s
 project-wide "WASM plugin build output" rule like every other `.wasm` in this repo. CMake's

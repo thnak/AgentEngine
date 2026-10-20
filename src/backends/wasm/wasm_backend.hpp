@@ -22,7 +22,9 @@
 // test_wasm_backend.cpp); the bridge's own tests (tests/plugin/test_wasm_tool_bridge.cpp) prove only the
 // new seam, not re-prove this file's internals.
 
+#include <concepts>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -32,6 +34,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/plugin/plugin.hpp"
+#include "agentengine/sandbox/net_egress_proxy.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 
 namespace agentengine::wasm {
@@ -56,6 +59,23 @@ struct ToolInvokeRequest {
     std::string args_json;
 };
 
+// ADR-241 follow-up (G7/G17 on the WASM edge): the type-erased, blocking egress call the guest's `http-request` import
+// makes. Built ONLY by `erase_egress_backend` below, from a `NetEgressBackend` conformer.
+using EgressBlockingFetch =
+    std::function<result<sandbox::NetEgressResponse>(sandbox::NetEgressRequest, cap::NetOut, sandbox::EgressCallControl)>;
+
+// Wraps one host-owned conformer (anything with `fetch_blocking`, as `HostEgressProxy` and `TestEgressProxy` have).
+template <class B>
+    requires sandbox::NetEgressBackend<B> &&
+             requires(B const& b, sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+                 { b.fetch_blocking(std::move(r), std::move(g), std::move(c)) } -> std::same_as<result<sandbox::NetEgressResponse>>;
+             }
+[[nodiscard]] EgressBlockingFetch erase_egress_backend(std::shared_ptr<B const> backend) {
+    return [backend = std::move(backend)](sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+        return backend->fetch_blocking(std::move(r), std::move(g), std::move(c));
+    };
+}
+
 class WasmBackend {
 public:
     static constexpr ProfileTraits traits{
@@ -72,6 +92,14 @@ public:
     // destructor) requires Instance to be a complete type, which it is not yet at this point in the
     // header (Pimpl idiom's standard requirement, not specific to this class).
     WasmBackend();
+    // ADR-070-shaped host opt-in (ADR-241 follow-up): HOST code (never model output, never the guest) may supply the
+    // `NetEgressBackend` the guest's `http-request` import goes through. Unset (the default constructor) = the production
+    // `HostEgressProxy`, behaviour unchanged. It is one more egress backend, not a bypass: the guest's `cap::NetOut` grant
+    // (narrowed by `ResourceLimits::net_bytes`) is still handed to it, and every conformer runs the allowlist gate itself;
+    // it receives only the values-only `EgressCallControl` (stop, deadline, admission), never an `EffectContext`. It cannot
+    // mint or widen a grant -- the grant it is passed is the one bound at load. Its production use is tests supplying
+    // `TestEgressProxy` (permit loopback); tools/egress_seam_lint.py keeps that type out of src/ and include/.
+    explicit WasmBackend(EgressBlockingFetch egress);
     ~WasmBackend();
     WasmBackend(WasmBackend const&) = delete;
     WasmBackend& operator=(WasmBackend const&) = delete;
@@ -138,6 +166,7 @@ public:
     struct Instance;
 
 private:
+    EgressBlockingFetch egress_;  // empty = production HostEgressProxy
     std::unordered_map<std::string, std::unique_ptr<Instance>> instances_;
 };
 
