@@ -121,7 +121,15 @@ task<result<NetEgressResponse>> egress_fetch(NetEgressRequest req, cap::NetOut g
     rt::HttpContext ctx;
     ctx.reactor  = &io->runtime.reactor();
     ctx.dns_pool = &io->runtime.dns_pool();
-    ctx.policy   = std::move(seams.address_policy);  // empty fails closed (no_policy) before any lookup
+    // Whatever policy the seam carries is narrowed to IPv4 unless a test opted into v6 by name; an empty one stays empty
+    // (fails closed, no_policy, before any lookup).
+    if (seams.address_policy && !seams.allow_non_v4) {
+        ctx.policy = [inner = std::move(seams.address_policy)](pal::IpAddress const& a) {
+            return a.family == pal::IpAddress::family_kind::v4 && inner(a);
+        };
+    } else {
+        ctx.policy = std::move(seams.address_policy);
+    }
 #ifdef AGENTENGINE_WITH_HTTPS
     ctx.tls = rt::tls_connector({.ca_bundle_pem_override = std::move(seams.tls_ca_override)});
 #endif

@@ -71,6 +71,7 @@ struct EgressSeams {
     rt::HostResolver host_resolver;
     rt::AddressPolicy address_policy;
     std::string       tls_ca_override;  // empty = the vendored CA bundle
+    bool              allow_non_v4 = false;  // a test must opt into v6 by name; otherwise any policy is narrowed to v4
 };
 [[nodiscard]] EgressSeams production_seams();
 

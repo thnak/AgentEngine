@@ -34,6 +34,9 @@ struct TestEgressProxy {
     rt::HostResolver          host_resolver   = egress_detail::production_host_resolver();
     rt::AddressPolicy         address_policy  = egress_detail::egress_address_policy;
     std::string               tls_ca_override;
+    // A permit-all `address_policy` still refuses every non-v4 family unless a test sets this: the OS dual-stack connect
+    // would otherwise reach a v4 listener through a v4-mapped answer (measured, ADR-241 S2). Production never has it.
+    bool                      allow_non_v4    = false;
     std::chrono::milliseconds total_timeout   = kDefaultEgressTotalTimeout;
 
     mutable egress_detail::GateObserver observer;
@@ -56,7 +59,7 @@ struct TestEgressProxy {
 
 private:
     [[nodiscard]] egress_detail::EgressSeams seams() const {
-        return egress_detail::EgressSeams{host_resolver, address_policy, tls_ca_override};
+        return egress_detail::EgressSeams{host_resolver, address_policy, tls_ca_override, allow_non_v4};
     }
 };
 

@@ -456,6 +456,16 @@ void gate_g2() {
         auto a_req = row.req;
         auto a = egress::egress_gate(a_req, grant);
         check_s(!a.has_value(), std::string("G2(a) egress_gate refuses: ") + row.row);
+        // The gate-level scan itself (layer a alone): at least one field of the row trips `reject_crlf`.
+        {
+            bool tripped = !agentengine::sandbox::reject_crlf("method", row.req.method).has_value() ||
+                           !agentengine::sandbox::reject_crlf("path", row.req.path).has_value();
+            for (auto const& [k, v] : row.req.headers) {
+                tripped = tripped || !agentengine::sandbox::reject_crlf("header name", k).has_value() ||
+                          !agentengine::sandbox::reject_crlf("header value", v).has_value();
+            }
+            check_s(tripped, std::string("G2(a) reject_crlf (the gate's own scan) refuses: ") + row.row);
+        }
 
         // (b) rt::http_request directly: it validates before it needs a reactor, so a bare context is enough.
         agentengine::rt::HttpRequest hr;
@@ -611,13 +621,10 @@ void gate_g4_v6() {
                 int const before = server.accept_count();
                 auto r = go(p, get_root(), make_grant(grant_for("test.invalid", server.port())), EgressCallControl{});
                 (void)r;
-                bool const mapped = f.addr.bytes[10] == 0xff && f.addr.bytes[11] == 0xff;
-                // MEASURED (ADR-241 finding): a v4-MAPPED answer under a permit-all policy reaches the v4 listener through the OS
-                // dual-stack connect. Every other v6 form never connects. Production is safe either way (egress_address_policy
-                // refuses every non-v4 family, asserted above); this only shows what permit-all would expose.
-                if (!mapped) {
+                // TestEgressProxy narrows even a permit-all policy to v4 (coordinator decision 1): a v4-MAPPED answer used to reach the
+                // v4 listener through the OS dual-stack connect (measured), so EVERY form, mapped included, is a no-connect now.
                     check_s(server.accept_count() == before, std::string(entry) + ": G4 permit-all + v6 answer never reaches the v4 listener: " + f.what);
-                }
+
             }
         }
     }
@@ -820,12 +827,12 @@ void gate_g9_byte_cap() {
             std::uint64_t wire_bytes = 0;
             auto over = run([](auto fd) { handle_flood(fd, 1001); }, std::uint64_t{1000}, &wire_bytes);
             expect_error(entry, "G9 cap + 1", over, failure_class::resource, "net.byte_cap_exceeded");
-            check_s(wire_bytes <= 1000 + 2 * 1000, who + "cap + 1 is cut off within cap + 2*min(64 KiB, cap) wire bytes (" + std::to_string(wire_bytes) + ")");
+            check_s(wire_bytes <= 3 * 1000 + 1, who + "cap + 1 is cut off at EXACTLY the total bound (cap + 2*min(64 KiB, cap)) + 1 (" + std::to_string(wire_bytes) + ")");
         }
         // cap == 0 allows zero body bytes, it is NOT unlimited.
         {
             auto empty = run([](auto fd) { write_all(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"); }, std::uint64_t{0}, nullptr);
-            // OPEN QUESTION (reported): heads share min(64 KiB, cap), so cap 0 leaves a head budget of 0 and EVERY response, even an
+            // INTENDED (coordinator decision 2): heads share min(64 KiB, cap), so cap 0 leaves a head budget of 0 and EVERY response, even an
             // empty one, fails closed as a resource error. The claim proven is fail-closed (never unlimited).
             check_s(!empty.has_value() && empty.error().klass == failure_class::resource, who + "cap 0 fails closed as resource, never unlimited");
             auto some = run(handle_ok, std::uint64_t{0}, nullptr);
@@ -859,14 +866,14 @@ void gate_g9_byte_cap() {
             };
             auto r = run(flood_1xx, std::uint64_t{1000}, &wire_bytes);
             check_s(!r.has_value(), who + "a 1xx flood is refused");
-            check_s(wire_bytes <= 1000 + 2 * 1000, who + "the 1xx flood is bounded on the client (" + std::to_string(wire_bytes) + ")");
+            check_s(wire_bytes <= 3 * 1000 + 1, who + "the 1xx flood is bounded on the client (" + std::to_string(wire_bytes) + ")");
             auto trailer_flood = [](agentengine::pal::fd_t fd) {
                 if (!write_all(fd, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n")) return;
                 write_all(fd, "X-T: " + std::string(200 * 1024, 't') + "\r\n\r\n");
             };
             auto t = run(trailer_flood, std::uint64_t{1000}, &wire_bytes);
             check_s(!t.has_value(), who + "a trailer flood is refused");
-            check_s(wire_bytes <= 1000 + 2 * 1000 + 16 * 1024 /* + one read chunk: the total is checked as a read RETURNS */, who + "the trailer flood is bounded on the client (" + std::to_string(wire_bytes) + ")");
+            check_s(wire_bytes <= 3 * 1000 + 1, who + "the trailer flood is bounded on the client (" + std::to_string(wire_bytes) + ")");
         }
         // No cap in the grant: the 16 MiB hard ceiling applies.
         {

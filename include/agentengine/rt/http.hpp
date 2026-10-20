@@ -424,6 +424,10 @@ private:
 // ADR-241 S1: the ONE place wire bytes are counted. A read that pushes the total past the budget is `over_budget`
 // (its data dropped); callers map that to `response_too_large`.
 inline task<HttpIo> read_counted(HttpTransport& t, http_wire::WireBudget& budget, std::size_t n, std::stop_token stop) {
+    // Clamp the request to the remaining budget + 1 (never 0): the total can then never exceed `limit + 1` wire bytes, so the
+    // bound is exact and not "plus one read chunk" (ADR-241 S2, coordinator decision 4).
+    std::uint64_t const remaining = budget.limit > budget.used ? budget.limit - budget.used : 0;
+    n = static_cast<std::size_t>(std::max<std::uint64_t>(1, std::min<std::uint64_t>(n, remaining + 1)));
     HttpIo r = co_await t.read_some(n, std::move(stop));
     if (r.status == http_io::ok && !budget.charge(r.data.size())) {
         r.status = http_io::over_budget;
