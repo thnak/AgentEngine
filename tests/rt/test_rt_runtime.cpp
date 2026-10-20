@@ -702,16 +702,40 @@ std::optional<std::size_t> thread_count() {
 #endif
 }
 
+// A joined thread can still be listed for a moment: the kernel wakes the joiner (clears the tid) before the task
+// is reaped from /proc/self/task, and under load that window widens (#198-class flake, seen on Linux at -j10:
+// before 2 / after 1, before 1 / after 2). So a count is read once it has SETTLED: two reads 20 ms apart agree.
+std::optional<std::size_t> settled_thread_count() {
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    auto       prev     = thread_count();
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        auto const now = thread_count();
+        if (!now || now == prev || std::chrono::steady_clock::now() > deadline) return now;
+        prev = now;
+    }
+}
+
 void r10_no_thread_outlives() {
     std::thread([] {}).join();  // a sanitizer's own helper thread, started on the first thread creation, is not ours
-    auto const before = thread_count();
+    auto const before = settled_thread_count();
     std::optional<std::size_t> during;
     {
         Runtime rt{config(3, 2, 2)};
         (void)rt.run(one());  // let everything start
         during = thread_count();
     }
-    auto const after = thread_count();
+    // Poll down to `before` (bounded): a Runtime thread that really outlives destruction is still there at the
+    // deadline and fails below; one the kernel has merely not reaped yet is gone within milliseconds.
+    std::optional<std::size_t> after;
+    {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        for (;;) {
+            after = thread_count();
+            if (!after || !before || *after <= *before || std::chrono::steady_clock::now() > deadline) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
     if (!before || !after || !during) {
         std::printf("[skip] R10 thread count unavailable\n");
         return;
