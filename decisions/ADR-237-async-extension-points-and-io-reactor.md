@@ -2948,6 +2948,51 @@ fails it).
   `native_shell_session.cpp:401,506`, `docker_persistent_shell_surface.cpp:242` and `linux_native_jail_backend.cpp:463`
   under the task-shaped execution surfaces.
 
+### Step 58 (2026-10-20): Phase G slice 5 -- `BatchableModelCall::Call` is `task`-shaped; Phase G complete (#187)
+
+- `BatchableModelCall::Call` returns `task<result<ChatResponse>>` -- it is the batch node's one model-I/O step.
+  `call_request` is a coroutine that awaits it and then runs the synchronous `finish`; `operator()` and the
+  supervisor's per-delivery `unbatchable` override (`src/rt/workflow_supervisor_batch.cpp`) `co_await` it. `Build` and
+  `Complete` stay synchronous on ADR-239's no-I/O contract. `call_request` takes references; both callers await it in
+  place (in the override, `request` and `call` are members of the stored `ExecutorBody`'s closure).
+- Conformers: 8 `Call` lambdas in 4 files (batch coalescing, batch replay, the OpenRouter live e2e); none in
+  `examples/`, `tools/`, `devsim/`. No `block_on` added; no lock live at either await. Coalescing and replay tests pass
+  unchanged. `test_openrouter_batch_live_e2e` now `co_await`s `chat()` instead of resuming it by hand; it is a
+  live-network test, so that change is compile-verified only.
+- **Phase G is complete**: every seam the #174 triage assigned to it (`ApprovalDecider`, `PolicyDecider`,
+  `ExecutorBody`, `ChildRunner`, `EffectContext::blob_sink`, `BatchableModelCall::Call`) is `task`-shaped. What
+  remains of the triage's conversions joins #180: `ReplayChatClient::SleepFn` and `RegisteredRunner::invoke`.
+
+### Step 59 (2026-10-20): `workflow_as_executor` charges the inner run on throw and on drop (#196, ADR-193 §9)
+
+- Closes step 55's residual "`run_once` has no guard". `workflow_as_executor_detail::run_once` guards the
+  `co_await inner.run_workflow(...)` with `ChargeOnUnwind`. Because `WorkflowSupervisor::usage()` is reset when a run
+  STARTS, the guard charges `inner.usage()` only if `run_id()` moved off the value read before the await (the agent
+  adapter's `last_run_id()` test); `run_workflow` bumps the id and resets the total with no suspension between.
+  `completed()` sits where the run is handed off (after the outcome is built) or charged.
+- Proof (`test_rt_workflow_as_executor` C1-C5): a throw after spending (C1) and a drop while parked (C2) each charge
+  the caller exactly once -- both FAIL on the unguarded code; dropped before the inner run started after a previous run
+  left `usage()` nonzero (C3), and parked on the inner supervisor's run mutex while another run holds it (C3b), charge
+  nothing; normal completion (C4) and normal failure (C5) charge exactly once.
+- **Residual:** if the inner supervisor is shared by concurrent outer callers and ANOTHER caller's run starts after
+  this call read `run_id()`, a drop of this call while it still waits on the run mutex charges that other run's
+  partial spend (which its own caller also charges). The guard cannot tell whose run moved the id; closing it needs
+  `run_workflow` to hand the caller a start token. Tracked in #196.
+
+### Step 60 (2026-10-20): #183 batches 1-2 -- test drivers move to `block_on` (prerequisite for D7, #178)
+
+- 75 test files (`tests/rt/agent_session/`, `tests/workflow/`, `tests/core/ledger/`) drove tasks with a local
+  `drive()` helper (`while (!t.done()) t.resume(); return t.take_value();`). Each helper's body is now
+  `return rt::block_on(std::move(t));`; no call site and no assertion moved. Labels `rt/agent_session` 39/39 and
+  `workflow|core/ledger` 46/46, identical before and after. No hang, deadlock or `block_on_refused` appeared.
+- **Kept on purpose (class b, marked `// #178`)** -- tests that step a task by hand to OBSERVE a suspended state,
+  which `block_on` cannot express; D7 needs a sanctioned stepping API for them before direct driving goes private:
+  `test_rt_agent_session_snapshot` P6 (a run parked on a gate, a snapshot queued behind `session_mutex_`, both on one
+  thread), `test_ledger_async_locking` T1-T3/T7/T9 (store calls parked on a gate), `test_rt_workflow_supervisor` P5
+  (two tasks resumed across threads), and `test_delegation_provenance` R4-D0..D5 (step 55's drop tests).
+- Remaining hand-driven sites after these batches: ~417 by raw grep in ~127 files (some are not tasks); the largest
+  groups are `tests/rt/` (top level), `tests/sandbox/`, `tests/protocol/openai/`, `tests/core/chat/`, `tests/eval/`.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
@@ -2958,8 +3003,8 @@ narrowed out of the same row). The triage adds **3 seams §5.1 never named** tha
 The "~27" figure and the step-46-era paragraph below are kept as history; §14.2 supersedes their count.
 
 **Since then (2026-10-18/20):** Phase G slices 1-4 (steps 52-53, 55-56) converted `ApprovalDecider`, `PolicyDecider`,
-`ExecutorBody`, `ChildRunner` and `EffectContext::blob_sink`, so **3 conversions are left**: the batch `Call`,
-`ReplayChatClient::SleepFn` and `RegisteredRunner::invoke` (the last two with #180). The #174 inventory was triaged twice, independently, on
+`ExecutorBody`, `ChildRunner`, `EffectContext::blob_sink` and (step 58) the batch `Call`, so **2 conversions are
+left**: `ReplayChatClient::SleepFn` and `RegisteredRunner::invoke`, both with #180. The #174 inventory was triaged twice, independently, on
 two branches merged together: §14.2 (2026-10-16, the Phase E branch) and the "§14.1 triage table" below (2026-10-19,
 the Phase G branch, reconciled with steps 52-53). Both count 49 aliases; where their status differs, the 2026-10-19
 table is current.
@@ -2991,7 +3036,8 @@ closes the small end of Phase B), then Phase C with the qdrant `Resolver` folded
 `PersistentShellSurface`; `NetEgressBackend`~~ (Phase D, §14 step 50); ~~`SecretStore`; the three stores~~ (Phase
 C, steps 46-49); ~~plus ~15 further `std::function` typedefs that have not been triaged individually yet~~
 (triaged, #174: §14.2 and the §14.1 triage table below). What is left after the triage and Phase G slices 1-2:
-~~`ChildRunner`~~ (step 55), `BatchableModelCall::Call` and ~~`EffectContext::blob_sink`~~ (step 56) (**Phase G**), plus
+~~`ChildRunner`~~ (step 55), ~~`BatchableModelCall::Call`~~ (step 58) and ~~`EffectContext::blob_sink`~~ (step 56)
+(**Phase G, complete**), plus
 `ReplayChatClient::SleepFn` and the shell's `RegisteredRunner::invoke` (with #180, the blocking conformer bodies).
 
 **§14.1 triage table (#174, 2026-10-19, `main` at `16efaa38`; doc-only -- nothing below was converted).**
@@ -3160,7 +3206,8 @@ the nested drive loops it targeted are gone -- `WorkflowSupervisor::drive<T>` an
 `ChildRunner`; `BatchableModelCall::Call`/`Complete` (reached only *through* `BatchableModelCall`, so their
 own slice); `EffectContext::blob_sink`; and the nested drive loop at `agent_spawn_child_run.hpp:139`, which
 belongs with the agent.spawn seam rather than with the executor body. **Slices 3-4 DONE** (§14 steps 55-56,
-2026-10-20): `ChildRunner` with that drive loop, and `blob_sink`. Remaining: `BatchableModelCall::Call`/`Complete`.
+2026-10-20): `ChildRunner` with that drive loop, and `blob_sink`. **Slice 5 DONE** (§14 step 58): `BatchableModelCall::Call`
+(`Build`/`Complete` stay synchronous, ADR-239). **Phase G is complete.**
 
 **Gate for every phase, unchanged:** build-dev clean; the named tests for the touched area pass; naming-lint
 OK; layering-lint OK; `ctest -LE live-network` -> the identical 14 baseline failures (re-measured 402/418 non-live
