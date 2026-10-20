@@ -12,12 +12,14 @@
 // `rt::` test in this suite already uses) instead of `block_on(ref.ask<...>(...))` against a real
 // actor mailbox. Same behavior proven, no engine/mailbox left to stand it up.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <memory_resource>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
 namespace {
@@ -38,8 +40,7 @@ namespace a2a = agentengine::a2a;
 
 template <class T>
 T drive(art::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Same shape test_agent_session_suspend_resume.cpp's own CannedChatClient uses -- echoes the run_id

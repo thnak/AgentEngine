@@ -10,11 +10,13 @@
 // from "broken for everyone", and would pass against a handler that returns an error
 // unconditionally.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
@@ -40,8 +42,7 @@ namespace json = agentengine::json;
 // the ADR-237 D7 test-driver rewrite.
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct SlowArgs {

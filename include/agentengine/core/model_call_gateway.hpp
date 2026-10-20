@@ -374,7 +374,12 @@ private:
                                          "gateway.usage_unavailable"};
             }
             ++attempts_used;
-            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            // #184: a caller-caused cancel is neither success nor failure for the breaker (frees a half-open probe).
+            if (!succeeded && drained.failure.klass == failure_class::canceled && ctx.cancellation.stop_requested()) {
+                breaker.on_canceled();
+            } else {
+                breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            }
 
             if (succeeded) {
                 co_return ChatResponse{std::move(drained.accumulated), *drained.usage};
@@ -527,13 +532,24 @@ private:
                 if (terminated_by_consumer) break;
                 if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-            if (terminated_by_consumer) return std::nullopt;
+            if (terminated_by_consumer) {
+                breaker.on_canceled();  // #184: the consumer left mid-attempt -- release a half-open probe slot
+                return std::nullopt;
+            }
 
             // Same fail-closed-on-missing-usage rule `attempt_with_retry()` already enforces for `call()`
             // -- 004 §5's TokenBudget<N> depends on a true per-call token count.
             bool const succeeded = s.terminal() == stream_terminal::closed && last_usage.has_value();
             ++attempts_used;
-            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            bool const caller_canceled =
+                !succeeded && s.terminal() != stream_terminal::closed &&
+                s.fail_error().klass == failure_class::canceled &&
+                (stop.stop_requested() || ctx.cancellation.stop_requested());
+            if (caller_canceled) {
+                breaker.on_canceled();  // #184
+            } else {
+                breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            }
 
             if (succeeded) {
                 if (sticky_) last_successful_tier_ = tier_index;

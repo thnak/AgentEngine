@@ -10,10 +10,12 @@
 //         live one, including correctly rejecting a duplicate of an id it only ever learned about
 //         via restore, never via its own create_project.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/project_registry.hpp"
 
 using agentengine::rt::CreateProject;
@@ -38,8 +40,7 @@ void check(bool cond, char const* what) {
 // path in this single-caller test file -- one resume() call resolves each fully.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 }  // namespace

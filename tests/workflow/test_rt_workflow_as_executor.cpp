@@ -438,6 +438,7 @@ int main() {
         {
             Message const input = text_message("in");  // named: the body is lazy and takes a const&
             auto t = (*wrapped)(input, ctx);
+            // #178: deliberate step-driving (observes a suspended state: hook parked, task not done)
             t.resume();
             check(g_hook_parked && !t.done() && log.charges == 0,
                   "C2: setup -- the inner run is parked after spending and nothing is charged yet");
@@ -479,6 +480,7 @@ int main() {
         g_park_hook   = true;
         g_hook_parked = false;
         auto other = inner.sup.run_workflow(RunWorkflow{input});  // a direct driver's run, parked holding the mutex
+        // #178: deliberate step-driving (parks a run holding the supervisor mutex so the next call observes busy)
         other.resume();
         check(g_hook_parked && inner.sup.usage().input_tokens == 100,
               "C3b: setup -- another run holds the supervisor and has spent 100 input tokens");
@@ -486,6 +488,7 @@ int main() {
         agentengine::EffectContext ctx2 = log2.context();
         {
             auto t = (*wrapped)(input, ctx2);
+            // #178: deliberate step-driving (observes a suspended state: parked on the busy supervisor)
             t.resume();  // inside run_once, parked on run_mutex_
             check(!t.done(), "C3b: setup -- the second call is parked on the busy supervisor");
         }

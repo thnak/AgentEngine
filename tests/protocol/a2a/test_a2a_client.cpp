@@ -14,10 +14,12 @@
 // so every client verb returns a `task` driven through the local `drive()` helper below, and the
 // transport/CardFetcher stand-ins this test supplies are coroutines in turn.
 
+#include <utility>
 #include <cstdio>
 #include <memory_resource>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/a2a/client.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
@@ -39,8 +41,7 @@ namespace a2a = agentengine::a2a;
 
 template <class T>
 T drive(art::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 class CannedChatClient {

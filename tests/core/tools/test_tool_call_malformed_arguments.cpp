@@ -19,6 +19,7 @@
 // Positive controls (2026-09-26): duplicate detection disabled in json_value.hpp -> T8, T9 fail; the non-object
 // check removed from tool_call_request_of -> T7 fails.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <optional>
@@ -26,6 +27,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -48,8 +50,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Every argument optional: `{}` is a VALID call, so only a real step-2 refusal keeps it from running.

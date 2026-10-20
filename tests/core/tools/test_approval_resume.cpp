@@ -47,6 +47,7 @@
 //
 // Positive controls: each MAJOR fix was reverted by hand and the matching check was seen to fail (recorded in
 // ADR-196 §6 / ADR-192 §9).
+#include <utility>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -54,6 +55,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
@@ -85,8 +87,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message text_msg(ae::role r, std::string text) {

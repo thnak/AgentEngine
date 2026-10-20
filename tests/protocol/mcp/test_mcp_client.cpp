@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
@@ -34,8 +35,7 @@ namespace art  = agentengine::rt;
 // sender is a synchronous in-process `McpServer`/mock -- so a minimal drive loop is enough.
 template <class T>
 T drive(art::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct EchoArgs {

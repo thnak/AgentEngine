@@ -17,11 +17,13 @@
 //
 // MACHINE SAFETY (CLAUDE.md): 8 real threads, bounded, matching the original's own cap.
 
+#include <utility>
 #include <cstdint>
 #include <cstdio>
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/spawn_cost_budget.hpp"
 
 using agentengine::rt::ConsumeSpawnTokens;
@@ -44,8 +46,7 @@ void check(bool cond, char const* what) {
 // caller), so the fast path never genuinely suspends and one resume() call resolves it fully.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 }  // namespace

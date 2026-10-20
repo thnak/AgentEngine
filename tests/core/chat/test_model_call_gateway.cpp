@@ -53,6 +53,7 @@
 //          without ever falling back to retrying the primary -- and the NEXT call after that still
 //          starts at the fallback again, never automatically un-sticking to a more-preferred tier.
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -104,9 +105,18 @@ struct ScriptedOutcome {
 // many times the gateway's OWN internal copy actually called `chat_stream()` needs a counter shared
 // across every copy of this fixture, not one that silently diverges the moment the gateway is
 // constructed. `outcomes` stays plain-by-value (set once, before construction, never mutated after).
+// #184: lets a test hold ONE chat_stream() call open (after the gateway's on_send() admitted it) while the
+// consumer walks away, so the consumer-gone path is hit deterministically. Shared across backend copies.
+struct StreamGate {
+    std::atomic<bool> armed{false};
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+};
+
 class ScriptedGatewayBackend {
 public:
     std::vector<ScriptedOutcome> outcomes;
+    std::shared_ptr<StreamGate> gate;
 
     ScriptedGatewayBackend()
         : call_count_(std::make_shared<std::size_t>(0)),
@@ -128,6 +138,12 @@ public:
         ae::stream_config<ae::ChatResponseUpdate> cfg;
         cfg.capacity = 32;
         auto pair = ae::make_stream<ae::ChatResponseUpdate>(std::pmr::get_default_resource(), cfg);
+        if (gate && gate->armed.exchange(false)) {
+            gate->entered = true;
+            auto const until = std::chrono::steady_clock::now() + std::chrono::seconds(5);  // bounded
+            while (!gate->release && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         observed_idempotency_keys_->push_back(request.idempotency_key.value_or(std::string{}));
         std::size_t const call_count = *call_count_;
         if (call_count < outcomes.size()) {
@@ -530,6 +546,148 @@ int main() {
             AE_CHECK(r.has_value(), "G8: after closing, calls are admitted normally again");
             AE_CHECK(primary.call_count() == 5, "G8: call_count advances again -- no longer shedding");
         }
+    }
+
+    // ---- G8b (#184): a CALLER-canceled attempt is neither a success nor a failure for the breaker ----
+    {
+        auto canceled_ctx = [](std::stop_token t) {
+            auto c = make_ctx();
+            c.cancellation = t;
+            return c;
+        };
+        std::stop_source src;
+        src.request_stop();
+        ae::RetryPolicy no_retry;
+        no_retry.max_attempts = 1;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 3;
+        breaker.open_duration = std::chrono::milliseconds(60);
+
+        // (a) closed: 5 canceled attempts (threshold 3) do not trip; the next real call still reaches the backend.
+        {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 5; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::canceled));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("fine", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 5; ++i) {
+                auto ctx = canceled_ctx(src.get_token());
+                auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+                AE_CHECK(!r.has_value() && r.error().klass == ae::failure_class::canceled,
+                         "G8b(a): a canceled attempt fails canceled");
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(r.has_value() && primary.call_count() == 6,
+                     "G8b(a): 5 canceled attempts did NOT trip the breaker (the 6th call reached the backend)");
+        }
+        // (a2) a canceled attempt does not RESET the consecutive count either: 2 failures, cancel, 1 failure -> trips.
+        {
+            ScriptedGatewayBackend primary;
+            primary.outcomes = {ScriptedOutcome::fail(ae::failure_class::transient),
+                                ScriptedOutcome::fail(ae::failure_class::transient),
+                                ScriptedOutcome::fail(ae::failure_class::canceled),
+                                ScriptedOutcome::fail(ae::failure_class::transient)};
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 4; ++i) {
+                auto ctx = (i == 2) ? canceled_ctx(src.get_token()) : make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open" && primary.call_count() == 4,
+                     "G8b(a2): a canceled attempt neither bumped nor reset the count -- 3 real failures tripped it");
+        }
+        // (a3) a provider that reports `canceled` WITHOUT the caller having stopped still counts as a failure.
+        {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 3; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::canceled));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 3; ++i) {
+                auto ctx = make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open",
+                     "G8b(a3): a `canceled` the caller did not cause still trips the breaker");
+        }
+        // (b) half-open probe canceled -> stays half-open, slot freed, NEXT call probes, success closes.
+        // (c) control: a provider failure on the probe re-opens.
+        for (bool provider_fails : {false, true}) {
+            ScriptedGatewayBackend primary;
+            for (int i = 0; i < 3; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::transient));
+            primary.outcomes.push_back(provider_fails ? ScriptedOutcome::fail(ae::failure_class::transient)
+                                                      : ScriptedOutcome::fail(ae::failure_class::canceled));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("probe ok", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("closed", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+            ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+            for (int i = 0; i < 3; ++i) {
+                auto ctx = make_ctx();
+                (void)ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            {
+                auto ctx = provider_fails ? make_ctx() : canceled_ctx(src.get_token());
+                auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+                AE_CHECK(!r.has_value() && primary.call_count() == 4, "G8b: the probe reached the backend and failed");
+            }
+            auto ctx = make_ctx();
+            auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));
+            if (provider_fails) {
+                AE_CHECK(!r.has_value() && r.error().code == "gateway.circuit_open" && primary.call_count() == 4,
+                         "G8b(c): a provider failure on the probe re-opens the breaker (next call shed)");
+            } else {
+                AE_CHECK(r.has_value() && primary.call_count() == 5,
+                         "G8b(b): a canceled probe freed the slot -- the NEXT call probed (not shed, not wedged)");
+                auto ctx2 = make_ctx();
+                auto r2 = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx2));
+                AE_CHECK(r2.has_value() && primary.call_count() == 6, "G8b(b): the successful probe closed the breaker");
+            }
+        }
+    }
+
+    // ---- G8c (#184): call_stream()'s consumer-gone exit must free a half-open probe slot ------------
+    {
+        ae::RetryPolicy no_retry;
+        no_retry.max_attempts = 1;
+        ae::BreakerConfig breaker;
+        breaker.fail_threshold = 3;
+        breaker.open_duration = std::chrono::milliseconds(60);
+        ScriptedGatewayBackend primary;
+        primary.gate = std::make_shared<StreamGate>();
+        for (int i = 0; i < 3; ++i) primary.outcomes.push_back(ScriptedOutcome::fail(ae::failure_class::transient));
+        for (int i = 0; i < 3; ++i)  // the abandoned probe's script, the next probe, one more after closing
+            primary.outcomes.push_back(ScriptedOutcome::ok({text_delta("x", true, ae::Usage{1, 1, 0, 0, 0.0})}));
+        ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), no_retry, breaker, &no_jitter);
+        for (int i = 0; i < 3; ++i) {
+            auto ctx = make_ctx();
+            (void)ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // cooldown -> next admit is the probe
+        primary.gate->armed = true;
+        {
+            auto ctx = make_ctx();
+            auto s = gw.call_stream(make_request(), ctx);
+            auto const until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!primary.gate->entered && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            AE_CHECK(primary.gate->entered, "G8c: the probe was admitted and reached the backend");
+            s.cancel();  // the consumer walks away mid-attempt
+            primary.gate->release = true;
+        }
+        // The abandoned attempt finishes on the gateway's own thread; poll (bounded) for the NEXT call.
+        bool probed = false;
+        for (int i = 0; i < 200 && !probed; ++i) {
+            auto ctx = make_ctx();
+            ae::DrainedChatStream d = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+            if (d.ok) probed = true;
+            else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        AE_CHECK(probed, "G8c: after the consumer abandoned the probe, a later call is admitted as the probe "
+                         "(not shed forever -- a wedged probe slot)");
+        auto ctx = make_ctx();
+        ae::DrainedChatStream d = ae::drain_chat_stream(gw.call_stream(make_request(), ctx));
+        AE_CHECK(d.ok && primary.call_count() == 6, "G8c: the successful probe closed the breaker (call admitted again)");
     }
 
     // ---- G9: call_stream() basic success -- chunks pushed live, reconstruction matches call() -----

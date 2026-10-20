@@ -11,10 +11,12 @@
 //   E5     Positive control: the same session without the host pre-mount shows no body in its first
 //          request -- so E1 is caused by the pre-mount, not by something else putting it there.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_premount.hpp"
@@ -39,8 +41,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct MountSkillArgs {
