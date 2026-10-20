@@ -685,7 +685,21 @@ private:
             error_code = invoked.error().code;
             result_out = tool_pipeline_detail::make_error_result(call_id, invoked.error());
         } else {
-            auto normalized = tool_pipeline_detail::normalize_success(call_id, *invoked, ctx);
+            // ADR-237 5.1 (#187): `blob_sink` is async (and is never wired on a job's allowlisted ctx, so
+            // this resolves without suspending); driven with `block_on` like `invoke` above. This step sits
+            // outside that try block, so a fault is translated here exactly as `invoke`'s catch does.
+            auto drive_normalize = [&]() -> result<std::pair<ToolResult, std::size_t>> {
+                try {
+                    return rt::block_on(tool_pipeline_detail::normalize_success(call_id, *invoked, ctx));
+                } catch (std::exception const& e) {
+                    return std::unexpected(error{failure_class::fatal, std::string("background job tool threw: ") + e.what(),
+                                                  "background_job.tool_threw"});
+                } catch (...) {
+                    return std::unexpected(error{failure_class::fatal, "background job tool threw a non-exception",
+                                                  "background_job.tool_threw"});
+                }
+            };
+            auto normalized = drive_normalize();
             if (!normalized) {
                 error_code = normalized.error().code;
                 result_out = tool_pipeline_detail::make_error_result(call_id, normalized.error());

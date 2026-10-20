@@ -17,6 +17,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/task.hpp"  // ADR-237 5.1 (#187): blob_sink returns task<result<BlobRef>>
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -234,7 +235,11 @@ struct EffectContext {
     // means "no sink available" -- step 9 treats that as "cannot promote" and fails closed rather
     // than silently inlining an over-threshold result anyway, which is exactly the hazard this
     // mechanism exists to prevent (see `tool_pipeline.hpp`'s own comment on this decision).
-    std::function<result<BlobRef>(std::span<std::byte const> bytes, std::string const& media_type)>
+    //
+    // ADR-237 5.1 (#187): `task`-shaped, because its documented conformer
+    // (`WorktreeObjectStore::put_blob`) is. The sink's arguments (`bytes`) must outlive the task;
+    // every caller awaits it in the same full-expression, from a frame that owns the bytes.
+    std::function<task<result<BlobRef>>(std::span<std::byte const> bytes, std::string const& media_type)>
         blob_sink;
 
     // The session's own mediated filesystem view into its sandbox mount, if one is currently live

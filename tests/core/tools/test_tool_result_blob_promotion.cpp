@@ -113,10 +113,10 @@ void test_over_threshold_with_sink_promotes_to_blob() {
     std::string sunk_media_type;
     std::size_t sunk_byte_count = 0;
     ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const& media_type)
-            -> agentengine::result<agentengine::BlobRef> {
+            -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
         sunk_media_type = media_type;
         sunk_byte_count = bytes.size();
-        return agentengine::BlobRef{"digest-abc", media_type, bytes.size(), "test-store"};
+        co_return agentengine::BlobRef{"digest-abc", media_type, bytes.size(), "test-store"};
     };
 
     std::string const big(500, 'z');
@@ -153,8 +153,8 @@ void test_blob_sink_failure_propagates() {
     agentengine::CapabilitySet const held;
     auto ctx = make_ctx();
     ctx.tool_result_byte_threshold = 20;
-    ctx.blob_sink = [](std::span<std::byte const>, std::string const&) -> agentengine::result<agentengine::BlobRef> {
-        return std::unexpected(agentengine::error{agentengine::failure_class::resource, "store is full",
+    ctx.blob_sink = [](std::span<std::byte const>, std::string const&) -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::resource, "store is full",
                                                     "test.blob_store_full"});
     };
 
@@ -175,9 +175,9 @@ void test_background_task_applies_the_same_rule() {
 
     std::size_t sunk_byte_count = 0;
     ctx.blob_sink = [&](std::span<std::byte const> bytes, std::string const&)
-            -> agentengine::result<agentengine::BlobRef> {
+            -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
         sunk_byte_count = bytes.size();
-        return agentengine::BlobRef{"digest-bg", "application/json", bytes.size(), "test-store"};
+        co_return agentengine::BlobRef{"digest-bg", "application/json", bytes.size(), "test-store"};
     };
 
     bool completed = false;

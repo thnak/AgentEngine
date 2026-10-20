@@ -159,7 +159,7 @@ namespace read_content_detail {
 // a sandbox file's bytes, so both `invoke_via` (URL) and `invoke_from_sandbox` (path) below funnel
 // through this one function rather than duplicating the threshold/truncate/blob-sink logic per
 // source. Moved here verbatim from the pre-`path`-source `ReadContent::invoke_via` body.
-[[nodiscard]] inline result<ReadContentReply> build_reply(std::string&& body, std::string media_type,
+[[nodiscard]] inline task<result<ReadContentReply>> build_reply(std::string&& body, std::string media_type,
                                                            EffectContext& ctx) {
     ReadContentReply reply;
     reply.total_bytes = body.size();
@@ -170,7 +170,7 @@ namespace read_content_detail {
     if (reply.total_bytes <= threshold) {
         reply.preview = std::move(body);
         reply.truncated = false;
-        return reply;
+        co_return reply;
     }
 
     // Over threshold: the preview is always bounded (never the hazard 006 §7 exists to prevent)
@@ -183,11 +183,11 @@ namespace read_content_detail {
     if (ctx.blob_sink) {
         std::span<std::byte const> const bytes{reinterpret_cast<std::byte const*>(body.data()),
                                                  body.size()};
-        auto blob = ctx.blob_sink(bytes, reply.media_type);
-        if (!blob) return std::unexpected(blob.error());
+        auto blob = co_await ctx.blob_sink(bytes, reply.media_type);
+        if (!blob) co_return std::unexpected(blob.error());
         reply.blob = *blob;
     }
-    return reply;
+    co_return reply;
 }
 
 }  // namespace read_content_detail
@@ -232,7 +232,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
                                           "read_content requires exactly one of 'url' or 'path'",
                                           "read_content.ambiguous_source"});
         }
-        if (has_path) co_return invoke_from_sandbox(args, ctx);
+        if (has_path) co_return co_await invoke_from_sandbox(args, ctx);
         co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
@@ -241,30 +241,30 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // `tools/read_sandbox_file.hpp` already proved end to end. No `Content-Type` header exists for
     // a local file, so `media_type` is always the same generic default `invoke_via` below falls
     // back to when a URL response omits one.
-    [[nodiscard]] static result<Reply> invoke_from_sandbox(Args const& args, EffectContext& ctx) {
+    [[nodiscard]] static task<result<Reply>> invoke_from_sandbox(Args const& args, EffectContext& ctx) {
         if (!ctx.sandbox_fs) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "this session has no sandbox mount yet",
                                           "read_content.no_sandbox"});
         }
         if (!ctx.capabilities) {
-            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+            co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                           "tool.capability_not_held"});
         }
         std::string const mount{read_content_detail::kWorkMount};
         auto granted = ctx.capabilities->find_fs_read(mount, *args.path);
         if (!granted) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "no granted FsRead capability covers '" + *args.path +
                                               "' on the '" + mount + "' mount",
                                           "tool.capability_not_held"});
         }
 
         auto bytes = ctx.sandbox_fs->read_file(*args.path);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         std::string body(reinterpret_cast<char const*>(bytes->data()), bytes->size());
-        return read_content_detail::build_reply(std::move(body), "application/octet-stream", ctx);
+        co_return co_await read_content_detail::build_reply(std::move(body), "application/octet-stream", ctx);
     }
 
     // The actual `url`-source logic, parameterized over the egress backend (`sandbox::
@@ -313,7 +313,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
             }
         }
 
-        co_return read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
+        co_return co_await read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
     }
 };
 

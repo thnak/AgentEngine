@@ -559,13 +559,13 @@ int main() {
         EffectContext ctx_with_sink{};
         ctx_with_sink.tool_result_byte_threshold = 8;
         ctx_with_sink.blob_sink = [](std::span<std::byte const>,
-                                      std::string const& media_type) -> agentengine::result<agentengine::BlobRef> {
+                                      std::string const& media_type) -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
             agentengine::BlobRef blob;
             blob.digest = "test-digest";
             blob.media_type = media_type;
             blob.size = 0;
             blob.store = "test-store";
-            return blob;
+            co_return blob;
         };
 
         // A fresh WorkflowSupervisor instance -- the T8-no-sink attempt above never actually started a
