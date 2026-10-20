@@ -17,6 +17,7 @@
 //         cadence holds end to end: a newly mount_tool'd tool is NOT on the first outbound
 //         ChatRequest and IS on the second, the turn after mount_tool ran.
 
+#include <utility>
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <tuple>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -47,8 +49,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // -- Shared fixtures --------------------------------------------------------------------------

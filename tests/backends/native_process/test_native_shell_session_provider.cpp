@@ -39,11 +39,13 @@
 // using `live_session` alone as the tool gate (no cap check) fails N1; not setting the job's process limit fails W5;
 // skipping the containment probe fails W0 on a host whose pwsh is the Store build.
 
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_process/native_shell_session_provider.hpp"
 
 #include "../../support/memory_cap.hpp"
 #include "agentengine/core/base64.hpp"
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -82,8 +84,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Windows PowerShell 5.1 ships with every supported Windows; the Store pwsh fails the containment probe (W0).

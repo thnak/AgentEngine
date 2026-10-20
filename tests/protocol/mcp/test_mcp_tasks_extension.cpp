@@ -5,11 +5,13 @@
 // REAL `Backgroundable` tool via `background_task()` (tool_pipeline.hpp, real since Phase B) -- not a
 // stub, the same real primitive Phase B's own `test_agent_session_background_task.cpp` proves.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
@@ -34,8 +36,7 @@ namespace art  = agentengine::rt;
 // sender drives the in-process `McpServer` synchronously), so a minimal drive loop is enough.
 template <class T>
 T drive(art::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct SlowArgs {

@@ -29,6 +29,7 @@
 // question whether that scale is CI-practical) -- 64 iterations here, real `AgentSession` round-trips
 // each time.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -37,6 +38,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -84,8 +86,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {

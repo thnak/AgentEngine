@@ -26,9 +26,11 @@
 //   [11] Grant<T>/authorized(): a grant issued to a descendant is authorized for that descendant,
 //        never for an unrelated IdentityHandle.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/async_quota.hpp"
 #include "agentengine/trust/identity_authority.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 
@@ -46,8 +48,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct BranchCost {};

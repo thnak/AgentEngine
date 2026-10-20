@@ -14,12 +14,14 @@
 //            goes; an automatic approval is never worded as a human's; `enable_unattended_mode` sets the level;
 //            reserved approval ids refused on both fields.
 
+#include <utility>
 #include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
@@ -44,8 +46,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message text_msg(ae::role r, std::string text, ae::content_origin origin, bool tainted) {
