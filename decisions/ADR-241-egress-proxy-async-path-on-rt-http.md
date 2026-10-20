@@ -497,3 +497,29 @@ supersede the sections they name:
   proven in `test_rt_https`).
 - G13g (ASan) and G13d under TSan: Linux sanitizer trees.
 - R12: the 64 x 16 MiB over 2 lanes measurement.
+
+**Implementation red-team (round 5, the code): 0 FATAL / 2 MAJOR / 8 MINOR, all addressed in this PR.**
+- M1: the WASM edge's whole path is executed end to end with no new seam -- a single-entry loopback grant passes the gate and the
+  production policy refuses it; the guest sees `host-not-allowlisted`, no accept, the call returns promptly and every admission
+  counter is back to 0. Mutants: a skipped latch count-down hangs (caught by a 90 s guard); a skipped slot release leaves counters
+  non-zero.
+- M2: `egress_error`'s TLS class mapping has unit rows on synthetic responses (cert rejected -> `policy` with and without
+  `failure`; setup -> `fatal`; transport -> `transient`); mutant `tls_failed -> transient` fails five rows.
+- m1: admission inserts both map nodes before any counter moves (undoing the first on a throw), so a `bad_alloc` cannot leak a slot.
+  No test: there is no allocation-failure hook.
+- m2: the unattributed principal bucket defaults to `per_principal` (32); the unattributed run bucket stays 8.
+- m3: the WASM `wall_ms` is clamped to 24 h for the epoch ticks, the egress deadline and the timeout classification (a host's
+  `UINT64_MAX` "unbounded" no longer overflows into a past deadline).
+- m4/m5: the production proxy has `localhost` and numeric-encoding (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`) rows on both
+  entry points through the real `getaddrinfo`, asserting no connect -- the first rows that reach `production_host_resolver()`. The old
+  "encodings" row, which only fed a fake resolver, is renamed to what it proves.
+- m6: the MCP-minted run id is `mcp:<per-instance nonce>:<n>`, so two servers (or two process lifetimes) never share ids.
+- m7 (cross-reference ADR-193): persisting and restoring `delegation_root` changes ADR-193 behaviour for RESTORED delegated
+  children -- they now match their root's approved lessons and charge the root's spawn quota, as the live child does. A restored
+  child still has `on_behalf_of` unset and `delegation_depth` reset to 0 (pre-existing).
+- m8: G13d's "lazy init without the mutex" mutant was killed 5/5 on Windows at 16 threads (reduced from 64 so the test fits its
+  512 MiB RLIMIT_DATA cap on Linux, where each thread's stack counts against it); it is not TSan-proven.
+
+Still unproven after round 5 (follow-ups on #180): G17 and the G7 timing rows on the WASM edge (need a fixture tool that sends a
+body and a reachable silent peer), G11's wrong-name and broken-CA rows, G13g (ASan) and G13d (TSan), R12. Note: the WASM rows run
+only in builds with `AGENTENGINE_WITH_WASM=ON`.
