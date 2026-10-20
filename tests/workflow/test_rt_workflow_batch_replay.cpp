@@ -102,12 +102,12 @@ T drive(agentengine::rt::task<T> t) {
             r.messages.push_back(text_message(name + ":" + all_text_of(in)));
             return r;
         },
-        [sync_calls](ChatRequest const& req, EffectContext&) -> result<ChatResponse> {
+        [sync_calls](ChatRequest const& req, EffectContext&) -> agentengine::task<result<ChatResponse>> {
             if (sync_calls) ++*sync_calls;
             ChatResponse resp;
             resp.message = text_message("sync(" + all_text_of(req.messages.front()) + ")", role::assistant);
             resp.usage.input_tokens = 10;
-            return resp;
+            co_return resp;
         },
         [name](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
             return ExecutorOutcome{text_message(name + "=" + all_text_of(resp.message))};

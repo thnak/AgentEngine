@@ -124,12 +124,12 @@ struct Calls {
             r.messages.push_back(text_message(name + ":" + all_text_of(in)));
             return r;
         },
-        [calls](ChatRequest const& req, EffectContext&) -> result<ChatResponse> {
+        [calls](ChatRequest const& req, EffectContext&) -> agentengine::task<result<ChatResponse>> {
             ++calls->sync;
             ChatResponse resp;
             resp.message = text_message("sync(" + all_text_of(req.messages.front()) + ")", role::assistant);
             resp.usage.input_tokens = 10;
-            return resp;
+            co_return resp;
         },
         [name, calls](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
             ++calls->complete;
@@ -816,7 +816,7 @@ spec:
         wf.bound.max_rounds = 2;
         BatchableModelCall body{
             [](Message const&, EffectContext&) -> result<ChatRequest> { throw std::runtime_error("build boom"); },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;
@@ -846,7 +846,7 @@ spec:
                 r.messages.push_back(text_message("q"));
                 return r;
             },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;
