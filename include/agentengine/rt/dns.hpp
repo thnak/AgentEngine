@@ -20,7 +20,7 @@
 //   - Results resume on the caller's home (rt/offload.hpp's rules: ADR-175 `block_on` home or ADR-219 host
 //     `Resumer`), never on the DNS worker.
 //   - `HostResolver` is a TEST SEAM (a slow or scripted resolver), in the same spirit as ADR-011's injectable
-//     `HostEgressProxy::resolver`: production callers leave it empty and get getaddrinfo. It is a value the
+//     `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`): production callers leave it empty and get getaddrinfo. It is a value the
 //     caller passes explicitly, never ambient state.
 //
 // CONNECT (ADR-011's rule, unchanged by ADR-237):

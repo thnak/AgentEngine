@@ -270,7 +270,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // The actual `url`-source logic, parameterized over the egress backend (`sandbox::
     // NetEgressBackend`, net_egress_proxy.hpp). `invoke()` above always supplies the real
     // `HostEgressProxy`; a test supplies a fake conformer instead -- the SAME testability seam
-    // `HostEgressProxy::resolver`'s own comment already documents ("a test may inject a fake...
+    // `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`)'s own comment already documents ("a test may inject a fake...
     // production code never constructs a HostEgressProxy with a non-default resolver"), applied
     // one level up so this function's fetch/error-mapping logic is provable without a live network
     // call or tripping the (correct, intentional) loopback/RFC1918 block a real local test server

@@ -75,7 +75,7 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // (224.0.0.0/4), reserved (240.0.0.0/4), and unspecified (0.0.0.0/8).
 [[nodiscard]] bool is_blocked_address(std::uint32_t ipv4_host_order) noexcept;
 
-// `\r` or `\n` anywhere in `value` -- this proxy builds the raw HTTP/1.1 request line and header
+// CR, LF or NUL anywhere in value (ADR-241 D2 added NUL) -- this proxy builds the raw HTTP/1.1 request line and header
 // block itself (no vetted HTTP library exists to lean on, ADR-011 §2), so this is the only thing
 // standing between a guest-controlled `path`/header value and request-splitting/header injection
 // onto the wire (ADR-011 claim C9).
@@ -111,8 +111,9 @@ inline constexpr std::uint64_t kHardResponseCeilingBytes = 16u * 1024u * 1024u;
 // service. Refusing those was not defence, it was a false positive with no attacker on the other
 // side of it.
 //
-// This deliberately does NOT weaken the guest path: `HostEgressProxy::resolver` still defaults to
-// `resolve_and_validate` above, and test_net_egress_proxy.cpp still proves every blocked range.
+// This deliberately does NOT weaken the guest path: `HostEgressProxy` (ADR-241) has no resolver or policy seam at all and runs
+// `egress_address_policy` over every answer; `resolve_and_validate` above remains for the Kata backend and the relay, and
+// test_net_egress_proxy.cpp still proves every blocked range.
 [[nodiscard]] result<VerifiedEndpoint> resolve_host(std::string_view host, std::uint16_t port);
 
 // Connects to exactly `endpoint` (never a hostname -- see `VerifiedEndpoint`'s own comment), speaks

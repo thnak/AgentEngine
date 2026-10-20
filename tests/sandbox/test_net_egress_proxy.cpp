@@ -982,6 +982,22 @@ static_assert(agentengine::sandbox::NetEgressBackend<TestEgressProxy>, "G14 the 
 static_assert(!agentengine::sandbox::NetEgressBackend<OldArityBackend>,
               "G14 a backend with the old 2-argument fetch must NOT satisfy NetEgressBackend (no defaulted control)");
 
+// ---- G15: the production type has NO seam to flip --------------------------------------------------------------------
+// No `resolver`, `address_policy`, `host_resolver` or `tls_ca_override` member, and no setter for any of them: the seams
+// exist only on the separate test type, in the testing header (tools/egress_seam_lint.py keeps that header out of host code).
+template <class T> concept HasResolver = requires(T t) { t.resolver; };
+template <class T> concept HasAddressPolicy = requires(T t) { t.address_policy; };
+template <class T> concept HasHostResolver = requires(T t) { t.host_resolver; };
+template <class T> concept HasCaOverride = requires(T t) { t.tls_ca_override; };
+template <class T> concept HasAllowNonV4 = requires(T t) { t.allow_non_v4; };
+template <class T> concept HasSetter = requires(T t) { t.set_resolver(nullptr); } || requires(T t) { t.set_address_policy(nullptr); } ||
+                                       requires(T t) { t.set_host_resolver(nullptr); };
+static_assert(!HasResolver<HostEgressProxy> && !HasAddressPolicy<HostEgressProxy> && !HasHostResolver<HostEgressProxy> &&
+                  !HasCaOverride<HostEgressProxy> && !HasAllowNonV4<HostEgressProxy> && !HasSetter<HostEgressProxy>,
+              "G15 HostEgressProxy has no seam member and no setter");
+static_assert(HasHostResolver<TestEgressProxy> && HasAddressPolicy<TestEgressProxy> && HasCaOverride<TestEgressProxy>,
+              "G15 positive control: the TEST type does carry the seams (so the concepts above can fail)");
+
 // ---- G16: a body on GET / HEAD / TRACE / OPTIONS ---------------------------------------------------------------
 void gate_g16_body_on_bodyless_methods() {
     for (auto const& [entry, go] : kEntries) {
