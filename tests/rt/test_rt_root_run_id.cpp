@@ -371,6 +371,19 @@ int main() {
         check(third.run_id.rfind("mcp:", 0) == 0 && third.root_run_id == third.run_id &&
                   third.run_id != first.run_id && third.run_id != second.run_id,
               "S8: the task-augmented path (server.hpp, the second start site) mints its own run id too");
+
+        // red-team r5 m6: a SECOND server instance's first request must not mint the id the first instance's first request
+        // did (the counter alone restarts at 1; a per-instance host-side nonce keeps them apart).
+        mcp::McpServer server2(table, held, ApprovalDecider{}, "root-run-id-test-server");
+        mcp::JsonRpcRequest req2{mcp::RpcId{std::string{"client-chosen-id"}}, "tools/call",
+                                 json::Value::make_object(
+                                     {{"name", json::Value::make_string("probe")},
+                                      {"arguments", json::Value::make_object({{"noop", json::Value::make_bool(true)}})}})};
+        (void)server2.dispatch(req2, caller);
+        Seen const other_instance_first = probe_seen(3);
+        check(other_instance_first.run_id.rfind("mcp:", 0) == 0 && other_instance_first.run_id != first.run_id &&
+                  other_instance_first.root_run_id == other_instance_first.run_id,
+              "S8/m6: two McpServer instances mint different run ids for their first request");
     }
 
     std::fprintf(stderr, g_failures == 0 ? "test_rt_root_run_id: ALL PASS\n" : "test_rt_root_run_id: %d FAILURE(S)\n",

@@ -58,6 +58,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -528,8 +529,20 @@ private:
     // request (8) and per principal (32); an UNAUTHENTICATED caller has an empty principal and is held by the
     // shared unattributed principal bucket whatever run id it carries (empty `caller.id`, ADR-061 SS7 R13).
     void mint_request_run(EffectContext& ctx) const {
-        ctx.run_id      = "mcp:" + std::to_string(request_seq_.fetch_add(1, std::memory_order_relaxed) + 1);
+        // `mcp:<instance nonce>:<n>`: two servers in one process (or two process lifetimes) never mint the same id
+        // (red-team r5 m6); the nonce is host-side randomness, never anything the client sent.
+        ctx.run_id      = "mcp:" + instance_nonce_ + ":" +
+                          std::to_string(request_seq_.fetch_add(1, std::memory_order_relaxed) + 1);
         ctx.root_run_id = ctx.run_id;
+    }
+
+    [[nodiscard]] static std::string make_instance_nonce() {
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::random_device    rd;
+        std::uint64_t const   bits = (static_cast<std::uint64_t>(rd()) << 32) ^ static_cast<std::uint64_t>(rd());
+        std::string           out(16, '0');
+        for (int i = 0; i < 16; ++i) out[static_cast<std::size_t>(i)] = kHex[(bits >> (4 * i)) & 0xF];
+        return out;
     }
 
     [[nodiscard]] static std::string req_id_to_call_id(RpcId const& id) {
@@ -542,6 +555,7 @@ private:
     ApprovalDecider       approve_;
     std::string          server_name_;
     mutable std::atomic<std::uint64_t>          request_seq_{0};  // ADR-241 §8.4: server-minted, host-side only
+    std::string                                 instance_nonce_ = make_instance_nonce();
     mutable std::mutex                          tasks_mutex_;
     mutable std::unordered_map<std::string, TaskRecord> tasks_;
 };

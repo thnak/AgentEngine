@@ -210,8 +210,10 @@ struct EgressCallControl {
     AdmissionKey                          admission;
 };
 
-// The host-set admission limits (ADR-241 8.2): per ROOT RUN 8, per PRINCIPAL 32, global 64, two small UNATTRIBUTED
-// buckets, and the request-body cap the gate enforces (D11). Plain atomics on one process-wide object, adjustable at any
+// The host-set admission limits (ADR-241 8.2): per ROOT RUN 8, per PRINCIPAL 32, global 64, two UNATTRIBUTED buckets
+// (a context with no run id: 8; a context with no principal: 32, the per-principal value, so a host that never sets
+// principals is not throttled below what one real principal gets -- red-team r5 m2), and the request-body cap the gate
+// enforces (D11). Plain atomics on one process-wide object, adjustable at any
 // time by HOST code (never model output). A host that uses ONE service principal for everything gets per-run isolation
 // under an effective per-principal 32 -- it should raise `per_principal`.
 // ae-naming-lint: allow EgressLimits — ADR-241 §8.2: new egress vocabulary, 027 §4 row added when the ADR is Judged
@@ -220,7 +222,7 @@ struct EgressLimits {
     std::atomic<std::uint32_t> per_principal{32};
     std::atomic<std::uint32_t> global{64};
     std::atomic<std::uint32_t> unattributed_run{8};
-    std::atomic<std::uint32_t> unattributed_principal{8};
+    std::atomic<std::uint32_t> unattributed_principal{32};
     std::atomic<std::uint64_t> max_request_bytes{16u * 1024u * 1024u};
 };
 [[nodiscard]] EgressLimits& egress_limits() noexcept;
@@ -228,6 +230,24 @@ struct EgressLimits {
 // The default overall deadline of one egress call (resolve + connect + TLS + body); `<= 0` clamps to it -- there is no
 // unbounded mode (ADR-241 D5).
 inline constexpr std::chrono::milliseconds kDefaultEgressTotalTimeout{120'000};
+
+// A guest's `wall_ms` is host-configured but unbounded as an integer: a host that means "unbounded" with UINT64_MAX would
+// overflow `milliseconds(wall_ms)` into a NEGATIVE duration and put the deadline in the past, failing every call at once
+// (red-team r5 m3). Anything above this bound is treated as the bound.
+inline constexpr std::chrono::hours kMaxEgressWallBound{24};
+
+[[nodiscard]] inline std::uint64_t clamp_egress_wall_ms(std::uint64_t wall_ms) noexcept {
+    auto const bound = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(kMaxEgressWallBound).count());
+    return wall_ms < bound ? wall_ms : bound;
+}
+
+// `start + wall_ms` as a deadline, overflow-safe; `wall_ms == 0` is the caller's "unset" and yields the unset time point.
+[[nodiscard]] inline std::chrono::steady_clock::time_point egress_wall_deadline(
+    std::chrono::steady_clock::time_point start, std::uint64_t wall_ms) noexcept {
+    if (wall_ms == 0) return {};
+    return start + std::chrono::milliseconds(static_cast<std::int64_t>(clamp_egress_wall_ms(wall_ms)));
+}
 
 // The ONE place an `EffectContext` becomes an `EgressCallControl`: the cancellation token, the deadline hint, and the
 // host-derived admission labels (`{tenant, principal.root_id(), root_run_id else run_id}`).

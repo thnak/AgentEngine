@@ -296,6 +296,13 @@ void g13_i_principal_level(SilentListener& silent, FastServer& fast) {
 
 // ---- G13 k / R5-1: an empty identity charges the UNATTRIBUTED bucket, it never skips a level ---------------------
 void g13_k_unattributed(SilentListener& silent, FastServer& fast) {
+    {  // red-team r5 m2: the shipped defaults. The unattributed PRINCIPAL bucket is the per-principal value (a host that
+       // never sets principals is not throttled below one real principal); the unattributed RUN bucket stays 8.
+        auto const& l = agentengine::sandbox::egress_limits();
+        check(l.unattributed_principal.load() == 32 && l.per_principal.load() == 32,
+              "G13k default unattributed_principal == per_principal == 32");
+        check(l.unattributed_run.load() == 8, "G13k default unattributed_run == 8");
+    }
     {  // an empty run identity (and empty principal): the unattributed buckets of both levels
         HeldCalls h;
         h.launch(8, key("", "", ""), silent.port());
@@ -306,7 +313,10 @@ void g13_k_unattributed(SilentListener& silent, FastServer& fast) {
         h.release();
         check(wait_for_global(0), "G13k released");
     }
-    {  // an empty PRINCIPAL with distinct runs: the unattributed PRINCIPAL bucket holds them to 8 across runs
+    {  // an empty PRINCIPAL with distinct runs: the unattributed PRINCIPAL bucket holds them to its cap (set to 8 here so
+       // the row is cheap; the shipped default is asserted above) across runs
+        LimitsRestore restore;
+        agentengine::sandbox::egress_limits().unattributed_principal.store(8);
         HeldCalls h;
         h.launch(4, key("t", "", "R1"), silent.port());
         h.launch(4, key("t", "", "R2"), silent.port());

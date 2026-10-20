@@ -45,6 +45,7 @@ constexpr std::uint64_t kUnboundedTicks = UINT64_MAX / 2;
 
 std::uint64_t ticks_for(std::uint64_t wall_ms) {
     if (wall_ms == 0) return kUnboundedTicks;
+    wall_ms = sandbox::clamp_egress_wall_ms(wall_ms);  // red-team r5 m3: `wall_ms + kEpochTickMs` must not wrap either
     std::uint64_t const ticks = (wall_ms + kEpochTickMs - 1) / kEpochTickMs;
     return ticks == 0 ? 1 : ticks;
 }
@@ -869,7 +870,7 @@ result<ToolResult> WasmBackend::invoke_tool(SandboxHandle const& handle, ToolInv
     // admission = {tenant, principal.root_id(), root_run_id else run_id}, all host-derived.
     call.egress = sandbox::egress_call_control(ctx);
     if (inst.limits.wall_ms > 0) {
-        auto const wall_deadline = call_start + std::chrono::milliseconds(inst.limits.wall_ms);
+        auto const wall_deadline = sandbox::egress_wall_deadline(call_start, inst.limits.wall_ms);  // clamped, never in the past
         if (call.egress.deadline == std::chrono::steady_clock::time_point{} || wall_deadline < call.egress.deadline) {
             call.egress.deadline = wall_deadline;
         }
@@ -1029,7 +1030,7 @@ result<ExecOutcome> WasmBackend::exec_blocking(SandboxHandle& handle, ExecReques
     if (!result) {
         auto const it = instances_.find(handle.opaque_id);
         bool const likely_timeout = it != instances_.end() &&
-            elapsed >= std::chrono::milliseconds(it->second->limits.wall_ms) && it->second->limits.wall_ms > 0;
+            elapsed >= std::chrono::milliseconds(sandbox::clamp_egress_wall_ms(it->second->limits.wall_ms)) && it->second->limits.wall_ms > 0;
         outcome.klass = likely_timeout ? exec_outcome_class::timeout : exec_outcome_class::crash;
         outcome.stderr_text = result.error().message;
         return outcome;

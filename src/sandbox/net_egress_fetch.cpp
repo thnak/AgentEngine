@@ -134,10 +134,24 @@ public:
                                    : limits.per_principal.load(std::memory_order_relaxed))) {
             return false;
         }
-        // Every level has room: admit all three together.
+        // Every level has room: admit all three together. The only operations that can throw (the two map node
+        // allocations) run FIRST and touch no counter; if the second throws, the first node is erased again, so a
+        // `bad_alloc` here leaves no leaked slot and no empty entry (red-team r5 m1). After this block nothing can throw.
+        std::map<RunKey, std::uint32_t>::iterator       run_it;
+        std::map<PrincipalKey, std::uint32_t>::iterator pr_it;
+        bool                                            run_inserted = false;
+        if (!run_unattr) std::tie(run_it, run_inserted) = runs_.try_emplace(run_key, 0u);
+        if (!pr_unattr) {
+            try {
+                pr_it = principals_.try_emplace(pr_key, 0u).first;
+            } catch (...) {
+                if (run_inserted) runs_.erase(run_it);
+                throw;
+            }
+        }
         ++global_;
-        if (run_unattr) ++unattributed_run_; else ++runs_[run_key];
-        if (pr_unattr) ++unattributed_principal_; else ++principals_[pr_key];
+        if (run_unattr) ++unattributed_run_; else ++run_it->second;
+        if (pr_unattr) ++unattributed_principal_; else ++pr_it->second;
         out->active           = true;
         out->run_unattributed = run_unattr;
         out->pr_unattributed  = pr_unattr;
