@@ -1,6 +1,6 @@
 # 026 — Agent-Facing Runtime Surface
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008, 010, 025 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (§2 shell row, §3, §5: per profile; CodeAct opt-in) · **Depends on:** 006, 007, 008, 010, 025 · **Gate:** §8
 
 ## Goal
 
@@ -42,7 +42,7 @@ be load-bearing for safety. Specifically:
 |---|---|---|
 | Filesystem | `/work`, `/input`, `/out` — ordinary directories (025 §7) | Mount ids, worktree digests, object store, profile names |
 | Python | A normal interpreter with stdlib | Interpreter build, WASI vs native, snapshot/restore |
-| Shell | An ordinary-looking shell — `cd`, `ls`, pipes, env vars, exit codes (010 §1) | That there is no real shell process: commands are parsed and dispatched to capability-gated primitives and other `Runner`s/`Tool`s, never resolved against a search path (010 §2) |
+| Shell | An ordinary-looking shell — `cd`, `ls`, pipes, env vars, exit codes (010 §1) | Under `native-jail`/`wasm`: that there is no real shell process (commands are parsed and dispatched to capability-gated primitives, never resolved against a search path, 010 §2). Under `microvm`: nothing to hide; it is the guest's real `bash`, bounded at the VM (ADR-242 R2/R3) |
 | Files | Files persist between executions | That persistence is a content-addressed commit per turn |
 | Working directory / env | `cd` and env vars persist across calls, and are shared between Python and Shell (010 §3a) | That this is one `ExecState` object, or that `Runner`/`ExecState` are engine concepts at all |
 | Network | Reachable hosts work; others fail like an unreachable host | Allowlists, egress proxy, capability names |
@@ -54,6 +54,9 @@ enumeration, and **no** safety lecture. Where a constraint is *actionable* — "
 `/work` and `/out`" — it is one short line, because that is task information, not architecture.
 
 ## 3. Error mapping
+
+> *Amended by ADR-242 (2026-10-20):* the mapping is listed per profile where a profile cannot report a
+> class (for example, OOM is not classifiable on Kata today).
 
 Failures reach the agent as the exception an ordinary program would get. The shell's equivalent is
 an ordinary shell equivalent — a nonzero exit code and a `stderr` line ("no such file or directory",
@@ -129,6 +132,10 @@ relative path in Python is not coordinating two subsystems — it is doing the s
 does at one terminal with one Python REPL open beside it.
 
 ## 5. The `agent` library — this *is* CodeAct
+
+> *Amended by ADR-242 R3 (2026-10-20):* CodeAct is opt-in. The `agent` library exists only when the
+> CodeAct `ContextProvider` is attached; under `microvm` it reaches the host through the `agent.*` shim
+> (ADR-242 R3 rule 5).
 
 **The library is the action space, not an accessory to it.** CodeAct means the model's primary way
 of acting on the world is *writing a program*, rather than emitting one tool-call JSON object per

@@ -11,8 +11,9 @@ with sandboxed execution and a Python code interpreter as built-in subsystems, s
 agent protocols of 2026 (MCP, A2A, AG-UI, OpenTelemetry GenAI).
 
 The developer model is **MAF-shaped** (Microsoft Agent Framework's agent/session/tool/workflow
-vocabulary) expressed in AgentEngine's own **zero-cost CRTP policy idiom** (originally modeled on
-Quark's identical idiom).
+vocabulary), expressed as a **C++23 API designed for least developer code** (`ADR-242` R5: CRTP is
+optional authoring sugar, type erasure is fine off measured hot paths). The target is developers
+building multi-user agent servers on Linux; Windows is supported for development and desktop.
 
 **The project is spec-driven.** 30 RFC documents (`rfcs/NNN-*.md`) are the authoritative design;
 `decisions/ADR-*.md` are executed proofs (the live record starts at ADR-242; ADR-001 to ADR-241 are
@@ -47,49 +48,52 @@ model output influence a permission decision, it is wrong regardless of how well
 
 ## Locked decisions — do not relitigate without an ADR
 
-- **Quark is not a dependency of this project.** `ADR-037` removed it entirely (was an unmodified
-  submodule); `third_party/quark` is gone and the runtime substrate is `agentengine::rt::`. Do not
-  reintroduce without a new ADR.
+`ADR-242` (Judged 2026-10-20) is the project's direction; read its §2, §3 and §3a before any
+architectural change.
+
+- **Nothing is chosen implicitly; the developer chooses and owns the risk; invariants are never
+  options** (`ADR-242` §2). The engine ships managed options for every resource (execution backend,
+  authority source, budgets and limits, turn cap, approval, concurrency, telemetry, strictness,
+  Runtime, secrets, transport). If one is not chosen, startup fails with a named error listing the
+  options. A preset is an explicit choice of everything it bundles. "Explicitly unbounded" is a valid
+  budget value when stated as a named value, never as `0` or a missing field. "Own risk" covers the
+  residuals each option discloses in `ADR-242` §3a; it never relaxes I1–I8. Keep §3a true: a cell
+  says "engine enforces" only when an enforcement test with a positive control proves it.
+- **Every agent runs inside a sandbox from a `SandboxBackend`, and every backend hosts the worktree**
+  (`ADR-242` R8). The worktree is always present in the backend and stays engine-owned and durable
+  (D4). "No sandbox" is `NoSandboxBackend`, a real conformer that is never `Strict`-eligible.
+- **Execution options** (`ADR-242` R2): `microvm` (Kata, with its own `bash`/`python3`),
+  `native-jail` (Windows, Linux), `remote`, `wasm`, and `NoSandboxBackend`; none is the default, and
+  no fallback is silent. Under `microvm`, I2 is enforced at the VM boundary, from the host
+  (`ADR-242` R3 rules 1–7).
+- **The shell and the CodeAct interpreter are two tiers, each attached by a `ContextProvider`**
+  (`ADR-242` R3). `execute_code` (persistent interpreter + `agent.*`) exists only when its provider is
+  attached. CPython is the language wherever it runs; never a WASI Python. `ADR-071`'s
+  `NativePythonProvider` stays distinct and is never substituted for `execute_code`.
+- **An optional `agentengine_server` module** (`ADR-242` R4) may provide the MCP/A2A/AG-UI transports
+  and a listener; the core stays transport-agnostic and a host may still own its socket. Per-request
+  authority is mandatory in the server module.
+- **One host-owned Runtime per process, passed explicitly** (`ADR-242` R6); library code creates no
+  threads or private Runtimes.
+- **Quark is not a dependency of this project.** `ADR-037` removed it entirely; the runtime substrate
+  is `agentengine::rt::`. Do not reintroduce without a new ADR.
 - **WASM Component Model (WASI 0.3) is the plugin ABI** — tools, skills, providers, memory stores,
   filters, and the C/C++ library track (009 §7).
-- **The embedded native CPython interpreter is the one mediated code-interpreter path,
-  permanently** — never WASM, never a second *interpreter* for `execute_code` (rationale and WASI
-  Python's ecosystem gap: `docs/research/2026-standards-landscape.md` §6). `ADR-071` narrowed this
-  from a blanket "never a second runtime" to permit `NativePythonProvider` — a distinct,
-  explicitly-scoped, host-opt-in native-automation capability, never substituted for `execute_code`
-  and kept out of `agentengine_python_runner`. Don't blur the two, or widen either scope, without a
-  new ADR.
-- **No `microvm` sandbox profile.** Isolation strength for the interpreter/shell comes from treating
-  the whole execution environment as the sandbox — worktree, capabilities, resource limits, network
-  policy — with CPython's dangerous entry points mediated at the point of use and the OS-level jail
-  as a second layer (008 §1b), not from a second local isolation technology. A workload that would
-  need hardware isolation uses the `remote` profile against infrastructure that already provides it.
-- **v1 authoring surfaces are C++ CRTP and declarative YAML/JSON.** Python/.NET bindings deferred.
-- **AgentEngine does not implement HTTP networking itself.** Project-owner direction (2026-08-15)
-  settled the inbound MCP/A2A/AG-UI transport question: host/consumer code owns the socket,
-  terminates TLS/auth, and hands the engine already-parsed requests — MAF-style — rather than the
-  engine running its own listener. `ADR-061`'s Tier 1 (client-role principal derivation) and Tier 3
-  (host-fronted server role's session-side admission mechanism and bearer-credential bridges) are
-  both Judged (2026-08-20, project-owner sign-off) — but Tier 3 never built the actual test-fixture
-  listener a server-role conformance run needs, so 011 §10 G1 / 012 §8 G1 remain unmet. Don't reopen
-  "should AgentEngine bind a port" without a new ADR; `decisions/archive/README.md`'s ADR-061 row and the
-  milestone-7 breakdown doc's Phase H have the full rationale and the real security defects this
-  decision's red-teaming found and fixed in already-shipped code.
+- **Python/.NET bindings are deferred.** v1 authoring surfaces are the C++ API and declarative
+  YAML/JSON (I6).
 - **The licence is MIT, decided.** See [`LICENSE`](LICENSE); resolved 2026-08-04
   (024 Q1 / OQ-11). Not an open question.
 
 ## Feature vs. safety balance
 
-**Default to enabling, not blocking.** `ADR-070` (Judged) records a deliberate project-owner
-trade: ship a broader feature surface even where it costs some engine-enforced safety, via a
-disciplined **Delegated Decision Seam** — explicit host opt-in, fails closed/safe when unset,
-narrows or decides among already-possessed authority only (never mints/widens it), host code never
-model output, always audited. Ship first behind that seam with real ADR evidence and honestly
-disclosed residuals (`ADR-071`'s native unsandboxed process-execution providers is the model);
-harden later, as a follow-on ADR, not as a precondition to shipping. This is not a license to
-relax I2/I3 themselves — `ADR-070` §3 rejected that outright — it only bounds where responsibility
-for an already-scoped risk can be delegated to the consumer dev, and it still needs its own ADR,
-not a blanket exemption because the goal sounds reasonable.
+**Enable features through explicit choices, not by weakening invariants.** `ADR-070`'s Delegated
+Decision Seam (explicit opt-in, narrows or decides among already-possessed authority only, host code
+never model output, audited) is how responsibility for an already-scoped risk moves to the developer;
+`ADR-242` §2 applies it to every resource and strengthens "unset" from "today's behaviour" to a named
+startup error. Ship behind an explicit choice with honestly disclosed residuals (in `ADR-242` §3a),
+harden later in a follow-on ADR. This is not a license to relax I2/I3 themselves — `ADR-070` §3
+rejected that outright — and the identity-to-authority policy is the developer's root of trust, not a
+seam (`ADR-242` R7).
 
 ## Working within this repo
 
@@ -99,7 +103,8 @@ not a blanket exemption because the goal sounds reasonable.
 - **Every RFC has a promotion gate.** A design without a falsifiable gate does not get written down
   as settled. Security claims need positive controls — a test that cannot fail proves nothing.
 - **Contested, hot-path, or security-critical designs go through `design → red-team → prove →
-  judge`** and produce an ADR in `decisions/`, not an ad-hoc change. Quark's agents
+  judge`** and produce an ADR in `decisions/` (numbered from 243, kept short: a few hundred lines,
+  work logs in `docs/planning/`), not an ad-hoc change. Quark's agents
   (`quark-architect`, `quark-redteam`, `quark-prover`, `quark-judge`) are the model for this.
 - **When implementation starts**: every source file names the spec(s)/ADR(s) it implements in a top
   comment; a load-bearing invariant without a test, a hot path without a bench, or a protocol claim

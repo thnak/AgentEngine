@@ -1,6 +1,6 @@
 # 010 — Code Interpreter and Shell
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 006, 007, 008, 009, 025 · **Gate:** §9 · **Research:** [2026 landscape §6](../docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (§2, §3, §5, §9) · **Depends on:** 006, 007, 008, 009, 025 · **Gate:** §9 · **Research:** [2026 landscape §6](../docs/research/2026-standards-landscape.md)
 
 ## Goal
 
@@ -59,6 +59,14 @@ arbitrary named programs, which is the one thing a capability-based system canno
 sandboxing alone; a `Runner` that never does that removes the hazard instead of containing it.
 
 ## 2. Runtime selection — one runtime, permanently, and why
+
+> *Amended by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R3 (2026-10-20).* The **ecosystem argument below stands**: there is no
+> WASI Python. The **architectural "one runtime" argument is replaced**: the interpreter is CPython
+> wherever it runs, either embedded under `native-jail` or the guest's own CPython under `microvm`,
+> pinned to one version (ADR-242 G-R10) and bound by one `agent.*` contract (G-R2). `execute_code` is
+> the CodeAct tier and exists only when its `ContextProvider` is attached; the shell is a separate tier.
+> The "no real shell process" model of §1–§2 applies to `native-jail` and `wasm`; under `microvm` the
+> shell is the guest's real `bash`.
 
 **The runtime is embedded native CPython, under `native-jail` (008 §1b), or cluster-managed under
 `remote`. There is no `wasm` Python backend and no `microvm` profile.** Two distinct arguments back
@@ -157,6 +165,11 @@ design, only Python-first by priority.
 
 ## 3. Execution contract
 
+> *Amended by ADR-242 (2026-10-20).* Item 1's in-memory persistence holds under the CodeAct provider
+> and unchanged authority; under `microvm`, an authority change rebuilds the VM and loses interpreter
+> memory (ADR-242 R3 rule 1). Item 3's CPU bound under `microvm` is a rate (vCPUs, CFS quota) plus
+> `wall_ms`; an explicit `cpu_ms` request fails closed.
+
 Every `execute_code` invocation:
 
 1. Runs in the **session's interpreter** (008 §6). Within a session, in-memory state persists
@@ -230,6 +243,10 @@ Files are the **worktree** (025) — durable engine state, not sandbox state:
 
 ## 5. Packages
 
+> *Amended by ADR-242 R3 rule 7 (2026-10-20).* A root `microvm` guest can `pip install` from any
+> destination egress allows, so a package index is an explicit egress grant, never implicit; the
+> pinned guest image is the package set unless the developer grants more.
+
 Package availability is **operator policy, never model choice** (I3):
 
 | Policy | Behaviour |
@@ -283,6 +300,11 @@ emit ordinary tool spans — the cross-SDK telemetry contract MAF standardized, 
 traces are comparable across frameworks.
 
 ## 9. Promotion gate
+
+> *Amended by ADR-242 (2026-10-20).* G2's "dangerous shell paths must not exist as a reachable code
+> path" and G7 (interpreter mediation) are scoped to `native-jail` and `wasm`; under `microvm` the
+> corresponding claims are ADR-242's G-R4 and G-R9 (the VM boundary, enforced from the host). G3 and
+> G6 (shared `ExecState`) bind `microvm` too, through ADR-242 G-R2.
 
 - **G1 (ecosystem)** — under `native-jail`, a scripted data task using NumPy + pandas produces a
   chart artifact identically across the target platform set (021 §2) from the same pinned

@@ -1,6 +1,6 @@
 # 008 — Sandbox and Isolation
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-171** (§2a — isolation machinery in the tree is not a backend until it satisfies §2; proximity is not conformance) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](../docs/research/2026-standards-landscape.md)
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-09-04 by ADR-171** (§2a — isolation machinery in the tree is not a backend until it satisfies §2; proximity is not conformance) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (§1, §2, §3, §4, §9: `microvm` profile, nothing implicit, every agent inside a `SandboxBackend` that hosts the worktree, `none` = `NoSandboxBackend`) · **Depends on:** 007, 009, 021 · **Gate:** §9 · **Research:** [2026 landscape §6–8](../docs/research/2026-standards-landscape.md)
 
 ## Goal
 
@@ -48,33 +48,19 @@ Two things are nonetheless **locked**, because leaving them open would leave the
   `MediatedPythonRunner` remains the sole, mediated `execute_code` path this locked decision protects,
   unchanged. See CLAUDE.md's matching amendment to its own paraphrase of this paragraph, and 010 §2
   for the fuller architectural argument and its own matching amendment.
-- **No `microvm` profile.** An earlier draft of this RFC offered `microvm` (Firecracker/Hyperlight-
-  class hardware isolation) as the strongest local boundary for hostile or multi-tenant workloads.
-  It is dropped. The original rationale cited a missing macOS backend; that framing is superseded
-  now that macOS is out of scope entirely (021 §7 OQ-1) — the real reason is sturdier: Firecracker
-  is architecturally Linux+KVM-only (its own FAQ states the host/guest boundary; the VMM core is
-  built directly against `KVM_RUN`, no abstraction layer to retarget), so there is **no
-  production-grade path to run it on Windows either**, the one platform besides Linux this project
-  targets. Porting it would mean writing a new, unaudited VMM, not retargeting a build — exactly
-  the second local isolation technology this decision declines to build and cross-platform-maintain
-  (`docs/research/2026-microvm-windows-portability.md`, 2026-08-04). A workload that genuinely needs
-  hardware-level isolation is better served by the `remote` profile against infrastructure that
-  already does this well (e.g. Kubernetes Agent Sandbox CRD backed by Kata/Firecracker on a real
-  Linux/KVM host) than by AgentEngine building one of its own. `native-jail` stays a kernel-enforced,
-  per-OS boundary — §1b adds interpreter-level mediation as defense in depth on top of it, not a
-  claim that it now matches hardware isolation.
+- ~~**No `microvm` profile.**~~ *Superseded by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R2 (2026-10-20).* `microvm` is a
+  first-class profile, backed first by `KataBackend` (Kata 4.x, Cloud Hypervisor, KVM, Linux). The guest
+  carries its own `bash` and `python3`, and I2 is enforced at the VM boundary from the host (ADR-242 R3
+  rules 1–7). The original argument (Firecracker has no Windows path) still holds for Windows, which is
+  why `microvm` is Linux-only, not why it should not exist. `native-jail` stays a kernel-enforced,
+  per-OS boundary with §1b's interpreter-level mediation.
 
 The contract below is what makes that split safe: profiles differ in backend, never in semantics.
 
-**Priority: `native-jail` first, the backend seam absorbs the rest.** `native-jail` is the one
-profile that is cross-platform today, already has a proven Windows backend
-(`decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md`) and a proven caller-aware import
-story for the full native-library Python ecosystem (010, `decisions/archive/ADR-003-caller-aware-import-gating.md`)
-— it is the v1 completeness target, not one profile among equally-unfinished others. `wasm` and
-`remote` are already specified for when their tradeoffs fit. Anything stronger and Linux-only —
-gVisor, Kata, a future microVM backend — is deliberately **not** something the engine commits to
-building or maintaining first; §2a makes explicit that the `SandboxBackend` seam is open precisely so
-a deployer who needs one can supply it without waiting on this project's roadmap.
+~~**Priority: `native-jail` first.**~~ *Superseded by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §2 and R2 (2026-10-20):* no
+profile is first or default. The developer chooses the execution option for each agent and owns its
+disclosed risk (ADR-242 §3a lists what each option enforces today and what the developer manages). The
+`SandboxBackend` seam stays open for backends the engine does not ship (§2a).
 
 ### 1a. The WASM runtime requirement
 
@@ -180,6 +166,12 @@ with CPython as one tenant of it — never a synonym for "the Python process is 
 narrower and weaker claim than this RFC makes.
 
 ## 2. The contract
+
+> *Amended by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R8 (2026-10-20):* every agent runs inside a sandbox created by a
+> `SandboxBackend`, and **the worktree is part of the concept**: every conformer gains the verbs that
+> materialise the agent's granted worktree mounts and harvest changes back, authorised against
+> `FsRead`/`FsWrite` (025 §5). `none` is `NoSandboxBackend`, a real conformer that registers only as
+> `named_only` and can never win `Strict`.
 
 ```cpp
 struct SandboxBackend {                              // concept
@@ -287,8 +279,9 @@ The four the engine ships and backs with a promotion gate (§9) — not the exha
 
 | Profile | Backend | Boundary | Cold start | Platforms | Intended use |
 |---|---|---|---|---|---|
+| **`microvm`** (ADR-242 R2) | Kata Containers (Cloud Hypervisor, KVM) | Hardware VM; I2 enforced at the VM boundary from the host | seconds (~6 s measured) | Linux + KVM | The shell and code interpreter with the guest's own `bash`/`python3`; multi-tenant servers that can run KVM |
 | **`wasm`** | wasmtime, WASI 0.3 components | Software; capability-based, no ambient authority | µs–low ms | Win · Linux, identical (021 §2 — macOS not targeted) | Plugins (default, 009), deterministic execution, replay, hostile multi-tenant *plugin* code that fits the WASI surface |
-| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs), next | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments — the default |
+| **`native-jail`** | OS process jail + interpreter-level mediation (§1b) | Kernel-enforced, per-OS, plus mediated at the point of use | ms | Win (AppContainer + Job Object + restricted token) · Linux (namespaces + seccomp-BPF + cgroups v2 + no_new_privs), next | The code interpreter and shell (010), full-ecosystem Python, on trusted-tenant deployments |
 | **`remote`** | Kubernetes **Agent Sandbox** CRD, or a vendor sandbox API | Cluster-side, backend-decoupled — may itself use hardware isolation | network + backend | Any (client side) | Production scale-out, cluster-managed lifecycle, pause/resume, and hostile/untrusted-multi-tenant workloads that need a stronger boundary than `native-jail` offers — this profile, not one we build, is where that strength comes from |
 | **`none`** | In-process | **No boundary** | 0 | All | First-party trusted code only; **refuses to load T2/T3 code** (007 §6) |
 
@@ -302,7 +295,8 @@ The four the engine ships and backs with a promotion gate (§9) — not the exha
 
 **`Strict`** (`decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md` corrected this section's
 naming from the earlier, undefined `Profile::Strict`) is the named alias meaning "the strongest
-profile available on this platform, never `none`" and is the default for every agent (002 §3). It is
+profile available on this platform, never `none`". *Amended by ADR-242 §2 (2026-10-20):* it is no
+longer the default for every agent; strictness is a value the developer states. It is
 a resolution *selector*, not a backend itself — it has no `create`/`exec`/`destroy` and is never
 instantiated; `SandboxProfile<Strict>` is resolved at `register_agent<A>()` time (002 §6) into a
 concrete backend's `ProfileTraits`.
@@ -351,8 +345,11 @@ agent's declared profile fails registration).
 
 **Two rules the table exists to make explicit:**
 
-- **Egress is always host-mediated.** No profile hands a guest a raw socket. This is the only way
-  `NetOut<host>` means the same thing everywhere, and it is what makes egress auditable.
+- **Egress is always host-mediated.** No profile hands a guest a raw socket, **except `microvm`**
+  (ADR-242 R3 rule 6): the guest has a real network stack, and egress leaves only through the host
+  bridge policy (ADR-240). Secrets are never placed in a `microvm` guest; they resolve and are used
+  host-side. This is the only way `NetOut<host>` means the same thing everywhere, and it is what makes
+  egress auditable.
 - **Nested sandbox creation is denied in every profile.** A guest cannot create a guest.
 
 ## 4a. Remote callback authentication (resolves OQ-3 for this RFC's part of it)
@@ -517,7 +514,9 @@ downgrade shows up as a graph change, not as a surprise in an incident review.
 
 - **G1 (parity)** — one hostile test corpus runs against every available backend on every platform
   in the current target set (021 §2 — Windows now, Linux next) and produces the **same outcome
-  classification** for every case. Semantics identical, strength documented.
+  classification** for every case. Semantics identical, strength documented. *Amended by ADR-242
+  (2026-10-20):* the classification is listed per profile where a profile cannot report a class (for
+  example, OOM is not classifiable on Kata today).
 - **G2 (containment)** — every §7 abuse case is contained, with a measured kill time, and a
   positive control (limits deliberately disabled) demonstrably fails — so the test is not vacuous.
 - **G3 (no ambient authority)** — a probe guest enumerating filesystem, network, env, and processes

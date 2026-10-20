@@ -128,8 +128,10 @@ Thirty-five programs in [`examples/`](examples/), most of them offline against a
                            circuit breaker, channel/stream backend, platform abstraction layer
 ```
 
-Isolation is a seam with named profiles (`wasm`, `native-jail`, `remote`): identical in contract, differing
-in strength. There is no `microvm` profile; a workload that needs hardware isolation uses `remote`.
+Every agent runs inside a sandbox from a `SandboxBackend` that hosts its worktree. Execution options
+(`microvm` via Kata, `native-jail`, `remote`, `wasm`, `NoSandboxBackend`) are identical in contract and
+differ in strength; none is the default, and the developer chooses one and owns its disclosed risk
+([ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md), 2026-10-20).
 
 ## Eight invariants
 

@@ -929,7 +929,8 @@ a stable state** (021 §2). This replaces the "contribute upstream vs. downgrade
 question was originally posed with — neither candidate resolution was taken; macOS is dropped
 outright rather than downgraded to a lower tier.
 
-008 §1's `no microvm profile` decision, whose original rationale cited the macOS PAL gap, was
+*(Superseded 2026-10-20 by [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R2: `microvm` is now a Linux-only first-class profile; the
+paragraph below is kept as history.)* 008 §1's `no microvm profile` decision, whose original rationale cited the macOS PAL gap, was
 re-grounded instead in a Windows-hosting finding (`docs/research/2026-microvm-windows-portability.md`,
 2026-08-04: Firecracker is architecturally Linux+KVM-only, no production-grade Windows-hosted path
 exists either) so the decision doesn't lose its footing now that macOS is moot rather than missing.

@@ -1,6 +1,6 @@
 # 002 — Agent Model and Authoring
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Depends on:** 001, 003, 004, 006, 015 · **Gate:** §8
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (R5 authoring API; interpreter no longer locked to `native-jail`) · **Depends on:** 001, 003, 004, 006, 015 · **Gate:** §8
 
 ## Goal
 
@@ -184,7 +184,8 @@ also gives a 015 document the identical harness (I6).
 
 **What `SandboxProfile<P>` governs.** It is not one dial over every sandboxed effect an agent can
 reach: 009 §6 hardcodes plugins to run in the `wasm` profile regardless of what an agent declares
-here, and 008 §1/CLAUDE.md permanently lock the code interpreter to `native-jail` — neither is
+here, and the code interpreter runs on the execution option the developer chooses for it (ADR-242
+R2/R3; formerly locked to `native-jail`) — neither is
 redirected by this policy. `SandboxProfile<P>` selects the backend for the agent's *other*
 script-executing tools: a custom `Tool` that needs sandboxed execution but is neither a plugin (009)
 nor the built-in interpreter (010) runs under the profile declared here, or is rejected at

@@ -1,6 +1,6 @@
 # 015 — Declarative Agent and Workflow Format
 
-**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§3 switch `case`/`default` edge keys, ADR-215 Proposed, issue #34; §3 `review_points`, issue #45) · **Depends on:** 002, 006, 014 · **Gate:** §7
+**Status:** Reviewed (2026-08-05, docs/planning/v1-review-signoff-workflow.md) · **Amended 2026-10-01** (§3 switch `case`/`default` edge keys, ADR-215 Proposed, issue #34; §3 `review_points`, issue #45) · **Amended 2026-10-20 by [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)** (`microvm` added to the profile vocabulary; values are required, nothing implicit) · **Depends on:** 002, 006, 014 · **Gate:** §7
 
 ## Goal
 
