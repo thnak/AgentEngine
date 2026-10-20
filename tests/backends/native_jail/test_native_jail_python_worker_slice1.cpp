@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -112,6 +113,37 @@ int main() {
         }
         AE_CHECK(elapsed2.count() < 2000,
                  "G-lifecycle-2: the post-kill call fails fast (no hang waiting on a dead worker)");
+    }
+
+    // ================================================================================================
+    // G-Q1b: kill-reason ordering. The watchdog must publish kill_reason BEFORE TerminateJobObject, because
+    // exec_session()'s blocked ReadFile returns the instant the worker dies. The test-only post-terminate
+    // hook widens the kill->(late store) window to 400ms: under store-after-terminate the reader sees
+    // reason==none and misclassifies the wall-clock kill as crash.
+    // ================================================================================================
+    {
+        NativeJailBackend::set_test_post_terminate_hook(+[] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        });
+        MediatedPythonConfig cfg;
+        cfg.python_home = AE_PYTHON_HOME;
+        cfg.exec_wall_ms = 500;
+        cfg.memory_bytes = 256ull * 1024 * 1024;
+        cfg.pids = 4;
+        MediatedPythonRunner runner(std::move(cfg), backend);
+        auto init = runner.initialize();
+        AE_CHECK(init.has_value(), "G-Q1b setup: runner initializes a real jailed worker process");
+        ExecState state{};
+        EffectContext ctx{};
+        ExecRequest req{"python", "while True:\n    pass\n"};
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
+        NativeJailBackend::set_test_post_terminate_hook(nullptr);
+        AE_CHECK(out.has_value(), "G-Q1b: exec_session() returns an outcome");
+        if (out.has_value()) {
+            AE_CHECK(out->klass == exec_outcome_class::timeout,
+                     "G-Q1b: a wall-clock kill is timeout even when the watchdog is delayed after the kill "
+                     "(reason published before TerminateJobObject), not crash");
+        }
     }
 
     // ================================================================================================

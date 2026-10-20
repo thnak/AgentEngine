@@ -463,7 +463,10 @@ result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
 
 namespace {
 namespace wp = ::agentengine::native_jail::worker_protocol;
+std::atomic<void (*)()> g_test_post_terminate_hook{nullptr};
 }  // namespace
+
+void NativeJailBackend::set_test_post_terminate_hook(void (*fn)()) { g_test_post_terminate_hook.store(fn); }
 
 void NativeJailBackend::terminate_worker(Instance& inst) {
     if (!inst.worker.has_value()) return;
@@ -519,8 +522,11 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
         // port, unlike a design that only drained inside exec()'s own wait_or_kill().
         if (auto polled = inst.job.poll_memory_limit_once();
             polled.has_value() && *polled == job_kill_reason::memory_limit) {
+            // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+            // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+            ws.kill_reason.store(job_kill_reason::memory_limit, std::memory_order_release);
             TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000003));
-            ws.kill_reason.store(job_kill_reason::memory_limit);
+            if (auto h = g_test_post_terminate_hook.load()) h();
             ws.alive.store(false);
         }
 
@@ -529,8 +535,11 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
             case watchdog_phase::awaiting_init:
             case watchdog_phase::call_active:
                 if (now >= ws.phase_deadline) {
+                    // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+                    // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+                    ws.kill_reason.store(job_kill_reason::wall_clock_timeout, std::memory_order_release);
                     TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000001));
-                    ws.kill_reason.store(job_kill_reason::wall_clock_timeout);
+                    if (auto h = g_test_post_terminate_hook.load()) h();
                     ws.alive.store(false);
                 }
                 break;
@@ -546,11 +555,14 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
                     std::uint64_t const budget_100ns =
                         static_cast<std::uint64_t>(ws.session_config.idle_cpu_budget_ms.count()) * 10'000ULL;
                     if (cpu_since_window_start > budget_100ns) {
+                        // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+                        // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+                        ws.kill_reason.store(job_kill_reason::process_limit, std::memory_order_release);
                         TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000004));
+                        if (auto h = g_test_post_terminate_hook.load()) h();
                         // job_kill_reason has no dedicated "background CPU budget exceeded" member --
                         // process_limit is repurposed here (unused for any other kill reason on this
                         // path), matching the final spec §6's own note.
-                        ws.kill_reason.store(job_kill_reason::process_limit);
                         ws.alive.store(false);
                     } else if (now - ws.idle_window_start_time >= ws.session_config.idle_cpu_window_ms) {
                         ws.idle_window_start_time = now;
@@ -781,7 +793,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         // Broken pipe: either the worker crashed on its own or the watchdog already killed it
         // (awaiting_init's own deadline, or a memory-limit notification during startup).
         ws.alive.store(false);
-        job_kill_reason const reason = ws.kill_reason.load();
+        job_kill_reason const reason = ws.kill_reason.load(std::memory_order_acquire);
         stop_watchdog(*instance);
         close_worker_handles(*instance);
         return std::unexpected(ae::error{
@@ -994,7 +1006,7 @@ result<ExecOutcome> NativeJailBackend::exec_session(SandboxHandle const& handle,
             // Broken pipe -- the worker died. Classify from the watchdog's own observed kill_reason
             // (a real, external signal), never from anything the worker itself claimed (I3).
             ws.alive.store(false);
-            job_kill_reason const reason = ws.kill_reason.load();
+            job_kill_reason const reason = ws.kill_reason.load(std::memory_order_acquire);
             outcome = ExecOutcome{};
             outcome.klass = reason == job_kill_reason::wall_clock_timeout ? exec_outcome_class::timeout
                              : reason == job_kill_reason::memory_limit    ? exec_outcome_class::oom

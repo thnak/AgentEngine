@@ -3071,6 +3071,22 @@ fails it).
   `test_ledger_async_locking`, `test_rt_agent_session_snapshot` P6, `test_delegation_provenance` R4/R5). #183's
   mechanical part is done; making direct driving private (D7, #178) needs a sanctioned stepping API for these first.
 
+### Step 66 (2026-10-20): the `rt::http` timer stops stay on the reactor thread -- won't do (#184)
+
+- Closes the rt::http step's Open item "the timer stops are requested on the reactor thread ... move them onto
+  `StrandStopCallback`" as **won't do**. Inventory: `http_detail::StopTimer` (overall and per-op idle deadline,
+  `rt/http.hpp`) requests stop on a PRIVATE source whose only listeners are `ForwardStop` (`OpGuard`'s
+  `from_overall_`/`from_idle_`/`from_caller_`: another `stop_source::request_stop`) and the TCP/TLS awaiter's
+  `Canceler` (`rt/tcp.hpp`, `reactor_await.hpp`: a cancel post). `StallTimer` sets an atomic and calls
+  `TcpStream::close()`, which only posts. TLS/TCP have no timers of their own. No engine code and no strand-owned state
+  runs on the reactor thread, so §4.2 holds; `StopTimer::fired_` is release/acquire-ordered before the stop, so the
+  `http_error` mapping is ordered.
+- Moving them would be a net negative: the stop's only job is to cancel a reactor operation, and a strand post made
+  after the lanes stopped is dropped (step 5's caveat), which would leave that operation hanging; it would also add a
+  strand slice to every deadline (behaviour moves), and `http_stream`/body `next()` may run on a host or `block_on`
+  home. Nothing observable distinguishes the two, so no discriminating test exists. The binding rule stays as the
+  header states it: a timer's stop callbacks are signal-or-post only.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are
