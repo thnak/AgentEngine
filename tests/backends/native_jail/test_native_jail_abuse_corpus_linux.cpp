@@ -22,6 +22,7 @@
 // Real child processes are spawned under real namespace + cgroup + seccomp isolation -- bounded by
 // this test's own generous-but-finite wall_ms values (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <chrono>
 #include <cstdlib>
@@ -82,7 +83,9 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 5000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 3;
@@ -140,7 +143,9 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
+        ae_test::grant_listed_mounts(contained_spec);
         // 25s: C2-Linux's own measured finding -- cgroups v2's reclaim-before-OOM-kill dance took
         // ~2-7.9s wall-clock in this harness's environment for this exact 512 MB-vs-32 MB shape; a
         // short wall_ms would make this backend's own timeout watcher pre-empt the real OOM kill
@@ -188,7 +193,9 @@ int main() {
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(short_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(short_spec);
+        ae_test::grant_listed_mounts(short_spec);
         short_spec.limits.wall_ms = 500;
         short_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         short_spec.limits.pids = 4;
@@ -244,7 +251,9 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 1000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 4;

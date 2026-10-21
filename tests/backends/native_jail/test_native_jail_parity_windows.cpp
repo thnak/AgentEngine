@@ -7,6 +7,7 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite wall_ms (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -68,6 +69,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;  // generous: classification parity, not tightest-bound timing
         spec.limits.memory_bytes = c.memory_bytes;
         spec.limits.pids = c.pids;

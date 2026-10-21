@@ -71,9 +71,9 @@ int main() {
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.deny_all = false;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
-        check(!handle.has_value() && handle.error().code == "kata_backend.net_capability_required",
+        check(!handle.has_value() && handle.error().code == "sandbox.net_not_authorized",
               "create(): NetPolicy{deny_all=false, empty allowlist} with NO cap::SandboxNetOut grant "
-              "fails closed with kata_backend.net_capability_required (the capability gate fires "
+              "fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional) (the capability gate fires "
               "before this backend's own 'unrestricted egress unsupported' shape is ever reached)");
     }
 
@@ -136,7 +136,7 @@ int main() {
 
     // ---- 5. Red-team finding (BLOCKING, fixed same pass -- kata_backend.cpp's own comment at the
     //         fix site, decisions/archive/ADR-093-...md §5): a nonempty allowlist with NO cap::SandboxNetOut
-    //         grant at all fails closed with kata_backend.net_capability_required, rather than
+    //         grant at all fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional), rather than
     //         silently sailing through authorize_spec()'s own "opt-out when zero grants" shape --
     //         proves this backend no longer grants real network egress via SandboxSpec::net alone,
     //         with zero capability ever held (the exact I2 ambient-authority gap the red-team found).
@@ -145,9 +145,9 @@ int main() {
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.allowlist.push_back("example.com:443:https");
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
-        check(!handle.has_value() && handle.error().code == "kata_backend.net_capability_required",
+        check(!handle.has_value() && handle.error().code == "sandbox.net_not_authorized",
               "create(): a nonempty NetPolicy::allowlist with NO cap::SandboxNetOut grant at all "
-              "fails closed with kata_backend.net_capability_required -- real network egress is "
+              "fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional) -- real network egress is "
               "never reachable via SandboxSpec::net alone, zero ambient authority");
     }
 

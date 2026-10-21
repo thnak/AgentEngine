@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string>
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
@@ -58,7 +59,7 @@ int main() {
     // (ADR-093, kata_backend.cpp's own §Slice 10 comment) superseded with a real, capability-gated
     // NetPolicy mechanism -- `spec.net.deny_all=false`/a nonempty `allowlist` with ZERO
     // `cap::SandboxNetOut` grants (the default `SandboxSpec` both cases below construct) now fails
-    // closed with `kata_backend.net_capability_required` instead (kata_backend.cpp's own real, current
+    // closed with `sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional)` instead (kata_backend.cpp's own real, current
     // rejection for "NetPolicy requests real network access... but the caller holds no
     // cap::SandboxNetOut grant at all"). `net_allowlist_unsupported` no longer appears anywhere in
     // kata_backend.cpp at all (grep-confirmed) -- this assertion was never actually exercised against
@@ -69,9 +70,9 @@ int main() {
         spec.net.deny_all = false;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_capability_required",
+                  handle.error().code == "sandbox.net_not_authorized",
               "create(): NetPolicy{deny_all=false} with no cap::SandboxNetOut grant fails closed with "
-              "kata_backend.net_capability_required, not silently ignored");
+              "sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional), not silently ignored");
     }
     {
         KataBackend backend;
@@ -79,7 +80,7 @@ int main() {
         spec.net.allowlist.push_back("example.com:443:https");
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_capability_required",
+                  handle.error().code == "sandbox.net_not_authorized",
               "create(): a nonempty NetPolicy::allowlist with no cap::SandboxNetOut grant also fails "
               "closed the same way");
     }
@@ -92,6 +93,7 @@ int main() {
         m.source = BlobRef{"sha256:deadbeef", "text/plain", 4, "test-store"};
         m.guest_path = "/mnt/blob";
         spec.mounts.push_back(m);
+        ae_test::grant_listed_mounts(spec);
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.blob_mount_unsupported",
               "create(): MountSpec::source as a BlobRef fails closed with "
@@ -100,24 +102,26 @@ int main() {
 
     // ---- 3a. SLICE 11 (red-team finding, kata-backend-config-pipeline-pids-disk-net-redesign-
     //          draft.md §5a'): a MountSpec host path targeting this backend's own workdir root is
-    //          rejected outright, unconditionally -- WITH ZERO cap::SandboxMount grant held, the
-    //          exact zero-grant condition the finding depends on (authorize_spec()'s own capability
-    //          check skips itself entirely for a caller holding no relevant grant at all, so this
-    //          check must NOT rely on that layer). Runs before any resource is acquired (same as the
+    //          rejected outright, unconditionally -- EVEN WITH a covering cap::SandboxMount grant
+    //          held. (The finding was found with zero grants, when authorize_spec() skipped itself;
+    //          ADR-244 made that check unconditional, so the zero-grant shape is now refused earlier
+    //          with sandbox.mount_not_authorized. Granting the mount is the stronger form: the
+    //          workdir is forbidden whatever the caller holds.) Runs before any resource is acquired (same as the
     //          BlobRef/',' checks above), so -- unlike most of this file's cases -- this one does NOT
     //          require a live Kata/containerd deployment to prove for real. -----------------------
     {
         KataBackend backend;
-        SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
+        SandboxSpec spec;  // the mount below IS granted (grant_listed_mounts): the workdir check must still fire
         MountSpec m;
         m.source = std::string("/run/agentengine-kata");
         m.guest_path = "/mnt/workdir";
         m.read_write = true;
         spec.mounts.push_back(m);
+        ae_test::grant_listed_mounts(spec);
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
               "create(): a MountSpec host path equal to this backend's own workdir root is rejected "
-              "with kata_backend.workdir_mount_forbidden, with ZERO cap::SandboxMount grant held");
+              "with kata_backend.workdir_mount_forbidden, even with a covering cap::SandboxMount grant");
     }
     {
         KataBackend backend;
@@ -127,6 +131,7 @@ int main() {
         m.guest_path = "/mnt/quota-file";
         m.read_write = true;
         spec.mounts.push_back(m);
+        ae_test::grant_listed_mounts(spec);
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
               "create(): a MountSpec host path CONTAINED WITHIN this backend's own workdir root "
@@ -144,6 +149,7 @@ int main() {
         m.guest_path = "/mnt/sibling";
         m.read_write = false;
         spec.mounts.push_back(m);
+        ae_test::grant_listed_mounts(spec);
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code != "kata_backend.workdir_mount_forbidden",
               "create(): a host path that only shares the workdir root as a string PREFIX (a sibling "
@@ -168,6 +174,7 @@ int main() {
         ro_mount.guest_path = "/mnt/ro";
         ro_mount.read_write = false;
         spec.mounts.push_back(ro_mount);
+        ae_test::grant_listed_mounts(spec);
 
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a real host-path MountSpec grant creates cleanly");
@@ -200,6 +207,7 @@ int main() {
         rw_mount.guest_path = "/mnt/rw";
         rw_mount.read_write = true;
         rw_spec.mounts.push_back(rw_mount);
+        ae_test::grant_listed_mounts(rw_spec);
         auto rw_handle = agentengine::rt::block_on(rw_backend.create(rw_spec, ctx));
         check(rw_handle.has_value(), "create(): a read_write=true MountSpec grant creates cleanly");
         if (rw_handle.has_value()) {

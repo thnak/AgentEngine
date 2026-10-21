@@ -42,6 +42,7 @@
 // kMaxPrivateBytesGrowth slack of 50 MiB (6x over) -- either real leak is caught with a wide margin
 // at this count, which is what actually justifies calling 300 "enough," not just "cheap."
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -213,6 +214,7 @@ int main() {
     SandboxSpec spec;
     spec.mounts.push_back(
         MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

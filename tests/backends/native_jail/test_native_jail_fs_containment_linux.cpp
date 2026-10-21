@@ -12,6 +12,7 @@
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as every other Linux native_jail
 // test -- run via tests/helpers/cgroup_v2_test_setup.sh.
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <fcntl.h>
 #include <unistd.h>
@@ -87,7 +88,9 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -135,9 +138,12 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.mounts.push_back(
             MountSpec{.source = ro_dir.string(), .guest_path = "/ro", .read_write = false});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;

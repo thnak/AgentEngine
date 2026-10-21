@@ -34,6 +34,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
@@ -85,6 +86,7 @@ int main() {
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
             MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(short_spec);
         short_spec.limits.wall_ms = 800;
 
         auto handle = agentengine::rt::block_on(backend.create(short_spec, ctx));
@@ -183,6 +185,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 2500;
         contained_spec.limits.output_bytes = 4096;
 

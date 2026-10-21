@@ -21,6 +21,7 @@
 // revert); after the fix, it passes cleanly, repeatably. That empirical before/after difference is
 // this test's real evidence, not a formal guarantee.
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -74,6 +75,7 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 5000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

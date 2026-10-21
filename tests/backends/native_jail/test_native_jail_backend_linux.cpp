@@ -14,6 +14,7 @@
 // Real child processes are spawned under real namespace + cgroup + seccomp isolation -- bounded by
 // this test's own generous-but-finite wall_ms values (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <filesystem>
 #include <iostream>
@@ -55,7 +56,9 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

@@ -55,3 +55,28 @@ Verdict: **not ready** (1 FATAL, 10 MAJOR, 8 MINOR).
 | m7 | MINOR | `UnmediatedShell` kind touches the kind enum and persistence | `capability.hpp:281,316` | value reserved on deletion |
 | m8 | MINOR | pdf tool makes hosts grant internal paths; shared scratch | `extract_pdf_text.hpp:253-258` | `required_grants()`; disclosed |
 | — | gates | G-C2 sites not enumerated; G-C5b/d and G-C7 passed with the property absent | — | enumerated and rewritten |
+
+## Round 3 — 2026-10-21, against revision 3
+
+Verdict: **not ready** (0 FATAL, 9 MAJOR, 7 MINOR). The reviewer also confirmed slice 2's in-progress
+`authorize_spec` edit was read, not modified. One finding was found worse on re-check: the empty-prefix
+case of `path_prefix_covers` (below, m1).
+
+| # | Sev | Finding | Evidence | Disposition (revision 4) |
+|---|---|---|---|---|
+| M1 | MAJOR | No intersection primitive for the `per_request` ceiling (`attenuate` is all-or-nothing, `narrow_to_ceiling` silently drops); raw sessions get "no ceiling" implicitly; bridge chat-client secrets sit outside the ceiling | `capability.hpp:926-936`; `agent_session_bridge.hpp:231-243,349`; `secret.hpp:259` | required `per_request(ceiling)` / named `no_ceiling()`; `attenuate` refusal; client secrets held by the session, not unioned |
+| M2 | MAJOR | "`per_request` at least as strict as `single_trusted_caller`" is false | `agent_session_core.cpp:970-977` | restore requires the same source |
+| M3 | MAJOR | Expiry checked only at run start; `RequestAuthority::expiry{}` means already expired; "forever" is `time_point::max()` | `agent_session_core.cpp:966,1703-1708`; `.hpp:99` | checked every turn and tool dispatch; `Expiry::at`/`never` |
+| M4 | MAJOR | `multi_agent::spawn` reuses the parent principal and is voided by `per_request`; `WorkflowChatClient` runs at host-static authority; no carrier for "the parent's source" | `multi_agent.hpp:180-226`; `workflow_as_chat_client.hpp:117-118,171-175` | `ctx.authority_source`; same rule on both spawn paths; `WorkflowChatClient` refused under `per_request` |
+| M5 | MAJOR | Workflow validation cannot see node sessions | `graph.hpp:297`; `agent_workflow_executor.hpp:97-100`; `workflow_supervisor.cpp:27` | source carried in the tag; checked at tag build and per call |
+| M6 | MAJOR | The runner has no session identity: principal shared, `run_id` parsable, restored copies reuse `session_id_`, clear+reinit hands globals to the next user | `sandbox.hpp:289`; `agent_session_core.cpp:807` | engine-minted `session_nonce` (identity + epoch); runner refuses after its session's epoch moves |
+| M7 | MAJOR | Bridge attenuation gates only the pipeline; the tool body still sees the caller's full `ctx`; `config.approved` is a standing cross-caller approval | `tool_bridge.hpp:59,68-78`; `agent_spawn.hpp:432,519` | `ctx` swapped for the call; `BridgeApproval::per_call` / `standing_for(principal)` |
+| M8 | MAJOR | Read-write grants over deployment paths persist as never-revoked ACEs: cross-session code injection | ADR-041; `native_jail_backend.cpp` | per-backend deployment-path registry; overlapping read-write refused |
+| M9 | MAJOR | Legacy records bricked with no migration | `session_store.hpp:196` | `migrate_record(record, choices)` |
+| m1 | MINOR | `path_prefix_covers` treats only `/` as a boundary and is case-sensitive; **and `""` covers everything** (found on re-check) | `capability.hpp:556-564` | normalised comparison; empty-prefix grant refused |
+| m2 | MINOR | Linux binds mounts in vector order: masking | `linux_native_jail_backend.cpp:159-173` | deployment mounts first; overlaps refused |
+| m3 | MINOR | Dedup keyed on raw string, grows with unique paths | `native_jail_backend.cpp:134-145` | normalised key; growth per unique path disclosed |
+| m4 | MINOR | `NativeShellSessionProvider` is also a `PersistentShellSurface` | `persistent_shell.hpp:5` | gate only `mediated = false` surfaces |
+| m5 | MINOR | Null capabilities: "empty set" vs "refused" | — | "authorizes nothing" |
+| m6 | MINOR | Reflection and `ask` re-send `StartRun` without authority | `bounded_reflection.hpp:157`; `session_builder.hpp:482,493,618` | authority parameter |
+| m7 | MINOR | Ungated recording; `examples/` missing from the caller list; Y8 flips in slice 3 | `agent_spawn.hpp:528` | G-C12; list and slice fixed |

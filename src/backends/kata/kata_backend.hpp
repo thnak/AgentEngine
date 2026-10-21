@@ -265,14 +265,12 @@
 //
 // **Red-team finding (BLOCKING), fixed before landing** (ADR-093 ยง5): before this fix, a caller with
 // ZERO `cap::SandboxNetOut` grants at all could still reach real network egress via `spec.net`
-// directly -- `authorize_spec()`'s own capability-coverage check (sandbox.hpp) deliberately SKIPS
-// itself when a caller holds no relevant grants at all (a documented cross-backend opt-out shape),
-// and this backend's OWN unconditional pre-Slice-10 fail-closed check (which used to be the real
-// backstop) was removed by Slice 10 in favor of a mechanism that acts on `spec.net` directly. Fixed:
-// `create()` now requires at least one `cap::SandboxNetOut` grant whenever `spec.net` requests
-// anything beyond `deny_all`, independent of `authorize_spec()`'s own opt-in scoping
-// (`kata_backend.net_capability_required` otherwise) -- see the fix site in `kata_backend.cpp` for
-// the full reasoning, and `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5 for the proof.
+// directly -- `authorize_spec()`'s capability-coverage check (sandbox.hpp) then skipped itself when a
+// caller held no relevant grants at all, and Slice 10 had removed this backend's own fail-closed
+// backstop. Fixed first here (`kata_backend.net_capability_required`), then at the source: since
+// ADR-244 ง2.4 `authorize_spec()` checks unconditionally, so a network request with no covering
+// `cap::SandboxNetOut` is refused with `sandbox.net_not_authorized` and the backend-local check is
+// gone. Proof: `tests/backends/kata/test_kata_backend_slice9_10_linux.cpp` cases 2a/2b/5.
 //
 // SLICE 11 (2026-08-24, docs/planning/kata-backend-config-pipeline-pids-disk-net-redesign-draft.md,
 // design -> independent red-team (8 findings, 5 BLOCKING, all fixed pre-implementation) -> implement)
