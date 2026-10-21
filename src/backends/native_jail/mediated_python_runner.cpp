@@ -7,6 +7,8 @@
 
 #include "backends/native_jail/mediated_python_runner.hpp"
 
+#include <filesystem>
+
 #include "backends/native_jail/native_jail_win32_helpers.hpp"  // widen/narrow
 
 #ifndef AE_PYTHON_WORKER_EXE_PATH
@@ -29,7 +31,22 @@ MediatedPythonRunner::~MediatedPythonRunner() {
     }
 }
 
-result<void> MediatedPythonRunner::initialize() {
+std::vector<cap::SandboxMount> MediatedPythonRunner::required_mounts(MediatedPythonConfig const& config) {
+    std::vector<cap::SandboxMount> out;
+    for (auto const& [mount_id, host_path] : config.mount_roots) {
+        out.push_back(cap::SandboxMount{narrow(host_path), "/" + mount_id, /*read_write=*/true});
+    }
+    // The deployment paths `NativeJailBackend::create_python_worker()` mounts read-only at their own path.
+    auto deployment = [&out](std::string path) {
+        if (!path.empty()) out.push_back(cap::SandboxMount{path, path, /*read_write=*/false});
+    };
+    deployment(std::filesystem::path(std::string(AE_PYTHON_WORKER_EXE_PATH)).parent_path().string());
+    deployment(config.python_home);
+    for (std::string const& p : config.extra_sys_path) deployment(p);
+    return out;
+}
+
+result<void> MediatedPythonRunner::initialize(CapabilitySet const& host_grant, EffectContext& ctx) {
     if (initialized_) {
         return std::unexpected(error{failure_class::contract,
                                       "MediatedPythonRunner::initialize() called twice",
@@ -58,6 +75,9 @@ result<void> MediatedPythonRunner::initialize() {
     session.mount_roots = config_.mount_roots;
 
     SandboxSpec spec;
+    // ADR-244 §2.4: the authority every mount and deployment path is checked against. Explicit host
+    // input, never derived from `config_`.
+    spec.capabilities = host_grant;
     spec.mounts.reserve(config_.mount_roots.size());
     for (auto const& [mount_id, host_path] : config_.mount_roots) {
         spec.mounts.push_back(MountSpec{
@@ -70,10 +90,15 @@ result<void> MediatedPythonRunner::initialize() {
     spec.limits.memory_bytes = config_.memory_bytes;
     spec.limits.pids = config_.pids;
 
-    EffectContext init_ctx{};  // create_python_worker() does not examine ctx today, matching create()'s
-                                // own identical unused-ctx-parameter precedent one layer down; accepted
-                                // for interface symmetry with a future audit use, not a live dependency.
-    auto created = backend_.create_python_worker(spec, std::move(session), init_ctx);
+    auto created = backend_.create_python_worker(spec, std::move(session), ctx);
+    // ADR-244 §2.6: the worker's creation is an effect like any other sandbox's, so it is audited (I4).
+    run_event_payload::SandboxExec audit;
+    audit.exec_id = "mediated-python-create";
+    audit.backend = "mediated-python";
+    audit.stage = "create";
+    audit.ok = created.has_value();
+    audit.error_code = created.has_value() ? std::string{} : created.error().code;
+    ctx.sandbox_exec_sink(run_event_kind::sandbox_exec_finished, std::move(audit));
     if (!created.has_value()) return std::unexpected(created.error());
 
     handle_ = std::move(*created);
@@ -90,6 +115,30 @@ result<ExecOutcome> MediatedPythonRunner::run_blocking(ExecRequest request, Exec
     if (!initialized_) {
         return std::unexpected(error{failure_class::fatal, "MediatedPythonRunner is not initialized",
                                       "python.not_initialized"});
+    }
+    // ADR-244 §2.4: one runner per session, enforced here rather than by host wiring.
+    if (!ctx.session_nonce.minted()) {
+        return std::unexpected(error{failure_class::policy,
+                                      "this run carries no session nonce; the Python runner serves only a "
+                                      "context its session minted",
+                                      "codeact.no_session"});
+    }
+    {
+        std::lock_guard<std::mutex> lock(bind_mutex_);
+        if (!bound_session_.has_value()) {
+            bound_session_ = ctx.session_nonce;
+        } else if (bound_session_->identity != ctx.session_nonce.identity) {
+            return std::unexpected(error{failure_class::policy,
+                                          "the Python runner is bound to a different session",
+                                          "codeact.runner_bound_to_other_session"});
+        } else if (bound_session_->epoch != ctx.session_nonce.epoch) {
+            // The bound session was cleared, restored or forked since: its interpreter state is not the
+            // new incarnation's to inherit. The host creates a new runner.
+            return std::unexpected(error{failure_class::policy,
+                                          "the Python runner's session has been cleared, restored or forked "
+                                          "since it was bound; create a new runner",
+                                          "codeact.runner_session_moved"});
+        }
     }
     return backend_.exec_session(handle_, std::move(request), state, ctx);
 }

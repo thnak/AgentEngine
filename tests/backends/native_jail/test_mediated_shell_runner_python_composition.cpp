@@ -17,6 +17,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -69,7 +70,7 @@ int main() {
     MediatedPythonConfig py_cfg;
     py_cfg.python_home = AE_PYTHON_HOME;
     MediatedPythonRunner python(std::move(py_cfg), backend);
-    auto init = python.initialize();
+    auto init = ae_test::initialize_runner(python);
     AE_CHECK(init.has_value(), "E3-PY1: setup -- the real MediatedPythonRunner initializes");
 
     auto adapter = MediatedFileSystemAdapter::create(scratch_w);
@@ -94,6 +95,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python print(6 * 7)"}, state, ctx));
@@ -113,6 +115,7 @@ int main() {
         // grammar for anything beyond a simple expression, not a ShellRunner correctness bug.
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python ae_e3_side_effect=1"}, state, ctx));
         AE_CHECK(!out.has_value() && out.error().code == "shell.capability_denied",
                  "E3-PY3 (negative control): ShellRunner cannot invoke PythonRunner without RunnerCall");
@@ -138,6 +141,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         // The whole multi-line, quote-containing Python body is wrapped in ONE shell-level
         // double-quoted word so this grammar's word-splitting never sees the spaces/quotes inside

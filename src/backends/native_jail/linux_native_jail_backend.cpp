@@ -284,6 +284,22 @@ result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const&
             "linux_native_jail.net_allowlist_unsupported"});
     }
 
+    // ADR-244 §2.4: mounts are bound in vector order onto the jail's tmpfs root, so a mount whose guest
+    // path is inside (or contains) another's would mask it -- a later read-only mount hiding a read-write
+    // one, or the reverse. Refused outright, before anything is bound.
+    for (std::size_t i = 0; i < spec.mounts.size(); ++i) {
+        for (std::size_t j = i + 1; j < spec.mounts.size(); ++j) {
+            std::string const& a = spec.mounts[i].guest_path;
+            std::string const& b = spec.mounts[j].guest_path;
+            if (capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a)) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox mounts '" + a + "' and '" + b + "' overlap; the later one would mask the other",
+                    "sandbox.mount_overlap"});
+            }
+        }
+    }
+
     DelegatedRootState root_state = ensure_delegated_root(delegated_cgroup_root_);
     if (!root_state.ready) return std::unexpected(*root_state.init_error);
 

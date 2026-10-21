@@ -45,6 +45,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -361,7 +362,7 @@ int main() {
     // nothing folds into history yet. ----------------------------------------------------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B1-setup: runner initializes cleanly");
 
         Session session;
@@ -413,7 +414,7 @@ int main() {
     // ---- B2: a fresh StartRun while a codeact_ask interaction is open is rejected -------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B2-setup: runner initializes cleanly");
 
         Session session;
@@ -444,7 +445,7 @@ int main() {
     // ---- B3: resolving with an answer re-runs the script; a deterministic prefix survives replay ---
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B3-setup: runner initializes cleanly");
 
         Session session;
@@ -501,7 +502,7 @@ int main() {
     // ---- B4: two sequential agent.ask() calls in one script -- same interaction_id, updated prompt -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B4-setup: runner initializes cleanly");
 
         Session session;
@@ -567,7 +568,7 @@ int main() {
     // ---- B5 (positive control): no agent.ask() call -- one round, no regression --------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B5-setup: runner initializes cleanly");
 
         Session session;
@@ -594,7 +595,7 @@ int main() {
     // ---- B6: execute_code + another tool call in one round, execute_code ask-pends -- fails closed -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B6-setup: runner initializes cleanly");
 
         noop_tool_invoked_log() = false;
@@ -637,7 +638,7 @@ int main() {
         std::filesystem::path const marker = work_dir / "marker.txt";
 
         MediatedPythonRunner runner(make_cfg(work_dir.wstring()), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
 
         Session session;

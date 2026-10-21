@@ -2,9 +2,8 @@
 // Implements rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row -- the PDF
 // text-layer slice, per ADR-106 (PDFium, BSD-3-Clause, not poppler/mupdf) and
 // docs/planning/pdf-text-extraction-design-draft.md (Revision 7, closed after six real red-team
-// rounds). First real, host-reachable slice of that design; earlier work on this branch landed
-// NativeJailBackend::grant_ro_path_once() alone (native_jail_backend.hpp), the small, PDFium-
-// independent primitive this file's Windows half now actually uses.
+// rounds). First real, host-reachable slice of that design. (Its Windows half used to grant its paths through
+// `NativeJailBackend::grant_ro_path_once()`, outside any capability check; ADR-244 §2.4 removed that.)
 //
 // ISOLATION (S3a): PDFium never links into this process. The actual decode runs in a dedicated,
 // per-call child process (agentengine_pdf_worker, pdf_worker_main.cpp), spawned via the SAME
@@ -23,12 +22,12 @@
 // SCRATCH FILE (S3a(ii)): the host still does the capability check and the read (inheriting
 // `ReadContent`'s own already-shipped, already-accepted `FileSystemAdapter::read_file()` size gap --
 // explicitly NOT a new defect this file introduces). The fetched bytes are written to a per-call
-// file inside ONE fixed scratch directory. Windows: that directory is granted to the shared
-// AppContainer profile exactly once via `grant_ro_path_once()` (real, measured dedup -- see that
-// method's own test). Linux: `LinuxNativeJailBackend::exec()`'s mount namespace is already private
-// and per-call/torn-down-with-the-child (round-6 red-team's own finding -- no AppContainer-shaped
-// cross-session exposure exists there at all), so the scratch directory is an ordinary
-// `SandboxSpec.mounts` read-only bind, no dedup mechanism needed.
+// file inside ONE fixed scratch directory. ADR-244 §2.4: on both platforms that directory and the worker's
+// own are ordinary read-only `SandboxSpec.mounts`, checked against the calling session's `cap::SandboxMount`
+// grants (`required_grants()` lists them for the host). Windows: the backend's mount step grants each
+// read-only path to the shared AppContainer profile once (deduplicated, ADR-004 finding 9). Linux:
+// `LinuxNativeJailBackend::exec()`'s mount namespace is private and per call (round-6 red-team's own
+// finding), so the bind goes with the child.
 //
 // LINUX TOOLCHAIN MOUNTS -- a real, disclosed residual, not a design choice this file can avoid:
 // `LinuxNativeJailBackend::exec()` hardcodes `execve("/bin/sh", {"/bin/sh", "-c", command, ...})`
@@ -258,6 +257,38 @@ template <sandbox::NetEgressBackend Proxy>
 #endif
 }
 
+// ADR-244 §2.4: every path the worker's sandbox needs, as read-only mounts at their own path. The one list
+// both `invoke_worker()` mounts and `required_grants()` reports, so the two cannot drift. On Linux the jail
+// runs `/bin/sh -c`, so a shell and the dynamic linker must be reachable (a disclosed residual, not a
+// hardened guest-path scheme).
+[[nodiscard]] inline std::vector<MountSpec> worker_mounts() {
+    std::vector<MountSpec> out;
+    auto add = [&out](std::string path) {
+        out.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false});
+    };
+#if !defined(_WIN32)
+    for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(dir, ec) && !ec) add(dir);
+    }
+#endif
+    // The worker binary's own directory also holds pdfium.dll on Windows (copied at build time), which no
+    // default AppContainer ACE covers (ADR-004 §6 finding 1).
+    add(std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path().string());
+    add(scratch_dir().string());
+    return out;
+}
+
+// The caller's own `cap::SandboxMount` grants, and nothing else from its set: the authority the worker's
+// spec is checked against (never more than the caller holds; a null set holds nothing).
+[[nodiscard]] inline CapabilitySet caller_mount_grants(EffectContext const& ctx) {
+    std::vector<Capability> grants;
+    if (ctx.capabilities) {
+        for (cap::SandboxMount const& g : ctx.capabilities->sandbox_mount_grants()) grants.push_back(g);
+    }
+    return CapabilitySet::grant_root(std::move(grants));
+}
+
 // pid + a process-local monotonic counter -- collision-safety across CONCURRENT calls within one
 // process (the design draft's own "not decided" item); not a security boundary (the scratch
 // directory's own access grant, not the filename, is what gates who can read it).
@@ -345,19 +376,11 @@ template <class Backend>
     // is real, separately-scoped host-integration work per the design draft's own S3a "not decided").
     static native_jail::NativeJailBackend backend;
 
-    auto granted = backend.grant_ro_path_once(scratch_dir().wstring());
-    if (!granted) co_return std::unexpected(granted.error());
-    // The worker binary's own directory (also holds pdfium.dll, copied there at build time) is NOT
-    // covered by any Windows default AppContainer ACE the way a curated set of real OS paths is
-    // (ADR-004 §6 finding 1) -- an ordinary build-output directory needs its own explicit grant, the
-    // same reason create_python_worker() grants its own exe_dir separately from ordinary
-    // SandboxSpec.mounts (native_jail_backend.cpp).
-    std::filesystem::path const worker_dir =
-        std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path();
-    auto worker_dir_granted = backend.grant_ro_path_once(worker_dir.wstring());
-    if (!worker_dir_granted) co_return std::unexpected(worker_dir_granted.error());
-
+    // ADR-244 §2.4: the worker's paths are ordinary read-only mounts, checked against the calling session's
+    // own grants (`required_grants()` lists them for the host) -- no separate, unchecked grant path.
     SandboxSpec spec;
+    spec.mounts = worker_mounts();
+    spec.capabilities = caller_mount_grants(ctx);
     spec.limits.wall_ms = kWorkerWallMs;
     spec.limits.memory_bytes = kWorkerMemoryBytes;
     spec.limits.pids = kWorkerPids;
@@ -394,24 +417,10 @@ template <class Backend>
                                                          EffectContext& ctx) {
     static native_jail::LinuxNativeJailBackend backend;
 
+    // ADR-244 §2.4: the same checked-mount shape as the Windows branch above.
     SandboxSpec spec;
-    // Toolchain mounts -- see this file's own top comment: LinuxNativeJailBackend::exec() hardcodes
-    // `/bin/sh -c`, so a working shell + dynamic linker must be reachable inside the jail. Real,
-    // disclosed residual, not a security-hardened guest_path scheme.
-    for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {
-        std::error_code ec;
-        if (std::filesystem::exists(dir, ec) && !ec) {
-            spec.mounts.push_back(
-                MountSpec{.source = std::string(dir), .guest_path = dir, .read_write = false});
-        }
-    }
-    std::filesystem::path const worker_dir =
-        std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path();
-    spec.mounts.push_back(MountSpec{
-        .source = worker_dir.string(), .guest_path = worker_dir.string(), .read_write = false});
-    std::filesystem::path const scratch = scratch_dir();
-    spec.mounts.push_back(MountSpec{
-        .source = scratch.string(), .guest_path = scratch.string(), .read_write = false});
+    spec.mounts = worker_mounts();
+    spec.capabilities = caller_mount_grants(ctx);
 
     spec.limits.wall_ms = kWorkerWallMs;
     spec.limits.memory_bytes = kWorkerMemoryBytes;
@@ -613,6 +622,17 @@ more call would fetch it -- that call does not exist.
     }();
 
     return make_skill_source_descriptor(InlineSkillSource("extract-pdf-text", std::move(resolved)));
+}
+
+// ADR-244 §2.4: the read-only `cap::SandboxMount` grants a session must hold for `extract_pdf_text` (and its
+// siblings that share this worker) to run. A listing for the host to read and grant; the tool never grants
+// itself anything. Note the scratch directory is fixed and shared by every session in the process.
+[[nodiscard]] inline std::vector<cap::SandboxMount> required_grants() {
+    std::vector<cap::SandboxMount> out;
+    for (MountSpec const& m : extract_pdf_text_detail::worker_mounts()) {
+        out.push_back(cap::SandboxMount{std::get<std::string>(m.source), m.guest_path, /*read_write=*/false});
+    }
+    return out;
 }
 
 }  // namespace agentengine::tools

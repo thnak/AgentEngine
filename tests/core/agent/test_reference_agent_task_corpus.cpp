@@ -40,6 +40,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
@@ -163,7 +164,7 @@ int main() {
     cfg.expose_agent_files_data = true;
 
     MediatedPythonRunner runner(std::move(cfg), backend);
-    auto init = runner.initialize();
+    auto init = ae_test::initialize_runner(runner);
     AE_CHECK(init.has_value(), "H1-setup: MediatedPythonRunner initializes with the measured closure");
 
     auto caps = CapabilitySet::grant_root({
@@ -178,6 +179,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "csv_sum.json");
         EffectContext dummy_ctx{};
+        dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T1: fixture loads and plays back a response");
 
@@ -191,6 +193,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
@@ -204,6 +207,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "list_dir.json");
         EffectContext dummy_ctx{};
+        dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T2: fixture loads and plays back a response");
 
@@ -217,6 +221,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
@@ -231,6 +236,7 @@ int main() {
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "pandas_groupby.json");
         EffectContext dummy_ctx{};
+        dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
         AE_CHECK(resp.has_value(), "H1-T3: fixture loads and plays back a response");
 
@@ -244,6 +250,7 @@ int main() {
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ExecRequest req{"python", code};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));

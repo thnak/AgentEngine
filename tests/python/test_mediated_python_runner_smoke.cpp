@@ -29,6 +29,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -94,12 +95,13 @@ int main() {
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E2-C1: MediatedPythonRunner initializes a real embedded interpreter");
         AE_CHECK(runner.ok(), "E2-C1: ok() reflects successful initialization");
 
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all (nullptr) -- the fail-closed baseline
+        ctx.session_nonce = ae_test::kTestSessionNonce;
 
         // E2-C2: basic execution + stdout capture.
         {
@@ -199,7 +201,7 @@ int main() {
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E2-C8: setup -- a second interpreter (after the first's Py_Finalize) "
                                     "initializes cleanly");
 
@@ -208,6 +210,7 @@ int main() {
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
              Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // E2-C8 (positive control for E2-C5): "json" IS in this runner's package policy -- the
@@ -253,6 +256,7 @@ int main() {
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{5}}}});
             EffectContext capped_ctx{};
+            capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
             ExecRequest req{"python", "try:\n    open('/work/e2c9.txt', 'r')\n    print('SHOULD NOT REACH')\n"
                                        "except PermissionError as e:\n    print('DENIED:', e)"};
@@ -268,6 +272,7 @@ int main() {
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{1000}}}});
             EffectContext capped_ctx{};
+            capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
             ExecRequest req{"python", "with open('/work/e2c9.txt', 'r') as f:\n    print('READ:', f.read())"};
             auto out = agentengine::rt::block_on(runner.run(req, capped_state, capped_ctx));
@@ -288,11 +293,12 @@ int main() {
         cfg.output_cap_bytes = 128;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "F3-setup: a third interpreter initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
 
         // F3-R1: a bare trailing expression on its own line is captured as result_repr -- 010 §3's
         // own named "value never print()-ed" gap, closed.

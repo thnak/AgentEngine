@@ -134,13 +134,88 @@ std::wstring build_minimal_environment_block() {
 [[nodiscard]] result<void> grant_ro_deduped(AppContainerProfile const& profile, std::wstring const& path) {
     if (path.empty()) return {};
     static std::mutex granted_mutex;
-    static std::unordered_set<std::wstring> granted;
+    static std::unordered_set<std::string> granted;  // ADR-244 §2.4: keyed on the normalised path
 
+    std::string const key = sandbox_detail::host_path_key(narrow(path));
     std::lock_guard<std::mutex> guard(granted_mutex);
-    if (granted.contains(path)) return {};
+    if (granted.contains(key)) return {};
     auto result = profile.grant_path(path, /*read_write=*/false);
     if (!result.has_value()) return result;
-    granted.insert(path);
+    granted.insert(key);
+    return {};
+}
+
+// ADR-244 §2.4: AppContainer ACEs on the shared profile are never revoked (ADR-041), so a read-write grant
+// over a deployment path (the worker's directory, `python_home`, an `extra_sys_path` entry) made once by any
+// session would let it plant modules every later worker imports. This process-wide ledger refuses that
+// overlap in both orders: a read-write mount over a recorded deployment path, and a deployment path under
+// (or over) a path some earlier mount already made writable.
+class GrantLedger {
+public:
+    [[nodiscard]] result<void> record_deployment(std::string const& key) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        for (std::string const& w : writable_) {
+            if (overlaps(key, w)) return refuse(key);
+        }
+        deployment_.insert(key);
+        return {};
+    }
+    [[nodiscard]] result<void> record_writable(std::string const& key) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        for (std::string const& d : deployment_) {
+            if (overlaps(key, d)) return refuse(key);
+        }
+        writable_.insert(key);
+        return {};
+    }
+
+private:
+    [[nodiscard]] static bool overlaps(std::string const& a, std::string const& b) {
+        return capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a);
+    }
+    [[nodiscard]] static result<void> refuse(std::string const& key) {
+        return std::unexpected(ae::error{
+            failure_class::policy,
+            "a read-write mount and an interpreter deployment path overlap at '" + key +
+                "'; deployment paths are never writable (grants on the shared AppContainer profile are "
+                "never revoked)",
+            "sandbox.deployment_path_writable"});
+    }
+
+    std::mutex                      mutex_;
+    std::unordered_set<std::string> deployment_;
+    std::unordered_set<std::string> writable_;
+};
+
+[[nodiscard]] GrantLedger& grant_ledger() {
+    static GrantLedger ledger;
+    return ledger;
+}
+
+// Grants every mount of an already-authorized spec on the shared profile: read-only ones once per path
+// (`grant_ro_deduped`, ADR-004 finding 9), read-write ones after the ledger check above.
+[[nodiscard]] result<void> grant_spec_mounts(AppContainerProfile const& profile, SandboxSpec const& spec,
+                                             std::wstring& cwd) {
+    for (MountSpec const& mount : spec.mounts) {
+        if (!std::holds_alternative<std::string>(mount.source)) {
+            return std::unexpected(ae::error{
+                failure_class::policy,
+                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet "
+                "(M2 Phase C scope gap -- host paths only)",
+                "native_jail.blob_mount_unsupported",
+            });
+        }
+        std::string const& host = std::get<std::string>(mount.source);
+        std::wstring const host_path = widen(host);
+        if (mount.read_write) {
+            if (auto r = grant_ledger().record_writable(sandbox_detail::host_path_key(host)); !r) return r;
+            auto granted = profile.grant_path(host_path, /*read_write=*/true);
+            if (!granted.has_value()) return std::unexpected(granted.error());
+            if (cwd.empty()) cwd = host_path;
+        } else if (auto granted = grant_ro_deduped(profile, host_path); !granted.has_value()) {
+            return granted;
+        }
+    }
     return {};
 }
 
@@ -201,19 +276,8 @@ result<SandboxHandle> NativeJailBackend::create_blocking(SandboxSpec const& spec
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
 
-    for (MountSpec const& mount : spec.mounts) {
-        if (!std::holds_alternative<std::string>(mount.source)) {
-            return std::unexpected(ae::error{
-                failure_class::policy,
-                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet "
-                "(M2 Phase C scope gap -- host paths only)",
-                "native_jail.blob_mount_unsupported",
-            });
-        }
-        std::wstring host_path = widen(std::get<std::string>(mount.source));
-        auto granted = (*profile)->grant_path(host_path, mount.read_write);
-        if (!granted.has_value()) return std::unexpected(granted.error());
-        if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
+    if (auto granted = grant_spec_mounts(**profile, spec, instance->cwd); !granted.has_value()) {
+        return std::unexpected(granted.error());
     }
 
     auto job_created = instance->job.create(spec.limits);
@@ -448,12 +512,6 @@ void NativeJailBackend::erase_instance_locked(std::string const& id) {
     instances_.erase(id);
 }
 
-result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
-    auto profile = shared_profile();
-    if (!profile.has_value()) return std::unexpected(profile.error());
-    return grant_ro_deduped(**profile, path);
-}
-
 // ================================================================================================
 // Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/archive/ADR-081-jailed-python-worker-
 // process-slice-1.md is the ADR superseding this file's former "Correction (2026-08-23)" comment on
@@ -586,19 +644,6 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
 result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const& spec,
                                                                 PythonWorkerSessionConfig session,
                                                                 EffectContext&) {
-    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §6 finding B1: this is a
-    // SEPARATE mount-granting entry point from create() above (MediatedPythonRunner::initialize()
-    // calls this, never create()) -- the mechanism's own red-team pass found it would otherwise be
-    // silently unenforced on the one path that matters most in production (the mediated Python
-    // interpreter's real host-directory mounts). A no-op for every caller that doesn't hold a
-    // SandboxMount/SandboxNetOut grant, identical to create()'s own call above.
-    if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
-        return std::unexpected(authorized.error());
-    }
-
-    auto profile = shared_profile();
-    if (!profile.has_value()) return std::unexpected(profile.error());
-
     if (session.worker_exe_path.empty()) {
         return std::unexpected(ae::error{
             failure_class::contract,
@@ -609,37 +654,41 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         });
     }
 
+    // ADR-244 §2.4: the deployment paths the worker needs just to start (its own directory, python_home,
+    // extra_sys_path) are ordinary read-only mounts at their own path, checked against the same grants as
+    // every other mount -- there is no separate, unchecked grant path any more. They are recorded in the
+    // grant ledger first, so no read-write mount (here or in any later sandbox) can overlap them.
+    SandboxSpec effective = spec;
+    std::vector<std::string> deployment;
+    deployment.push_back(narrow(std::filesystem::path(session.worker_exe_path).parent_path().wstring()));
+    if (!session.python_home.empty()) deployment.push_back(narrow(session.python_home));
+    for (std::wstring const& p : session.extra_sys_path) {
+        if (!p.empty()) deployment.push_back(narrow(p));
+    }
+    for (std::string const& path : deployment) {
+        effective.mounts.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false});
+    }
+
+    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §6 finding B1: this is a
+    // SEPARATE mount-granting entry point from create() above (MediatedPythonRunner::initialize()
+    // calls this, never create()), so it runs the same unconditional check, over every mount and
+    // deployment path, before anything is granted.
+    if (auto authorized = authorize_spec(effective); !authorized.has_value()) {
+        return std::unexpected(authorized.error());
+    }
+    for (std::string const& path : deployment) {
+        if (auto r = grant_ledger().record_deployment(sandbox_detail::host_path_key(path)); !r) {
+            return std::unexpected(r.error());
+        }
+    }
+
+    auto profile = shared_profile();
+    if (!profile.has_value()) return std::unexpected(profile.error());
+
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
-
-    for (MountSpec const& mount : spec.mounts) {
-        if (!std::holds_alternative<std::string>(mount.source)) {
-            return std::unexpected(ae::error{
-                failure_class::policy,
-                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet",
-                "native_jail.blob_mount_unsupported",
-            });
-        }
-        std::wstring host_path = widen(std::get<std::string>(mount.source));
-        auto granted = (*profile)->grant_path(host_path, mount.read_write);
-        if (!granted.has_value()) return std::unexpected(granted.error());
-        if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
-    }
-
-    // The worker binary and the interpreter deployment paths (python_home/extra_sys_path) are NOT
-    // SandboxSpec mounts -- they are host deployment config the worker process needs read+execute
-    // access to just to START, not guest-visible session data -- so they get their own grant_path()
-    // calls here (008 §2's mount contract, applied one layer up from ordinary guest mounts).
-    auto grant_ro = [&](std::wstring const& path) -> result<void> {
-        return grant_ro_deduped(**profile, path);
-    };
-    {
-        std::filesystem::path exe_dir = std::filesystem::path(session.worker_exe_path).parent_path();
-        if (auto g = grant_ro(exe_dir.wstring()); !g.has_value()) return std::unexpected(g.error());
-    }
-    if (auto g = grant_ro(session.python_home); !g.has_value()) return std::unexpected(g.error());
-    for (auto const& p : session.extra_sys_path) {
-        if (auto g = grant_ro(p); !g.has_value()) return std::unexpected(g.error());
+    if (auto granted = grant_spec_mounts(**profile, effective, instance->cwd); !granted.has_value()) {
+        return std::unexpected(granted.error());
     }
 
     auto job_created = instance->job.create(spec.limits);

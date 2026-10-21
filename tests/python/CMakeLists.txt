@@ -46,6 +46,16 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_mediated_python_runner_smoke PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
+  # ---- decisions/ADR-244-required-choices-step-1b.md §2.4 (G-C5 a/b/d/f): the runner's explicit host grant,
+  # one runner per session (nonce binding), deduplicated read-only deployment grants, and deployment paths
+  # never writable.
+  agentengine_add_test(test_mediated_python_runner_choices
+    LIBS agentengine::core agentengine::mediated_python_runner agentengine_warnings
+    DEFINITIONS
+      AE_PYTHON_HOME="${AGENTENGINE_PYTHON_HOME}")
+  set_tests_properties(test_mediated_python_runner_choices PROPERTIES
+    ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 120)
+
   # ---- decisions/archive/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026 §5's `agent.output`.
   # A real script calling agent.output.set(value) against the real agentengine_python_worker.exe,
   # round-tripping into ExecOutcome::structured_output_json; proves the opt-in gate, last-call-wins,

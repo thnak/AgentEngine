@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -92,18 +93,23 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from(EchoTool{});
-        bridge.capabilities = {cap::Entropy{}};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {cap::Entropy{}},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-setup: a MediatedPythonRunner with a tool bridge initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
 
         // G1-I1: an ordinary `from agent import tools` import, then an ordinary keyword call.
         {
@@ -181,18 +187,23 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from(EchoTool{});
-        bridge.capabilities = {};  // no cap::Entropy granted
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {},  // no cap::Entropy granted
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-N1: setup -- a second interpreter initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
         ExecRequest req{"python",
                          "from agent import tools\n"
                          "try:\n"
@@ -215,11 +226,15 @@ int main() {
         // cfg.tool_bridge left at its default nullopt.
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-N2: setup -- a third interpreter (no tool bridge) initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
         ExecRequest req{"python",
                          "try:\n"
                          "    import agent\n"
@@ -244,11 +259,15 @@ int main() {
         // it, not the constructor, proving this ALSO works starting from "no bridge at all".
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-R1: setup -- a fourth interpreter (no initial bridge) initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
 
         {
             ExecRequest req{"python",
@@ -263,10 +282,11 @@ int main() {
         }
 
         {
-            ToolBridgeConfig bridge_a;
-            bridge_a.bridged_tools = ToolTable::from(EchoTool{});
-            bridge_a.capabilities = {cap::Entropy{}};
-            bridge_a.approved = true;
+            // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+            // anonymous test principal these contexts run as.
+            ToolBridgeConfig bridge_a{.bridged_tools = ToolTable::from(EchoTool{}),
+                             .capabilities  = {cap::Entropy{}},
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_a));
             AE_CHECK(refreshed.has_value(), "G2-R2: refresh_agent_tools() with tool A succeeds");
 
@@ -281,10 +301,11 @@ int main() {
         }
 
         {
-            ToolBridgeConfig bridge_b;
-            bridge_b.bridged_tools = ToolTable::from(RefreshedTool{});  // note: NO EchoTool this time
-            bridge_b.capabilities = {};
-            bridge_b.approved = true;
+            // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+            // anonymous test principal these contexts run as.
+            ToolBridgeConfig bridge_b{.bridged_tools = ToolTable::from(RefreshedTool{}),
+                             .capabilities  = {},
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_b));
             AE_CHECK(refreshed.has_value(), "G2-R3: refresh_agent_tools() with a DIFFERENT tool B succeeds");
 

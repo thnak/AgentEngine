@@ -44,6 +44,7 @@
 
 #include <windows.h>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -130,7 +131,7 @@ int main() {
         cfg.mount_roots["work"] = scratch_w;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E4-PY setup: MediatedPythonRunner initializes");
 
         ExecState state{};
@@ -138,6 +139,7 @@ int main() {
             {Capability{cap::FsRead{"work", "", std::nullopt}},
              Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // ---- ctypes / winreg: denied via the import allowlist, never reaching the loader --------

@@ -183,6 +183,21 @@ namespace sandbox_detail {
     return out;
 }
 
+// ADR-244 §2.4: the one normal form host paths are compared in. On Windows `\` and `/` are the same
+// separator and the file system is case-insensitive, so a grant written `C:\Work` must cover
+// `c:/work/sub` (and a test written with `/` must take the same branch as a real Windows path); ASCII
+// case-folding matches NTFS for every drive letter and ASCII name. Elsewhere paths are byte-exact.
+[[nodiscard]] inline std::string host_path_key(std::string_view path) {
+    std::string out(path);
+#if defined(_WIN32)
+    for (char& c : out) {
+        if (c == '\\') c = '/';
+        else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+#endif
+    return out;
+}
+
 }  // namespace sandbox_detail
 
 // docs/planning/sandbox-spec-capability-enforcement-design-draft.md -- the real authority behind
@@ -202,6 +217,20 @@ namespace sandbox_detail {
 // and grants none.
 [[nodiscard]] inline result<void> authorize_spec(SandboxSpec const& spec) {
     std::vector<cap::SandboxMount> const mount_grants = spec.capabilities.sandbox_mount_grants();
+    // ADR-244 §2.4: a grant must name its path. An empty host prefix would cover every host path
+    // (`path_prefix_covers("")` is true) -- an "everything" nobody spelled out -- so it is refused, not
+    // skipped, whenever this spec mounts anything.
+    if (!spec.mounts.empty()) {
+        for (cap::SandboxMount const& grant : mount_grants) {
+            if (grant.host_path_prefix.empty()) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "a cap::SandboxMount grant has an empty host_path_prefix; a grant must name the host "
+                    "path it covers",
+                    "sandbox.mount_grant_invalid"});
+            }
+        }
+    }
     for (MountSpec const& mount : spec.mounts) {
         std::string const* host_path = std::get_if<std::string>(&mount.source);
         // A BlobRef source has no host path for a SandboxMount grant to cover at all -- each
@@ -222,8 +251,12 @@ namespace sandbox_detail {
         }
 
         bool covered = false;
+        std::string const host_key = sandbox_detail::host_path_key(*host_path);
         for (cap::SandboxMount const& grant : mount_grants) {
-            if (!capability_detail::path_prefix_covers(grant.host_path_prefix, *host_path)) continue;
+            if (!capability_detail::path_prefix_covers(sandbox_detail::host_path_key(grant.host_path_prefix),
+                                                       host_key)) {
+                continue;
+            }
             if (!capability_detail::path_prefix_covers(grant.guest_path_prefix, mount.guest_path)) continue;
             if (mount.read_write && !grant.read_write) continue;  // a read grant never authorizes write
             covered = true;

@@ -247,6 +247,41 @@ int main() {
         AE_CHECK(r.has_value(), "G14: a BlobRef mount source is left to the backend's own check");
     }
 
+    // G15 (ADR-244 §2.4): a SandboxMount grant with an EMPTY host prefix names no path. It used to cover
+    // every host path (`path_prefix_covers("")` is true), an unnamed "everything"; it is refused.
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"", "", true}}});
+        spec.mounts.push_back(host_mount("/etc", "/g", false));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_grant_invalid",
+                 "G15: an empty-prefix SandboxMount grant is refused, not treated as covering everything");
+    }
+
+    // G16 (ADR-244 §2.4): host paths compare in one normal form. On Windows `\` and `/` are the same
+    // separator and case does not matter; elsewhere the comparison stays byte-exact.
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxMount{"C:\\Work\\Data", "/w", true}}});
+        spec.mounts.push_back(host_mount("c:/work/data\\Sub", "/w", true));
+        auto r = authorize_spec(spec);
+#if defined(_WIN32)
+        AE_CHECK(r.has_value(), "G16: a backslash, mixed-case child of a granted Windows path is covered");
+#else
+        AE_CHECK(!r.has_value(), "G16: off Windows, host paths compare byte-exact");
+#endif
+    }
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxMount{"C:\\Work\\Data", "/w", true}}});
+        spec.mounts.push_back(host_mount("C:\\Work\\DataX", "/w", true));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
+                 "G16b: a sibling that only shares the prefix string is not covered");
+    }
+
     std::cout << "\n" << (g_failures == 0 ? "ALL PASS" : "FAILURES") << "\n";
     return g_failures == 0 ? 0 : 1;
 }

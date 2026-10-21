@@ -372,6 +372,11 @@ bound, 020 §4).
   with it installs whatever authority the request carries. It is named so a reviewer can find it.
 - **Unique read-only deployment paths add one AppContainer ACE each**, never revoked (ADR-041); the dedup
   bounds repeats of the same path only.
+- **The worker's own directory is a deployment path, and its grant covers everything beneath it.** In this
+  repository's builds `agentengine_python_worker.exe` sits at the build root, so the read-only grant on its
+  directory already covers `python_home` and the whole build tree (found while proving G-C5(a), which
+  therefore omits an `extra_sys_path` entry outside the tree instead). This was true before this ADR too
+  (main granted the same directory). A deployment should install the worker in a directory of its own.
 
 ## 7. Red-team record
 

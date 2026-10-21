@@ -35,8 +35,22 @@ namespace agentengine {
     return std::shared_ptr<CapabilitySet const>(&cs, [](CapabilitySet const*) noexcept {});
 }
 
+// decisions/ADR-244-required-choices-step-1b.md §2.4: which session, and which incarnation of it, this context
+// belongs to. Minted by the session only (`rt::AgentSessionCore`): `identity` is its never-reused per-object
+// counter, `epoch` moves on every initialize, clear, restore and fork. A principal (shared across sessions)
+// or a session_id string (reused by a restored copy) is not an identity; this is what a one-per-session
+// resource (the mediated Python worker) binds to. `identity == 0` means "no session minted this context".
+struct SessionNonce {
+    std::uint64_t identity = 0;
+    std::uint64_t epoch    = 0;
+
+    [[nodiscard]] constexpr bool minted() const noexcept { return identity != 0; }
+    friend constexpr bool operator==(SessionNonce, SessionNonce) noexcept = default;
+};
+
 struct EffectContext {
     Principal                             principal;
+    SessionNonce                          session_nonce;
     // ADR-061 §20.3: a shared_ptr, not a raw pointer, since Tier 3 populates this per-request from a
     // RequestAuthority-owned CapabilitySet (rt/agent_session.hpp) that must outlive the coroutine
     // frame that constructed it -- a raw pointer borrowed from that frame would dangle once the

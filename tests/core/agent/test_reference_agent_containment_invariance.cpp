@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/reference_agent_prompt.hpp"
@@ -72,6 +73,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
     std::printf("  running (as-if under %s prompt): %s\n", prompt_variant_label, source.c_str());
     ExecState state{};
     EffectContext ctx{};
+    ctx.session_nonce = ae_test::kTestSessionNonce;
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecRequest req{"python", source};  // <-- exactly language + source; no prompt field exists to fill
     auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
@@ -108,7 +110,7 @@ int main() {
     cfg.mount_roots["work"] = std::wstring(base.begin(), base.end());
 
     MediatedPythonRunner runner(std::move(cfg), backend);
-    auto init = runner.initialize();
+    auto init = ae_test::initialize_runner(runner);
     AE_CHECK(init.has_value(), "H2-setup: MediatedPythonRunner initializes");
 
     // No os/subprocess/net capability granted at all -- the fail-closed baseline (matches E2/E4).

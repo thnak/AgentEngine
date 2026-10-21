@@ -449,7 +449,14 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         return native_jail::MediatedPythonRunner(std::move(cfg), backend);
     }();
     static bool const initialized = [] {
-        auto r = runner.initialize();
+        // ADR-244 §2.4: this CLI is the host, so it states the runner's authority itself -- exactly the
+        // mounts the runner lists, granted here, nothing derived inside the engine.
+        std::vector<agentengine::Capability> grants;
+        for (auto const& m : native_jail::MediatedPythonRunner::required_mounts(runner.config())) {
+            grants.push_back(m);
+        }
+        agentengine::EffectContext init_ctx;
+        auto r = runner.initialize(agentengine::CapabilitySet::grant_root(std::move(grants)), init_ctx);
         if (!r) {
             std::cerr << "FATAL: MediatedPythonRunner failed to initialize: " << r.error().message << "\n";
         }
@@ -918,8 +925,10 @@ private:
             codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
         auto bridged = union_codeact_tools(ToolTable::from(), codeact_skill_tools);
         if (!bridged) co_return std::unexpected(bridged.error());
-        auto refreshed = runner.refresh_agent_tools(
-            native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
+        // ADR-244 §2.4: the bundled approval is scoped to the principal making THIS execute_code call (the
+        // config is rebuilt on every call), never a standing yes for whoever calls next.
+        auto refreshed = runner.refresh_agent_tools(native_jail::ToolBridgeConfig{
+            *bridged, /*capabilities=*/{}, native_jail::BridgeApproval::standing_for(ctx.principal)});
         if (!refreshed) co_return std::unexpected(refreshed.error());
 
         // ADR-057 §9: `ctx.codeact_preseeded_answers` is host-driven replay state, set (only) by

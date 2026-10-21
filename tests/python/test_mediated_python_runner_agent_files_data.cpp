@@ -19,6 +19,7 @@
 #include <fstream>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -110,11 +111,12 @@ int main() {
         cfg.expose_agent_files_data = true;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-setup: a MediatedPythonRunner with mount_roots initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"input", "", std::nullopt}},
             Capability{cap::FsRead{"work", "", std::nullopt}},
@@ -259,6 +261,7 @@ int main() {
         // never a bypass around the SAME mediation open()/listdir() already enforce.
         {
             EffectContext narrow_ctx{};
+            narrow_ctx.session_nonce = ae_test::kTestSessionNonce;
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
             narrow_ctx.capabilities = agentengine::borrow_capabilities(narrow_caps);
             ExecRequest req{"python",
@@ -284,19 +287,21 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["input"] = widen(input_dir);
         cfg.expose_agent_files_data = true;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from(EchoTool{});
-        bridge.capabilities = {};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-coexist: setup -- a runner with BOTH tool_bridge and "
                                     "mount_roots initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -351,12 +356,13 @@ int main() {
         // cfg.expose_agent_files_data left at its default false.
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-N3: setup -- a runner with mount_roots but no "
                                     "expose_agent_files_data opt-in initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
         ExecRequest req{"python",
                          "try:\n"
                          "    import agent\n"

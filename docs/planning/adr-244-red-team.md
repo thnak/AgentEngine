@@ -80,3 +80,31 @@ case of `path_prefix_covers` (below, m1).
 | m5 | MINOR | Null capabilities: "empty set" vs "refused" | — | "authorizes nothing" |
 | m6 | MINOR | Reflection and `ask` re-send `StartRun` without authority | `bounded_reflection.hpp:157`; `session_builder.hpp:482,493,618` | authority parameter |
 | m7 | MINOR | Ungated recording; `examples/` missing from the caller list; Y8 flips in slice 3 | `agent_spawn.hpp:528` | G-C12; list and slice fixed |
+
+## Implementation notes (slice 2)
+
+- **Slice 2a** (cb7132d8): `authorize_spec` unconditional. G1a-c and G7 in
+  `test_sandbox_capability_authorization` failed on the old code and pass on the new.
+- **Slice 2b**: empty-prefix `SandboxMount` refused (G15 showed an empty prefix authorized mounting `/etc`);
+  Windows host paths normalised (G16); `SessionNonce` minted by the session; `MediatedPythonRunner` takes an
+  explicit host grant, audits its creation and binds one session nonce; deployment paths are checked mounts
+  with deduplicated read-only grants and a process-wide grant ledger (`sandbox.deployment_path_writable`); the
+  tool bridge narrows to the caller and swaps `ctx`, and `BridgeApproval` replaces `approved`. Gate test:
+  `tests/python/test_mediated_python_runner_choices.cpp` (A, B, D, F) plus `test_tool_bridge` G-C5(c)/(g).
+- **Found while proving G-C5(a):** the worker binary sits at the build root, so its directory grant covers
+  `python_home` and the whole build tree. Pre-existing; disclosed in ADR-244 §6.
+- **One unexplained failure:** `test_native_jail_backend_windows` failed once (10.18 s, about twice its normal
+  time) in the first ctest run after the slice-2b mount-loop rebuild, with no output captured. It then passed
+  21 consecutive runs (3 through ctest alone, 3 in the same combined ctest invocation, 15 direct). Not called a
+  flake; watched in every full-suite run that follows.
+- **Pre-existing on main, out of scope:** `tests/rt/agent_session/test_rt_agent_session_farm_ops_live_e2e.cpp:501`
+  does not compile under MSVC (a `co_return` inside a plain `std::find_if` lambda, C7617). Only built where
+  the Python runner is enabled (`build-py`).
+- **Slice 2c**: `extract_pdf_text`'s worker directory and scratch directory are ordinary read-only mounts
+  on both platforms, checked against the caller's `SandboxMount` grants; `tools::required_grants()` lists
+  them for the host. `NativeJailBackend::grant_ro_path_once` is removed; its test became
+  `test_native_jail_ro_mount_dedup_windows` (one grant across 11 creates, plus an ungranted mount refused).
+  `test_extract_pdf_text` gained the negative: `FsRead` without the worker grants is refused
+  `sandbox.mount_not_authorized`. Built and run with `AGENTENGINE_WITH_PDF=ON` (Windows, Linux).
+- **Linux jail**: overlapping guest paths refused (`sandbox.mount_overlap`) before anything is bound;
+  `/work` and `/workshop` do not overlap (positive control).

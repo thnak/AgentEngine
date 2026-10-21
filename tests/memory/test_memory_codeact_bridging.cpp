@@ -95,23 +95,25 @@ int main() {
         req.tool_name  = "recall";
         req.call_id    = "c1";
         req.arguments  = json::Value::make_object({{"query", json::Value::make_string("timezone")}});
+        // ADR-244 §2.4: the bridge reaches at most what the caller holds, so the caller holds the read grant.
         EffectContext ctx{};
+        ctx.principal = principal;
+        ctx.capabilities = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({Capability{read_cap}}));
 
         // Negative control: no FsRead grant in the bridge config -> denied.
         {
-            ToolBridgeConfig config;
-            config.bridged_tools = ToolTable::from_descriptors({recall_descriptor});
-            config.approved      = true;
+            ToolBridgeConfig config{.bridged_tools = ToolTable::from_descriptors({recall_descriptor}),
+                                    .capabilities  = {},
+                                    .approval      = native_jail::BridgeApproval::standing_for(principal)};
             auto result = bridge_tool_call(config, req, ctx);
             check(result.is_error, "R1: recall is DENIED through a bridge config with no FsRead grant");
         }
 
         // Positive control: the SAME descriptor, now WITH the matching FsRead grant -> succeeds.
         {
-            ToolBridgeConfig config;
-            config.bridged_tools = ToolTable::from_descriptors({recall_descriptor});
-            config.capabilities  = {Capability{read_cap}};
-            config.approved      = true;
+            ToolBridgeConfig config{.bridged_tools = ToolTable::from_descriptors({recall_descriptor}),
+                                    .capabilities  = {Capability{read_cap}},
+                                    .approval      = native_jail::BridgeApproval::standing_for(principal)};
             auto result = bridge_tool_call(config, req, ctx);
             check(!result.is_error, "R1: recall SUCCEEDS through a bridge config granting the matching FsRead");
             if (!result.is_error) {

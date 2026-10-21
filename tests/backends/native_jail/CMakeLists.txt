@@ -311,9 +311,8 @@ if(WIN32)
   # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
   set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
 
-  # ---- NativeJailBackend::grant_ro_path_once() (docs/planning/pdf-text-extraction-design-draft.md
-  # Revision 6/7 -- the public entry point round-5/round-6 red-team found missing) -----------------
-  agentengine_add_test(test_native_jail_grant_ro_path_once_windows
+  # ---- Read-only mounts granted to the shared profile once (ADR-244 §2.4; replaced grant_ro_path_once()) --
+  agentengine_add_test(test_native_jail_ro_mount_dedup_windows
     LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
     TIMEOUT 30)
 

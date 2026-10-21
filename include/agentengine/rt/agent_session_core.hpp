@@ -492,6 +492,7 @@ public:
         principal_    = std::move(principal);
         token_budget_ = token_budget;
         max_turns_    = max_turns;
+        advance_session_nonce();
     }
 
 
@@ -1363,6 +1364,13 @@ private:
     std::uint64_t const                                 session_identity_ =
         agent_session_detail::g_next_session_identity.fetch_add(1, std::memory_order_relaxed);
     EffectContext                                       effect_context_;
+    // ADR-244 §2.4: the epoch half of `effect_context_.session_nonce` (the identity half is
+    // `session_identity_`). Moves on initialize, clear, restore and fork, so a one-per-session resource
+    // bound to an earlier incarnation refuses this one.
+    std::uint64_t                                        nonce_epoch_ = 0;
+    void advance_session_nonce() noexcept {
+        effect_context_.session_nonce = agentengine::SessionNonce{session_identity_, ++nonce_epoch_};
+    }
     // ADR-061 §20.2: session-level, set once at wiring time by whichever Tier-3 listener fronts this
     // session (set_require_authority(), above). Defaults to false -- unchanged behavior for every
     // embedded/non-Tier-3 session.

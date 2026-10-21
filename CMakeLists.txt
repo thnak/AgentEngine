@@ -1299,8 +1299,8 @@ if(AGENTENGINE_WITH_PDF)
   endif()
 
   # ---- The sandboxed worker binary (pdf_worker_main.cpp) -- reads one PDF path (argv[1], already
-  # placed by the host into a scratch directory it granted read-only access to -- see
-  # NativeJailBackend::grant_ro_path_once()/LinuxNativeJailBackend's ordinary SandboxSpec.mounts,
+  # placed by the host into a scratch directory mounted read-only -- an ordinary SandboxSpec.mounts entry
+  # checked against the caller's grants (ADR-244 §2.4),
   # docs/planning/pdf-text-extraction-design-draft.md §3a), extracts text page-by-page via PDFium's
   # C API, and writes delimited records to stdout under its own self-queried output-byte ceiling
   # (§3a/§4 item 5) -- NEVER initializes PDFium's FormFill/V8 engine (round-1 red-team's own
