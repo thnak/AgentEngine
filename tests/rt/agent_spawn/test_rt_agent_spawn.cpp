@@ -58,6 +58,7 @@
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
@@ -456,7 +457,7 @@ int main() {
         using ParentHistory = ComposedContextProvider<HistoryProvider<Window<0>>,
                                                         AgentSpawnToolProvider<InMemoryAppendLogStore>>;
         AgentSession<ScriptedChatClient, NoSessionState, ParentHistory> parent;
-        parent.initialize("parent-1", Principal{"caller-5", ""});
+        parent.initialize("parent-1", Principal{"caller-5", ""}, ae_test::trusted_unbounded());
         parent.set_capabilities(&caller_held);
         auto engaged = parent.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},
@@ -495,7 +496,7 @@ int main() {
         // ---- T6: no cap::AgentCall grant at all -> agent.spawn is never even advertised -----------
         CapabilitySet const no_spawn_cap = CapabilitySet::grant_root({});
         AgentSession<ScriptedChatClient, NoSessionState, ParentHistory> unarmed;
-        unarmed.initialize("parent-2", Principal{"caller-6", ""});
+        unarmed.initialize("parent-2", Principal{"caller-6", ""}, ae_test::trusted_unbounded());
         unarmed.set_capabilities(&no_spawn_cap);
         auto engaged2 = unarmed.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},

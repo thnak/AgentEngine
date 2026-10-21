@@ -31,8 +31,17 @@ struct Researcher : Agent<Researcher,
         "Research the question. Cite sources. Hand off to the writer when you have enough.";
 };
 
-AgentSessionOptions opts;
-opts.grants = {/* the authority the caller holds; narrowed to Researcher's Capabilities<...> */};
+AgentSessionOptions opts{
+    .session_id = "user-42",
+    .principal  = {"user-42", "tenant-a"},
+    // Every session choice is stated (ADR-244): where authority comes from, the token budget, the turn cap.
+    .choices    = {AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::at_most(50'000),
+                   Bound<std::uint64_t>::at_most(12)},
+    .grants     = {/* the authority the caller holds; narrowed to Researcher's Capabilities<...> */},
+    .chat_client_grants = {},
+    .approve_tools      = std::nullopt,
+    .policy             = {},
+};
 auto researcher = make_agent_session<Researcher>(std::move(chat_client), opts);  // validates, then binds
 auto stream     = researcher->ask_stream("Compare WASI 0.2 and 0.3.");
 ```

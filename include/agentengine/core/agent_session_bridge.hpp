@@ -42,6 +42,7 @@
 //                        consumer exists -- ADR-226 §3 names each one).
 
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <functional>
@@ -175,8 +176,12 @@ static_assert(ContextProvider<AgentToolSurface<>>, "AgentToolSurface must be a C
 // struct may be derived from model output). The agent's own declaration supplies everything else.
 // ae-naming-lint: allow AgentSessionOptions — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 struct AgentSessionOptions {
-    std::string session_id = "s-agent";
-    Principal   principal{"p-agent", ""};
+    // ADR-244 §2.2: no defaults. A shared default identity (formerly "s-agent"/"p-agent") put every bridged
+    // session under one principal, with its approvals and quotas; an empty one fails `choice.missing.session_id`
+    // / `choice.missing.principal`. `choices` has no default constructor, so omitting it does not compile.
+    std::string    session_id;
+    Principal      principal;
+    SessionChoices choices;
 
     // The authority the caller actually holds and is willing to hand this session. Narrowed to the agent's
     // declared `Capabilities<...>` ceiling (`narrow_to_ceiling()` below) -- never widened to it: a ceiling
@@ -192,12 +197,6 @@ struct AgentSessionOptions {
     // is bound from the tool's OWN declared capabilities, which `register_agent<A>()` already proved lie
     // inside the ceiling.
     std::vector<Capability> chat_client_grants;
-
-    // 002 §9 Q2 per-run overrides: narrowing only. A value above the agent's compiled bound is REFUSED
-    // (`agent_session.override_widens`), not clamped -- a caller who asked for more than the agent allows
-    // should hear about it.
-    std::optional<std::uint64_t> max_turns;
-    std::optional<std::uint64_t> token_budget;
 
     // Same semantics as `RawQuickstartSessionBuilder::approve_tools()`/`.policy()`: decide among calls that
     // ALREADY need a decision; never make a call need less approval than its tool (or the agent) declares.
@@ -320,19 +319,25 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
                                      "agent_session.output_schema_unvalidated"});
     }
 
-    // 002 §9 Q2: narrowing-only overrides, refused rather than clamped.
-    std::uint64_t max_turns = meta.max_turns;
-    if (opts.max_turns.has_value()) {
-        if (*opts.max_turns > meta.max_turns) return std::unexpected(override_widens("max_turns"));
-        max_turns = *opts.max_turns;
+    // ADR-244 §2.2: the session's identity is the caller's, stated.
+    if (opts.session_id.empty()) {
+        return std::unexpected(choice_missing("session_id", std::array<std::string_view, 1>{"a non-empty session id"}));
     }
-    std::optional<std::uint64_t> token_budget = meta.token_budget;
-    if (opts.token_budget.has_value()) {
-        if (meta.token_budget.has_value() && *opts.token_budget > *meta.token_budget) {
-            return std::unexpected(override_widens("token_budget"));
-        }
-        token_budget = opts.token_budget;
+    if (opts.principal.id.empty()) {
+        return std::unexpected(
+            choice_missing("principal", std::array<std::string_view, 1>{"Principal{id, tenant_id} with a non-empty id"}));
     }
+
+    // 002 §9 Q2: the caller's turn cap and budget narrow the agent's declaration; one above it is refused
+    // (`agent_session.override_widens`), not clamped -- a caller who asked for more than the agent allows should
+    // hear about it, and `unbounded()` against a declared bound is such a request.
+    // ADR-244 slice 4 makes `AgentMetadata`'s own `max_turns`/`token_budget` required `Bound`s as well.
+    Bound<std::uint64_t> const declared_turns = Bound<std::uint64_t>::at_most(meta.max_turns);
+    Bound<std::uint64_t> const declared_budget = meta.token_budget.has_value()
+                                                     ? Bound<std::uint64_t>::at_most(*meta.token_budget)
+                                                     : Bound<std::uint64_t>::unbounded();
+    if (!declared_turns.covers(opts.choices.max_turns)) return std::unexpected(override_widens("max_turns"));
+    if (!declared_budget.covers(opts.choices.token_budget)) return std::unexpected(override_widens("token_budget"));
 
     for (Capability const& c : opts.chat_client_grants) {
         if (capability_kind_of(c) != capability_kind::secret) {
@@ -352,7 +357,7 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     ChatClientCapabilities const client_caps = client.capabilities();
 
     auto session = std::make_unique<SessionT>();
-    session->initialize(opts.session_id, opts.principal, token_budget, max_turns);
+    session->initialize(opts.session_id, opts.principal, opts.choices);
     session->emplace_chat_client(std::move(client));
     session->set_capabilities(capabilities.get());
 
@@ -419,7 +424,7 @@ template <class A>
 template <class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
 [[nodiscard]] result<AgentBundle<ChatClientT>> bind_agent_session(AgentMetadata const& meta, ChatClientT client,
-                                                                  AgentSessionOptions opts = {},
+                                                                  AgentSessionOptions opts,
                                                                   ChatClientRegistry const* registry = nullptr,
                                                                   SandboxBackendRegistry const* sandbox_registry =
                                                                       nullptr) {
@@ -431,7 +436,7 @@ template <class ChatClientT>
 // declares one.
 template <class A, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
-[[nodiscard]] result<AgentBundle<ChatClientT>> make_agent_session(ChatClientT client, AgentSessionOptions opts = {},
+[[nodiscard]] result<AgentBundle<ChatClientT>> make_agent_session(ChatClientT client, AgentSessionOptions opts,
                                                                   ChatClientRegistry const* registry = nullptr,
                                                                   SandboxBackendRegistry const* sandbox_registry =
                                                                       nullptr) {

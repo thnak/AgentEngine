@@ -20,6 +20,7 @@
 #include <string>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/protocol/a2a/client.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
@@ -80,7 +81,7 @@ struct Harness {
     Session session;
 
     Harness() {
-        session.initialize("s-a2a-client", ae::Principal{"p-owner", ""});
+        session.initialize("s-a2a-client", ae::Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
     }
 

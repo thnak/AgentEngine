@@ -41,6 +41,7 @@
 #include <utility>
 
 #include "agentengine/core/chat_client.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/run_event.hpp"
@@ -201,7 +202,7 @@ int main() {
     };
     session.emplace_chat_client(primary, std::make_tuple(), fast_retry_policy(), agentengine::BreakerConfig{},
                                  GatewayT::JitterSource(&no_jitter));
-    session.initialize("s-g5", agentengine::Principal{"p", ""});
+    session.initialize("s-g5", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
     session.set_capabilities(&held);
 
@@ -247,7 +248,7 @@ int main() {
         };
         session2.emplace_chat_client(primary2, std::make_tuple(), fast_retry_policy(),
                                       agentengine::BreakerConfig{}, GatewayT::JitterSource(&no_jitter));
-        session2.initialize("s-g6", agentengine::Principal{"p", ""});
+        session2.initialize("s-g6", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         session2.set_capabilities(&held);
         session2.set_stream_model_calls(true);
 

@@ -52,6 +52,7 @@
 #include <utility>
 
 #include "agentengine/core/tool.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/multi_agent.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -264,7 +265,7 @@ int main() {
                 auto s = std::make_unique<
                     AgentSession<CannedChatClient, agentengine::rt::NoSessionState,
                                  agentengine::HistoryProvider<agentengine::Window<0>>>>();
-                s->initialize("child", p);
+                s->initialize("child", p, ae_test::trusted_unbounded());
                 s->emplace_chat_client();
                 return s;
             };
@@ -284,7 +285,7 @@ int main() {
         SessionFactory<ScriptedGatedChatClient, agentengine::rt::NoSessionState, GatedToolProvider>
             factory = [](Principal const& p) {
                 auto s = std::make_unique<ChildSession>();
-                s->initialize("child", p);
+                s->initialize("child", p, ae_test::trusted_unbounded());
                 s->emplace_chat_client();
                 return s;
             };
@@ -576,7 +577,7 @@ int main() {
                            agentengine::HistoryProvider<agentengine::Window<0>>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
-                    s->initialize("child", p);
+                    s->initialize("child", p, ae_test::trusted_unbounded());
                     s->emplace_chat_client(shared_attempts, /*fail_times=*/2, failure_class::resource);
                     return s;
                 };
@@ -599,7 +600,7 @@ int main() {
                            agentengine::HistoryProvider<agentengine::Window<0>>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
-                    s->initialize("child", p);
+                    s->initialize("child", p, ae_test::trusted_unbounded());
                     s->emplace_chat_client(shared_attempts, /*fail_times=*/99, failure_class::contract);
                     return s;
                 };
@@ -622,7 +623,7 @@ int main() {
                            agentengine::HistoryProvider<agentengine::Window<0>>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
-                    s->initialize("child", p);
+                    s->initialize("child", p, ae_test::trusted_unbounded());
                     s->emplace_chat_client(shared_attempts, /*fail_times=*/1, failure_class::canceled);
                     return s;
                 };

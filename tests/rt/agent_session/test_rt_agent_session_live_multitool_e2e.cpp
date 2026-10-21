@@ -70,6 +70,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -350,8 +351,7 @@ int main() {
                                      /*transport=*/sandbox::ProviderTransport::tls,
                                      /*scan_response_format_leaks=*/false,
                                      /*session_id=*/std::string{"mt1-session"});
-        session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
         session.set_capabilities(&held);
 
         Message const input = user_message(
@@ -414,8 +414,7 @@ int main() {
                                      /*transport=*/sandbox::ProviderTransport::tls,
                                      /*scan_response_format_leaks=*/false,
                                      /*session_id=*/std::string{"mt2-session"});
-        session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
         session.set_capabilities(&held);
 
         agentengine::result<agentengine::rt::AgentResponse> resp = drive(session.start_run(StartRun{

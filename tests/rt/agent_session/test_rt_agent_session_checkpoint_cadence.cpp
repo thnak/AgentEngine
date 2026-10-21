@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/block_on.hpp"
 
@@ -101,7 +102,7 @@ int main() {
     using agentengine::Principal;
 
     AgentSession<OneShotChatClient> session;
-    session.initialize("s-cadence", Principal{"p-mia", ""});
+    session.initialize("s-cadence", Principal{"p-mia", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client();
     InMemorySessionStore store;
 

@@ -58,6 +58,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -465,6 +466,7 @@ static_assert(agentengine::ContextProvider<NoToolsHistoryProvider>);
 
 void w8_agent_bridge_composes_with_direct_tap() {
     AgentSession<ScriptedChatClient, NoSessionState, NoToolsHistoryProvider> session;
+    session.initialize("w8", agentengine::Principal{"p-w8", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.2
     std::vector<ExecutorBody> bodies = {agent_session_as_executor_body(session)};
 
     WorkflowSupervisor sup;

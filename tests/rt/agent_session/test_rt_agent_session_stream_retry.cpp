@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/replay_chat_client.hpp"
@@ -253,7 +254,7 @@ struct Harness {
 
     explicit Harness(std::vector<Attempt> attempts, std::uint32_t retries, bool stream_live = true,
                      char const* id = "s", std::optional<std::uint64_t> budget = std::nullopt) {
-        session.initialize(id, Principal{"p", ""}, budget);
+        session.initialize(id, Principal{"p", ""}, ae_test::trusted(budget));
         client = &session.emplace_chat_client();
         client->attempts = std::move(attempts);
         session.set_capabilities(&held);
@@ -635,7 +636,7 @@ int main() {
             inner.attempts[0].fail    = dead_stream();
             inner.attempts[1].updates = {text_delta("done", true, kUsage)};
             RecSession s;
-            s.initialize("s-rec", Principal{"p", ""});
+            s.initialize("s-rec", Principal{"p", ""}, ae_test::trusted_unbounded());
             s.emplace_chat_client(std::move(inner), [&](agentengine::ChatCallRecording rec) {
                 std::lock_guard lk(tape_mu);
                 tape.push_back(std::move(rec));
@@ -667,7 +668,7 @@ int main() {
             using Replayer = agentengine::ReplayChatClient;
             using ReplaySession = AgentSession<Replayer, NoSessionState, EchoHistoryProvider>;
             ReplaySession rs;
-            rs.initialize("s-replay", Principal{"p", ""});
+            rs.initialize("s-replay", Principal{"p", ""}, ae_test::trusted_unbounded());
             rs.emplace_chat_client(tape, ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             CapabilitySet const held = CapabilitySet::grant_root({});
             rs.set_capabilities(&held);
@@ -679,7 +680,7 @@ int main() {
 
             // CONTROL: the single-recording player, handed the failed attempt, serves it again.
             ReplaySession single;
-            single.initialize("s-single", Principal{"p", ""});
+            single.initialize("s-single", Principal{"p", ""}, ae_test::trusted_unbounded());
             single.emplace_chat_client(tape[0], ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             single.set_capabilities(&held);
             single.set_stream_model_calls(true);
@@ -691,7 +692,7 @@ int main() {
 
             // Over-long replay is loud, not repeated.
             ReplaySession over;
-            over.initialize("s-over", Principal{"p", ""});
+            over.initialize("s-over", Principal{"p", ""}, ae_test::trusted_unbounded());
             over.emplace_chat_client(std::vector<agentengine::ChatCallRecording>{tape[0]},
                                       ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             over.set_capabilities(&held);
@@ -720,7 +721,7 @@ int main() {
         backend.attempts[1].updates = {text_delta("done", true, kUsage)};
 
         GatewaySession gs;
-        gs.initialize("s-gw", Principal{"p", ""});
+        gs.initialize("s-gw", Principal{"p", ""}, ae_test::trusted_unbounded());
         gs.emplace_chat_client(std::move(backend), std::tuple<>{},
                                 agentengine::RetryPolicy{.max_attempts = 1});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -754,7 +755,7 @@ int main() {
             return a;
         };
         auto const make = [&](std::uint32_t retries, GatedSession& session, CapabilitySet const& held) {
-            session.initialize("s13", Principal{"p", ""});
+            session.initialize("s13", Principal{"p", ""}, ae_test::trusted_unbounded());
             session.emplace_chat_client().attempts = script();
             session.set_capabilities(&held);
             session.set_stream_model_calls(true);

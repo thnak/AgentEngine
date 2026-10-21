@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -257,7 +258,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, ProbeProvider> session;
-        session.initialize("malformed-args", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/6);
+        session.initialize("malformed-args", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/6));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
 
@@ -313,7 +314,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, GatedProvider> session;
-        session.initialize("dup-keys", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+        session.initialize("dup-keys", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
         session.set_suspend_for_approval(true);

@@ -86,6 +86,7 @@
 #endif
 
 #include "agentengine/core/content.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -553,10 +554,10 @@ int main() {
 
     auto market_session    = std::make_shared<RealSession>();
     auto technical_session = std::make_shared<RealSession>();
-    market_session->initialize("large-ctx-market", Principal{"large-ctx-market-principal", ""});
+    market_session->initialize("large-ctx-market", Principal{"large-ctx-market-principal", ""}, ae_test::trusted_unbounded());
     market_session->emplace_chat_client(host, static_cast<std::uint16_t>(443), model,
                                         SecretRef{kSecretName}, caps, store, "/api/v1");
-    technical_session->initialize("large-ctx-technical", Principal{"large-ctx-technical-principal", ""});
+    technical_session->initialize("large-ctx-technical", Principal{"large-ctx-technical-principal", ""}, ae_test::trusted_unbounded());
     technical_session->emplace_chat_client(host, static_cast<std::uint16_t>(443), model,
                                            SecretRef{kSecretName}, caps, store, "/api/v1");
 
@@ -719,11 +720,10 @@ int main() {
         // ones above, already out of scope) would show real turns.
         auto market_session2    = std::make_shared<RealSession>();
         auto technical_session2 = std::make_shared<RealSession>();
-        market_session2->initialize("large-ctx-market-2", Principal{"large-ctx-market-principal-2", ""});
+        market_session2->initialize("large-ctx-market-2", Principal{"large-ctx-market-principal-2", ""}, ae_test::trusted_unbounded());
         market_session2->emplace_chat_client(host, static_cast<std::uint16_t>(443), model,
                                              SecretRef{kSecretName}, caps, store, "/api/v1");
-        technical_session2->initialize("large-ctx-technical-2",
-                                       Principal{"large-ctx-technical-principal-2", ""});
+        technical_session2->initialize("large-ctx-technical-2", Principal{"large-ctx-technical-principal-2", ""}, ae_test::trusted_unbounded());
         technical_session2->emplace_chat_client(host, static_cast<std::uint16_t>(443), model,
                                                 SecretRef{kSecretName}, caps, store, "/api/v1");
 

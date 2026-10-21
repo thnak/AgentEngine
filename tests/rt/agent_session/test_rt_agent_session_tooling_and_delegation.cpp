@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "agentengine/core/codeact_runner_binding.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/tool.hpp"
@@ -477,7 +478,7 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session;
-        session.initialize("s-s1", Principal{"p", ""});
+        session.initialize("s-s1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             tool_call_message("c1", "counter_tool", R"({"delta":3})"),
@@ -507,14 +508,14 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session_a;
-        session_a.initialize("s-s2-a", Principal{"p", ""});
+        session_a.initialize("s-s2-a", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client_a = session_a.emplace_chat_client();
         client_a.set_script({tool_call_message("c1", "counter_tool", R"({"delta":10})")});
         CapabilitySet const held_a = CapabilitySet::grant_root({});
         session_a.set_capabilities(&held_a);
 
         StatefulSession session_b;
-        session_b.initialize("s-s2-b", Principal{"p", ""});
+        session_b.initialize("s-s2-b", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client_b = session_b.emplace_chat_client();
         client_b.set_script({tool_call_message("c1", "counter_tool", R"({"delta":1})")});
         CapabilitySet const held_b = CapabilitySet::grant_root({});
@@ -543,7 +544,7 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session;
-        session.initialize("s-s5-source", Principal{"p", ""});
+        session.initialize("s-s5-source", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({tool_call_message("c1", "counter_tool", R"({"delta":5})")});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -568,7 +569,7 @@ int main() {
 
         fork.clear_in_process_state();
         check(fork.history().empty(), "S5: clear_in_process_state() resets history");
-        fork.initialize("s-s5-after-clear", Principal{"p", ""});
+        fork.initialize("s-s5-after-clear", Principal{"p", ""}, ae_test::trusted_unbounded());
         // capabilities_/chat_client_ wiring deliberately survives clear_in_process_state() (both stay
         // "configuration," never per-session data) -- reuse the SAME client, fresh script.
         fork_client.reset_call_count();
@@ -655,8 +656,8 @@ int main() {
 
     CodeActSession kit_a;
     CodeActSession kit_b;
-    kit_a.initialize("s-a", Principal{"p", ""});
-    kit_b.initialize("s-b", Principal{"p", ""});
+    kit_a.initialize("s-a", Principal{"p", ""}, ae_test::trusted_unbounded());
+    kit_b.initialize("s-b", Principal{"p", ""}, ae_test::trusted_unbounded());
     CapabilitySet const held_ab = CapabilitySet::grant_root({});
     kit_a.set_capabilities(&held_ab);
     kit_b.set_capabilities(&held_ab);
@@ -731,7 +732,7 @@ int main() {
         using DelegationSession = AgentSession<CapturingChatClient>;
         DelegationSession session;
         Principal const owner = agentengine::make_embedded_principal("p-owner", "tenant-a");
-        session.initialize("s-root", owner);
+        session.initialize("s-root", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(StartRun{user_message("hello")}));
@@ -756,7 +757,7 @@ int main() {
 
         using DelegationSession = AgentSession<CapturingChatClient>;
         DelegationSession session;
-        session.initialize("s-delegated", *derived);
+        session.initialize("s-delegated", *derived, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(StartRun{user_message("hello")}));

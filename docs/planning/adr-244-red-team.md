@@ -110,6 +110,47 @@ case of `path_prefix_covers` (below, m1).
 - **Linux jail**: overlapping guest paths refused (`sandbox.mount_overlap`) before anything is bound;
   `/work` and `/workshop` do not overlap (positive control).
 
+## Implementation notes (slice 3a)
+
+Slice 3 split into 3a (the session layer), 3b (servers, workflows, YAML ceiling, Y8) and 3c (spawn, reflection
+and ask authority, provider secrets); ADR-244 §5.
+
+- **Gate tests:** `tests/rt/agent_session/test_rt_agent_session_choices.cpp` C1–C15; `try_compile` cases
+  `session_choices_positive_control`, `session_initialize_without_choices`, `session_choices_omitted_member`,
+  `request_authority_without_expiry`, `agent_session_options_default`; `tools/test_preset_lint.py`
+  (`--self-test` plants four uses and catches them).
+- **Mutants** (each patched in, the covering test rebuilt and run, then reverted): missing choices admitted at
+  run start (with the second guard in `apply_dispatch_authority` removed too) and at resume; expiry unchecked;
+  ceiling unchecked; `single_trusted_caller` accepting a carried authority; restore admitting a mode change, a
+  wider budget, or a record without choices; `at_most(0)` admitted; the bridge admitting a turn cap above the
+  agent's. All killed. The resume mutant first survived: no test resolved on a session without choices; C15
+  was added for it. Removing only the second guard is not a mutant, since the entry checks still refuse.
+- **Interim mappings, each marked in the code** (today's behaviour, now stated, not yet the target):
+  - `rt/agent_spawn_child_run.hpp`: the child is `single_trusted_caller()` over `req.capabilities`, budget
+    `req.token_budget` or `unbounded()`, turn cap `at_most(req.max_turns)` (so a `max_turns` of 0 is now
+    refused at admission, `choice.zero_bound`). Slice 3c: inherit the parent's source, `tighter()`.
+  - `eval/eval_trial.hpp`: `TrialSpec`'s optional budget and turn cap map unset to `unbounded()`. The
+    `TrialSpec` fields themselves become required in slice 4.
+  - `tools/test_driver/test_driver.hpp`: fixture budget unset → `unbounded()`, turn cap
+    `min(fixture, kMaxTurnsPerRun = 32)`, as the fixture format defines; the 13 scenario goldens now record that
+    in `run_started` (read by hand: 12 at 32 turns, `file_fixture_one_sentence` at its fixture's 6).
+  - `tools/cli_chat.cpp` states `unbounded()` for both; the three `*_shell_chat.cpp` tools state
+    `at_most(25)` turns, the builder default they had.
+  - `core/harness.hpp:586` still reads `effective_budget.value_or(0)` for reflection: slice 4's
+    `run_with_bounded_reflection` row.
+- **Audit for passing-for-the-wrong-reason:** a temporary marker printed on every `choice.missing.session`
+  refusal; a full Windows run showed it only in `test_rt_agent_session_choices` (the cases that test it). The
+  marker was removed before commit.
+- **Baseline failures, unchanged by the slice:** Windows: the Docker-backed sandbox and `execution_surface`
+  tests (no Docker daemon) and `test_external_skill_discovery` D6. thnak-server (gcc and clang):
+  `test_json_dump_escape` (RLIMIT_DATA not enforced) and the three containerd tests (socket permission).
+- **Found, not caused, by the slice:** `test_rt_workflow_batch_coalescing` C1 failed 2 of 20 runs under clang
+  (0 of 20 under gcc). Its call counter is a plain `int` bumped by concurrently running fan-out nodes
+  (`tests/workflow/test_rt_workflow_batch_coalescing.cpp:113,129`), a data race in the test; the file and the
+  supervisor are untouched by this slice. Left for its own fix.
+- **gcc/clang only:** designated initializers of `AgentSessionOptions` that leave out trailing members
+  trip `-Wmissing-field-initializers`; every such site states all seven.
+
 ## Round 4 — 2026-10-21, two reviewers
 
 One reviewer attacked the code slice 2 shipped (PR #213), with executed probes; the other attacked revision 4's

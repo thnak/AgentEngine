@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
 
@@ -197,7 +198,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":42})";
 
         Session session;
-        session.initialize("o1", Principal{"p", ""});
+        session.initialize("o1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -224,7 +225,7 @@ int main() {
         std::string const invalid_json = R"({"name":"widget"})";
 
         Session session;
-        session.initialize("o2", Principal{"p", ""});
+        session.initialize("o2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(invalid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -245,7 +246,7 @@ int main() {
         std::string const not_json_at_all = "plain prose, not JSON, not schema-shaped";
 
         Session session;
-        session.initialize("o3", Principal{"p", ""});
+        session.initialize("o3", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(not_json_at_all), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -272,7 +273,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":7})";
 
         Session session;
-        session.initialize("o4", Principal{"p", ""});
+        session.initialize("o4", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -300,7 +301,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":9})";
 
         Session session;
-        session.initialize("o5", Principal{"p", ""});
+        session.initialize("o5", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});

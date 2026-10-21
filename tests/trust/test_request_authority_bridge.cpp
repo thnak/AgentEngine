@@ -106,7 +106,7 @@ int main() {
 
         auto authority = rt::request_authority_from_bearer_claims(claims, held, wall_now, steady_now);
         check(authority.has_value(), "claim 3 setup: a well-formed, unexpired claim succeeds");
-        check(authority->expiry == steady_now + std::chrono::hours{1},
+        check(authority->expiry == agentengine::Expiry::at(steady_now + std::chrono::hours{1}),
               "claim 3: expiry is derived purely from the passed-in samples, not a real clock read");
     }
 

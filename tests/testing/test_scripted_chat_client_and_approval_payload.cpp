@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
@@ -185,7 +186,7 @@ int main() {
     // ---- SC4 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("sc4", agentengine::Principal{"p", ""});
+        session.initialize("sc4", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         auto& client = session.emplace_chat_client();
         (void)client.push(text_turn("hello back"));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
@@ -199,7 +200,7 @@ int main() {
     // ---- AP1 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("ap1", agentengine::Principal{"p", ""});
+        session.initialize("ap1", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         (void)session.emplace_chat_client().push(
             tool_calls_turn({{"c1", "gated_tool", R"({"value":7})"}}));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
@@ -225,7 +226,7 @@ int main() {
     // ---- AP2 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("ap2", agentengine::Principal{"p", ""});
+        session.initialize("ap2", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         (void)session.emplace_chat_client().push(tool_calls_turn(
             {{"c1", "gated_tool", R"({"value":1})"}, {"c2", "free_tool", R"({"value":2})"}}));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});

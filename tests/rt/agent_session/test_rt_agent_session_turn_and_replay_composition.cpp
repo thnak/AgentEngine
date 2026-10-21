@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "agentengine/core/content_replay_gateway.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
 
@@ -136,7 +137,7 @@ int main() {
     };
 
     AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-    session.initialize("combo-t1", Principal{"p1", ""});
+    session.initialize("combo-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client(ScriptedGatewayInner{state}, trigger);
 
     std::tuple<RedactingMiddleware> chain{};

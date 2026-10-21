@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn_child_run.hpp"
@@ -351,7 +352,7 @@ int main() {
         AgentMetadata target;  // empty declared ceiling
 
         AgentSession<ScriptedChatClient, NoSessionState, SpawnHistoryProvider> parent;
-        parent.initialize("parent-1", Principal{"caller-1", ""});
+        parent.initialize("parent-1", Principal{"caller-1", ""}, ae_test::trusted_unbounded());
         parent.set_capabilities(&caller_held);
         parent.history_provider().configure(&caller_held, target, "child-said-done");
         parent.emplace_chat_client().set_script({
@@ -394,13 +395,13 @@ int main() {
     // ---- T5: RC-1 -- background execution is disabled on every spawned child, positive + negative -
     {
         AgentSession<ScriptedChatClient> plain;
-        plain.initialize("plain-1", Principal{"p", ""});
+        plain.initialize("plain-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         check(!plain.background_execution_disabled(),
               "T5 negative control: an ORDINARY (non-spawned) session defaults to backgrounding "
               "allowed -- every existing caller is unaffected by this task's own change");
 
         AgentSession<ScriptedChatClient> flagged;
-        flagged.initialize("flagged-1", Principal{"p", ""});
+        flagged.initialize("flagged-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         flagged.set_background_execution_disabled(true);
         check(flagged.background_execution_disabled(), "T5: the flag is set and observable");
 
@@ -418,7 +419,7 @@ int main() {
         // Same session, flag OFF, proves the guard is what changed the outcome above -- not, say, the
         // empty ToolTable rejecting every call the same way regardless of the flag.
         AgentSession<ScriptedChatClient> unflagged;
-        unflagged.initialize("unflagged-1", Principal{"p", ""});
+        unflagged.initialize("unflagged-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         auto rejected_for_other_reason = drive(unflagged.start_background_task(empty_table, bg_request));
         check(!rejected_for_other_reason.has_value(),
               "T5 negative control: WITHOUT the flag, the same empty-table call still fails (no such "

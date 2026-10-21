@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
@@ -167,7 +168,7 @@ int main() {
     // ---- S1: a top-level session: every run is its own root ------------------------------------------------
     {
         Session s;
-        s.initialize("top", make_embedded_principal("p1", "t1"));
+        s.initialize("top", make_embedded_principal("p1", "t1"), ae_test::trusted_unbounded());
         auto seen = s.emplace_chat_client().shared_state();
         (void)drive(s.start_run(rt::StartRun{user_message("one")}));
         (void)drive(s.start_run(rt::StartRun{user_message("two")}));
@@ -184,7 +185,7 @@ int main() {
     // ---- S2: a child/node session carries the INHERITED root on every run -----------------------------------
     Session inheriting;
     {
-        inheriting.initialize("child", delegated_principal());
+        inheriting.initialize("child", delegated_principal(), ae_test::trusted_unbounded());
         inheriting.set_inherited_root_run_id("ROOT:run:7");
         auto seen = inheriting.emplace_chat_client().shared_state();
         (void)drive(inheriting.start_run(rt::StartRun{user_message("a")}));
@@ -213,12 +214,12 @@ int main() {
     // ---- S4: clear_in_process_state() keeps the inheritance (G13h2) ------------------------------------------
     {
         Session child2;
-        child2.initialize("child2", delegated_principal());
+        child2.initialize("child2", delegated_principal(), ae_test::trusted_unbounded());
         child2.set_inherited_root_run_id("ROOT:run:9");
         child2.clear_in_process_state();
         check(child2.inherited_root_run_id() == "ROOT:run:9",
               "S4: clear_in_process_state() does NOT reset the inheritance (a reset child would become its own root)");
-        child2.initialize("child2b", delegated_principal());
+        child2.initialize("child2b", delegated_principal(), ae_test::trusted_unbounded());
         auto seen = child2.emplace_chat_client().shared_state();
         (void)drive(child2.start_run(rt::StartRun{user_message("c")}));
         check(seen->seen.size() == 1 && seen->seen[0].root_run_id == "ROOT:run:9",
@@ -236,7 +237,8 @@ int main() {
                   decoded->principal_delegation_root == "root-principal",
               "S5: both fields survive the JSON round trip");
         Session restored;
-        if (decoded) restored.restore_from_record(*decoded);
+        restored.initialize("restore-target", delegated_principal(), ae_test::trusted_unbounded());  // ADR-244 §2.3
+        if (decoded) check(restored.restore_from_record(*decoded).has_value(), "S5: the record restores");
         check(restored.inherited_root_run_id() == "ROOT:run:7",
               "S5: restore_from_record() restores the inherited root (a restored child is not a fresh root)");
         check(restored.principal().root_id() == "root-principal",
@@ -282,8 +284,8 @@ int main() {
     // ---- S7: a workflow's agent nodes share ONE root --------------------------------------------------------
     {
         Session a1, a2;
-        a1.initialize("n1", make_embedded_principal("wf-owner", "t1"));
-        a2.initialize("n2", make_embedded_principal("wf-owner", "t1"));
+        a1.initialize("n1", make_embedded_principal("wf-owner", "t1"), ae_test::trusted_unbounded());
+        a2.initialize("n2", make_embedded_principal("wf-owner", "t1"), ae_test::trusted_unbounded());
         auto seen1 = a1.emplace_chat_client().shared_state();
         auto seen2 = a2.emplace_chat_client().shared_state();
         std::vector<Seen> fn_seen;
@@ -319,7 +321,7 @@ int main() {
 
         // A host-stamped root (a workflow driven from a tool of an outer run) is inherited, not overwritten.
         Session a3;
-        a3.initialize("n3", make_embedded_principal("wf-owner", "t1"));
+        a3.initialize("n3", make_embedded_principal("wf-owner", "t1"), ae_test::trusted_unbounded());
         auto seen3 = a3.emplace_chat_client().shared_state();
         workflow::Workflow wf2;
         wf2.id        = "wf-2";

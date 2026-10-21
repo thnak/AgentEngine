@@ -166,7 +166,12 @@ int main() {
         ActionAgent session;
         // A real human/service identity: on_behalf_of is empty -- derive_on_behalf_of() (018 §2) is
         // never called for a genuine top-level principal, only for a delegated/spawned one.
-        session.initialize("s-top-level", Principal{"p-human-operator", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-top-level", Principal{"p-human-operator", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);

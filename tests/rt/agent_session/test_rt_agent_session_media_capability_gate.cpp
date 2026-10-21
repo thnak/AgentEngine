@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -135,7 +136,7 @@ int main() {
     // closed, and the backend's own chat() is NEVER invoked at all.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t1", Principal{"p1", ""});
+        session.initialize("t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {image_message("m-image")};
         RecordingChatClient& client = session.emplace_chat_client();
 
@@ -156,7 +157,7 @@ int main() {
     // unconditional rejection of any Media content.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t2", Principal{"p1", ""});
+        session.initialize("t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {image_message("m-image")};
         RecordingChatClient& client = session.emplace_chat_client();
         client.declared_caps.multimodal_in_image = true;

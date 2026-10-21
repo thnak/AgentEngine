@@ -822,6 +822,8 @@ private:
 // host policy calls — never reachable from anything derived from model output, I3). No convenience
 // "give me everything" shortcut exists; that is the actual property 007 §9 G1 tests, not merely a
 // comment promising it.
+class CapabilityCeiling;
+
 // ae-naming-lint: allow CapabilitySet — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CapabilitySet {
 public:
@@ -1103,8 +1105,43 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return granted_.size(); }
 
+    // ADR-244 §2.3: true iff every entry of `other` is subsumed by this set -- the ceiling check for a
+    // per-request authority, which is refused when it holds anything outside, never silently narrowed.
+    [[nodiscard]] bool covers(CapabilitySet const& other) const {
+        return std::all_of(other.granted_.begin(), other.granted_.end(),
+                           [this](Capability const& c) { return contains(c); });
+    }
+
+    // ADR-244 §2.3: the named "no ceiling" for `AuthoritySource::per_request`. A set cannot hold "everything"
+    // (this class has no such state), so the absence of a ceiling is its own value, never an empty set.
+    [[nodiscard]] static CapabilityCeiling no_ceiling() noexcept;
+
 private:
     std::vector<Capability> granted_;
 };
+
+// ADR-244 §2.3: what a per-request authority may hold -- a host-supplied `CapabilitySet`, or the named
+// `CapabilitySet::no_ceiling()`. No default: a ceiling is always one or the other, stated.
+class CapabilityCeiling {  // ae-naming-lint: allow CapabilityCeiling — ADR-244
+public:
+    CapabilityCeiling() = delete;
+    // Implicit, so `per_request(set)` reads as written.
+    CapabilityCeiling(CapabilitySet ceiling) : ceiling_(std::move(ceiling)) {}  // NOLINT(google-explicit-constructor)
+
+    [[nodiscard]] bool is_none() const noexcept { return !ceiling_.has_value(); }
+    [[nodiscard]] bool admits(CapabilitySet const& request) const {
+        return !ceiling_.has_value() || ceiling_->covers(request);
+    }
+    [[nodiscard]] CapabilitySet const* set() const noexcept { return ceiling_ ? &*ceiling_ : nullptr; }
+
+private:
+    friend class CapabilitySet;
+    struct none_tag {};
+    explicit CapabilityCeiling(none_tag) noexcept {}
+
+    std::optional<CapabilitySet> ceiling_;
+};
+
+inline CapabilityCeiling CapabilitySet::no_ceiling() noexcept { return CapabilityCeiling(CapabilityCeiling::none_tag{}); }
 
 }  // namespace agentengine

@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -323,7 +324,7 @@ int main() {
         using Session = AgentSession<RecordingChatClient, NoSessionState,
                                        ToolsHistoryProvider<RendezvousToolA, RendezvousToolB>>;
         Session session;
-        session.initialize("rendezvous", owner);
+        session.initialize("rendezvous", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             ScriptedOutcome{multi_tool_call_response(
                                 {{"c1", "rendezvous_a", "{\"ignored\":false}"}, {"c2", "rendezvous_b", "{\"ignored\":false}"}}),
@@ -346,7 +347,7 @@ int main() {
         using Session = AgentSession<RecordingChatClient, NoSessionState,
                                        ToolsHistoryProvider<GroupToolX, GroupToolY>>;
         Session session;
-        session.initialize("group", owner);
+        session.initialize("group", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             ScriptedOutcome{
                 multi_tool_call_response({{"c1", "group_x", "{\"ignored\":false}"}, {"c2", "group_y", "{\"ignored\":false}"}}),
@@ -374,7 +375,7 @@ int main() {
             using Session = AgentSession<RecordingChatClient, NoSessionState,
                                            ToolsHistoryProvider<DelayToolA, DelayToolB>>;
             Session session;
-            session.initialize("delay-" + std::to_string(i), owner);
+            session.initialize("delay-" + std::to_string(i), owner, ae_test::trusted_unbounded());
             // delay_a (emitted FIRST, call c1) blocks until delay_b (emitted SECOND, call c2) signals
             // its own completion -- real completion order is DETERMINISTICALLY [b, a] every iteration
             // (see file banner); if dispatch were secretly still sequential, delay_a would run to

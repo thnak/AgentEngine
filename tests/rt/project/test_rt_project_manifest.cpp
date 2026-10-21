@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_manifest.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -174,7 +175,7 @@ void test_m2_overwrite_latest() {
 
 void test_p1_pause_healthy() {
     AgentSession<OneShotChatClient> member;
-    member.initialize("member-p1", Principal{"p1", ""});
+    member.initialize("member-p1", Principal{"p1", ""}, ae_test::trusted_unbounded());
     member.emplace_chat_client();
     (void)drive(member.start_run(StartRun{user_message("hi")}));
 
@@ -205,7 +206,7 @@ void test_p1_pause_healthy() {
 
 void test_p2_pause_fail_closed() {
     AgentSession<OneShotChatClient> member;
-    member.initialize("member-p2", Principal{"p1", ""});
+    member.initialize("member-p2", Principal{"p1", ""}, ae_test::trusted_unbounded());
     member.emplace_chat_client();
     (void)drive(member.start_run(StartRun{user_message("hi")}));
 
@@ -234,7 +235,7 @@ void test_p3_restore_pure_status_flip() {
 
 void test_p4_archive_healthy() {
     AgentSession<OneShotChatClient> member;
-    member.initialize("member-p4", Principal{"p1", ""});
+    member.initialize("member-p4", Principal{"p1", ""}, ae_test::trusted_unbounded());
     member.emplace_chat_client();
     (void)drive(member.start_run(StartRun{user_message("hi")}));
 
@@ -252,7 +253,7 @@ void test_p4_archive_healthy() {
 
 void test_p5_archive_fail_closed() {
     AgentSession<OneShotChatClient> member;
-    member.initialize("member-p5", Principal{"p1", ""});
+    member.initialize("member-p5", Principal{"p1", ""}, ae_test::trusted_unbounded());
     member.emplace_chat_client();
     (void)drive(member.start_run(StartRun{user_message("hi")}));
 

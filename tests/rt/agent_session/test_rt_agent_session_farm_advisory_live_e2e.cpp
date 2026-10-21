@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "agentengine/core/context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -398,9 +399,7 @@ int main() {
                                  /*seed=*/std::nullopt, /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false,
                                  /*session_id=*/std::string{"farm-advisory-live-e2e-session"});
-    session.initialize("farm-advisory-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt,
-                        /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize("farm-advisory-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================

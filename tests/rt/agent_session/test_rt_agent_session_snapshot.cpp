@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/channel.hpp"
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -148,7 +149,7 @@ int main() {
     // P1: to_record()/restore_from_record() round-trips identity + run position.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p1", Principal{"p1", "tenant-y"});
+        session.initialize("p1", Principal{"p1", "tenant-y"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
         check(ran.has_value(), "P1 setup: the run converges");
@@ -161,8 +162,9 @@ int main() {
         check(!rec.deleted, "P1: a live session's record is not a tombstone");
 
         AgentSession<OneShotChatClient> restored;
+        restored.initialize("restore-target", Principal{"restore-target", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.3
         restored.emplace_chat_client();
-        restored.restore_from_record(rec);
+        check(restored.restore_from_record(rec).has_value(), "P1: the record restores");
         check(restored.session_id() == "p1", "P1: restore_from_record() restores session_id");
         check(restored.principal().id == "p1" && restored.principal().tenant_id == "tenant-y",
               "P1: restore_from_record() restores the principal");
@@ -175,7 +177,7 @@ int main() {
     // SessionStore conformer.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p2", Principal{"p2", "tenant-x"});
+        session.initialize("p2", Principal{"p2", "tenant-x"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         InMemorySessionStore store;
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
@@ -197,7 +199,7 @@ int main() {
         // P2b (ported from test_agent_session_snapshot.cpp, now retired): a second save() under the
         // same id overwrites the latest state -- the store's own single-slot, overwrite-latest
         // contract, exercised through save_agent_session_snapshot() specifically rather than assumed.
-        session.initialize("p2", Principal{"p2-renamed", "tenant-x"});
+        session.initialize("p2", Principal{"p2-renamed", "tenant-x"}, ae_test::trusted_unbounded());
         auto saved_again = drive(save_agent_session_snapshot(session, store));
         check(saved_again.has_value(), "P2b setup: a second snapshot under the same id succeeds");
         auto loaded_again = agentengine::rt::block_on(load_agent_session_snapshot(store, "p2"));
@@ -222,7 +224,7 @@ int main() {
     {
         struct ScratchState { int notes = 0; };
         AgentSession<OneShotChatClient, ScratchState> session;
-        session.initialize("p4", Principal{"p4", "tenant-p4"});
+        session.initialize("p4", Principal{"p4", "tenant-p4"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         session.state().notes = 42;
         session.metadata()["k"] = "v";
@@ -255,7 +257,7 @@ int main() {
     // P5: checkpoint_if_due()'s cadence gate.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p5", Principal{"p5", ""});
+        session.initialize("p5", Principal{"p5", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         InMemorySessionStore store;
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
@@ -278,7 +280,7 @@ int main() {
     {
         auto gate = agentengine::rt::make_channel<int>(1);
         AgentSession<SuspendingChatClient> session;
-        session.initialize("p6", Principal{"p6", ""});
+        session.initialize("p6", Principal{"p6", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(std::move(gate.consumer));
 
         // Explicitly agentengine::rt::task<T> here, NOT the bare `task` alias (which this file's own

@@ -54,6 +54,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
@@ -853,9 +854,7 @@ int main() {
     // exchange into an artificial failure. std::nullopt makes run_rounds()'s own loop condition
     // (agent_session.hpp: `!max_turns_.has_value() || ...`) genuinely unbounded; a real workflow
     // that DOES have a well-defined shape is exactly where a max_turns budget belongs instead.
-    session.initialize("farm-ops-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt,
-                        /*max_turns=*/std::nullopt);
+    session.initialize("farm-ops-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/std::nullopt));
     session.set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================

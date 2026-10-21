@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -276,7 +277,7 @@ Suspended start_suspended(Session& s, Viewer& viewer, std::string const& tag) {
 }
 
 void setup(Session& s, std::string const& id, CapabilitySet const& held, std::vector<Message> script) {
-    s.initialize(id, agentengine::Principal{"p", ""});
+    s.initialize(id, agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script(std::move(script));
     s.set_capabilities(&held);
     s.set_suspend_for_approval(true);

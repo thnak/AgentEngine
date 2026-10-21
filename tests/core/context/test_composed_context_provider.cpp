@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -278,7 +279,7 @@ int main() {
     // --- Part 2: ComposedContextProvider actually driving a real AgentSession turn -------------
     {
         ComposedSession session;
-        session.initialize("s-session", principal);
+        session.initialize("s-session", principal, ae_test::trusted_unbounded());
         // Default-constructed session.history_provider() starts UNENGAGED unconditionally now (2026-
         // 08-23: the default ctor no longer auto-engages even when every Ms is default-constructible
         // -- see composed_context_provider.hpp's own comment on why that changed), so an explicit

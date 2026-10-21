@@ -20,6 +20,7 @@
 // disclosed precondition).
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 #include "backends/native_jail/sandbox_tool_provider.hpp"
@@ -201,7 +202,7 @@ int main() {
     SandboxToolProvider shell_provider(shell_scratch_root.string());
 
     Session live;
-    live.initialize("composed-containerd-live-session", real_owner_principal);
+    live.initialize("composed-containerd-live-session", real_owner_principal, ae_test::trusted_unbounded());
     auto engaged = live.history_provider().engage(
         std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)));
     check(engaged.has_value(), "setup: engage() succeeds with both real, already-bound providers");

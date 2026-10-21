@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/append_log_store.hpp"
@@ -220,7 +221,7 @@ int main() {
     // ---- Q4 (control): the route 029 Q2 names, through the real AgentSession -------------------
     {
         ae::rt::AgentSession<RecordingClient, ae::rt::NoSessionState, InstructionsFromMemory> session;
-        session.initialize("s-ctrl", principal);
+        session.initialize("s-ctrl", principal, ae_test::trusted_unbounded());
         session.history_provider().text = ae::memory_detail::memory_item_to_labeled_text(procedural);
         RecordingClient& client = session.emplace_chat_client();
         auto run = ae::test_support::run_task_sync<ae::result<ae::rt::AgentResponse>>(

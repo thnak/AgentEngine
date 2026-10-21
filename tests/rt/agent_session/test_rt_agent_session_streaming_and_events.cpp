@@ -64,6 +64,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -355,7 +356,7 @@ int main() {
     // ---- S1: streamed, no-tool-call response --------------------------------------------------------
     {
         PlainSession session;
-        session.initialize("s-s1", Principal{"p", ""});
+        session.initialize("s-s1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {{
             text_delta("Hello"),
@@ -402,7 +403,7 @@ int main() {
     // ---- S2: streamed tool-call round trip ------------------------------------------------------------
     {
         EchoSession session;
-        session.initialize("s-s2", Principal{"p", ""});
+        session.initialize("s-s2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {
@@ -434,7 +435,7 @@ int main() {
     // ---- S3: no usage on the terminal update -- fails closed, never silently zero-cost -----------------
     {
         PlainSession session;
-        session.initialize("s-s3", Principal{"p", ""});
+        session.initialize("s-s3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {{
             text_delta("hi", /*is_final=*/true, /*usage=*/std::nullopt),
@@ -468,7 +469,7 @@ int main() {
     {
         PlainSession session;
         session.emplace_chat_client();
-        session.initialize("s-s4", Principal{"p", ""});
+        session.initialize("s-s4", Principal{"p", ""}, ae_test::trusted_unbounded());
         check(!session.stream_model_calls(), "S4: streaming defaults false");
         session.set_stream_model_calls(true);
         check(session.stream_model_calls(), "S4: set_stream_model_calls(true) engages it");
@@ -483,7 +484,7 @@ int main() {
     // ---- L1: streaming path, scan armed -- the leaked Harmony block is promoted and invoked -----------
     {
         WeatherSession session;
-        session.initialize("s-l1", Principal{"p", ""});
+        session.initialize("s-l1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
@@ -510,7 +511,7 @@ int main() {
     // ---- L2: streaming path, scan NOT armed (default) -- the leak passes through unchanged -------------
     {
         WeatherSession session;
-        session.initialize("s-l2", Principal{"p", ""});
+        session.initialize("s-l2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
@@ -538,7 +539,7 @@ int main() {
     // ---- L3: non-streaming (chat()) path, scan armed via AgentSession -- proves path-agnosticism --------
     {
         WeatherSession session;
-        session.initialize("s-l3", Principal{"p", ""});
+        session.initialize("s-l3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.chat_rounds = {
             ChatResponse{text_message(kHarmonyLeak), Usage{3, 4, 0, 0, 0.0}},
@@ -609,7 +610,7 @@ int main() {
     // ---- OQ-M1: streaming, tool_calling declared, scan NOT armed, leak matches a live tool (D1/D5) ----
     {
         WeatherSession session;
-        session.initialize("s-oqm1", Principal{"p", ""});
+        session.initialize("s-oqm1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.stream_rounds = {
@@ -650,7 +651,7 @@ int main() {
     // ---- OQ-M2: streaming, tool_calling declared, scan ARMED -- new check does not fire/interfere (D2a) --
     {
         WeatherSession session;
-        session.initialize("s-oqm2", Principal{"p", ""});
+        session.initialize("s-oqm2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.stream_rounds = {
@@ -679,7 +680,7 @@ int main() {
     // ---- OQ-M3: chat() path, tool_calling declared, scan NOT armed, unrecognized recipient (D3) --------
     {
         WeatherSession session;
-        session.initialize("s-oqm3", Principal{"p", ""});
+        session.initialize("s-oqm3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         std::string const decoy_leak =
@@ -704,7 +705,7 @@ int main() {
     // ---- OQ-M4: chat() path, tool_calling declared, scan NOT armed, ordinary clean content (D3) --------
     {
         WeatherSession session;
-        session.initialize("s-oqm4", Principal{"p", ""});
+        session.initialize("s-oqm4", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.chat_rounds = {
@@ -730,7 +731,7 @@ int main() {
     // ---- A1: no enable_event_stream() call -- a run proceeds exactly as before, no crash --------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-no-stream", Principal{"p1", ""});
+        session.initialize("s-no-stream", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
         check(r.has_value(), "A1: a run with no event stream enabled still succeeds normally");
     }
@@ -738,7 +739,7 @@ int main() {
     // ---- A2: a successful run emits the full real success-path sequence, in order, seq 1..6 -----------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-success", Principal{"p1", ""});
+        session.initialize("s-success", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -770,7 +771,7 @@ int main() {
     // ---- count forward.                                                                              ---
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-reset", Principal{"p1", ""});
+        session.initialize("s-reset", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         (void)drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -790,7 +791,7 @@ int main() {
     // ---- A4a: a chat-call failure emits RunFailed as the terminal event, never RunFinished --------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-chat-fail", Principal{"p1", ""});
+        session.initialize("s-chat-fail", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().fail_next = true;
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
@@ -816,7 +817,7 @@ int main() {
     // ---- A4b: token-budget exceeded emits RunFailed with the budget error_code ---------------------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-budget", Principal{"p1", ""}, /*token_budget=*/std::uint64_t{1});
+        session.initialize("s-budget", Principal{"p1", ""}, ae_test::trusted(/*token_budget=*/std::uint64_t{1}));
         session.emplace_chat_client().reply_tokens = 1000;  // blows a budget of 1
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
@@ -837,7 +838,7 @@ int main() {
     // ---- A4c: no chat client configured emits RunFailed, before ModelCallStarted ever fires --------------
     {
         AgentSession<NeverEngagedChatClient> session;
-        session.initialize("s-no-client", Principal{"p1", ""});
+        session.initialize("s-no-client", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -862,7 +863,7 @@ int main() {
         AgentSession<FailableChatClient> session;
         Principal const owner    = Principal{"p-owner", "tenant-a"};
         Principal const stranger = Principal{"p-stranger", "tenant-a"};
-        session.initialize("s-denied", owner);
+        session.initialize("s-denied", owner, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(

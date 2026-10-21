@@ -125,14 +125,15 @@ public:
     //     the establishing principal at creation time.
     //
     // ADR-061 §35/§37.3: `authority` is a NEW, trailing, DEFAULTED parameter -- unlike `caller` above,
-    // its absence does not fail open. `AgentSession::start_run()`'s own admission (§20.4,
-    // agent_session.hpp's `if (require_authority_)` branch) consults `authority` ONLY when the
-    // underlying session was put into Tier-3 mode (`set_require_authority(true)`); an unset `authority`
-    // against such a session is denied outright (`run.authority_required`), never silently admitted
-    // through the `caller` branch instead -- fails closed by the session's own construction, not by
-    // this dispatcher remembering to check anything. A non-Tier-3 session (the common, embedded/
-    // single-tenant case, 018 §1) never reads `authority` at all, so every existing 2-argument call
-    // site (`tests/protocol/a2a/test_a2a_server.cpp`, `tests/protocol/a2a/test_task_principal_binding.cpp`) is unaffected.
+    // its absence does not fail open. `AgentSession::start_run()`'s own admission (§20.4; ADR-244 §2.3's
+    // `SessionChoices::authority`) decides what `authority` means: a `per_request(ceiling)` session denies
+    // an unset one outright (`run.authority_required`), never silently admitting it through the `caller`
+    // branch instead -- fails closed by the session's own construction, not by this dispatcher
+    // remembering to check anything. A `single_trusted_caller()` session (the embedded/single-tenant
+    // case, 018 §1) refuses a SET one (`run.authority_unexpected`) rather than replacing it with its own
+    // grants, so the 2-argument call sites (`tests/protocol/a2a/test_a2a_server.cpp`,
+    // `tests/protocol/a2a/test_task_principal_binding.cpp`) are exactly those sessions' callers. The
+    // server's own ceiling over `authority` is ADR-244 slice 3b.
     [[nodiscard]] task<result<Task>> send_message(
             Message const& inbound, agentengine::rt::SessionCaller const& caller,
             std::optional<agentengine::rt::RequestAuthority> authority = std::nullopt) {

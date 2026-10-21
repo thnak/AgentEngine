@@ -20,6 +20,7 @@
 #include <string>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
 namespace {
@@ -103,8 +104,8 @@ struct Harness {
 
     Session session;
 
-    explicit Harness(std::string session_id) {
-        session.initialize(std::move(session_id), ae::Principal{"p-owner", ""});
+    explicit Harness(std::string session_id, ae::SessionChoices choices = ae_test::trusted_unbounded()) {
+        session.initialize(std::move(session_id), ae::Principal{"p-owner", ""}, std::move(choices));
         session.emplace_chat_client();
     }
 
@@ -266,8 +267,7 @@ int main() {
 
     // --- D3-9/D3-10: ADR-061 §35/§37.3's `authority` parameter, against a REAL Tier-3-mode session --
     {
-        Harness<CannedChatClient> h3{"s-a2a-tier3"};
-        h3.session.set_require_authority(true);
+        Harness<CannedChatClient> h3{"s-a2a-tier3", ae_test::per_request_no_ceiling()};
         a2a::A2aServer tier3_server(h3.starter(), "ctx-3");
 
         // D3-9: the session requires per-request authority; omitting it (the plain 2-arg call, exactly
@@ -288,7 +288,7 @@ int main() {
         art::RequestAuthority const authority{
             ae::Principal{"p-owner", ""},
             std::make_shared<ae::CapabilitySet const>(ae::CapabilitySet::grant_root({})),
-            std::chrono::steady_clock::now() + std::chrono::hours{1},
+            ae::Expiry::at(std::chrono::steady_clock::now() + std::chrono::hours{1}),
         };
         auto with_authority =
             drive(tier3_server.send_message(text_message("real authority supplied"), kOwner, authority));

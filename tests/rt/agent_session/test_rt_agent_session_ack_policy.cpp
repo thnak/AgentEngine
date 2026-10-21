@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ack_policy;
@@ -138,7 +139,7 @@ int main() {
     // T1: at_most_once -- byte-identical to a raw start_run(), no store interaction whatsoever.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t1", Principal{"p1", ""});
+        session.initialize("ap-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("hi there");
         FlakyStore store;
 
@@ -154,7 +155,7 @@ int main() {
     // durably written before the caller sees the response, and the delta round-trips byte-correct.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t2", Principal{"p1", ""});
+        session.initialize("ap-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("durable reply");
         InMemorySessionStore store;
 
@@ -197,7 +198,7 @@ int main() {
     // AgentResponse ever reaches the caller.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t3", Principal{"p1", ""});
+        session.initialize("ap-t3", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("should not be trusted");
         FlakyStore store;
         store.set_save_should_fail(true);

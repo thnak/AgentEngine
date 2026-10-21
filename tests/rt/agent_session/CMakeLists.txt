@@ -173,6 +173,9 @@ agentengine_add_test(test_rt_agent_session_ack_policy LIBS agentengine::core age
 agentengine_add_test(test_rt_agent_session_lifecycle LIBS agentengine::core agentengine_warnings)
 # ADR-244 §2.4 (G-C5 b): the session mints its nonce; clear, fork and restore are new incarnations.
 agentengine_add_test(test_rt_agent_session_nonce LIBS agentengine::core agentengine_warnings)
+# ADR-244 slice 3a (G-C2, G-C3, G-C6 and G-C7 for the session, G-C12's RunStarted): stated choices, authority
+# sources refused rather than narrowed, admission-time expiry, and choices surviving clear, fork and restore.
+agentengine_add_test(test_rt_agent_session_choices LIBS agentengine::core agentengine_warnings)
 
 # ADR-199 §8 (red team MAJOR): a provider's on_turn_end(TurnView const&) reads a view that is still alive.
 # Catches a revert of the hook's `TurnView const&` on g++ (the Linux leg); MSVC hides the dangling reference.

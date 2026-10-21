@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "../../support/python_runner_grants.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -364,7 +365,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(), backend);
 
         Session session;
-        session.initialize("b1", Principal{"p", ""});
+        session.initialize("b1", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B1-setup: runner initializes cleanly");
@@ -417,7 +418,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(), backend);
 
         Session session;
-        session.initialize("b2", Principal{"p", ""});
+        session.initialize("b2", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B2-setup: runner initializes cleanly");
@@ -449,7 +450,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(), backend);
 
         Session session;
-        session.initialize("b3", Principal{"p", ""});
+        session.initialize("b3", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B3-setup: runner initializes cleanly");
@@ -507,7 +508,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(), backend);
 
         Session session;
-        session.initialize("b4", Principal{"p", ""});
+        session.initialize("b4", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B4-setup: runner initializes cleanly");
@@ -574,7 +575,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(), backend);
 
         Session session;
-        session.initialize("b5", Principal{"p", ""});
+        session.initialize("b5", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B5-setup: runner initializes cleanly");
@@ -604,7 +605,7 @@ int main() {
         noop_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("b6", Principal{"p", ""});
+        session.initialize("b6", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B6-setup: runner initializes cleanly");
@@ -646,7 +647,7 @@ int main() {
         MediatedPythonRunner runner(make_cfg(work_dir.wstring()), backend);
 
         Session session;
-        session.initialize("b7", Principal{"p", ""});
+        session.initialize("b7", Principal{"p", ""}, ae_test::trusted_unbounded());
         // ADR-244 §2.4: the runner is created for this session, so the session exists first.
         auto init = ae_test::initialize_runner(runner, session.session_nonce());
         check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");

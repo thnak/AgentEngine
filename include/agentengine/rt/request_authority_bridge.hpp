@@ -77,7 +77,7 @@ namespace agentengine::rt {
     return RequestAuthority{
         trust::principal_from_bearer_claims(claims, kind),
         std::move(capabilities),
-        *deadline,
+        agentengine::Expiry::at(*deadline),  // a bearer credential always expires
     };
 }
 

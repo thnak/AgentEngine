@@ -161,7 +161,12 @@ int main() {
         write_tool_invoked() = false;
 
         WriteAgent session;
-        session.initialize("s-no-grant", Principal{"p-demo", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-no-grant", Principal{"p-demo", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});  // deliberately empty
         session.set_capabilities(&held);
@@ -179,7 +184,12 @@ int main() {
         write_tool_invoked() = false;
 
         WriteAgent session;
-        session.initialize("s-granted", Principal{"p-demo", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-granted", Principal{"p-demo", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root(
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});

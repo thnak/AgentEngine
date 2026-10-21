@@ -45,6 +45,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -264,7 +265,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su1", Principal{"p", ""});
+        session.initialize("su1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -305,7 +306,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su2", Principal{"p", ""});
+        session.initialize("su2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -335,7 +336,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su3", Principal{"p", ""});
+        session.initialize("su3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -375,7 +376,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su4", Principal{"p", ""});
+        session.initialize("su4", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-path"), Usage{1, 1, 0, 0, 0.0}},
@@ -411,7 +412,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su5", Principal{"p", ""});
+        session.initialize("su5", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -440,7 +441,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su6", Principal{"owner", "tenant-a"});
+        session.initialize("su6", Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -475,7 +476,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su7", Principal{"p", ""});
+        session.initialize("su7", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
@@ -513,7 +514,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su8", Principal{"p", ""});
+        session.initialize("su8", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-via-policy"), Usage{1, 1, 0, 0, 0.0}},
@@ -546,7 +547,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su9", Principal{"p", ""});
+        session.initialize("su9", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-by-timeout"), Usage{1, 1, 0, 0, 0.0}},

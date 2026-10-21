@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_manifest.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -123,7 +124,7 @@ int main() {
 
     for (std::size_t i = 0; i < kProjectCount; ++i) {
         sessions[i] = std::make_unique<Session>();
-        sessions[i]->initialize("s-scale-" + std::to_string(i), Principal{"p-scale", ""});
+        sessions[i]->initialize("s-scale-" + std::to_string(i), Principal{"p-scale", ""}, ae_test::trusted_unbounded());
         sessions[i]->emplace_chat_client();
         stores[i]      = std::make_unique<InMemorySessionStore>();
         supervisors[i] = std::make_unique<ProjectSupervisor>();

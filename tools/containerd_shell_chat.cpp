@@ -129,6 +129,11 @@ int main(int argc, char** argv) {
     auto built = Builder(model)
                      .session_id(session_id)
                      .principal(cli_principal)
+                     // ADR-244: stated, not defaulted -- the builders' former 25-turn default, kept; one user
+                     // watches the session and can stop it, so tokens are not capped.
+                     .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                          agentengine::Bound<std::uint64_t>::unbounded(),
+                                                          agentengine::Bound<std::uint64_t>::at_most(25)})
                      .grant(Capability{cap::FsRead{"work", "", std::nullopt}})
                      .grant(Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}})
                      .grant(Capability{cap::RunCommand{}})

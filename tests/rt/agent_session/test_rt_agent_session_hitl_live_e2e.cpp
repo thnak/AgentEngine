@@ -71,6 +71,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -266,8 +267,7 @@ void configure_session(Session& session, std::string const& id, std::string cons
                                  /*x_title=*/kXTitle, /*end_user_id=*/id, /*seed=*/std::nullopt,
                                  /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false, /*session_id=*/id);
-    session.initialize(id, Principal{"live-hitl-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                        /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize(id, Principal{"live-hitl-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
     session.set_suspend_for_approval(true);
 }

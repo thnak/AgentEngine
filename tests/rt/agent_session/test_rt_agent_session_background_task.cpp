@@ -35,6 +35,7 @@
 #include <thread>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -153,7 +154,7 @@ int main() {
     using agentengine::Principal;
 
     AgentSession<OneShotChatClient> session;
-    session.initialize("s-bg", Principal{"p-owner", ""});
+    session.initialize("s-bg", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client();
 
     agentengine::CapabilitySet const held =

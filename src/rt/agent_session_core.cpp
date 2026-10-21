@@ -131,29 +131,15 @@ task<result<AgentResponse>> AgentSessionCore::start_run_locked(
         StartRun request,
         std::chrono::steady_clock::time_point now) {
 
+    // ADR-244 §2.2: a session nobody chose for refuses every run, before admission reads its mode.
+    if (!choices_.has_value()) co_return std::unexpected(missing_session_choices());
+
     // ADR-061 §20.4: branches on session MODE first, rather than widening a shared condition to
     // `caller.has_value() || authority.has_value()` -- the shape that broke once already (X3): a
-    // `require_authority_` session consults ONLY `authority`; a `caller`-only request is rejected
+    // `per_request` session consults ONLY `authority`; a `caller`-only request is rejected
     // outright, never silently admitted through the other branch. No code path reads both.
-    if (require_authority_) {
-        if (!request.authority.has_value()) {
-            ++admission_denied_count_;
-            co_return std::unexpected(error{failure_class::policy,
-                "this session requires per-request authority", "run.authority_required"});
-        }
-        if (!agentengine::principal_admitted_for(request.authority->principal, principal_)) {
-            ++admission_denied_count_;
-            co_return std::unexpected(error{failure_class::policy,
-                "caller not admitted for this session", "run.admission_denied"});
-        }
-    } else if (request.caller.has_value() &&
-               !agentengine::principal_admitted_for(
-                   agentengine::Principal{request.caller->id, request.caller->tenant_id},
-                   principal_)) {
-        ++admission_denied_count_;
-        co_return std::unexpected(error{
-            failure_class::policy, "caller not admitted for this session",
-            "run.admission_denied"});
+    if (result<void> admitted = admit(request.caller, request.authority); !admitted) {
+        co_return std::unexpected(admitted.error());
     }
 
     // ADR-061 §20.3/§22.3: written here, before any other branch below could reach a `held`/
@@ -252,7 +238,10 @@ task<result<AgentResponse>> AgentSessionCore::start_run_locked(
         effect_context_.cancellation = cancel_source_.get_token();
     }
 
-    emit_run_event(run_event_kind::run_started);
+    // ADR-244 §2.6: the run records what it was admitted under.
+    emit_run_event(run_event_kind::run_started,
+                   run_event_payload::RunStarted{choices_->authority.describe(), choices_->token_budget.describe(),
+                                                 choices_->max_turns.describe()});
     // ADR-199: branches on bound_model_route(), which the template answers from the client's type exactly as these
     // branches used to with `if constexpr`.
     if (model_route const route = bound_model_route(); route != model_route::direct) {
@@ -345,25 +334,9 @@ task<result<AgentResponse>> AgentSessionCore::resolve_interaction_locked(
         std::chrono::steady_clock::time_point now) {
 
     // ADR-061 §20.4: same mode-branch shape as start_run() -- see that function's own comment.
-    if (require_authority_) {
-        if (!request.authority.has_value()) {
-            ++admission_denied_count_;
-            co_return std::unexpected(error{failure_class::policy,
-                "this session requires per-request authority", "run.authority_required"});
-        }
-        if (!agentengine::principal_admitted_for(request.authority->principal, principal_)) {
-            ++admission_denied_count_;
-            co_return std::unexpected(error{failure_class::policy,
-                "caller not admitted for this session", "run.admission_denied"});
-        }
-    } else if (request.caller.has_value() &&
-               !agentengine::principal_admitted_for(
-                   agentengine::Principal{request.caller->id, request.caller->tenant_id},
-                   principal_)) {
-        ++admission_denied_count_;
-        co_return std::unexpected(error{
-            failure_class::policy, "caller not admitted for this session",
-            "run.admission_denied"});
+    if (!choices_.has_value()) co_return std::unexpected(missing_session_choices());
+    if (result<void> admitted = admit(request.caller, request.authority); !admitted) {
+        co_return std::unexpected(admitted.error());
     }
 
     // ADR-061 §22.3: placed HERE, immediately after admission and before EVERY later branch --
@@ -681,14 +654,11 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     principal_  = source.principal_;
     // ADR-241 §8.4: copied together with the principal -- a fork of a delegated child stays charged to the root.
     inherited_root_run_id_ = source.inherited_root_run_id_;
-    // ADR-061 §22.1/§21a Finding 1: fail-closed carry-forward -- a fork of a Tier-3 session must
-    // stay Tier-3 by default. Not copying this alongside principal_ (the identity) was a real,
-    // test-proven gap (a forked session was immediately start_run()-able with require_authority_
-    // silently back at its unsafe default). capabilities_ is deliberately still NOT copied here --
-    // a pre-existing gap unrelated to Tier 3, a non-issue for a require_authority_==true fork
-    // (that mode never reads capabilities_) and unchanged behavior for a ==false fork (which
-    // needs set_capabilities() re-called after fork_from(), exactly as before this change).
-    require_authority_ = source.require_authority_;
+    // ADR-244 §2.3 (ADR-061 §22.1's fail-closed carry-forward, widened to every choice): a fork runs under
+    // the source's authority mode, ceiling, budget and turn cap -- never back at an unset default.
+    // capabilities_ is deliberately still NOT copied: a per_request fork never reads it, and a
+    // single_trusted_caller fork needs set_capabilities() re-called after fork_from(), as before.
+    choices_ = source.choices_;
     std::size_t const n = std::min(history_prefix_len.value_or(source.history_.size()),
                                     source.history_.size());
     history_.assign(source.history_.begin(), source.history_.begin() + static_cast<std::ptrdiff_t>(n));
@@ -752,11 +722,10 @@ void AgentSessionCore::clear_core_state() {
     suspended_rounds_.clear();  // ADR-196
     pending_client_inputs_.clear();    // ADR-230
     answering_client_input_.reset();
-    token_budget_ = std::nullopt;
+    choices_.reset();  // ADR-244 §2.3: clear un-initialises; the next run fails choice.missing.session
     run_tokens_consumed_ = 0;
     run_usage_ = agentengine::Usage{};
     admission_denied_count_ = 0;
-    max_turns_ = std::nullopt;
     // A real gap found in the Quark original (core/agent_session.hpp's own clear_in_process_
     // state() never resets standing_effects_/standing_effect_counter_): this function's own
     // contract is "no residue left to read back through ANY of this class's own accessors" (005
@@ -807,12 +776,32 @@ AgentSessionRecord AgentSessionCore::to_record() const {
     rec.run_counter         = run_counter_;
     rec.turn_index          = effect_context_.turn_index;
     rec.open_interactions   = open_interactions_;
-    rec.require_authority   = require_authority_;  // ADR-061 §22.1
+    if (choices_.has_value()) {  // ADR-244 §2.3; the ceiling is host configuration and is not recorded
+        rec.choices = RecordedChoices{choices_->authority.mode(), choices_->token_budget, choices_->max_turns};
+    }
     return rec;
 }
 
 // agent_session.hpp:1762
-void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
+result<void> AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
+    // ADR-244 §2.3: every check before anything changes, so a refused restore leaves the session as it was.
+    if (!choices_.has_value()) return std::unexpected(missing_session_choices());
+    if (!rec.choices.has_value()) {
+        return std::unexpected(error{failure_class::contract,
+            "this record was written before ADR-244 and carries no choices; convert it with migrate_record(record, "
+            "choices), which states them",
+            "session.record_without_choices"});
+    }
+    SessionChoices const recorded{choices_->authority, rec.choices->token_budget, rec.choices->max_turns};
+    if (rec.choices->authority != choices_->authority.mode() || !recorded.covers(*choices_)) {
+        return std::unexpected(error{failure_class::policy,
+            "restoring would change the authority mode or widen a budget: the record ran under " +
+                std::string(authority_mode_name(rec.choices->authority)) + ", token_budget " +
+                rec.choices->token_budget.describe() + ", max_turns " + rec.choices->max_turns.describe() +
+                "; this session states " + choices_->authority.describe() + ", " +
+                choices_->token_budget.describe() + ", " + choices_->max_turns.describe(),
+            "session.choices_widened"});
+    }
     session_id_ = rec.session_id;
     principal_  = agentengine::Principal{rec.principal_id, rec.principal_tenant_id};
     // ADR-241 §8.4 / R14(b): the principal level of egress admission keys on `root_id()`, so a restored delegated
@@ -826,7 +815,6 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
     effect_context_.turn_index = rec.turn_index;
     advance_session_nonce();  // ADR-244 §2.4: a restored copy is a new incarnation, never the saved one
     open_interactions_ = rec.open_interactions;
-    require_authority_ = rec.require_authority;  // ADR-061 §22.1 -- fail-closed carry-forward
     // Issue #107: the in-memory per-interaction records describe the session being replaced, never this record
     // -- drop them all (a restored interaction resolves without them, see resolve_interaction()). And never hand
     // out an interaction id the restored set already uses: the counter continues past the highest one.
@@ -853,6 +841,7 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
     // environment is then released by its provider's ceilings or destructor, never left by stale state here.
     run_in_flight_ = false;
     pending_run_end_.reset();
+    return {};
 }
 
 // agent_session.hpp:1796
@@ -952,10 +941,42 @@ task<void> AgentSessionCore::drain_background_completions() {
 }
 
 // agent_session.hpp:1958
+// ADR-061 §20.4 admission, by the session's authority mode. The caller has checked `choices_`.
+result<void> AgentSessionCore::admit(std::optional<SessionCaller> const& caller,
+                                     std::optional<RequestAuthority> const& authority) {
+    if (choices_->authority.mode() == authority_mode::per_request) {
+        if (!authority.has_value()) {
+            ++admission_denied_count_;
+            return std::unexpected(error{failure_class::policy, "this session requires per-request authority",
+                                          "run.authority_required"});
+        }
+        if (!agentengine::principal_admitted_for(authority->principal, principal_)) {
+            ++admission_denied_count_;
+            return std::unexpected(error{failure_class::policy, "caller not admitted for this session",
+                                          "run.admission_denied"});
+        }
+        return {};
+    }
+    // ADR-244 §6: a request that names no caller is admitted -- `single_trusted_caller`'s disclosed residual.
+    if (caller.has_value() &&
+        !agentengine::principal_admitted_for(agentengine::Principal{caller->id, caller->tenant_id}, principal_)) {
+        ++admission_denied_count_;
+        return std::unexpected(error{failure_class::policy, "caller not admitted for this session",
+                                      "run.admission_denied"});
+    }
+    return {};
+}
+
+// ADR-244 §2.3: assigns every engine-set authority field of `effect_context_` in every branch that admits.
+// Expiry is checked here, at admission (ADR-242 R3 rule 1), never mid-run.
 result<void> AgentSessionCore::apply_dispatch_authority(
         std::optional<RequestAuthority> const& authority,
         std::chrono::steady_clock::time_point now) {
-    if (require_authority_) {
+    if (!choices_.has_value()) return std::unexpected(missing_session_choices());
+    if (result<void> z = check_bound("token_budget", choices_->token_budget); !z) return z;
+    if (result<void> z = check_bound("max_turns", choices_->max_turns); !z) return z;
+
+    if (CapabilityCeiling const* ceiling = choices_->authority.ceiling(); ceiling != nullptr) {
         if (!authority.has_value()) {
             return std::unexpected(error{failure_class::policy,
                 "this session requires per-request authority; dispatcher supplied none",
@@ -965,14 +986,30 @@ result<void> AgentSessionCore::apply_dispatch_authority(
             return std::unexpected(error{failure_class::policy,
                 "per-request authority has expired", "run.authority_expired"});
         }
-        effect_context_.principal    = authority->principal;
-        effect_context_.capabilities = authority->capabilities;
+        // Null capabilities authorize nothing: there is nothing to check against the ceiling, and nothing below
+        // dereferences it.
+        if (authority->capabilities != nullptr && !ceiling->admits(*authority->capabilities)) {
+            return std::unexpected(error{failure_class::policy,
+                "per-request authority holds a capability outside this session's ceiling; it is refused, not "
+                "narrowed",
+                "run.authority_exceeds_ceiling"});
+        }
+        effect_context_.principal            = authority->principal;
+        effect_context_.capabilities         = authority->capabilities;
+        effect_context_.authority_source     = authority_mode::per_request;
+        effect_context_.authority_expires_at = authority->expiry;
         return {};
     }
-    // Tier-3 does not front this session -- session-level state is the only authority that has
-    // ever existed for it, unchanged from before this mechanism existed.
-    effect_context_.principal    = principal_;
-    effect_context_.capabilities = capabilities_;
+    if (authority.has_value()) {
+        return std::unexpected(error{failure_class::policy,
+            "this session's authority source is single_trusted_caller; a request carrying its own authority is "
+            "refused, not silently replaced by the session's",
+            "run.authority_unexpected"});
+    }
+    effect_context_.principal            = principal_;
+    effect_context_.capabilities         = capabilities_;
+    effect_context_.authority_source     = authority_mode::single_trusted_caller;
+    effect_context_.authority_expires_at = std::nullopt;
     return {};
 }
 
@@ -1014,9 +1051,10 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
     // same pre-batch remainder, and batches compounded with depth), since each child's charge lands in
     // `run_tokens_consumed()` the moment it returns.
     auto const remaining_budget = [this]() -> std::optional<std::uint64_t> {
-        if (!token_budget_.has_value()) return std::nullopt;
+        std::optional<std::uint64_t> const budget = token_budget_limit();
+        if (!budget.has_value()) return std::nullopt;
         std::uint64_t const used = run_tokens_consumed();
-        return used >= *token_budget_ ? 0 : *token_budget_ - used;
+        return used >= *budget ? 0 : *budget - used;
     };
     effect_context_.remaining_token_budget = remaining_budget();
 
@@ -1340,12 +1378,12 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
         // history names it as the session_builder.hpp "finding 7" investigation's byproduct, though
         // the bug itself lives here, in AgentSession, not in that facade): this branch used to
         // `co_return` WITHOUT ever touching `effect_context_.turn_index` -- the ONLY field
-        // `run_rounds()`'s own `max_turns_` bound (below) ever inspects. Since `run_rounds()` is not
+        // `run_rounds()`'s own `max_turns()` bound (below) ever inspects. Since `run_rounds()` is not
         // re-entered while an interaction keeps resolving to ask-pending (the "completed" branch
         // below is the only path that calls back into it), a CodeAct script that keeps asking
         // follow-up questions forever was COMPLETELY unbounded by `.max_turns()`/`.token_budget()` --
         // LIVE-REPRODUCED: 50 `resolve_interaction()` round trips against a scripted always-ask tool,
-        // `max_turns_ == 3`, never once produced `run.max_turns_exceeded`, `turn_index` never left 0.
+        // `max_turns() == 3`, never once produced `run.max_turns_exceeded`, `turn_index` never left 0.
         // Fixed the same way the ordinary (non-codeact) approval-resume branches one function up
         // already do (`resolve_interaction()`'s own `:943`/`:998`, which increment once per call
         // regardless of approved/denied): count THIS round of ask/resolve work against the bound,
@@ -1353,7 +1391,7 @@ task<result<AgentResponse>> AgentSessionCore::resolve_codeact_ask(ResolveInterac
         // identical `run.max_turns_exceeded` `run_rounds()`'s own fallthrough produces, instead of
         // silently granting an ask-loop unlimited rounds no other resume path gets.
         ++effect_context_.turn_index;
-        if (max_turns_.has_value() && effect_context_.turn_index >= *max_turns_) {
+        if (max_turns().has_value() && effect_context_.turn_index >= *max_turns()) {
             pending_codeact_asks_.erase(rec_it);
             result<void> const erased = resolve_interaction_record(interaction_id);
             if (!erased) co_return std::unexpected(erased.error());
@@ -1710,7 +1748,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
     // resolve_interaction()) before this is ever reached.
     CapabilitySet const& held      = effect_context_.capabilities ? *effect_context_.capabilities : empty_caps;
 
-    for (; !max_turns_.has_value() || effect_context_.turn_index < *max_turns_;
+    for (; !max_turns().has_value() || effect_context_.turn_index < *max_turns();
          ++effect_context_.turn_index) {
         if (effect_context_.cancellation.stop_requested()) co_return finish_canceled();  // ADR-178
         emit_run_event(run_event_kind::turn_started, run_event_payload::Turn{effect_context_.turn_index});
@@ -1901,7 +1939,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
             error{failure_class::contract, "unreachable: no model call attempted", "run.internal"});
         // ADR-193: what delegated agents spent since the last model call is this run's spending too -- folded
         // in, and the budget checked, before another call is made (I8 across a delegation tree).
-        if (fold_delegated_usage() && token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+        if (fold_delegated_usage() && token_budget_limit().has_value() && run_tokens_consumed_ > *token_budget_limit()) {
             emit_run_event(run_event_kind::run_failed,
                            run_event_payload::RunFailed{"run.token_budget_exceeded",
                                                         "token budget exceeded (delegated agents included)"});
@@ -1934,7 +1972,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
                                 f.inner.message + (f.inner.code.empty() ? "" : " (" + f.inner.code + ")"),
                                 charged});
             // The charge can itself break the budget -- and a retry must not go ahead if it has.
-            if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+            if (token_budget_limit().has_value() && run_tokens_consumed_ > *token_budget_limit()) {
                 emit_run_event(run_event_kind::run_failed,
                                 run_event_payload::RunFailed{
                                     "run.token_budget_exceeded",
@@ -1973,7 +2011,7 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         run_usage_.reasoning_tokens += response->usage.reasoning_tokens;
         run_usage_.cost_estimate += response->usage.cost_estimate;
         run_usage_.cache_write_tokens += response->usage.cache_write_tokens;
-        if (token_budget_.has_value() && run_tokens_consumed_ > *token_budget_) {
+        if (token_budget_limit().has_value() && run_tokens_consumed_ > *token_budget_limit()) {
             emit_run_event(run_event_kind::run_failed,
                             run_event_payload::RunFailed{"run.token_budget_exceeded",
                                                           "per-run token budget exceeded"});

@@ -456,7 +456,14 @@ template <class Inner, class SummarizerT>
     }
 
     rt::AgentSession<RecordingChatClient<Inner>, rt::NoSessionState, ComposedProvider> session;
-    session.initialize(spec.trial_id, store.principal(), spec.token_budget, spec.max_turns);
+    // ADR-244 slice 3a: the trial session holds `held` itself (`single_trusted_caller`); `TrialSpec`'s optional
+    // budget and turn cap keep their meaning (unset is none) until the planning log's eval row is closed.
+    session.initialize(spec.trial_id, store.principal(),
+                       SessionChoices{AuthoritySource::single_trusted_caller(),
+                                      spec.token_budget ? Bound<std::uint64_t>::at_most(*spec.token_budget)
+                                                        : Bound<std::uint64_t>::unbounded(),
+                                      spec.max_turns ? Bound<std::uint64_t>::at_most(*spec.max_turns)
+                                                     : Bound<std::uint64_t>::unbounded()});
     session.set_capabilities(&held);
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),

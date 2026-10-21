@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -315,7 +316,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h1", Principal{"p", ""});
+        session.initialize("h1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("after-denial"), Usage{1, 1, 0, 0, 0.0}},
@@ -384,7 +385,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2a", Principal{"p", ""});
+        session.initialize("h2a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -422,7 +423,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2b", Principal{"p", ""});
+        session.initialize("h2b", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -462,7 +463,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2c", Principal{"p", ""});
+        session.initialize("h2c", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -506,7 +507,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h3a", Principal{"p", ""});
+        session.initialize("h3a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"legit-user"})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -533,7 +534,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h3b", Principal{"p", ""});
+        session.initialize("h3b", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -583,7 +584,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4a", Principal{"p", ""});
+        session.initialize("h4a", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":42})"), Usage{1, 1, 0, 0, 0.0}},
@@ -647,7 +648,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4b", Principal{"p", ""});
+        session.initialize("h4b", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done-after-external-denial"), Usage{1, 1, 0, 0, 0.0}},
@@ -685,7 +686,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4d", Principal{"p", ""});
+        session.initialize("h4d", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -732,7 +733,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4e", Principal{"p", ""});
+        session.initialize("h4e", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":8})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done-after-retry"), Usage{1, 1, 0, 0, 0.0}},
@@ -767,7 +768,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4c", Principal{"p", ""});
+        session.initialize("h4c", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":5})"), Usage{1, 1, 0, 0, 0.0}},
@@ -814,7 +815,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h5", Principal{"p", ""});
+        session.initialize("h5", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":1})"), Usage{1, 1, 0, 0, 0.0}},

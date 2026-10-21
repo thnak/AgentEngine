@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
@@ -114,7 +115,7 @@ int main() {
     {
         using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
         Session session;
-        session.initialize("s-success", ae::Principal{"p1", ""});
+        session.initialize("s-success", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(agentengine::rt::StartRun{make_turn("m-1")}));
@@ -161,7 +162,7 @@ int main() {
     {
         using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
         Session session;
-        session.initialize("s-fail", ae::Principal{"p1", ""});
+        session.initialize("s-fail", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().fail_next = true;
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 

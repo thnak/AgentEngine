@@ -148,7 +148,12 @@ int main() {
     using CustomizedAgent  = AgentSession<CapturingChatClient, rt::NoSessionState, ComposedProvider>;
 
     CustomizedAgent session;
-    session.initialize("s-custom-provider", Principal{"p-demo", ""});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-custom-provider", Principal{"p-demo", ""},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     // ComposedContextProvider always starts unengaged, even when every Ms (as here) happens to be
     // default-constructible -- see core/composed_context_provider.hpp's own comment for why an
     // earlier "auto-engage when possible" design was tried and rejected (it silently broke a real

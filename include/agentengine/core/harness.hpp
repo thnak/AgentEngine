@@ -537,8 +537,8 @@ template <class HistoryT, class ChatClientT>
         opts.policy = make_plan_execute_policy_decider(gate, std::move(after_gate), planning_safe);
     }
 
-    std::optional<std::uint64_t> const effective_budget = opts.token_budget.has_value() ? opts.token_budget
-                                                                                        : meta.token_budget;
+    // ADR-244 §2.2: the caller's stated budget; bind() refuses one wider than the agent declares.
+    std::optional<std::uint64_t> const effective_budget = opts.choices.token_budget.limit();
 
     result<AgentBundleWith<ChatClientT, HarnessContextProvider>> bound =
         agent_bind_detail::bind<ChatClientT, HarnessContextProvider>(meta, std::move(client), std::move(opts),
@@ -609,7 +609,7 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> bind_harness_session(AgentMetadata const& meta, ChatClientT client,
-                                                                      AgentSessionOptions opts = {},
+                                                                      AgentSessionOptions opts,
                                                                       HarnessOptions hopts = {},
                                                                       ChatClientRegistry const* registry = nullptr,
                                                                       SandboxBackendRegistry const* sandbox_registry =
@@ -623,7 +623,7 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
 template <class A, class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
-[[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts = {},
+[[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts,
                                                                       HarnessOptions hopts = {},
                                                                       ChatClientRegistry const* registry = nullptr,
                                                                       SandboxBackendRegistry const* sandbox_registry =

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -221,7 +222,7 @@ struct Harness {
     ScriptedClient* client = nullptr;
 
     explicit Harness(std::vector<Step> steps, std::uint32_t retries = 0, bool stream_live = true) {
-        session.initialize("s", Principal{"p", ""});
+        session.initialize("s", Principal{"p", ""}, ae_test::trusted_unbounded());
         client = &session.emplace_chat_client();
         client->steps = std::move(steps);
         session.set_capabilities(&held);
