@@ -67,6 +67,18 @@
 #include "../../support/crt_fail_fast.hpp"
 #include "../../support/error_detail.hpp"
 
+// Under ASan, freed blocks stay resident in the allocator's quarantine (256 MiB by default), which the
+// private-bytes census reads as growth: ADR-244's per-cycle rw capability SID churn measured +97 MB with
+// the default quarantine and +0.1 MB without it. Disabling it keeps census 2 a leak check; ASAN_OPTIONS
+// from the environment still applies on top of this.
+#if defined(__SANITIZE_ADDRESS__)
+extern "C" const char* __asan_default_options() { return "quarantine_size_mb=0"; }
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+extern "C" const char* __asan_default_options() { return "quarantine_size_mb=0"; }
+#endif
+#endif
+
 using namespace agentengine;
 using agentengine::native_jail::AppContainerProfile;
 using agentengine::native_jail::NativeJailBackend;
