@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -172,13 +173,15 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly");
 
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root(
             {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, std::nullopt, {}}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         std::string const script = "import socket\n"
@@ -216,11 +219,13 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly (SOCK-DENY)");
 
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all -- irrelevant here, since these
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
                                 // methods must be denied unconditionally, not merely without a grant
 
         ExecRequest req{"python",
@@ -270,13 +275,15 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly with a real 'work' mount");
 
         ExecState state{};
         CapabilitySet caps =
             CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // `_ae_internal` is not itself a name in the guest's own __main__ globals (it lives only in

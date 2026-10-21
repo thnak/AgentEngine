@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -61,16 +62,18 @@ int main() {
     MediatedPythonConfig cfg_a;
     cfg_a.python_home = AE_PYTHON_HOME;
     MediatedPythonRunner runner_a(cfg_a, backend);
-    AE_CHECK(runner_a.initialize().has_value(), "setup: session A's jailed worker initializes");
+    AE_CHECK(ae_test::initialize_runner(runner_a).has_value(), "setup: session A's jailed worker initializes");
 
     MediatedPythonConfig cfg_b;
     cfg_b.python_home = AE_PYTHON_HOME;
     MediatedPythonRunner runner_b(cfg_b, backend);
-    AE_CHECK(runner_b.initialize().has_value(), "setup: session B's jailed worker initializes");
+    AE_CHECK(ae_test::initialize_runner(runner_b).has_value(), "setup: session B's jailed worker initializes");
 
     ExecState state_a{};
     ExecState state_b{};
     EffectContext ctx{};
+    ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
 
     static constexpr char kCanaryValue[] = "leak_should_not_cross_sessions_98765";
 

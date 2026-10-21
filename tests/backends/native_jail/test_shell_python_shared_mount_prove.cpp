@@ -23,6 +23,7 @@
 #include <crtdbg.h>
 #endif
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -81,7 +82,7 @@ int main() {
     py_cfg.python_home = AE_PYTHON_HOME;
     py_cfg.mount_roots["work"] = scratch_w;
     MediatedPythonRunner python(std::move(py_cfg), backend);
-    auto init = python.initialize();
+    auto init = ae_test::initialize_runner(python);
     AE_CHECK(init.has_value(), "setup: real MediatedPythonRunner initializes, mount_roots[\"work\"] "
                                 "explicitly set to the shared directory");
 
@@ -109,6 +110,8 @@ int main() {
     {
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // NOTE, confirmed by this test's own first real run: shell's own mediated path grammar
@@ -157,6 +160,8 @@ int main() {
     {
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto write_via_python = agentengine::rt::block_on(shell.run(
@@ -224,6 +229,8 @@ int main() {
     {
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         CapabilitySet read_only_caps =
             CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}},
                                         Capability{cap::FsRead{"work", "", std::nullopt}}});

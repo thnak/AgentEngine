@@ -12,6 +12,7 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite timeouts (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -157,6 +158,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -202,6 +204,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
@@ -259,6 +262,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;

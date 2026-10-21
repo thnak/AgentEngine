@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/pal/env.hpp"
@@ -86,11 +87,13 @@ int main() {
     cfg.expose_agent_files_data = true;
 
     MediatedPythonRunner runner(std::move(cfg), backend);
-    auto init = runner.initialize();
+    auto init = ae_test::initialize_runner(runner);
     check(init.has_value(), "setup: MediatedPythonRunner with a real materialized skill mount initializes");
 
     ExecState state{};
     EffectContext ctx{};
+    ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
     auto granted = CapabilitySet::grant_root(
         {Capability{cap::FsRead{"real-mounted-skill", "", std::nullopt}}});
     ctx.capabilities = agentengine::borrow_capabilities(granted);

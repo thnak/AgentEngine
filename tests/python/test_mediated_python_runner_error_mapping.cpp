@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
@@ -95,11 +96,13 @@ int main() {
         cfg.mount_roots["work"] = widen(work_dir);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a 'work' mount initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"work", "", std::nullopt}},
         });
@@ -137,13 +140,15 @@ int main() {
         cfg.mount_roots["count"] = widen(count_dir);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with quota/count mounts initializes cleanly");
 
         // -- quota_bytes axis: a 10-byte cap on the 'quota' mount. --------------------------------
         {
             ExecState state{};
             EffectContext ctx{};
+            ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"quota", "", std::uint64_t{10}, std::nullopt}},
             });
@@ -181,6 +186,8 @@ int main() {
         {
             ExecState state{};
             EffectContext ctx{};
+            ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"count", "", std::nullopt, std::uint32_t{1}}},
             });
@@ -214,19 +221,24 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from(BlockedNetTool{});
-        bridge.capabilities = {cap::Entropy{}};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(BlockedNetTool{}),
+                         .capabilities  = {cap::Entropy{}},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a blocked-net tool bridge initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
-        auto caps = CapabilitySet::grant_root({});  // no cap::NetOut granted at all
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // No cap::NetOut granted at all. ADR-244 §2.4: the caller does hold what the bridged tool itself needs
+        // (cap::Entropy), since the bridge never reaches more than its caller holds.
+        auto caps = CapabilitySet::grant_root({Capability{cap::Entropy{}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // G4-R3-1: the raw-socket path -- a connect() attempt with no NetOut capability.

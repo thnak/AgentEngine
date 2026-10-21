@@ -49,6 +49,7 @@
 //      /proc/mounts in the first place, so there is nothing to unmount from here; this loop instead
 //      proves the plain host-side mkdir/rmdir bracketing the mount setup doesn't leak.
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <dirent.h>
 #include <fcntl.h>
@@ -168,7 +169,9 @@ int main() {
     SandboxSpec spec;
     spec.mounts.push_back(
         MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

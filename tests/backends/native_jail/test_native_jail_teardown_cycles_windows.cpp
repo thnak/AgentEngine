@@ -42,6 +42,7 @@
 // kMaxPrivateBytesGrowth slack of 50 MiB (6x over) -- either real leak is caught with a wide margin
 // at this count, which is what actually justifies calling 300 "enough," not just "cheap."
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -65,6 +66,18 @@
 #include "backends/native_jail/native_jail_backend.hpp"
 #include "../../support/crt_fail_fast.hpp"
 #include "../../support/error_detail.hpp"
+
+// Under ASan, freed blocks stay resident in the allocator's quarantine (256 MiB by default), which the
+// private-bytes census reads as growth: ADR-244's per-cycle rw capability SID churn measured +97 MB with
+// the default quarantine and +0.1 MB without it. Disabling it keeps census 2 a leak check; ASAN_OPTIONS
+// from the environment still applies on top of this.
+#if defined(__SANITIZE_ADDRESS__)
+extern "C" const char* __asan_default_options() { return "quarantine_size_mb=0"; }
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+extern "C" const char* __asan_default_options() { return "quarantine_size_mb=0"; }
+#endif
+#endif
 
 using namespace agentengine;
 using agentengine::native_jail::AppContainerProfile;
@@ -213,6 +226,7 @@ int main() {
     SandboxSpec spec;
     spec.mounts.push_back(
         MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;

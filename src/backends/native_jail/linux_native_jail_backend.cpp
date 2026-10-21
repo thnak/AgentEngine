@@ -264,9 +264,29 @@ std::string drain_pipe_bounded(int read_fd, std::uint64_t cap_bytes) {
 }  // namespace
 
 result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
+    // ADR-244 §2.4: a guest path is the place under the jail root a mount lands, compared by spelling below, so
+    // it must have one spelling: absolute, not the root itself, and free of empty, `.` and `..` components
+    // (`//work` is `/work`; a relative path would be created beside the jail root on the host). Checked before
+    // the grants, so a malformed guest path gets its own error.
+    for (MountSpec const& mount : spec.mounts) {
+        std::string_view const g = mount.guest_path;
+        bool ok = g.size() > 1 && g.front() == '/' && g.back() != '/';
+        for (std::size_t start = 1; ok && start <= g.size();) {
+            std::size_t const end = std::min(g.find('/', start), g.size());
+            std::string_view const part = g.substr(start, end - start);
+            ok = !part.empty() && part != "." && part != "..";
+            start = end + 1;
+        }
+        if (!ok) {
+            return std::unexpected(error{failure_class::policy,
+                                         "sandbox mount guest path '" + mount.guest_path +
+                                             "' is not a normalised absolute path other than '/'",
+                                         "sandbox.guest_path_invalid"});
+        }
+    }
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
-    // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
-    // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
+    // the real authority behind mounts/net -- every mount and egress entry needs a covering grant
+    // (ADR-244 §2.4: unconditionally; see authorize_spec()'s own comment, sandbox.hpp).
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
@@ -282,6 +302,22 @@ result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const&
             "linux_native_jail: NetPolicy with deny_all=false or a nonempty allowlist is not "
             "supported yet -- this backend has no CNI/egress-proxy wired to honor a real allowlist",
             "linux_native_jail.net_allowlist_unsupported"});
+    }
+
+    // Mounts are bound in vector order onto the jail's tmpfs root, so a mount whose guest path is inside (or
+    // contains) another's would mask it -- a later read-only mount hiding a read-write one, or the reverse.
+    // Refused outright, before anything is bound.
+    for (std::size_t i = 0; i < spec.mounts.size(); ++i) {
+        for (std::size_t j = i + 1; j < spec.mounts.size(); ++j) {
+            std::string const& a = spec.mounts[i].guest_path;
+            std::string const& b = spec.mounts[j].guest_path;
+            if (capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a)) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox mounts '" + a + "' and '" + b + "' overlap; the later one would mask the other",
+                    "sandbox.mount_overlap"});
+            }
+        }
     }
 
     DelegatedRootState root_state = ensure_delegated_root(delegated_cgroup_root_);

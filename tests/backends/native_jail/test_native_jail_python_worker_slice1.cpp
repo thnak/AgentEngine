@@ -21,6 +21,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -70,11 +71,13 @@ int main() {
         cfg.pids = 4;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         auto const t0 = std::chrono::steady_clock::now();
         ExecRequest req{"python", "while True:\n    pass\n"};
@@ -131,10 +134,12 @@ int main() {
         cfg.memory_bytes = 256ull * 1024 * 1024;
         cfg.pids = 4;
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q1b setup: runner initializes a real jailed worker process");
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "while True:\n    pass\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         NativeJailBackend::set_test_post_terminate_hook(nullptr);
@@ -164,11 +169,13 @@ int main() {
         cfg.pids = 4;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q2 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         // Try to allocate ~512 MiB, well past the 64 MiB cap -- either the worker is killed by the Job
         // Object before the allocation completes (outcome: oom/timeout/crash, never ok with success

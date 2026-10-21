@@ -9,6 +9,11 @@
 
 namespace agentengine::rt {
 
+std::uint64_t agent_session_detail::next_session_identity() noexcept {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 // agent_session.hpp:785
 void AgentSessionCore::cancel() noexcept {
     std::stop_source source;
@@ -693,6 +698,7 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     discarded_tokens_estimate_ = 0;
     last_run_id_.clear();
     effect_context_ = EffectContext{};
+    advance_session_nonce();  // ADR-244 §2.4: a new incarnation
     open_interactions_.clear();
     interaction_counter_ = 0;
     // Issue #107: every per-interaction record goes with the interactions -- a stale entry kept here matched a
@@ -727,6 +733,7 @@ void AgentSessionCore::clear_core_state() {
     discarded_tokens_estimate_ = 0;
     last_run_id_.clear();
     effect_context_ = EffectContext{};
+    advance_session_nonce();  // ADR-244 §2.4: a new incarnation
     open_interactions_.clear();
     interaction_counter_ = 0;
     // Round 8 red-team, finding 17 (LOW): this function's own contract is "no residue left to read
@@ -817,6 +824,7 @@ void AgentSessionCore::restore_from_record(AgentSessionRecord const& rec) {
     last_run_id_ = run_counter_ > 0 ? session_id_ + ":run:" + std::to_string(run_counter_)
                                       : std::string{};
     effect_context_.turn_index = rec.turn_index;
+    advance_session_nonce();  // ADR-244 §2.4: a restored copy is a new incarnation, never the saved one
     open_interactions_ = rec.open_interactions;
     require_authority_ = rec.require_authority;  // ADR-061 §22.1 -- fail-closed carry-forward
     // Issue #107: the in-memory per-interaction records describe the session being replaced, never this record

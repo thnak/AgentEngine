@@ -136,8 +136,8 @@ void release_egress(egress::HostEgress& host, std::string const& tag, std::strin
 result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, EffectContext& /*ctx*/) {
     // Slice 3 (docs/planning/sandbox-spec-capability-enforcement-design-draft.md): capabilities are
     // the real authority behind mounts/net, checked FIRST, before any of this backend's own
-    // mount/net logic below runs. A no-op for every caller that doesn't hold a SandboxMount/
-    // SandboxNetOut grant (the mechanism's own opt-in scoping) -- see authorize_spec()'s own comment.
+    // mount/net logic below runs. Unconditional (ADR-244 §2.4): a mount or network request with no
+    // covering grant is refused, whether or not the caller holds any grant of that kind.
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
@@ -199,41 +199,12 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // asked for something this backend cannot honor fails fast, the same low cost Slice 2's original
     // convenience-flag-path check had, rather than paying for a full `ctr images mount` first only to
     // reject the request afterward.
-    bool const wants_network = !spec.net.deny_all || !spec.net.allowlist.empty();
-    if (wants_network && spec.capabilities.sandbox_net_out_grants().empty()) {
-        // Red-team finding (BLOCKING, found against this exact Slice -- see decisions/archive/ADR-093-
-        // kata-backend-netpolicy-allowlist-config-cni.md §5): `authorize_spec()` (sandbox.hpp)
-        // deliberately SKIPS its own `cap::SandboxNetOut` coverage check when a caller holds ZERO
-        // `SandboxNetOut` grants at all -- a documented "opt-out preserved" backward-compatibility
-        // shape for callers who never adopted the capability system at all (sandbox.hpp's own
-        // comment, proven live by `test_sandbox_capability_authorization.cpp`'s own G1 case). Before
-        // this Slice that vacuous skip was harmless HERE specifically, because `KataBackend::create()`
-        // itself ALWAYS failed closed on any non-`deny_all` `NetPolicy` regardless of capabilities
-        // (Slice 2/3) -- THIS backend's own unconditional check was the real backstop, not
-        // `authorize_spec()`'s. Slice 10 removed that backstop and replaced it with a mechanism that
-        // acts on `spec.net` directly: without this check, a caller could reach REAL network egress
-        // via `spec.net.allowlist` alone, with NO `cap::SandboxNetOut` grant ever held -- ambient
-        // authority over a real network path, a direct I2 violation. This restores this backend's own
-        // backstop, scoped to the zero-grant case only: `authorize_spec()` above already rejects a
-        // request that IS covered by some grant but not this exact one (`sandbox.net_not_authorized`),
-        // so only the "zero grants at all" gap needs closing here, not coverage logic again.
-        return std::unexpected(error{
-            failure_class::policy,
-            "kata_backend: NetPolicy requests real network access (deny_all=false or a nonempty "
-            "allowlist) but the caller holds no cap::SandboxNetOut grant at all -- this backend's "
-            "NetPolicy mechanism is real as of Slice 10 and can no longer rely on authorize_spec()'s "
-            "own opt-out-when-no-grants shape as an implicit backstop",
-            "kata_backend.net_capability_required"});
-    }
-    // NOTE: "deny_all == false with an EMPTY allowlist" (unrestricted egress -- this backend can only
-    // ever enforce a positive allowlist) is NOT separately checked here. It is provably unreachable
-    // at this point: with zero cap::SandboxNetOut grants, the capability check just above already
-    // rejected it (kata_backend.net_capability_required); with any grant present, authorize_spec()
-    // itself (sandbox.hpp, called at the very top of this function, before this line ever runs) has
-    // its own identical rejection for exactly this shape ("sandbox.net_not_authorized" -- "deny_all
-    // == false with an EMPTY allowlist means unrestricted egress requested... no finite grant can
-    // authorize that"). A third, redundant check here would be dead code on every real call path --
-    // this project's own "don't validate scenarios that can't happen" discipline, not an oversight.
+    // ADR-244 §2.4: this backend used to carry its own zero-grant backstop here
+    // (`kata_backend.net_capability_required`, ADR-093 §5), because `authorize_spec()` skipped its
+    // `cap::SandboxNetOut` check when the caller held no grant of that kind. That check is now
+    // unconditional, so a network request with no covering grant -- none at all included -- and
+    // unrestricted egress (`deny_all == false` with an empty allowlist) are both refused above with
+    // `sandbox.net_not_authorized`, before this point.
     //
     // SLICE 10 (ADR-093): resolve each allowlist entry to a verified IPv4 literal via the SAME
     // resolve_and_validate() HostEgressProxy itself uses (SSRF-safe: blocks loopback/link-local/

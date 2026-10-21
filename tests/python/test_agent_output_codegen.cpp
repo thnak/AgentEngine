@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
@@ -46,11 +47,13 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.output.set({'x': 1})\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
@@ -76,11 +79,13 @@ int main() {
         cfg.expose_agent_output = true;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R2 setup: runner initializes with agent.output exposed");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\n"
                           "agent.output.set({'answer': 42, 'note': 'done'})\nprint('script ran')\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));

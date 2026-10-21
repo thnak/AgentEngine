@@ -10,6 +10,7 @@
 // this test's own generous-but-finite wall_ms values (CLAUDE.md Machine Safety), same discipline
 // as test_job_object_limits.cpp.
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -61,6 +62,7 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     // 5000, not 2000: measured this session (test_native_jail_backend_windows flaking right after
     // test_job_object_limits' own memory-heavy tests) -- under host memory pressure,
     // JOB_OBJECT_LIMIT_JOB_MEMORY enforcement for a 32 MB cap can take longer than 2000ms to catch a

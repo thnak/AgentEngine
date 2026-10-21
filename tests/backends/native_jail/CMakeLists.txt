@@ -311,10 +311,20 @@ if(WIN32)
   # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
   set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
 
-  # ---- NativeJailBackend::grant_ro_path_once() (docs/planning/pdf-text-extraction-design-draft.md
-  # Revision 6/7 -- the public entry point round-5/round-6 red-team found missing) -----------------
-  agentengine_add_test(test_native_jail_grant_ro_path_once_windows
+  # ---- Read-only mounts granted to the shared profile once (ADR-244 §2.4; replaced grant_ro_path_once()) --
+  agentengine_add_test(test_native_jail_ro_mount_dedup_windows
     LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
+    TIMEOUT 30)
+
+  # ---- Read-write mounts on a per-sandbox capability SID; deployment paths never writable (ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_rw_capability_windows
+    LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
+    TIMEOUT 120)
+
+  # ---- G-C5(e): every AppContainer grant goes through grant_spec_mounts (a source scan, ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_grant_sites
+    LIBS agentengine_warnings
+    DEFINITIONS AE_SOURCE_ROOT="${PROJECT_SOURCE_DIR}"
     TIMEOUT 30)
 
   # ---- AppContainerProfile::grant_path()/revoke_path() ACE lifecycle (docs/planning/office-document-

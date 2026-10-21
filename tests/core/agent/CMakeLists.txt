@@ -75,3 +75,6 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_reference_agent_containment_invariance PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 endif()
+
+# ---- ADR-244 §2.1: Bound<T>, check_bound(), choice_missing() -- header-only, core-tier ----------
+agentengine_add_test(test_bound LIBS agentengine::core agentengine_warnings)

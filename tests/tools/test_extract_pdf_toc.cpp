@@ -240,8 +240,10 @@ public:
 void test_real_end_to_end_toc_extraction() {
     using agentengine::tools::ExtractPdfToc;
 
-    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::FsRead{"work", "", std::nullopt}});
+    // ADR-244 §2.4: the worker's read-only mounts are checked against the session's grants too.
+    std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", std::nullopt}};
+    for (auto const& m : agentengine::tools::required_grants()) grants.push_back(m);
+    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(std::move(grants));
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);

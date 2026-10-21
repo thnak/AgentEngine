@@ -15,6 +15,7 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite wall_ms values (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
@@ -160,6 +161,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 5000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 3;
@@ -210,6 +212,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 5000;
         contained_spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB cap
         contained_spec.limits.pids = 4;
@@ -252,6 +255,7 @@ int main() {
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(short_spec);
         short_spec.limits.wall_ms = 500;
         short_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         short_spec.limits.pids = 4;
@@ -310,6 +314,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 3000;
         contained_spec.limits.memory_bytes = 32ull * 1024 * 1024;
         contained_spec.limits.pids = 4;
@@ -342,6 +347,7 @@ int main() {
         SandboxSpec positive_spec = contained_spec;
         positive_spec.mounts.push_back(
             MountSpec{.source = secret_dir.string(), .guest_path = "/secret", .read_write = false});
+        ae_test::grant_listed_mounts(positive_spec);
         auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
         AE_CHECK_OK(positive_handle, "C3 fs-escape positive control: create() granting the secret dir succeeds");
         if (positive_handle.has_value()) {
@@ -391,6 +397,7 @@ int main() {
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 1000;
         contained_spec.limits.memory_bytes = 64ull * 1024 * 1024;
         contained_spec.limits.pids = 4;

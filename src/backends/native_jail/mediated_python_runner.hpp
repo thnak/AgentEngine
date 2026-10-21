@@ -38,6 +38,7 @@
 // `python_worker_mediation.hpp`'s identical note; this redesign did not touch that decision.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -125,11 +126,21 @@ public:
     MediatedPythonRunner(MediatedPythonRunner&&) = delete;
     MediatedPythonRunner& operator=(MediatedPythonRunner&&) = delete;
 
+    // The read-only and read-write `cap::SandboxMount`s a host grant must hold for `initialize()` to
+    // succeed with `config` (ADR-244 §2.4): each `mount_roots` entry read-write at its guest path, and
+    // the worker's directory, `python_home` and every `extra_sys_path` entry read-only at their own
+    // path. A listing for the host to read and pass to `CapabilitySet::grant_root` itself -- the runner
+    // never grants anything it derives from configuration.
+    [[nodiscard]] static std::vector<cap::SandboxMount> required_mounts(MediatedPythonConfig const& config);
+
     // Spawns the jailed worker process (NativeJailBackend::create_python_worker()) and blocks for its
-    // `init_response`. Must be called exactly once, before `run()`.
-    [[nodiscard]] result<void> initialize();
+    // `init_response`. Must be called exactly once, before `run()`. ADR-244 §2.4: the worker has no
+    // caller at creation, so the host states the authority explicitly -- every mount and deployment path
+    // is checked against `host_grant` -- and `ctx` receives the "create" audit row.
+    [[nodiscard]] result<void> initialize(CapabilitySet const& host_grant, EffectContext& ctx);
 
     [[nodiscard]] bool ok() const { return initialized_; }
+    [[nodiscard]] MediatedPythonConfig const& config() const noexcept { return config_; }
 
     // Satisfies `Runner` (sandbox/runner.hpp) -- byte-identical signature to before this redesign.
     // Delegates to `NativeJailBackend::exec_session()`, which owns exec_seq/single-flight/watchdog
@@ -152,6 +163,11 @@ private:
     NativeJailBackend& backend_;
     bool initialized_ = false;
     SandboxHandle handle_;
+    // ADR-244 §2.4: one runner per session, enforced here. The first run binds the session nonce it
+    // came from; any other session, and any later incarnation of the same one (after a clear, restore or
+    // fork), is refused -- the interpreter's globals belong to the session that created them.
+    std::mutex bind_mutex_;
+    std::optional<SessionNonce> bound_session_;
 };
 
 } // namespace agentengine::native_jail

@@ -45,6 +45,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../support/python_runner_grants.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -361,11 +362,12 @@ int main() {
     // nothing folds into history yet. ----------------------------------------------------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B1-setup: runner initializes cleanly");
 
         Session session;
         session.initialize("b1", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B1-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "execute_code",
@@ -413,11 +415,12 @@ int main() {
     // ---- B2: a fresh StartRun while a codeact_ask interaction is open is rejected -------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B2-setup: runner initializes cleanly");
 
         Session session;
         session.initialize("b2", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B2-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "execute_code", execute_code_args("import agent\nagent.ask('q')")),
@@ -444,11 +447,12 @@ int main() {
     // ---- B3: resolving with an answer re-runs the script; a deterministic prefix survives replay ---
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B3-setup: runner initializes cleanly");
 
         Session session;
         session.initialize("b3", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B3-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -501,11 +505,12 @@ int main() {
     // ---- B4: two sequential agent.ask() calls in one script -- same interaction_id, updated prompt -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B4-setup: runner initializes cleanly");
 
         Session session;
         session.initialize("b4", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B4-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -567,11 +572,12 @@ int main() {
     // ---- B5 (positive control): no agent.ask() call -- one round, no regression --------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B5-setup: runner initializes cleanly");
 
         Session session;
         session.initialize("b5", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B5-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -594,13 +600,14 @@ int main() {
     // ---- B6: execute_code + another tool call in one round, execute_code ask-pends -- fails closed -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B6-setup: runner initializes cleanly");
 
         noop_tool_invoked_log() = false;
 
         Session session;
         session.initialize("b6", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B6-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/true);
         session.emplace_chat_client().set_script(
             {{two_tool_call_response("c1", "execute_code", execute_code_args("import agent\nagent.ask('q')"),
@@ -637,11 +644,12 @@ int main() {
         std::filesystem::path const marker = work_dir / "marker.txt";
 
         MediatedPythonRunner runner(make_cfg(work_dir.wstring()), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
 
         Session session;
         session.initialize("b7", Principal{"p", ""});
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({

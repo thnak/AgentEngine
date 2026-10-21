@@ -20,7 +20,7 @@
 // Every value emitted to nft/tc/bridge is typed (uint32 address, uint16 port, uint64 bytes) or validated by
 // this header's own charset checks (MAC, interface name, tag): no string from a guest, a DNS answer or model
 // output reaches a generated command line (I3). The allowed tuples are the backend's own resolution of
-// spec.net.allowlist entries that authorize_spec()/net_capability_required already required to be covered by a
+// spec.net.allowlist entries that authorize_spec() already required to be covered by a
 // cap::SandboxNetOut grant (I2); this module only ever ADDS drops, it never edits iptables/ufw/Docker, never
 // opens FORWARD and never touches a sysctl.
 //

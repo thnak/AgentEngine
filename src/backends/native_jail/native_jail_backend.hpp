@@ -111,6 +111,7 @@
 #include "agentengine/sandbox/net_egress_proxy.hpp"  // VerifiedEndpoint -- set_test_connect_resolver_override
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
+#include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/job_object_limits.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
 
@@ -163,6 +164,22 @@ struct PythonWorkerSessionConfig {
     std::chrono::milliseconds idle_cpu_budget_ms{100};
 };
 
+// ADR-244 §2.4: one sandbox's read-write mounts, granted to its own capability SID. Revoked when the sandbox goes
+// (normal destroy, or a create that fails after granting); after a crash the ACEs stay but name a SID no later
+// token holds.
+struct RwGrants {
+    std::optional<OwnedSid>   sid;
+    std::vector<std::wstring> paths;
+
+    RwGrants() = default;
+    RwGrants(RwGrants const&) = delete;
+    RwGrants& operator=(RwGrants const&) = delete;
+    ~RwGrants() {
+        if (!sid.has_value()) return;
+        for (std::wstring const& path : paths) (void)revoke_sid_path(path, sid->get());
+    }
+};
+
 class NativeJailBackend {
 public:
     static constexpr ProfileTraits traits{
@@ -196,21 +213,6 @@ public:
     result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
     result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
     void destroy_blocking(SandboxHandle& handle);
-
-    // Grants this backend's shared, deployment-scoped AppContainer profile read+execute access to a
-    // FIXED, host-controlled path (never a caller/model-supplied one -- I2), deduplicated for the life
-    // of the process the same way `python_home`/`extra_sys_path`/the worker-binary directory already
-    // are internally for `create_python_worker()`. Exists so a caller outside this translation unit
-    // (e.g. a first-party `Tool<>` that needs one fixed scratch directory readable by an
-    // AppContainer'd worker it spawns via plain `create()`/`exec()`, not `create_python_worker()`) can
-    // reach that same dedup guarantee -- `grant_ro_deduped()`/`shared_profile()` are anonymous-
-    // namespace internals of native_jail_backend.cpp and were never reachable from outside it before
-    // this method (docs/planning/pdf-text-extraction-design-draft.md Revision 6, round-5/round-6
-    // red-team finding). Calling this repeatedly with the SAME `path` is a safe no-op after the first
-    // call -- it does not grow the shared profile's DACL. Does not itself add `path` to any
-    // `SandboxSpec::mounts` list; the grant lives on the AppContainer SID's own ACL, independent of any
-    // particular `SandboxHandle`'s `SandboxSpec` bookkeeping.
-    [[nodiscard]] result<void> grant_ro_path_once(std::wstring const& path);
 
     // ---- Jailed-Python-worker surface (additive; NOT part of the SandboxBackend concept -- see
     // sandbox/sandbox.hpp's own `exec_session` is intentionally absent from that `requires` clause,
@@ -320,6 +322,9 @@ private:
     // library implementations and hard-errors on this one) -- `Instance` stays private, just not
     // opaque across the header boundary.
     struct Instance {
+        // Declared first, so it is destroyed last: the job (and every process in it) is gone before the
+        // read-write ACEs are revoked.
+        RwGrants        rw;
         JobObjectLimits job;
         ResourceLimits  limits;
         std::wstring    cwd;  // first read-write mount's host path, if any; empty = inherit

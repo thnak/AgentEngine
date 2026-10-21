@@ -27,7 +27,7 @@
 // (a sanity check inside the test itself, not assumed) before proving revoke_path() succeeds anyway.
 //
 // Technique: the same dacl_entry_count()/GetNamedSecurityInfoW positive-control discipline
-// test_native_jail_grant_ro_path_once_windows.cpp and test_native_jail_teardown_cycles_windows.cpp
+// test_native_jail_ro_mount_dedup_windows.cpp and test_native_jail_teardown_cycles_windows.cpp
 // already established and validated as sensitive (a differing-value repeat grant genuinely accumulates
 // ACEs there), extended here with a SID-specific has_sid_ace() check -- a flat entry count alone cannot
 // distinguish "our ACE is gone" from "some OTHER ACE was added or removed," which matters once a
@@ -62,7 +62,7 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-// Same technique as test_native_jail_grant_ro_path_once_windows.cpp's own dacl_entry_count().
+// Same technique as test_native_jail_ro_mount_dedup_windows.cpp's own dacl_entry_count().
 DWORD dacl_entry_count(std::wstring const& path) {
     PACL dacl = nullptr;
     PSECURITY_DESCRIPTOR sd = nullptr;

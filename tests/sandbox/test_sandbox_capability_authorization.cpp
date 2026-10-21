@@ -42,16 +42,36 @@ MountSpec host_mount(std::string host_path, std::string guest_path, bool read_wr
 }  // namespace
 
 int main() {
-    // G1: no SandboxMount/SandboxNetOut grants at all -- every existing caller's shape (design draft
-    // §5) -- mounts/net pass through completely unchecked, regardless of content. This is the whole
-    // backward-compatibility premise the mechanism is built on.
+    // G1 (ADR-244 §2.4, G-C4): no SandboxMount/SandboxNetOut grants at all. This used to skip the check
+    // entirely (an opt-in mechanism; ADR-242 §2 lists that as an implicit permissive choice). Now a mount
+    // or a network policy nobody granted is refused, whether or not any grant of that kind exists.
     {
         SandboxSpec spec;
         spec.mounts.push_back(host_mount("/anything/at/all", "/g", true));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
+                 "G1a: a host mount with no SandboxMount grant at all is refused");
+    }
+    {
+        SandboxSpec spec;
         spec.net.deny_all = false;
         spec.net.allowlist.push_back("evil.example:443:https");
         auto r = authorize_spec(spec);
-        AE_CHECK(r.has_value(), "G1: empty capabilities skips enforcement entirely (opt-out preserved)");
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.net_not_authorized",
+                 "G1b: a network allowlist with no SandboxNetOut grant at all is refused");
+    }
+    {
+        SandboxSpec spec;
+        spec.net.deny_all = false;  // unrestricted egress, no grant
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.net_not_authorized",
+                 "G1c: unrestricted egress with no grant at all is refused");
+    }
+    {
+        // Positive control: a spec that mounts nothing and denies all egress needs no grant.
+        SandboxSpec spec;
+        auto r = authorize_spec(spec);
+        AE_CHECK(r.has_value(), "G1d: no mounts and deny_all need no grant");
     }
 
     // G2: a covering SandboxMount grant authorizes a matching mount.
@@ -119,17 +139,15 @@ int main() {
                  "G6: a literal '..' component in guest_path is rejected");
     }
 
-    // G7: an UNRELATED capability (e.g. cap::Background) present, but zero SandboxMount grants --
-    // mount enforcement must NOT engage (red-team finding B2: engaging on whole-CapabilitySet
-    // emptiness, rather than presence of the relevant grant kind, would fail open here in the wrong
-    // direction and closed in a surprising one -- this proves the fix).
+    // G7: an UNRELATED capability (cap::Background) is not mount authority. Under the old opt-in check
+    // this asserted the mount passed unchecked; under ADR-244 it is refused like any ungranted mount.
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root({Capability{cap::Background{4}}});
         spec.mounts.push_back(host_mount("/anything/at/all", "/g", true));
         auto r = authorize_spec(spec);
-        AE_CHECK(r.has_value(),
-                 "G7: an unrelated capability does not accidentally engage mount enforcement");
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
+                 "G7: an unrelated capability does not authorize a mount");
     }
 
     // G8: deny_all=true (the default) with a SandboxNetOut grant present -- nothing to authorize,
@@ -227,6 +245,41 @@ int main() {
         spec.mounts.push_back(blob_mount);
         auto r = authorize_spec(spec);
         AE_CHECK(r.has_value(), "G14: a BlobRef mount source is left to the backend's own check");
+    }
+
+    // G15 (ADR-244 §2.4): a SandboxMount grant with an EMPTY host prefix names no path. It used to cover
+    // every host path (`path_prefix_covers("")` is true), an unnamed "everything"; it is refused.
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"", "", true}}});
+        spec.mounts.push_back(host_mount("/etc", "/g", false));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_grant_invalid",
+                 "G15: an empty-prefix SandboxMount grant is refused, not treated as covering everything");
+    }
+
+    // G16 (ADR-244 §2.4): host paths compare in one normal form. On Windows `\` and `/` are the same
+    // separator and case does not matter; elsewhere the comparison stays byte-exact.
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxMount{"C:\\Work\\Data", "/w", true}}});
+        spec.mounts.push_back(host_mount("c:/work/data\\Sub", "/w", true));
+        auto r = authorize_spec(spec);
+#if defined(_WIN32)
+        AE_CHECK(r.has_value(), "G16: a backslash, mixed-case child of a granted Windows path is covered");
+#else
+        AE_CHECK(!r.has_value(), "G16: off Windows, host paths compare byte-exact");
+#endif
+    }
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxMount{"C:\\Work\\Data", "/w", true}}});
+        spec.mounts.push_back(host_mount("C:\\Work\\DataX", "/w", true));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
+                 "G16b: a sibling that only shares the prefix string is not covered");
     }
 
     std::cout << "\n" << (g_failures == 0 ? "ALL PASS" : "FAILURES") << "\n";
