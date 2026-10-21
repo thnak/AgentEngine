@@ -310,3 +310,17 @@ agentengine_compile_fail_test(eval_run_trial_rejects_prewrapped_summarizer
   CONTROL compile_fail_eval_run_trial_plain_inner_positive_control
   EXPECT "SummarizerT must not already be a RecordingChatClient"
   LIBS agentengine::worktree_store)
+
+# ---- ADR-244 §2.1 / G-C1 compile-fail proof ---------------------------------------------------
+# `Bound<T>` has no default constructor: an aggregate that omits a `Bound` member does not compile, so
+# an omitted limit cannot mean "unbounded". The positive control states every member.
+agentengine_compile_fail_control(compile_fail_bound_positive_control
+  SOURCE bound_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(bound_omitted_member
+  SOURCE bound_omitted_member.cpp
+  CONTROL compile_fail_bound_positive_control
+  # cl: "attempting to reference a deleted function"; gcc: "use of deleted function"; clang: "call to
+  # deleted constructor".
+  EXPECT "deleted"
+  LIBS agentengine::core)
