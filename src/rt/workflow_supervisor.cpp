@@ -29,6 +29,9 @@ void WorkflowSupervisor::initialize(agentengine::workflow::Workflow graph, std::
                   agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
                   agent_kind_bodies_are_structurally_agent_backed() &&
                   batch_bodies_are_batchable();  // ADR-235 §3.1
+    // ADR-244 §2.3: a graph whose agent node wraps a per_request session would run that node with no authority.
+    initialize_refusal_ = agent_node_authority_refusal();
+    if (initialize_refusal_.has_value()) valid_base_ = false;
     valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
 }
 
@@ -1705,6 +1708,17 @@ bool WorkflowSupervisor::agent_kind_bodies_are_structurally_agent_backed() const
         }
     }
     return true;
+}
+
+std::optional<agentengine::error> WorkflowSupervisor::agent_node_authority_refusal() const {
+    for (std::size_t i = 0; i < graph_.executors.size() && i < bodies_.size(); ++i) {
+        if (!bodies_[i]) continue;
+        AgentExecutorBodyTag const* tag = bodies_[i].target<AgentExecutorBodyTag>();
+        if (tag != nullptr && tag->source() == agentengine::authority_mode::per_request) {
+            return node_requires_authority("agent node '" + graph_.executors[i].id + "'");
+        }
+    }
+    return std::nullopt;
 }
 
 bool WorkflowSupervisor::sub_workflow_kind_nodes_are_bound() const {

@@ -43,7 +43,7 @@ namespace agentengine::mcp {
     return CapabilityGrant{
         trust::principal_from_bearer_claims(claims, kind),
         std::move(capabilities),
-        *deadline,
+        Expiry::at(*deadline),
     };
 }
 

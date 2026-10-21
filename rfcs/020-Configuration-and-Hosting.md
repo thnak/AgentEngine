@@ -67,7 +67,9 @@ casualties directly, and §8.6 committed to the edits now applied here:
   §3a embedded-library host that routes its own HTTP paths to engine-provided handlers —
   `McpServer::dispatch()` (`include/agentengine/protocol/mcp/server.hpp`) and its A2A sibling take
   the caller's `Principal` and per-request `CapabilityGrant` as arguments precisely because they
-  never see a connection of their own.
+  never see a connection of their own. Each is constructed with a stated authority source
+  (`per_request(ceiling)` or `single_trusted_caller`, ADR-244 §2.3); neither falls back to a
+  construction-time set when a request carries no grant.
 - **"The same binary serves all five" does not survive** — ADR-061 §7c R21, in those words. The
   engine *library* is the same across shapes; the binary is not, because the shapes that speak a
   protocol surface now require host-supplied transport the engine does not ship. (The Cluster row was

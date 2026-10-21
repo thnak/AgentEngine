@@ -158,8 +158,12 @@ namespace agent_yaml_compiler_detail {
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.max_turns must be a whole number between 0 and 4294967295",
+                    "limits.max_turns must be a whole number between 1 and 4294967295",
                     "agent_yaml_compiler.invalid_limit"});
+            }
+            // ADR-244 §2.1 (flips test_agent_yaml_limits Y8): 0 is refused, as at every check site.
+            if (auto z = check_bound("limits.max_turns", Bound<std::uint64_t>::at_most(*bounded)); !z) {
+                return std::unexpected(z.error());
             }
             meta.max_turns = static_cast<std::uint32_t>(*bounded);
         }
@@ -168,8 +172,11 @@ namespace agent_yaml_compiler_detail {
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.token_budget must be a whole, non-negative number",
+                    "limits.token_budget must be a whole, positive number",
                     "agent_yaml_compiler.invalid_limit"});
+            }
+            if (auto z = check_bound("limits.token_budget", Bound<std::uint64_t>::at_most(*bounded)); !z) {
+                return std::unexpected(z.error());
             }
             meta.token_budget = *bounded;
         }

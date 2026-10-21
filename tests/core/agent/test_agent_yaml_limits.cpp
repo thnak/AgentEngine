@@ -30,14 +30,16 @@
 //         `limits:` block someone wrote that quietly does nothing is the same failure, quieter.
 //   Y7 -- an ABSENT limits block still yields 002 §3's documented defaults. This is the behaviour
 //         the fix had to preserve, not the behaviour it removed.
-//   Y8 -- `max_turns: 0` is ACCEPTED. Zero is a coherent "do nothing" budget and must not be
-//         confused with "unset"; refusing it would make the guard overreach.
+//   Y8 -- `max_turns: 0` and `token_budget: 0` are REFUSED (choice.zero_bound). ADR-244 §2.1 flipped this
+//         case: zero is neither "unset" nor a usable "deny everything" (that has its own mechanism), so it
+//         is refused at every check site, YAML included. Positive control: 1 compiles as written.
 //
 // Needs no daemon, no network and no credentials.
 
 #include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/yaml_value.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -147,12 +149,17 @@ int main() {
               "the guard rejects bad values, it does not make the block mandatory");
     }
 
-    // ---- Y8: zero is a real budget, not a missing one.
+    // ---- Y8 (ADR-244 §2.1): zero is refused, not taken as a budget.
     {
-        auto meta = compile(doc_with_limits("  limits:\n    max_turns: 0\n"));
-        check(meta.has_value() && meta->max_turns == 0,
-              "Y8: max_turns: 0 is ACCEPTED and means zero turns -- refusing it would make the "
-              "guard overreach into a coherent 'deny everything' setting");
+        auto turns = compile(doc_with_limits("  limits:\n    max_turns: 0\n"));
+        check(!turns.has_value() && turns.error().code == "choice.zero_bound",
+              "Y8: max_turns: 0 is REFUSED with choice.zero_bound");
+        auto budget = compile(doc_with_limits("  limits:\n    token_budget: 0\n"));
+        check(!budget.has_value() && budget.error().code == "choice.zero_bound",
+              "Y8: token_budget: 0 is REFUSED with choice.zero_bound");
+        auto one = compile(doc_with_limits("  limits:\n    max_turns: 1\n    token_budget: 1\n"));
+        check(one.has_value() && one->max_turns == 1 && one->token_budget == std::uint64_t{1},
+              "Y8 control: max_turns: 1 and token_budget: 1 compile as written");
     }
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

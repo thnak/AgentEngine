@@ -100,7 +100,7 @@ int main() {
     {
         auto const              table = ae::ToolTable::from(SlowBackgroundableTool{});
         ae::CapabilitySet const held  = ae::CapabilitySet::grant_root({ae::cap::Background{8}});
-        mcp::McpServer          server(table, held, ae::ApprovalDecider{}, "binding-test-server");
+        mcp::McpServer          server(table, mcp::McpAuthority::single_trusted_caller(held), ae::ApprovalDecider{}, "binding-test-server");
 
         ae::Principal const alice = ae::make_local_cli_principal("alice", "tenant-a");
         ae::Principal const bob   = ae::make_local_cli_principal("bob", "tenant-a");
@@ -231,7 +231,7 @@ int main() {
             co_return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
         };
 
-        a2a::A2aServer server(starter, "ctx-bind");
+        a2a::A2aServer server(starter, "ctx-bind", ae::AuthoritySource::single_trusted_caller());
 
         a2a::Message inbound;
         inbound.message_id = "m1";

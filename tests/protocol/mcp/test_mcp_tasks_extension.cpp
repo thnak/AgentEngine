@@ -94,7 +94,7 @@ int main() {
     // Background<1>: exactly one concurrent backgrounded call, so C4-6 can prove capacity enforcement
     // reused through the MCP path (G9, Phase B).
     ae::CapabilitySet const held = ae::CapabilitySet::grant_root({ae::cap::Background{1}});
-    mcp::McpServer server(table, held, ae::ApprovalDecider{}, "agentengine-test-tasks-server");
+    mcp::McpServer server(table, mcp::McpAuthority::single_trusted_caller(held), ae::ApprovalDecider{}, "agentengine-test-tasks-server");
     // ADR-061 §7 R3: one principal for this whole client, so every task it creates is owned by
     // the same identity that later polls it -- the ordinary case. The cross-principal case gets
     // its own dedicated test (test_task_principal_binding.cpp).

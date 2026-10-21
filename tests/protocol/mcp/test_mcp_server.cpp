@@ -70,7 +70,7 @@ struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool> {
 int main() {
     auto const table = ae::ToolTable::from(EchoTool{}, AlwaysFailsTool{});
     ae::CapabilitySet const held;  // neither tool declares a Capabilities<...> ceiling
-    mcp::McpServer server(table, held, ae::ApprovalDecider{}, "agentengine-test-server");
+    mcp::McpServer server(table, mcp::McpAuthority::single_trusted_caller(held), ae::ApprovalDecider{}, "agentengine-test-server");
     // ADR-061 §7 R3: `dispatch()` now requires the principal the request established.
     ae::Principal const kCaller = ae::make_local_cli_principal("test-caller", "test-tenant");
 

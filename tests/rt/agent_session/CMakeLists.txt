@@ -177,6 +177,10 @@ agentengine_add_test(test_rt_agent_session_nonce LIBS agentengine::core agenteng
 # sources refused rather than narrowed, admission-time expiry, and choices surviving clear, fork and restore.
 agentengine_add_test(test_rt_agent_session_choices LIBS agentengine::core agentengine_warnings)
 
+# ADR-244 slice 3b (G-C6, G-C2): the same authority rules on the A2A server, workflow agent nodes,
+# WorkflowChatClient and the agent bridge's ceiling, and zero declared bounds refused at bind.
+agentengine_add_test(test_rt_authority_surfaces LIBS agentengine::core agentengine_warnings)
+
 # ADR-199 §8 (red team MAJOR): a provider's on_turn_end(TurnView const&) reads a view that is still alive.
 # Catches a revert of the hook's `TurnView const&` on g++ (the Linux leg); MSVC hides the dangling reference.
 agentengine_add_test(test_rt_agent_session_turn_end_view_lifetime LIBS agentengine::core agentengine_warnings)

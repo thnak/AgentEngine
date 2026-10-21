@@ -151,6 +151,36 @@ and ask authority, provider secrets); ADR-244 §5.
 - **gcc/clang only:** designated initializers of `AgentSessionOptions` that leave out trailing members
   trip `-Wmissing-field-initializers`; every such site states all seven.
 
+## Implementation notes (slice 3b)
+
+- **Gate tests:** `tests/rt/agent_session/test_rt_authority_surfaces.cpp` S1–S7 (A2A both ways, the workflow
+  tag at `initialize()` and per call, `WorkflowChatClient`, the bridge ceiling, zero declared bounds);
+  `tests/protocol/mcp/test_mcp_capability_grant.cpp` rewritten for the two stated modes (claims 1 and 2 now
+  test both options, claim 8 the ceiling); `test_agent_yaml_limits` Y8 flipped to a refusal with a positive
+  control.
+- **Mutants:** 15, one per new check (MCP: trusted accepting a grant, per_request falling back to an empty
+  set, the ceiling; A2A: all four refusals; the workflow refusal at `initialize()` and per call;
+  `WorkflowChatClient`; the bridge's three ceiling rules; zero in `validate_agent_metadata` and in the YAML
+  compiler). All killed. Two needed a second pass: the A2A trusted mutant first failed to build
+  (unreachable code under `/WX`) and was rewritten with an opaque condition; the per-call workflow mutant
+  first survived, because the session's own admission refuses the same run (`run.authority_required`) and
+  `WorkflowResult` carries no error code. S4 now calls the node body directly and checks
+  `workflow.node_requires_authority`.
+- **Choices made here, each narrower than the alternative:**
+  - A `per_request` MCP server refuses a call without a grant on every method, `server/discover` and
+    `tools/list` included -- the same "no read-only exemption" rule the grant checks already had.
+  - `A2aServer` checks expiry itself as well as the session, so a host starter that reaches a session of
+    another mode (or none) is still held to what the server stated.
+  - The bridge's "no declared capabilities cannot be per_request" rule applies to native agents too, not
+    only YAML: an agent that declares nothing would refuse every non-empty authority under per_request.
+    Parsing YAML `capabilities:` into the ceiling stays slice 4.
+  - `WorkflowSupervisor::initialize_refusal()` names only this check's refusal; the older invalid-graph
+    checks still report `workflow_status::invalid` without a code.
+- **Disclosed:** `WorkflowChatClient`'s refusal reaches an `AgentSession` caller as `run.stream_incomplete`,
+  with `workflow_chat_client.per_request_session` in the message: the session wraps every failed stream
+  that way. A `McpAuthority::single_trusted_caller(held)` borrows `held`, as the server already borrowed
+  its `ToolTable`.
+
 ## Round 4 — 2026-10-21, two reviewers
 
 One reviewer attacked the code slice 2 shipped (PR #213), with executed probes; the other attacked revision 4's

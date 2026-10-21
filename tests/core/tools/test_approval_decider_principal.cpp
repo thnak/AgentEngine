@@ -131,7 +131,7 @@ int main() {
             co_return caller.tenant_id == "trusted-tenant";
         };
         ae::ToolTable const sync_table = ae::ToolTable::from(AlwaysApproveTool{});
-        mcp::McpServer server(sync_table, held, tenant_gated, "approval-decider-principal-test-server");
+        mcp::McpServer server(sync_table, mcp::McpAuthority::single_trusted_caller(held), tenant_gated, "approval-decider-principal-test-server");
 
         ae::Principal const kTrusted   = ae::make_local_cli_principal("caller-t", "trusted-tenant");
         ae::Principal const kUntrusted = ae::make_local_cli_principal("caller-u", "other-tenant");

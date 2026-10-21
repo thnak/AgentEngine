@@ -339,6 +339,28 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     if (!declared_turns.covers(opts.choices.max_turns)) return std::unexpected(override_widens("max_turns"));
     if (!declared_budget.covers(opts.choices.token_budget)) return std::unexpected(override_widens("token_budget"));
 
+    // ADR-244 §2.3 (red-team D14): a per_request session's ceiling is bounded by the agent's declaration, the
+    // same narrowing direction as the turn cap. `no_ceiling()` takes the declared ceiling; a stated ceiling the
+    // declaration does not cover is refused, not clamped. An agent that declares no capabilities (every YAML
+    // agent today) would refuse every authority that holds anything, so it cannot be per_request at all
+    // rather than being pushed to `no_ceiling()`.
+    SessionChoices choices = opts.choices;
+    if (CapabilityCeiling const* asked = opts.choices.authority.ceiling(); asked != nullptr) {
+        if (meta.capability_ceiling.empty()) {
+            return std::unexpected(choice_missing(
+                "capability_ceiling",
+                std::array<std::string_view, 2>{
+                    "declare the agent's capabilities (Capabilities<...>, or `capabilities:` in YAML)",
+                    "SessionChoices{AuthoritySource::single_trusted_caller(), ...}"}));
+        }
+        CapabilitySet declared = CapabilitySet::grant_root(meta.capability_ceiling);
+        if (asked->is_none()) {
+            choices.authority = AuthoritySource::per_request(std::move(declared));
+        } else if (!declared.covers(*asked->set())) {
+            return std::unexpected(override_widens("capability_ceiling"));
+        }
+    }
+
     for (Capability const& c : opts.chat_client_grants) {
         if (capability_kind_of(c) != capability_kind::secret) {
             return std::unexpected(error{failure_class::policy,
@@ -357,7 +379,7 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     ChatClientCapabilities const client_caps = client.capabilities();
 
     auto session = std::make_unique<SessionT>();
-    session->initialize(opts.session_id, opts.principal, opts.choices);
+    session->initialize(opts.session_id, opts.principal, std::move(choices));
     session->emplace_chat_client(std::move(client));
     session->set_capabilities(capabilities.get());
 

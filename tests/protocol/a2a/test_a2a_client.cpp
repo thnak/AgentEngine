@@ -125,7 +125,7 @@ a2a::AgentCard make_card(std::string skill_name) {
 
 int main() {
     Harness h;
-    a2a::A2aServer server(h.starter(), "ctx-remote");
+    a2a::A2aServer server(h.starter(), "ctx-remote", ae::AuthoritySource::single_trusted_caller());
 
     a2a::RemoteAgentTransport transport;
     // ADR-061 §7 R1/R2: the transport is what establishes the caller, and every server verb now

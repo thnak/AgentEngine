@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2 and 3a built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3a and 3b built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -260,8 +260,16 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `test_rt_agent_session_choices` C1–C15 and five `try_compile` cases, with planted mutants. The two
      spawn paths and `eval_trial.hpp` state an interim `single_trusted_caller()` with their request's own
      bounds (an unset budget is `unbounded()`), marked in the code and in the planning log, until 3c.
-   - **3b:** the MCP and A2A server ceilings, the workflow tag and `WorkflowChatClient` refusal under
-     `per_request`, the YAML `capability_ceiling`, Y8.
+   - **3b, servers, workflows, the bridge ceiling (built):** `McpAuthority` and `A2aServer`'s stated
+     `AuthoritySource`, each refusing both ways (`mcp.`/`a2a.authority_required`, `_expired`,
+     `_exceeds_ceiling`, `_unexpected`); `CapabilityGrant::expiry` an `Expiry`; the workflow tag carries its
+     session's source (`workflow.node_requires_authority` at `initialize()`, named by
+     `initialize_refusal()`, and per call); `WorkflowChatClient` refused inside a `per_request` session; the
+     bridge bounds a `per_request` ceiling by `AgentMetadata::capability_ceiling` (`no_ceiling()` takes it, a
+     wider one is `agent_session.override_widens`, none declared is `choice.missing.capability_ceiling`); a
+     declared turn cap or budget of 0 refused in `validate_agent_metadata` and the YAML compiler (Y8 flipped).
+     Tests: `test_rt_authority_surfaces` S1–S7, `test_mcp_capability_grant` claims 1, 2 and 8, Y8, with
+     planted mutants.
    - **3c:** both spawn paths inherit the parent's authority source, children `tighter()`, the reflection and
      ask authority parameter, provider secrets invisible to tools.
 4. **Agent metadata, tools, builders, spawn, workflows, reflection (G-C3, G-C8's null registry):**

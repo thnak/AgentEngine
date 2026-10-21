@@ -342,7 +342,7 @@ int main() {
     {
         auto const table = ToolTable::from(ProbeTool{});
         CapabilitySet const held = CapabilitySet::grant_root({cap::Background{4}});
-        mcp::McpServer server(table, held, ApprovalDecider{}, "root-run-id-test-server");
+        mcp::McpServer server(table, mcp::McpAuthority::single_trusted_caller(held), ApprovalDecider{}, "root-run-id-test-server");
         Principal const caller = make_local_cli_principal("mcp-caller", "tenant-a");
         auto call = [&](std::string const& rpc_id) {
             mcp::JsonRpcRequest req{mcp::RpcId{rpc_id}, "tools/call",
@@ -376,7 +376,7 @@ int main() {
 
         // red-team r5 m6: a SECOND server instance's first request must not mint the id the first instance's first request
         // did (the counter alone restarts at 1; a per-instance host-side nonce keeps them apart).
-        mcp::McpServer server2(table, held, ApprovalDecider{}, "root-run-id-test-server");
+        mcp::McpServer server2(table, mcp::McpAuthority::single_trusted_caller(held), ApprovalDecider{}, "root-run-id-test-server");
         mcp::JsonRpcRequest req2{mcp::RpcId{std::string{"client-chosen-id"}}, "tools/call",
                                  json::Value::make_object(
                                      {{"name", json::Value::make_string("probe")},
