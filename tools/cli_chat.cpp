@@ -415,7 +415,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 // "first caller wins" property, unchanged from this function's own pre-ADR-030 shape) -- callers
 // after the first must not assume their own `mount_roots` argument had any effect.
 [[nodiscard]] native_jail::MediatedPythonRunner& shared_python_runner(
-    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots, agentengine::SessionNonce session_nonce) {
     // Jailed-Python-worker design (008 §1b/§3, 010 §2/§6): `MediatedPythonRunner` no longer owns an
     // in-process interpreter -- it is an IPC client over `NativeJailBackend::create_python_worker()`,
     // so it needs a `NativeJailBackend&` to hand its jailed worker process's real OS-level
@@ -448,7 +448,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         cfg.expose_agent_ask = true;
         return native_jail::MediatedPythonRunner(std::move(cfg), backend);
     }();
-    static bool const initialized = [] {
+    static bool const initialized = [session_nonce] {
         // ADR-244 §2.4: this CLI is the host, so it states the runner's authority itself -- exactly the
         // mounts the runner lists, granted here, nothing derived inside the engine.
         std::vector<agentengine::Capability> grants;
@@ -456,6 +456,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
             grants.push_back(m);
         }
         agentengine::EffectContext init_ctx;
+        init_ctx.session_nonce = session_nonce;  // the runner is created for the session that first reaches it
         auto r = runner.initialize(agentengine::CapabilitySet::grant_root(std::move(grants)), init_ctx);
         if (!r) {
             std::cerr << "FATAL: MediatedPythonRunner failed to initialize: " << r.error().message << "\n";
@@ -472,9 +473,9 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 // closed if any session OTHER than the one that bound first ever tries to reach the runner through
 // it, turning ADR-002 §5.5.6's rule into something enforced, not merely commented.
 [[nodiscard]] CodeActRunnerBinding<native_jail::MediatedPythonRunner>& shared_python_runner_binding(
-    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots, agentengine::SessionNonce session_nonce) {
     static CodeActRunnerBinding<native_jail::MediatedPythonRunner> binding(
-        shared_python_runner(mount_roots));
+        shared_python_runner(mount_roots, session_nonce));
     return binding;
 }
 
@@ -899,10 +900,11 @@ private:
         // lazy-static IIFE (cli_chat.cpp, near main()) runs its Py_InitializeFromConfig call the
         // first time this line executes, never before.
         if (runner_binding_ == nullptr) {
-            auto& binding = shared_python_runner_binding(mount_roots_);
+            auto& binding = shared_python_runner_binding(mount_roots_, ctx.session_nonce);
             auto  bound   = binding.bind(session_id_);
             if (!bound) co_return std::unexpected(bound.error());
             runner_binding_ = &binding;
+            bridge_principal_ = ctx.principal;
         }
         auto& runner = runner_binding_->runner();
         if (!runner.ok()) {
@@ -925,10 +927,10 @@ private:
             codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
         auto bridged = union_codeact_tools(ToolTable::from(), codeact_skill_tools);
         if (!bridged) co_return std::unexpected(bridged.error());
-        // ADR-244 §2.4: the bundled approval is scoped to the principal making THIS execute_code call (the
-        // config is rebuilt on every call), never a standing yes for whoever calls next.
+        // ADR-244 §2.4: this CLI's one user chose the bundled approval for their own session, so it stands for
+        // the principal that bound the runner -- a call under any other principal is not approved.
         auto refreshed = runner.refresh_agent_tools(native_jail::ToolBridgeConfig{
-            *bridged, /*capabilities=*/{}, native_jail::BridgeApproval::standing_for(ctx.principal)});
+            *bridged, /*capabilities=*/{}, native_jail::BridgeApproval::standing_for(bridge_principal_)});
         if (!refreshed) co_return std::unexpected(refreshed.error());
 
         // ADR-057 §9: `ctx.codeact_preseeded_answers` is host-driven replay state, set (only) by
@@ -994,6 +996,8 @@ private:
     // lifetime), lazily resolved by `real_execute_code()`'s first call (ADR-034 correction; see that
     // function's own comment for why NOT resolved eagerly by configure()/main() anymore).
     CodeActRunnerBinding<native_jail::MediatedPythonRunner>* runner_binding_ = nullptr;
+    // The principal of the call that bound the runner; the standing bridge approval is for it alone.
+    agentengine::Principal bridge_principal_;
     // ADR-102 Phase 5: default-constructed into the real, safe "no sandbox bound yet" state -- a
     // session that never calls `run_command_provider().bind_sandbox(...)` (e.g. a future caller of
     // this class that skips it) gets zero execution capability from this provider, never a crash.

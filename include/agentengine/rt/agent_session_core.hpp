@@ -450,11 +450,10 @@ namespace agent_session_detail {
 // the merge, leaking the FIRST session's content into the SECOND. A plain, ever-incrementing counter
 // never repeats across the life of the process (2^64 sessions is not a real exhaustion path), so
 // tagging with THIS instead of `this` closes the hole structurally rather than relying on allocator
-// behavior never colliding. `inline` (C++17) so every translation unit -- regardless of which
-// `AgentSession<...>` specialization it instantiates -- shares the exact same counter; a per-
-// specialization static would let two different `ChatClientT`/`StateT`/`HistoryProviderT`
-// combinations each start counting from 1 and collide with each other instead.
-inline std::atomic<std::uint64_t> g_next_session_identity{1};
+// behavior never colliding. Defined out of line (agent_session_core.cpp) so the whole process shares one
+// counter: an `inline` variable gets one copy per shared library, and ADR-244 §2.4's `SessionNonce` uses this
+// identity to tell sessions apart.
+[[nodiscard]] std::uint64_t next_session_identity() noexcept;
 }  // namespace agent_session_detail
 
 // ADR-199: how the bound chat client routes a model call -- read by start_run()'s warnings and should_retry_stream(),
@@ -776,6 +775,9 @@ public:
 
     [[nodiscard]] std::vector<Message> const& history() const noexcept { return history_; }
     [[nodiscard]] std::string const& session_id() const noexcept { return session_id_; }
+    // ADR-244 §2.4: this incarnation's nonce, for a host creating a per-session resource (the Python runner binds
+    // it at creation). Identity, not authority: holding it grants nothing.
+    [[nodiscard]] agentengine::SessionNonce session_nonce() const noexcept { return effect_context_.session_nonce; }
     [[nodiscard]] agentengine::Principal const& principal() const noexcept { return principal_; }
     [[nodiscard]] std::uint64_t admission_denied_count() const noexcept { return admission_denied_count_; }
     [[nodiscard]] std::unordered_map<std::string, std::string>& metadata() noexcept { return metadata_; }
@@ -1356,13 +1358,13 @@ private:
     // with whoever calls set_capabilities(), unchanged from before this type change.
     std::shared_ptr<CapabilitySet const>                capabilities_;
     // ADR-116 follow-on: this object's own permanent, process-wide-unique identity -- see
-    // `agent_session_detail::g_next_session_identity`'s own comment for why this exists (a real,
+    // `agent_session_detail::next_session_identity()`'s own comment for why this exists (a real,
     // empirically-confirmed ABA hole from using this session's raw address as `ComposedContextProvider
     // ::owner_`'s tag instead). Assigned ONCE, at construction, from a monotonic counter that never
     // repeats -- unlike this object's own address, which the heap allocator can and does hand to a
     // LATER, unrelated `AgentSession` once this one is destroyed.
     std::uint64_t const                                 session_identity_ =
-        agent_session_detail::g_next_session_identity.fetch_add(1, std::memory_order_relaxed);
+        agent_session_detail::next_session_identity();
     EffectContext                                       effect_context_;
     // ADR-244 §2.4: the epoch half of `effect_context_.session_nonce` (the identity half is
     // `session_identity_`). Moves on initialize, clear, restore and fork, so a one-per-session resource

@@ -181,6 +181,7 @@ int main() {
             {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, std::nullopt, {}}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         std::string const script = "import socket\n"
@@ -224,6 +225,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all -- irrelevant here, since these
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
                                 // methods must be denied unconditionally, not merely without a grant
 
         ExecRequest req{"python",
@@ -281,6 +283,7 @@ int main() {
             CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // `_ae_internal` is not itself a name in the guest's own __main__ globals (it lives only in

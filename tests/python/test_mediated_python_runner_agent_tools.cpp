@@ -97,7 +97,7 @@ int main() {
         // anonymous test principal these contexts run as.
         ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
                          .capabilities  = {cap::Entropy{}},
-                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
@@ -107,6 +107,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
         ctx.capabilities = std::make_shared<CapabilitySet const>(
             CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
@@ -191,7 +192,7 @@ int main() {
         // anonymous test principal these contexts run as.
         ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
                          .capabilities  = {},  // no cap::Entropy granted
-                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
@@ -201,6 +202,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
         ctx.capabilities = std::make_shared<CapabilitySet const>(
             CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
@@ -232,6 +234,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
         ctx.capabilities = std::make_shared<CapabilitySet const>(
             CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
@@ -265,6 +268,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
         ctx.capabilities = std::make_shared<CapabilitySet const>(
             CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
@@ -286,7 +290,7 @@ int main() {
             // anonymous test principal these contexts run as.
             ToolBridgeConfig bridge_a{.bridged_tools = ToolTable::from(EchoTool{}),
                              .capabilities  = {cap::Entropy{}},
-                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_a));
             AE_CHECK(refreshed.has_value(), "G2-R2: refresh_agent_tools() with tool A succeeds");
 
@@ -305,7 +309,7 @@ int main() {
             // anonymous test principal these contexts run as.
             ToolBridgeConfig bridge_b{.bridged_tools = ToolTable::from(RefreshedTool{}),
                              .capabilities  = {},
-                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_b));
             AE_CHECK(refreshed.has_value(), "G2-R3: refresh_agent_tools() with a DIFFERENT tool B succeeds");
 

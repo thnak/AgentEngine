@@ -56,7 +56,8 @@ namespace agentengine::native_jail {
 //   - `per_call(decider)`: each bridged call goes to `decider` (the session's own `ApprovalDecider`, passed
 //     by the host), exactly like a model tool call.
 //   - `standing_for(principal)`: the bundled decision of 010 §10 Q2, scoped to ONE principal. A bridged
-//     call made under any other principal is not approved.
+//     call made under any other principal is not approved, and a standing approval for the empty principal
+//     approves nobody (an unset principal is not an identity).
 class BridgeApproval {
 public:
     BridgeApproval() = delete;
@@ -72,7 +73,8 @@ public:
         if (decider_) return decider_;
         return [standing = standing_](Principal const& caller, std::string_view,
                                       std::string const&) -> task<bool> {
-            co_return standing.has_value() && caller.id == standing->id && caller.tenant_id == standing->tenant_id;
+            co_return standing.has_value() && !standing->id.empty() && caller.id == standing->id &&
+                      caller.tenant_id == standing->tenant_id;
         };
     }
 

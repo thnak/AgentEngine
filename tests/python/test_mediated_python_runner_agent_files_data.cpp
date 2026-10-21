@@ -117,6 +117,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"input", "", std::nullopt}},
             Capability{cap::FsRead{"work", "", std::nullopt}},
@@ -262,6 +263,7 @@ int main() {
         {
             EffectContext narrow_ctx{};
             narrow_ctx.session_nonce = ae_test::kTestSessionNonce;
+            narrow_ctx.principal = ae_test::kTestPrincipal;
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
             narrow_ctx.capabilities = agentengine::borrow_capabilities(narrow_caps);
             ExecRequest req{"python",
@@ -291,7 +293,7 @@ int main() {
         // anonymous test principal these contexts run as.
         ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
                          .capabilities  = {},
-                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
@@ -302,6 +304,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -363,6 +366,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python",
                          "try:\n"
                          "    import agent\n"

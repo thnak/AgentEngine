@@ -93,6 +93,7 @@ int main() {
     ExecState state{};
     EffectContext ctx{};
     ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
     auto granted = CapabilitySet::grant_root(
         {Capability{cap::FsRead{"real-mounted-skill", "", std::nullopt}}});
     ctx.capabilities = agentengine::borrow_capabilities(granted);

@@ -111,6 +111,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // NOTE, confirmed by this test's own first real run: shell's own mediated path grammar
@@ -160,6 +161,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto write_via_python = agentengine::rt::block_on(shell.run(
@@ -228,6 +230,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         CapabilitySet read_only_caps =
             CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}},
                                         Capability{cap::FsRead{"work", "", std::nullopt}}});

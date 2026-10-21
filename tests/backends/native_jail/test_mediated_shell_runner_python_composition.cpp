@@ -96,6 +96,7 @@ int main() {
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python print(6 * 7)"}, state, ctx));
@@ -116,6 +117,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python ae_e3_side_effect=1"}, state, ctx));
         AE_CHECK(!out.has_value() && out.error().code == "shell.capability_denied",
                  "E3-PY3 (negative control): ShellRunner cannot invoke PythonRunner without RunnerCall");
@@ -142,6 +144,7 @@ int main() {
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         // The whole multi-line, quote-containing Python body is wrapped in ONE shell-level
         // double-quoted word so this grammar's word-splitting never sees the spaces/quotes inside

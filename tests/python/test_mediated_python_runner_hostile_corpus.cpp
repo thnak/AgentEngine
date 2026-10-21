@@ -140,6 +140,7 @@ int main() {
              Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // ---- ctypes / winreg: denied via the import allowlist, never reaching the loader --------

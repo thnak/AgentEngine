@@ -102,6 +102,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"work", "", std::nullopt}},
         });
@@ -147,6 +148,7 @@ int main() {
             ExecState state{};
             EffectContext ctx{};
             ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"quota", "", std::uint64_t{10}, std::nullopt}},
             });
@@ -185,6 +187,7 @@ int main() {
             ExecState state{};
             EffectContext ctx{};
             ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"count", "", std::nullopt, std::uint32_t{1}}},
             });
@@ -222,7 +225,7 @@ int main() {
         // anonymous test principal these contexts run as.
         ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(BlockedNetTool{}),
                          .capabilities  = {cap::Entropy{}},
-                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(agentengine::Principal{})};
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
@@ -232,6 +235,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         // No cap::NetOut granted at all. ADR-244 §2.4: the caller does hold what the bridged tool itself needs
         // (cap::Entropy), since the bridge never reaches more than its caller holds.
         auto caps = CapabilitySet::grant_root({Capability{cap::Entropy{}}});

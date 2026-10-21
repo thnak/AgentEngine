@@ -74,6 +74,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
     ExecState state{};
     EffectContext ctx{};
     ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecRequest req{"python", source};  // <-- exactly language + source; no prompt field exists to fill
     auto out = agentengine::rt::block_on(runner.run(req, state, ctx));

@@ -163,6 +163,26 @@ int main() {
                  "ADR-244 (positive control): guest paths that only share a string prefix (/work, /workshop) "
                  "are not an overlap");
         if (ok.has_value()) agentengine::rt::block_on(backend.destroy(*ok));
+
+        // One spelling per guest path: `//work` binds onto `/work` but would not compare equal to it, a relative
+        // path would be created beside the jail root, and `/` is the root itself.
+        for (char const* bad : {"//work", "work", "/", "", "/work/", "/a/../work", "/a/./b"}) {
+            SandboxSpec s;
+            s.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = bad, .read_write = false});
+            ae_test::grant_listed_mounts(s);
+            auto r = agentengine::rt::block_on(backend.create(s, ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "sandbox.guest_path_invalid",
+                     (std::string("ADR-244: guest path '") + bad + "' is refused (sandbox.guest_path_invalid)").c_str());
+            if (r.has_value()) agentengine::rt::block_on(backend.destroy(*r));
+        }
+        SandboxSpec twice;
+        twice.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        twice.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work", .read_write = false});
+        ae_test::grant_listed_mounts(twice);
+        auto dup = agentengine::rt::block_on(backend.create(twice, ctx));
+        AE_CHECK(!dup.has_value() && dup.error().code == "sandbox.mount_overlap",
+                 "ADR-244: two mounts at the same guest path are refused (sandbox.mount_overlap)");
+        if (dup.has_value()) agentengine::rt::block_on(backend.destroy(*dup));
     }
 
     std::filesystem::remove_all(work_dir, ec);

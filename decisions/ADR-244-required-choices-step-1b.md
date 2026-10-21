@@ -1,11 +1,10 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 4. Red-team round 1 rejected revision 1 (3 FATAL,
-9 MAJOR, 6 MINOR); round 2 rejected revision 2 (1 FATAL, 10 MAJOR, 8 MINOR); round 3 rejected revision 3
-(0 FATAL, 9 MAJOR, 7 MINOR). This revision folds all three in (§7; the round-by-round findings are in
-[`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md)). Implements
-[ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and gate
-G-R13 (and the step-1b parts of G-R3 and G-R10). Precedes
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1 and 2 built. Four red-team rounds, each
+rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
+and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
+Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
+gate G-R13 (and the step-1b parts of G-R3 and G-R10). Precedes
 [ADR-243](ADR-243-layer-and-developer-api.md)'s slice 1 (ADR-243 §5: "Step 1b first"), so it works on
 today's types; ADR-243's facade later wraps what this ADR makes required, it does not undo it.
 
@@ -17,31 +16,9 @@ clear, fork, restore and delegation, and how the engine's own sandbox users get 
 mount check without granting themselves authority. A wrong answer to the last one breaks I2; a wrong
 answer to the others leaves a silent default in place or makes `0` mean "unbounded" again.
 
-Baseline, re-verified on main @ 7f224166 (2026-10-21): every row of ADR-242 §2's table still holds at its
-cited line. The inventory and two red-team rounds found more of the same kind:
-
-| Found | Where | Same defect as |
-|---|---|---|
-| Sandbox network grants are checked only if a `SandboxNetOut` grant exists | `sandbox/sandbox.hpp:255-256` | the mount row |
-| Read-only deployment paths (worker dir, `python_home`, `extra_sys_path`; on Windows the pdf worker's dir and scratch) are granted outside `SandboxSpec.mounts`, unchecked | `native_jail_backend.cpp:629-642`, `tools/extract_pdf_text.hpp:348,357` | the mount row |
-| `MediatedPythonRunner` creates its worker with an empty `EffectContext`; its bridged `agent.tools` calls run under `grant_root(config.capabilities)`, an authority built from configuration | `mediated_python_runner.cpp:60-73`; `tool_bridge.hpp:72-78` | the mount row; I2 |
-| The one-runner-per-session binding (`CodeActRunnerBinding`, ADR-030) is opt-in host wiring, not enforced by the runner | `codeact_runner_binding.hpp:47-58` | I1 |
-| `extract_pdf_text` picks its own backend (a function-local `static`, both platforms) | `tools/extract_pdf_text.hpp:346,395` | "registered by platform" |
-| `single_trusted_caller` (today's `require_authority == false`) silently replaces a supplied authority with the construction-time set; `McpServer` does the reverse (a per-call grant silently replaces `held_`) | `agent_session_core.cpp:964-968`; `mcp/server.hpp:209-229` | the authority rows |
-| A `per_request` authority is installed wholesale: the agent's capability ceiling is not applied | `agent_session_core.cpp:959-961` vs `agent_session_bridge.hpp:347-349` | I2 |
-| A spawned child gets no authority mode; its capabilities are a copy that outlives a parent grant's expiry | `rt/agent_spawn_child_run.hpp:166-170` | the authority rows |
-| `clear_core_state` resets budget and turn cap to unbounded; the snapshot record does not store them; `fork_core_from` does not copy them; `set_max_turns(std::optional)` can reset the cap to unbounded | `agent_session_core.cpp:748,752`, `:681-695`; `.hpp:311,634` | the budget row |
-| Docker/containerd: tag-pulled default images; `isolation = {}` defaults that hide 512 MiB / 128 pids; a non-`deny_all` policy becomes bridge or host networking with no network check | `docker_execution_surface.hpp:666`, `docker_persistent_shell_surface.hpp:142`, `containerd_execution_surface.hpp:447,753`; `docker_execution_surface.cpp:589-590` | the Kata image, limits and mount rows |
-| Capability caps are `std::optional` and "missing means uncapped": `NativeExec`, `Exec` (C++ and their CRTP tags, where `0` means unbounded), the declarative `NativeExec` grant parser, `FsRead::size_cap_bytes`, `FsWrite::quota_bytes`/`file_count_cap`, `NetOut::byte_cap` | `trust/capability.hpp:150-152,194-206,503,540-547,567-603`; `native_exec_grant.hpp:60-70`; `native_process_spawn.cpp:226-228` | the limits row |
-| Default budgets: `ChildSpawnRequest::max_turns = 25`, `SpawnTargetDescriptor::child_token_budget = 50'000`, `SpawnQuota::max_spawns_per_principal = 100`, the builders' `max_turns = 25` and unset budget, `run_with_bounded_reflection(max_total_tokens = 0)` meaning no bound | `rt/agent_spawn_child_run.hpp:84`, `rt/agent_spawn.hpp:170,209`, `core/session_builder.hpp:845-846,1148-1149,1343-1344`, `bounded_reflection.hpp:111-138`, `harness.hpp:584-586` | the turn-cap and budget rows |
-| `TerminationBound` requires one bound, but each omitted field is unbounded | `workflow/graph.hpp:220-243` | the budget row |
-| `AgentMetadata::stateless_pool_size` (nullopt = off, from the `Stateless<N>` tag) | `core/agent_registry.hpp:74`, `agent.hpp:107-108` | the restrictive-defaults paragraph |
-| `LinuxNativeJailBackend` defaults its cgroup root | `linux_native_jail_backend.hpp:88` | the Kata runtime row |
-| A `SandboxMount` grant with an empty `host_path_prefix` covers every host path (`path_prefix_covers("")` is true); on Windows, a backslash grant never covers a backslash child, and matching is case-sensitive | `trust/capability.hpp:556-564` | the mount row (an unnamed "everything"; a silent miss) |
-| `RequestAuthority::expiry{}` default-constructs to "already expired", and "never expires" is spelled `time_point::max()` | `rt/agent_session_core.hpp:99` | "unbounded only as a named value" |
-| `multi_agent::spawn` reuses the parent principal, carries no expiry, and a `per_request` child replaces its narrowed set with the request's | `rt/multi_agent.hpp:180-226` | the spawned-child row |
-| `WorkflowChatClient` runs inner nodes under host-static contexts; the caller's context is unused | `workflow_as_chat_client.hpp:117-118,171-175` | the authority rows |
-| The Python tool bridge's `config.approved` is a standing, defaulted approval for every bridged call | `tool_bridge.hpp:59` | the approval row |
+Baseline (main @ 7f224166): every row of ADR-242 §2's table still holds at its cited line, and the inventory
+and red-team rounds found about forty more of the same kind (the planning log lists them). The ones this ADR
+acts on are named where their decision is.
 
 ## 2. Decision
 
@@ -54,360 +31,290 @@ no conversion from an integer; `limit()` (nullopt = unbounded), `covers(child)`,
 
 - **Omission does not compile.** MSVC 19.51, clang and gcc-14 all reject an aggregate that leaves a
   `Bound` member out, a default-initialised outer struct, `Bound b = {}` and `optional::emplace()`
-  (2026-10-21 probe; `tests/compile_fail/bound_omitted_member.cpp` keeps it true).
+  (`tests/compile_fail/bound_omitted_member.cpp` keeps it true).
 - **Zero is refused at every check site**, enumerated in G-C2. A real "none allowed" uses its own
-  mechanism (`NetPolicy::deny_all`). This flips `test_agent_yaml_limits` Y8 (`max_turns: 0` accepted):
-  G-R13 refuses a `0` budget, and ADR-242 is Judged.
-- **Ordering is `covers`/`tighter`**, never `std::min` on raw integers, everywhere a parent's value
-  narrows a child's (metadata against session options, spawn against `remaining_token_budget`, capability
-  attenuation).
-- **CRTP tags.** `Bound` has private members, so it cannot be a template argument. Tags take
-  `BoundValue`, a structural literal type with `consteval` factories `at_most(n)` / `unbounded()`, and
-  convert to `Bound` at registration (`MaxTurns<at_most(16)>`, `cap::decl::NativeExec<…,
-  session_wall_ms = at_most(60'000), max_processes = unbounded()>`). A raw integer argument does not
-  convert.
+  mechanism (`NetPolicy::deny_all`). This flips `test_agent_yaml_limits` Y8 (`max_turns: 0` accepted).
+- **Ordering is `covers`/`tighter`**, never `std::min` on raw integers, wherever a parent's value narrows a
+  child's.
+- **CRTP tags** take `BoundValue`, a structural literal type with `consteval` factories, converted to `Bound`
+  at registration (`MaxTurns<at_most(16)>`). A raw integer argument does not convert.
 - **Option tables.** Each enumerated choice has one `constexpr` table that both its YAML parser and its
-  `choice_missing` call read; a test asserts they are the same object.
+  `choice_missing` call read.
+- **Engine floors are named.** Where the engine keeps a host-safety bound under an `unbounded()` choice
+  (an output drain's 16 MiB, a wall-clock ceiling), the floor is a separately named engine bound, disclosed,
+  and recorded beside the choice: `describe()` reads "unbounded (engine floor 16 MiB)". Slice 5 lists every
+  such site (planning log).
 
 ### 2.2 Where each choice is checked
 
 **Compile time where the developer writes the value in one expression; otherwise at the first point the
-choice is needed, as a named error, before any effect.** A type whose construction can fail on a value
-(an unpinned image, an empty prefix) gets a factory returning `result<T>`, because constructors do not
-throw here (CONVENTIONS). Internal holders that need a default-constructible slot (`Instance` structs:
-`native_jail_backend.hpp:324`, `linux_native_jail_backend.hpp:120`, `wasm_backend.cpp:253`,
-`native_process_spawn.cpp:225`, `native_shell_session.cpp:377`) hold `std::optional<ResourceLimits>`, set
-at `create()`, never a placeholder `unbounded()`.
+choice is needed, as a named error, before any effect.** A type whose construction can fail on a value gets a
+factory returning `result<T>` (constructors do not throw, CONVENTIONS). Internal holders that need a
+default-constructible slot hold `std::optional<ResourceLimits>`, set at `create()`.
 
 | Choice | Representation | Unset is |
 |---|---|---|
-| `ResourceLimits` (8 fields) | each `Bound<…>`; `ResourceLimits::unbounded()` is the named all-unbounded preset | a compile error |
-| Session authority, token budget, turn cap | `initialize(id, principal, SessionChoices)`; `SessionChoices{authority, token_budget, max_turns}` with `AuthoritySource::per_request()` / `::single_trusted_caller()` and `Bound`s; `set_max_turns` takes `Bound` | a compile error; a never-initialised or cleared session fails `start_run` with `choice.missing.session` |
-| `AgentMetadata` turn cap, token budget, approval, concurrency, telemetry, strictness, stateless pool | `std::optional<Bound<…>>`, `std::optional<approval_mode>` …, `std::optional<SandboxProfileDescriptor>`, `std::optional<StatelessPool>` (`off()` / `of(n)`) | the existing `validate_agent_metadata` (`agent_session_bridge.hpp:310`), extended, fails `choice.missing.<field>`; the CRTP path `static_assert`s each tag (including `Stateless<N>` or a new `NotStateless`), with the tag table in the message |
-| Session builders, spawn targets and requests, spawn quota, bounded reflection | `Bound` parameters and fields, no defaults | a compile error; a builder `build()` without one fails `choice.missing.<field>` |
-| Workflow termination | `TerminationBound::max_rounds`, `deadline_ms`: `Bound`, required | a compile error; YAML `choice.missing.workflow.<field>` |
-| `McpServer`, `A2aServer` authority | `McpAuthority` / `A2aAuthority`: `per_request()` or `single_trusted_caller(held)` | a compile error; see §2.3 for the per-request rules |
-| Sandbox backends | `build_default_sandbox_registry` **deleted**; the host constructs each chosen backend and registers it | resolving against an empty registry fails `choice.missing.sandbox_backend` |
-| `KataBackend`, Docker/containerd surfaces | `KataBackend::create(KataBackendConfig)` / `…Surface::create(image, isolation)`: image required and digest-pinned, `isolation` required with `Bound` limits | a compile error; tag-only fails `sandbox.image_not_pinned` |
-| `LinuxNativeJailBackend` cgroup root | constructor parameter | a compile error |
-| Provider-client Runtime | constructor parameter `rt::Runtime&`; the five private-Runtime sites removed | a compile error |
-| `EnvSecretSource` prefix | `EnvSecretSource::create(prefix)`; `""` refused | a compile error; `secret.empty_prefix` |
-| Capability caps (`NativeExec`, `Exec`, `FsRead`, `FsWrite`, `NetOut`), C++, CRTP and declarative | `Bound<…>` fields, attenuated with `covers`; the declarative parser requires each cap or the string `unbounded` | a compile error; `choice.missing.grant.<field>` |
-| Unmediated shell surfaces | `SandboxRuntime::run()` / `run_live()` take the caller's `EffectContext const&` and require `cap::UnmediatedShell{network}` | `sandbox.unmediated_not_granted`, audited (§2.5) |
+| `ResourceLimits` (8 fields) | each `Bound<…>`; `ResourceLimits::unbounded()` is the named preset | a compile error |
+| Session authority, token budget, turn cap | `initialize(id, principal, SessionChoices)`; `SessionChoices{authority, token_budget, max_turns}`; `set_max_turns` takes `Bound` | a compile error; a never-initialised or cleared session fails `start_run` with `choice.missing.session` |
+| Bridge and builder sessions | `AgentSessionOptions{session_id, principal, choices}` and the builders' `principal`, `secret_source`: required, no defaults (today `"s-agent"`, `"p-agent"`, `"p-quickstart"`, an `InMemorySecretStore`) | a compile error; `choice.missing.principal` / `.session_id` / `.secret_source` |
+| `AgentMetadata` turn cap, token budget, approval, concurrency, strictness | `std::optional<Bound<…>>`, `std::optional<approval_mode>`, …, `std::optional<SandboxProfileDescriptor>` | `validate_agent_metadata` (`agent_registry.hpp:559`), extended, fails `choice.missing.<field>`; the CRTP path `static_assert`s each tag |
+| Tool approval | every `Tool<>` declares `Approval<…>` (`static_assert`); `ToolDescriptor::approval` has no default | a compile error; a hand-built descriptor or a YAML tool without one fails registration, `choice.missing.tool.approval` |
+| Sandbox registry at bind | `register_agent`, `bind_agent_session`, `make_agent_session` take the registry by reference (no `nullptr` default) | a compile error; an empty registry fails `choice.missing.sandbox_backend` |
+| Spawn targets and requests, spawn quota, bounded reflection | `Bound` parameters and fields, no defaults | a compile error |
+| Workflow termination | `TerminationBound::max_rounds`, `deadline_ms`: `Bound`, required | a compile error; YAML `choice.missing.workflow.<field>`, and a present but invalid value (`-1`, non-numeric) is refused |
+| `McpServer`, `A2aServer` authority | `per_request(ceiling)` or `single_trusted_caller(held)` | a compile error; §2.3 |
+| Sandbox backends | `build_default_sandbox_registry` deleted; the host registers each backend it chose | `choice.missing.sandbox_backend` |
+| `KataBackend`, Docker/containerd surfaces | `create(config)` factories: image required and digest-pinned, `isolation` required with `Bound` limits | a compile error; tag-only fails `sandbox.image_not_pinned` |
+| `LinuxNativeJailBackend` cgroup root; provider-client `rt::Runtime&` | constructor parameters | a compile error |
+| `EnvSecretSource` prefix | `EnvSecretSource::create(prefix)`; `""` refused | `secret.empty_prefix` |
+| Capability caps (`NativeExec`, `Exec`, `FsRead`, `FsWrite`, `NetOut`), C++, CRTP and declarative | `Bound<…>` fields, attenuated with `covers`; the declarative parser requires each cap or `unbounded` | a compile error; `choice.missing.grant.<field>` |
+| Time limits | `http` `total_timeout` and `EffectContext::deadline`: `Bound<milliseconds>` / `Deadline::none()`, not `0` and a default `time_point` | a compile error |
+| Agent YAML strictness | `profile:` parsed against the option table; `sandbox.fallback` refused until supported | `choice.unknown_option` naming the table |
 
-`TerminationBound::token_budget` stays optional. The supervisor does not enforce it
-(`graph.hpp:222-235`: bookkeeping, host-monitored), so requiring it would record a limit nothing enforces
-and invite a false "engine enforces" cell. It is named in §6 and documented as unenforced.
+**Stay optional, documented as unenforced:** `TerminationBound::token_budget` (the supervisor only books
+it, `graph.hpp:222-235`), `AgentMetadata::telemetry` (enforced only by the harness, `harness.hpp:447,580`) and
+`stateless_pool_size` (no pool exists). Requiring them would record a choice nothing enforces.
 
-**Both layers are checked.** A raw `AgentSession` does not go through registration, and the protocol
-surfaces drive it directly; approval, concurrency, telemetry and strictness live only in
-`AgentMetadata`. Checking either alone leaves the other's defaults silent.
+**Both layers are checked.** A raw `AgentSession` does not go through registration and the protocol surfaces
+drive it directly, while approval, concurrency and strictness live only in `AgentMetadata`.
 
 ### 2.3 Authority: what each source means, everywhere it is carried
 
-`set_require_authority` is removed. `EffectContext` gains three engine-set fields, assigned in **every**
-branch of `apply_dispatch_authority` (never left over from a previous run): `authority_source`,
-`authority_expires_at` (`std::optional<steady_clock::time_point>`, nullopt under
-`single_trusted_caller`), and `session_nonce` (§2.4).
+`set_require_authority` is removed. `EffectContext` carries three engine-set fields, assigned in every branch
+of `apply_dispatch_authority`: `authority_source`, `authority_expires_at` (nullopt under
+`single_trusted_caller`), and `session_nonce` (§2.4, built).
 
-- **`per_request(ceiling)`**: the ceiling is a required argument — a `CapabilitySet`, or the named
-  `CapabilitySet::no_ceiling()`; a raw session does not get "no ceiling" by omission. A `StartRun` or
-  `ResolveInteraction` without a live authority fails `run.authority_required` / `run.authority_expired`.
-  A request authority is checked with `CapabilitySet::attenuate` against the ceiling, which is
-  all-or-nothing: an authority holding anything outside the ceiling is **refused**
-  (`run.authority_exceeds_ceiling`), never silently narrowed (`narrow_to_ceiling`, which drops entries,
-  stays a bridge-construction helper only). The bridge passes `AgentMetadata::capability_ceiling`.
-- **Expiry is checked during the run**, not only at its start: at each turn boundary and before each tool
-  dispatch, against `authority_expires_at` (`run.authority_expired`). An expired authority stops the
-  run's next effect, the parent's and a spawned child's alike. `RequestAuthority`'s expiry is a required
-  value: `Expiry::at(t)` or the named `Expiry::never()`; the "already expired" default goes.
-- **The chat client's own credentials are not the caller's.** The bridge's `chat_client_grants` (the
-  provider `cap::Secret`s, `agent_session_bridge.hpp:349`) are held by the session for the model call
-  only and are resolved against that session-held set, never unioned into the request's authority and
-  never visible to tools through `ctx.capabilities`.
-- **`single_trusted_caller()`**: today's `false` branch, except that a request **carrying** an authority is
-  refused with `run.authority_unexpected` instead of being silently replaced. Admission runs when the
-  request names a caller and is skipped when it names none (`agent_session_core.cpp:144`); that skip is
-  this option's disclosed residual, and the server module will refuse the option.
-- **A null `capabilities` pointer authorizes nothing**: every check treats it as the empty set (so a
-  request needing a capability is refused with that check's own code), and nothing dereferences it
-  (`effect_context.hpp:47` defaults it to null).
-- **Helpers that start runs on a session's behalf** (`run_with_bounded_reflection`,
-  `bounded_reflection.hpp:157`; the builders' `ask`, `session_builder.hpp:482,493,618`) take the
-  authority to carry as a parameter on a `per_request` session; without one they fail
-  `run.authority_required` on the first call, not the second.
-- **`McpServer`**: `single_trusted_caller(held)` refuses a call that carries a grant
-  (`mcp.authority_unexpected`); `per_request()` refuses one without (`mcp.authority_required`).
-  `A2aServer` likewise. A server/session pair with different modes fails closed on every request with one
-  of those named codes; the server cannot see the session's mode through `RunStarter`, so there is no
-  construction-time check (§6).
-- **Workflow executors** send `StartRun{input}` with no authority (`agent_workflow_executor.hpp:167`).
-  `validate_workflow` sees only the graph and the bodies are type-erased, so the node session's source is
-  carried in its `AgentExecutorBodyTag`: building a tag over a `per_request` session fails
-  `workflow.node_requires_authority`, and the adapter re-checks the session's current source on every
-  call (a session can be re-initialised after binding). `WorkflowChatClient`, which runs inner nodes
-  under host-static contexts, is refused on a `per_request` session (`workflow.requires_trusted_caller`).
-  Carrying a caller's authority through a workflow is R4/R7 work (§6).
-- **Spawned children**, on every path that starts one (`perform_agent_spawn` and `multi_agent::spawn`;
-  §1's table). The child inherits the parent's source, read from `ctx.authority_source` (never inferred).
-  Under `per_request`, the child's authority is **the derived on-behalf-of principal, the minted child
-  capabilities** (`mint_child_spawn_capabilities`, attenuated from the caller's `ctx.capabilities`)
-  **and the parent's `authority_expires_at`**, never the parent's whole grant; `multi_agent::spawn`
-  derives the principal and mints the set the same way instead of reusing the parent's. The child's
-  budget is `Bound::tighter(target, remaining)`, replacing `std::min` (`agent_spawn.hpp:528`).
+- **`per_request(ceiling)`**: the ceiling is a `CapabilitySet` or the named `CapabilitySet::no_ceiling()`. A
+  `StartRun` or `ResolveInteraction` without a live authority fails `run.authority_required` /
+  `run.authority_expired`. A request authority holding anything outside the ceiling is refused
+  (`run.authority_exceeds_ceiling`, via `attenuate`), never silently narrowed. The bridge passes
+  `AgentMetadata::capability_ceiling`; a `per_request` YAML agent with no `capabilities` fails
+  `choice.missing.capability_ceiling` at bind, so YAML is never pushed to `no_ceiling()`.
+- **Expiry is checked at admission**, as ADR-242 R3 rule 1 says ("a run admitted under live authority runs to
+  its end under it"): at `StartRun`, at `ResolveInteraction`, and at each spawn, where a child is admitted
+  against the parent's `authority_expires_at`. `RequestAuthority`'s expiry is `Expiry::at(t)` or the named
+  `Expiry::never()`; the "already expired" default goes.
+- **The chat client's own credentials are not the caller's**: provider `cap::Secret`s are held by the session
+  for the model call only, never unioned into the request's authority or visible to tools.
+- **`single_trusted_caller()`**: a request carrying an authority is refused (`run.authority_unexpected`)
+  instead of being silently replaced. The admission skip for a request that names no caller
+  (`agent_session_core.cpp:144`) is this option's disclosed residual; the server module refuses the option.
+- **A null `capabilities` pointer authorizes nothing** and is never dereferenced.
+- **Helpers that start runs on a session's behalf** (`run_with_bounded_reflection`, the builders' `ask`) take
+  the authority to carry as a parameter on a `per_request` session.
+- **`McpServer`/`A2aServer`**: `per_request(ceiling)` refuses a call without a grant (`mcp.authority_required`)
+  and one outside the ceiling; `single_trusted_caller(held)` refuses a call that carries one
+  (`mcp.authority_unexpected`).
+- **Workflow executors** send no authority; a workflow tag built over a `per_request` session fails
+  `workflow.node_requires_authority` (the tag carries the session's source, re-checked per call), and
+  `WorkflowChatClient` is refused on a `per_request` session.
+- **Spawned children**, on both paths (`perform_agent_spawn`, `multi_agent::spawn`): the child inherits the
+  parent's source from `ctx.authority_source`. Under `per_request` its authority is the derived on-behalf-of
+  principal, the minted child capabilities and the parent's expiry, never the parent's whole grant. The
+  target's metadata is validated and applied (`validate_agent_metadata`, `declared_descriptors`): its turn
+  cap is `tighter(target, request)`, its approval floor holds. Its budget is `tighter(target, remaining)`,
+  charged to the parent, on both paths.
 
-**Choices survive every way a session is re-made:**
+**Choices survive every way a session is re-made**: clear un-initialises it; fork copies `SessionChoices`;
+the snapshot record stores them and restore requires the same source and covered budgets
+(`session.choices_widened`); a record written before this ADR fails `session.record_without_choices`, and
+`migrate_record(record, choices)` converts it, inferring nothing.
 
-- `clear_core_state` un-initialises the session (next `start_run` fails `choice.missing.session`).
-- `fork_core_from` copies `SessionChoices` whole.
-- The snapshot record stores `SessionChoices`. Restore requires the **same authority source** (the two
-  sources are not ordered: `per_request` installs the request's set, which can be wider than the host set
-  a `single_trusted_caller` record ran under), and under `per_request` a ceiling covered by the record's.
-  Budgets may be equal or tighter. Anything else fails `session.choices_widened`.
-- A record written before this ADR (no choice fields; `FileSessionStore` keeps them on disk,
-  `session_store.hpp:196`) fails `session.record_without_choices`. The host converts it explicitly with
-  `migrate_record(AgentSessionRecord, SessionChoices) -> result<AgentSessionRecord>`, which records the
-  choice it was given and infers nothing.
+### 2.4 Mounts and network: unconditional, against an authority the engine was handed (built)
 
-### 2.4 Mounts and network: unconditional, against an authority the engine was handed
+`authorize_spec` checks every host-path mount against `cap::SandboxMount` grants and every non-`deny_all`
+network policy against `cap::SandboxNetOut` grants, whether or not any grant of that kind exists. A grant with
+an empty `host_path_prefix` is refused (`sandbox.mount_grant_invalid`). Paths compare in one normal form (on
+Windows `\` becomes `/`, ASCII case-insensitive; elsewhere byte-exact).
 
-`authorize_spec` checks **every** host-path mount against `cap::SandboxMount` grants and **every**
-non-`deny_all` network policy against `cap::SandboxNetOut` grants, whether or not any grant of that kind
-exists. Kata's zero-grant network backstop (`kata.net_capability_required`) becomes redundant and is
-removed with a test that the general check covers it.
+**Every path a backend uses is a checked mount.** Deployment paths (the worker's directory, `python_home`,
+`extra_sys_path`, the pdf worker's directory and scratch) are read-only `MountSpec`s with
+`guest_path == host path`, checked like any other; nothing is granted on the side. Every AppContainer grant
+the engine makes goes through one function, `grant_spec_mounts`, after `authorize_spec` (G-C5(e)).
 
-**Grants name their paths.** A `SandboxMount` grant with an empty `host_path_prefix` is refused
-(`sandbox.mount_grant_invalid`): `path_prefix_covers("")` covers every path, an unnamed "everything".
-Paths are compared in one normal form: on Windows, `\` becomes `/` and comparison is case-insensitive
-(today a backslash grant never covers a backslash child and case matters, `capability.hpp:556-564`); on
-Linux, byte-exact. Both sides go through the same function, so a test written with `/` and a real Windows
-path take the same branch.
+**The Windows grant model.** All native-jail sandboxes share one AppContainer SID, and an ACE on it outlives
+every process (ADR-041). So:
 
-**Every path a backend grants is a checked mount.** Deployment paths become read-only `MountSpec`s with
-`guest_path == host path` (the Windows jail ignores guest paths; the Linux jail binds them where they are,
-as `extract_pdf_text`'s Linux branch already does). `grant_ro_path_once` and `create_python_worker`'s
-separate grants are removed. To keep ADR-004 finding 9 closed (unbounded DACL growth on the shared
-AppContainer profile), **the mount step deduplicates read-only grants** on the normalised path
-(`grant_ro_deduped`, moved into the mount loop); G-C5(d) checks the DACL size is stable across repeated
-creates of the same paths. Unique per-session read-only paths still add one entry each, never revoked
-(ADR-041, §6).
+- **Read-only grants** go to the shared SID and are idempotent by the DACL itself: an explicit ACE already
+  carrying the mask means nothing is written.
+- **Read-write grants go to the sandbox's own capability SID**, derived from a random name; its process token
+  holds that capability, and the ACEs are revoked when the sandbox is destroyed (or when a create fails after
+  granting). An ACE left by a crash names a SID no later token holds, so it grants nothing. One sandbox
+  cannot write another's mount.
+- **Every DACL edit, with the check before it, runs under one cross-process lock.** An edit is a
+  read-modify-write; unserialized, a grant that read the DACL before a sibling's revoke writes the revoked
+  ACE back (measured: the DACL filled to 64 KB under 8 concurrent threads).
 
-**Deployment paths are never writable.** ACEs on the shared AppContainer profile are never revoked
-(ADR-041), so a read-write grant over `python_home` or an `extra_sys_path` entry, made once by any session,
-would let that session plant modules every later runner imports. Each backend keeps a process-wide
-registry of the deployment paths it has granted; a read-write mount that overlaps one (either is a prefix
-of the other) is refused, `sandbox.deployment_path_writable`, regardless of grants.
+**Deployment paths are never writable by a sandbox**, in this process or another:
 
-**Linux mount order.** The Linux jail binds mounts in vector order onto a tmpfs root
-(`linux_native_jail_backend.cpp:159-173`). Deployment mounts are bound first, and two mounts whose guest
-paths overlap are refused (`sandbox.mount_overlap`), so a later read-only mount cannot mask a read-write
-one or the reverse.
+1. *This process*: a ledger refuses a read-write mount and a deployment path that overlap, in either order,
+   keyed by directory identity (`GetFinalPathNameByHandleW`: short names, `\\?\`, junctions and case resolve
+   to one key). It is permanent for the process: a directory a sandbox could once write may hold what it wrote.
+2. *Other processes, after the fact*: a deployment path whose DACL gives write to the shared SID or to any
+   capability SID (a live or crashed sandbox's grant, an older engine's shared-SID grant) is refused.
+3. *Other processes, later*: every deployment path carries an allow ACE for a fixed marker capability SID that
+   no token holds; a read-write mount whose DACL names it (it is, or lies inside, a deployment path) is
+   refused. A deny ACE cannot serve: measured, a deny for the package SID or for ALL APPLICATION PACKAGES does
+   not stop a capability holder.
+
+All three fail `sandbox.deployment_path_writable`. What none sees is in §6.
+
+**Linux**: guest paths must be normalised absolute paths other than `/` (`sandbox.guest_path_invalid`), and
+two mounts whose guest paths overlap are refused (`sandbox.mount_overlap`), so a later mount cannot mask an
+earlier one.
 
 **Whose authority is checked:**
 
-- **A site with a calling `EffectContext`** sets `spec.capabilities` to a subset of `*ctx.capabilities`
-  ("never more than the caller holds"; `WasmBackend` hands `spec.capabilities` to the component,
-  `wasm_backend.cpp:268`, so the whole set would over-grant).
-- **`MediatedPythonRunner`** (Windows-only) is **one runner per session, enforced by the runner**. It
-  binds to the `session_nonce` of the first run it serves and refuses any other
-  (`codeact.runner_bound_to_other_session`), so `CodeActRunnerBinding`'s rule no longer depends on host
-  wiring. The nonce is engine-minted, never host- or model-supplied: the session's never-reused
-  `session_identity_` (`agent_session_core.hpp:1363`) with an epoch that increments on `initialize`,
-  `clear`, restore and fork. Principals (shared across sessions) and `session_id`/`run_id` strings (reused
-  by a restored copy, `agent_session_core.cpp:807`) are not identities. After the bound session's epoch
-  moves (a clear, so the next user of that id cannot inherit the interpreter's globals), the runner
-  refuses every run and the host creates a new one. Creation takes an explicit host grant and the
-  caller's context for audit:
-  `initialize(CapabilitySet const& host_grant, EffectContext& ctx)`, with `authorize_spec` checking every
-  mount and deployment path against `host_grant` and a `SandboxExec` "create" row emitted through `ctx`.
-  Per-call file use stays checked per open against the caller's `FsRead`/`FsWrite`
-  (`native_jail_handle_relay.cpp:159-172,307`). There is no per-run `SandboxMount` check: it would make
-  every caller hold read-write `SandboxMount` over the runner's roots, which also authorises building
-  other sandboxes over those paths (a widening).
-- **The runner's tool bridge** runs each bridged `agent.tools` call under `config.capabilities`
-  **attenuated to the calling `ctx.capabilities`**, not under `grant_root(config.capabilities)`, and for
-  the duration of the call **the `ctx` the tool body sees carries that attenuated set**, not the caller's
-  full one (a body that reads `ctx.capabilities` directly, such as `perform_agent_spawn` minting from it,
-  `agent_spawn.hpp:432,519`, or secret resolution, `secret.hpp:259`, would otherwise act on more than the
-  pipeline allowed). The standing `config.approved` (default `false`, `tool_bridge.hpp:59`) becomes a
-  required choice: `BridgeApproval::per_call()` (each bridged call goes to the session's
-  `ApprovalDecider` like a model tool call) or `BridgeApproval::standing_for(principal)`, which covers
-  only that principal's calls and is recorded in the audit row of every call it approves.
-- **`extract_pdf_text`** builds its spec with the calling session's grants on both platforms and exposes
-  `required_grants()`, the read-only `SandboxMount`s a host must give sessions that may use it. Its
-  scratch directory is fixed and shared across sessions (`extract_pdf_text.hpp:253-258`), disclosed in §6.
+- **A site with a calling `EffectContext`** sets `spec.capabilities` to a subset of `*ctx.capabilities`.
+- **`MediatedPythonRunner`** is one runner per session, enforced by the runner. `initialize(host_grant, ctx)`
+  takes an explicit host grant, binds the `session_nonce` of `ctx` (a minted one is required), and emits a
+  `SandboxExec` "create" row. A run with no nonce, another session's, or a later epoch of the bound session
+  (clear, restore, fork) is refused (`codeact.no_session`, `codeact.runner_bound_to_other_session`,
+  `codeact.runner_session_moved`). The nonce is minted by the session: its never-reused identity
+  (process-wide, out of line, so one counter per process) and an epoch that moves on `initialize`, clear,
+  restore and fork. It is identity, not authority; a host reads it (`session_nonce()`) to create the session's
+  runner. Each `mount_roots` entry must be one of the spec's read-write mounts (the relay opens files under
+  it). Per-call file use stays checked per open against the caller's `FsRead`/`FsWrite`.
+- **The runner's tool bridge** runs each bridged call under `config.capabilities` narrowed to the caller's
+  `ctx.capabilities`, and the tool body sees that narrowed set. Approval is a required
+  `BridgeApproval::per_call(decider)` or `standing_for(principal)`; a standing approval for the empty
+  principal approves nobody.
+- **`extract_pdf_text`** checks its mounts against the calling session's `SandboxMount` grants on both
+  platforms and lists them in `required_grants()`.
 
 ### 2.5 Unmediated surfaces
 
-`cap::UnmediatedShell{bool network}` is checked in `SandboxRuntime`, the point every Docker/containerd
-consumer passes (`LiveShellSandboxProvider`, `MandatorySandboxProvider`'s `run_command`, the task-branch
-tools). It applies to surfaces that declare themselves unmediated (a `static constexpr bool mediated =
-false` on the Docker and containerd surfaces). `NativeShellSessionProvider` also satisfies
-`PersistentShellSurface` (`persistent_shell.hpp:5`) but keeps its own `cap::NativeExec` gate (ADR-071) and
-does not also require `UnmediatedShell`. `reset_to_turn`, `spawn_child_branch` and the reapers run no
-command and need no grant. A surface whose isolation is not `deny_all` (bridge or host networking) requires `network = true`;
-`network = false` covers only a `deny_all` surface. The grant is per request. Each check emits a
-`SandboxExec` audit row naming the surface and whether networking is on.
-
-The hidden substitutions go: `isolation` is a required argument whose limits are `Bound`s, and
-`unbounded()` means no flag is passed. A stated limit the surface cannot enforce (containerd's `pids`,
-`containerd_execution_surface.hpp:437-440`) fails `sandbox.limit_unsupported`, as today. Hostile
-container tests (`test_docker_isolation.cpp`, `test_docker_persistent_shell_surface.cpp`) state real
-limits; the slice-5 rewrite may not map their omitted limits to `unbounded()` (machine safety).
-
-`capability_kind::unmediated_shell` is added to the kind enum, `capability_from_kind` and the
-policy-reachability tool. When step 3 deletes the surfaces, the kind's value stays reserved so persisted
-kinds do not shift.
+`cap::UnmediatedShell{surface, network}`, scoped by surface id, is checked in `SandboxRuntime`, the point every
+Docker/containerd consumer passes, for surfaces that declare `mediated = false`. A surface whose isolation is
+not `deny_all` requires `network = true`. Each check emits a `SandboxExec` audit row. The containerd surface's
+read-write host bind (`containerd_execution_surface.hpp:500-508`) goes through `authorize_spec` in the same
+slice. The hidden substitutions go: `isolation` is required with `Bound` limits, and `unbounded()` passes no
+flag; a stated limit the surface cannot enforce fails `sandbox.limit_unsupported`. Hostile container tests
+keep real limits. `capability_kind::unmediated_shell` is added and its value stays reserved after step 3.
 
 ### 2.6 Recording
 
-- `run_event_payload::RunStarted` gains `authority`, `token_budget` and `max_turns` (`describe()`), and
-  the session exposes `choices()` for a host with no event sink.
-- `validate_agent_metadata` returns the choice summary; `register_agent` and the YAML compiler return it
-  to the host for startup diagnostics.
-- Every `SandboxExec` "create" row carries `limits` (eight `describe()` strings); `MediatedPythonRunner`
-  gains such a row (§2.4). The emitters are enumerated in the slice-5 test.
-- A run without an event sink records nothing to an audit trail; that is the host's telemetry choice,
-  which is itself required.
+- `RunStarted` gains `authority`, `token_budget` and `max_turns`; the session exposes `choices()`.
+- `validate_agent_metadata`, `register_agent` and the YAML compiler return the choice summary.
+- Every `SandboxExec` "create" row carries `limits`, including any engine floor (§2.1), so the recorded value
+  is the enforced one.
+- A run without an event sink records nothing to an audit trail; nothing here requires one (§6).
 
 ## 3. Alternatives
 
-- **Runtime validation everywhere.** Every omission becomes a test-time failure instead of a compile
-  error. Kept only for `AgentMetadata`, which YAML builds field by field.
+- **Runtime validation everywhere.** Turns every omission into a test-time failure. Kept only for
+  `AgentMetadata`, which YAML builds field by field.
 - **A sentinel integer for unbounded.** An ordinary number in arithmetic and `min()`. Rejected.
-- **A list of backend kinds** (revision 1). Cannot carry Kata's config. Rejected.
 - **Derive grants from configuration, or exempt deployment paths.** The engine granting itself authority.
-  Rejected (§2.4).
-- **A per-run `SandboxMount` check on the Python runner** (revision 2). Widens every caller and does not
-  touch interpreter state. Rejected for one-runner-per-session (§2.4).
-- **Carry the parent's whole grant to a spawned child** (revision 2). Hands the child the parent's set.
-  Rejected (§2.3).
-- **Strict equality on restore** (revision 2). Refuses a host tightening a budget. Rejected for "covered
-  by" on budgets; the authority source must still match (revision 3's "`per_request` is at least as
-  strict" was false, §2.3).
-- **Silently narrowing a request authority to the ceiling** (`narrow_to_ceiling`). Drops entries the
-  caller thought it had, with no error. Rejected for an all-or-nothing refusal.
-- **Binding the Python runner to a principal or a `session_id`.** Principals are shared across sessions,
-  and a restored copy reuses its `session_id`. Rejected for an engine-minted nonce.
+  Rejected.
+- **An in-memory deployment registry alone** (revision 4). The ACEs it guards outlive the process; a second
+  process accepted a directory the first had made writable (executed). Rejected for the grant model.
+- **A deny-write marker on deployment paths.** Does not stop a capability holder (measured). Rejected for an
+  allow ACE naming a SID no token holds.
+- **Scanning a deployment path's subtree for write ACEs.** The worker's directory can be a whole build tree.
+  Rejected; the gap is a residual.
+- **Mid-run expiry checks** (revision 4). Contradicts ADR-242 R3 rule 1, which is Judged. Rejected.
+- **Silently narrowing a request authority to the ceiling.** Drops entries with no error. Rejected.
+- **Binding the Python runner to a principal or a `session_id`.** Principals are shared; a restored copy
+  reuses its id. Rejected for the nonce.
 
 ## 4. Gates
 
-Each with a positive control (022 §5); each test is written first and fails on main where the property is
-absent today.
+Each with a positive control (022 §5); each test is written first and fails where the property is absent.
 
 | Gate | Claim | Disproof / positive control |
 |---|---|---|
-| **G-C1** | No unbounded by omission | `try_compile` negatives: `ResourceLimits{}`, `SandboxSpec` without `.limits`, `SessionChoices{}`, `KataBackendConfig{}`, `TerminationBound{}`, each capability with an omitted cap, `SpawnTargetDescriptor` without a budget, a provider client without a Runtime, `EnvSecretSource{}`, a CRTP agent missing each tag, and a CRTP tag given a raw integer; each beside a fully specified positive |
-| **G-C2** | No unbounded by zero | `at_most(0)` refused with `choice.zero_bound` at each enumerated site: session `initialize`, `set_max_turns`, `validate_agent_metadata` (C++ and YAML), builders, spawn, `TerminationBound` validation, `authorize_spec` (limits), each capability cap; `unbounded()` in the same place starts and is recorded |
-| **G-C3** | A missing choice is a named error listing every option | For each `AgentMetadata` field, YAML fails `choice.missing.<field>` and the message lists the same table object the parser reads; never-initialised and cleared sessions fail `start_run`; positive: declared, it registers and runs |
-| **G-C4** | Mounts and egress are checked unconditionally; grants name their paths | Host-path mount with no grant of any kind refused; non-`deny_all` network refused (native-jail, Kata, Linux jail); an empty-prefix `SandboxMount` grant refused; on Windows a backslash, mixed-case child of a granted path is covered and a sibling is not; positive: covering grant succeeds; a planted `if (!grants.empty())` guard fails the test |
-| **G-C5** | The engine does not grant itself paths, tools or approvals | Windows: (a) `initialize` with a host grant missing `python_home` fails; (b) a run from a second session's nonce is refused, and after the bound session clears, every run is refused, while a run before that succeeds; (c) a bridged `agent.tools` call needing a capability the caller lacks is refused although `config.capabilities` holds it, and a bridged tool body that reads `ctx.capabilities` sees only the attenuated set; (d) the AppContainer DACL entry count is unchanged across 20 creates of the same paths (positive control: without dedup it grows); (e) no grant call remains outside the mount loop (source check); (f) a read-write mount overlapping a registered deployment path is refused although a covering grant exists; (g) `BridgeApproval::standing_for(A)` does not approve B's bridged call. Linux: overlapping guest paths refused. Both: `extract_pdf_text` from a session without `required_grants()` fails |
-| **G-C6** | Authority sources mean what they say | `per_request(ceiling)` refuses `StartRun`/`ResolveInteraction` without authority, refuses an authority holding anything outside the ceiling (`run.authority_exceeds_ceiling`), and stops a run whose authority expires between turns and before the next tool dispatch; `single_trusted_caller()` refuses a request with authority and leaves `authority_expires_at` empty; a provider secret held for the chat client is not visible to a tool through `ctx.capabilities`; `McpServer`/`A2aServer` both ways; building a workflow tag over a `per_request` session and `WorkflowChatClient` under `per_request` are refused; a null `capabilities` authorizes nothing and is not dereferenced (ASan); positives for each |
-| **G-C7** | Choices survive re-making; children never widen | Cleared session fails `start_run`; fork reports equal `choices()`; restore with tighter budgets succeeds, a different source or wider budget fails `session.choices_widened`, a legacy record fails `session.record_without_choices` and `migrate_record` converts it; through `perform_agent_spawn` **and** `multi_agent::spawn`, a `per_request` child is refused a capability the parent's grant holds but the minted set lacks, runs under a derived principal, and stops when the parent's grant expires mid-run; positive: a minted capability works while live |
-| **G-C8** | No backend by linkage or platform | No `build_default_sandbox_registry` symbol; empty registry fails `choice.missing.sandbox_backend`; only-`wasm` never resolves `native-jail`; positive: registering it resolves it |
-| **G-C9** | Images pinned | Tag-only refused by `KataBackend::create` and the three surfaces; digests construct (Kata and containerd on thnak-server) |
-| **G-C10** | Unmediated surfaces are a granted choice on every path | Through `shell_exec`, `run_command` and a task-branch tool: no grant refused and audited; `network = false` refused for a networked surface; positives with each grant |
-| **G-C11** | The test preset stays in tests | A CI check fails if `testing::` session presets appear under `include/`, `src/`, `tools/` or `examples/`; positive control: a planted use fails it |
-| **G-C12** | Choices are recorded | `RunStarted` carries the three session choices and `choices()` returns them; `validate_agent_metadata` returns the summary; every `SandboxExec` "create" emitter (enumerated in the test, the runner's new row included) carries `limits`; positive control: a planted emitter without `limits` fails the test |
+| **G-C1** | No unbounded by omission | `try_compile` negatives for every required field and parameter in §2.2, each beside a fully specified positive |
+| **G-C2** | No unbounded by zero | `at_most(0)` refused at each check site, and YAML `-1` and non-numeric limits refused; `unbounded()` in the same place starts and is recorded |
+| **G-C3** | A missing choice is a named error listing every option | each `AgentMetadata` field and a tool without approval fail `choice.missing.<field>`; round trip: every listed option parses, an unlisted one is refused with the list; positive: declared, it registers and runs |
+| **G-C4** (built) | Mounts and egress checked unconditionally; grants name their paths | `test_sandbox_capability_authorization` G1a-d, G7, G15, G16; Kata slice 2 and 9/10; a planted `if (!grants.empty())` guard fails it |
+| **G-C5** (built) | The engine does not grant itself paths, tools or approvals; deployment paths are never writable | `test_mediated_python_runner_choices` A (host grant missing a path), B (nonce binding), F (read-write over `python_home`); `test_rt_agent_session_nonce` N1-N7 (restore mutant fails); `test_native_jail_rw_capability_windows` W1-W2 (per-sandbox write, revoked), L1-L3 (each deployment layer, L3 from a second process; a mutant per layer fails it); `test_native_jail_ro_mount_dedup_windows` (DACL writes, not counts; mutant fails); `test_native_jail_grant_sites` (source scan; planted call fails); `test_native_jail_backend_concurrency_windows` (no write grant survives; unlocked mutant fails); `test_tool_bridge` G-C5(c)/(g); Linux `test_native_jail_backend_linux` (overlap, seven malformed guest paths); `test_extract_pdf_text` (no `required_grants()` refused) |
+| **G-C6** | Authority sources mean what they say | `per_request(ceiling)` refuses missing, expired-at-admission and out-of-ceiling authority; `single_trusted_caller()` refuses a carried authority; provider secrets invisible to tools; both servers both ways; workflow tag and `WorkflowChatClient` refused under `per_request`; a YAML `per_request` agent without `capabilities` refused; null capabilities authorize nothing (ASan) |
+| **G-C7** | Choices survive re-making; children never widen | clear, fork, restore and `migrate_record` as §2.3; on both spawn paths a child is refused a capability the minted set lacks, runs under a derived principal, is admitted against the parent's expiry, and runs under the target's turn cap and approval floor |
+| **G-C8** | No backend by linkage, platform or null | no `build_default_sandbox_registry` symbol; empty or omitted registry fails `choice.missing.sandbox_backend`; positive: registering it resolves it |
+| **G-C9** | Images pinned | tag-only refused by `KataBackend::create` and the surfaces; digests construct (thnak-server) |
+| **G-C10** | Unmediated surfaces are a granted choice | a fake `mediated = false` surface (runs on every platform) and the real ones on thnak-server: no grant refused and audited, wrong surface id or `network = false` refused |
+| **G-C11** | The test preset stays in tests | CI check over `include/`, `src/`, `tools/`, `examples/`; no production preset records an `unbounded()` it did not state; planted uses fail it |
+| **G-C12** | Choices are recorded, as enforced | `RunStarted` and `choices()`; a source scan finds every `SandboxExec` "create" emitter and each carries `limits`; a recorded engine floor equals the enforced one |
 
-G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8. Transport is not here:
-the core has none to default (ADR-242 R4).
+G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 plus the builder's
+`choice.missing.secret_source`. Transport is not here: the core has none to default (ADR-242 R4).
 
 ## 5. Migration, in slices (each a commit with its gate; one PR per two or three slices)
 
-1. **Vocabulary** (built): `Bound<T>`, `check_bound`, `choice_missing`; `BoundValue` and the option tables
-   land with their first users.
-2. **Mounts, network, the Python runner (G-C4, G-C5)**, first: the only rows exploitable today. One commit
-   for both platforms (no platform-split window, I6). The `session_nonce` field (and the session's epoch)
-   lands here, because the runner binding needs it. Dev tools (`tools/cli_chat.cpp` and the others)
-   grant their sessions the read-only `SandboxMount`s they need and the runner's host grant; no session
-   gains read-write `SandboxMount` it did not have.
-3. **Session choices and authority (G-C6, G-C7, part of G-C1/G-C2):** `SessionChoices`, the sources and
-   their refusals, ceiling attenuation, `authority_expires_at`, clear/fork/restore/spawn, `RunStarted`,
-   `McpServer`/`A2aServer`, workflow validation. The production `initialize` callers
-   (`agent_session_bridge.hpp:355`, `session_builder.hpp` ×3, `eval_trial.hpp:459`,
+1. **Vocabulary** (built).
+2. **Mounts, network, the Python runner (G-C4, G-C5)** (built): unconditional checks, the grant model,
+   deployment layers, the nonce, the bridge, `extract_pdf_text`, the Linux guest paths. ADR-242 §3a's Kata row
+   and 008 §2 amended.
+3. **Session choices and authority (G-C6, G-C7, part of G-C1/G-C2):** `SessionChoices`, the sources and their
+   refusals, ceilings (sessions and both servers), admission-time expiry, clear/fork/restore/spawn,
+   `RunStarted`, workflow validation, `AgentSessionOptions{session_id, principal, choices}`. The production
+   `initialize` callers (`agent_session_bridge.hpp:355`, `session_builder.hpp` ×3, `eval_trial.hpp:459`,
    `agent_spawn_child_run.hpp:167`, `tools/test_driver/test_driver.hpp:2754,3320`, `tools/*_chat.cpp`,
-   the `examples/`) are rewritten by hand. The bridge maps `AgentMetadata::max_turns` into a `Bound` here,
-   refusing `0`, so `test_agent_yaml_limits` Y8 flips in this slice, not slice 4. Tests are rewritten by a script mapping each test's existing arguments to the
-   equivalent choice (`set_require_authority(true)` → `per_request()`, a stated budget → `at_most`,
-   nothing → `testing::trusted_unbounded()`); G-C11 lands in the same commit.
-4. **Agent metadata, builders, spawn, workflows, reflection (G-C3):** `validate_agent_metadata`, CRTP
-   `static_assert`s and `BoundValue` tags, YAML `unbounded`, option tables; 002 §3's table defaults and
-   §9 Q3 ("absence = off") amended.
-5. **Resource limits and capability caps (rest of G-C1/G-C2):** `Bound` fields, backends read `limit()`,
-   the surfaces' hidden substitutions removed, the declarative grant parser, `SandboxExec` `limits`.
-6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10):** registry by registration,
-   `create()` factories with pinned images, cgroup root, provider Runtime (coordinated with ADR-237's
-   #180/#182, which touch the same constructors), `EnvSecretSource::create`, `cap::UnmediatedShell`.
+   `examples/`) are rewritten by hand; tests by a script mapping each test's arguments to the equivalent
+   choice. The bridge maps `max_turns` into a `Bound` here, refusing `0` (Y8 flips). G-C11 lands here.
+4. **Agent metadata, tools, builders, spawn, workflows, reflection (G-C3, G-C8's null registry):**
+   `validate_agent_metadata`, tool approval, CRTP `static_assert`s and `BoundValue` tags, the registry
+   parameter, builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
+   (`as_bounded_integer`, option tables, `fallback`, `capabilities` for `per_request`); 002 §3 and §9 Q3
+   amended.
+5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12):** `Bound` fields, backends read
+   `limit()`, every substitution site in the planning log removed or named as an engine floor, the
+   declarative grant parser, `SandboxExec` `limits`.
+6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10):** registry by registration, `create()`
+   factories with pinned images, cgroup root, provider Runtime (coordinated with ADR-237's #180/#182),
+   `EnvSecretSource::create`, `cap::UnmediatedShell{surface, network}`, the containerd host bind.
 
-Each slice updates ADR-242 §3a in the same commit (a closed cell moves to "engine enforces" and cites its
-tagged test, G-R12), and amends the specs that state the old defaults (002 §3, 008 §2, 014's termination
-bound, 020 §4).
+Each slice updates ADR-242 §3a in the same commit (a closed cell moves to "engine enforces" and cites its test,
+G-R12) and amends the specs that state the old defaults (002 §3, 008 §2, 014's termination bound, 020 §4).
+Every slice reruns the full suite on Windows and on Linux (thnak-server, gcc and clang, and the privileged
+jail run); a test whose outcome changes is read by hand, never re-baselined.
 
 ## 6. Residuals
 
-- **Churn and mis-mapping.** Slice 3 rewrites most test files. Each slice reruns the full suite on Windows
-  and on Linux (thnak-server, gcc and clang); any test whose outcome changes is read by hand, never
-  re-baselined. Baselines (main @ 7f224166): Windows, everything passes except 13 Docker-daemon tests
-  (daemon not running); Linux gcc, everything passes except `test_json_dump_escape` and the three
-  containerd tests.
-- **`extract_pdf_text` keeps its own backend instance**, and on Linux that instance's cgroup root, until
-  ADR-243 slice 4 gives tools a backend seam. Its mounts are checked against the caller, so the residual is
-  backend *choice*, not authority. Its scratch directory is shared across sessions.
-- **Server/session authority mismatch is caught per request, not at construction** (`RunStarter` hides the
-  session's mode). It fails closed with a named code.
-- **Workflows cannot carry a caller's per-request authority** to node sessions yet; such nodes are refused
-  at validation. R4/R7.
-- **`TerminationBound::token_budget` is not enforced** and stays optional.
-- **`RuntimeConfig{}`'s thread counts** stay defaulted; sizing moves to ADR-243's `Engine`.
-- **`A2aServer`'s task store never evicts** (`a2a/server.hpp:171,182`); a required capacity belongs to the
-  server module (ADR-242 §3a, R4).
-- **The shared AppContainer SID** (ADR-041): grants are never revoked and all native-jail sandboxes share
-  one SID, so at the OS level a granted path stays reachable across sessions. Unchanged by this ADR.
-- **Other narrowing defaults stay** (`stream_retries = 0`, `suspend_for_approval = false`, `max_stalls`,
-  `max_resets`); ADR-243's facade decides which become required.
-- **`single_trusted_caller` remains an option**, with the admission skip above; honest for an embedded
-  single-user host, refused by the server module.
-- **`CapabilitySet::no_ceiling()` is an honest option**, not a safe one: a `per_request` session built
-  with it installs whatever authority the request carries. It is named so a reviewer can find it.
-- **Unique read-only deployment paths add one AppContainer ACE each**, never revoked (ADR-041); the dedup
-  bounds repeats of the same path only.
+- **Deployment paths, what no layer sees** (§2.4): a read-write mount strictly inside a deployment path made by
+  another process *before* that path was first recorded (no layer looks below the path); a read-write mount
+  over an *ancestor* made by another process while a worker using the path is alive (re-checked at every
+  worker creation, not continuously); and content a sandbox wrote while a directory was writable, which
+  revoking the ACE does not undo. A host that mounts its interpreter directory read-write has made that choice.
+- **Dead ACEs accumulate.** A crashed sandbox's capability-SID ACE stays (harmless, it names no live token)
+  until the directory is deleted; enough crashes against one directory fill its DACL (64 KB) and later grants
+  there fail with a Win32 error, not silently.
+- **Read-only grants stay on the shared SID** (ADR-041): any native-jail sandbox can read what any other was
+  granted read-only. Read-write is no longer shared.
 - **The worker's own directory is a deployment path, and its grant covers everything beneath it.** In this
-  repository's builds `agentengine_python_worker.exe` sits at the build root, so the read-only grant on its
-  directory already covers `python_home` and the whole build tree (found while proving G-C5(a), which
-  therefore omits an `extra_sys_path` entry outside the tree instead). This was true before this ADR too
-  (main granted the same directory). A deployment should install the worker in a directory of its own.
+  repository's builds the worker sits at the build root, so its read-only grant covers the build tree and its
+  marker makes the whole tree non-writable to sandboxes. A deployment installs the worker in a directory of its
+  own.
+- **The containerd surface's host bind is unchecked** until slice 6.
+- **`extract_pdf_text` keeps its own backend instance** (and on Linux its cgroup root) until ADR-243 gives tools
+  a backend seam; its scratch directory is shared across sessions.
+- **Server/session authority mismatch is caught per request**, not at construction (`RunStarter` hides the
+  session's mode); it fails closed with a named code.
+- **Workflows cannot carry a caller's per-request authority** to node sessions yet; such nodes are refused.
+- **Unenforced, so optional:** `TerminationBound::token_budget`, `AgentMetadata::telemetry`,
+  `stateless_pool_size`; and a raw session with no event sink records nothing to an audit trail.
+- **`RuntimeConfig{}`'s thread counts** stay defaulted (sizing moves to ADR-243's `Engine`); `A2aServer`'s task
+  store never evicts (the server module's).
+- **Narrowing defaults stay** for now (the planning log lists them); ADR-243's facade decides which become
+  required.
+- **`single_trusted_caller` and `CapabilitySet::no_ceiling()` remain honest options**, not safe ones; both are
+  named so a reviewer can find them.
 
 ## 7. Red-team record
 
-Full findings: [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md). Every cited
-location was re-checked before folding in.
+Every cited location was re-checked before folding in; the planning log has each finding and its evidence.
 
-- **Round 1** (revision 1): not ready, 3 FATAL / 9 MAJOR / 6 MINOR. Fatal: no caller authority at the
-  Python runner's creation; null `*ctx.capabilities`; an unacknowledged exemption list
-  (`grant_ro_path_once`, `create_python_worker`). Majors: the unmediated gate on one path only, optional
-  capability caps, missed budgets, clear/fork/restore, `single_trusted_caller`'s silent replacement,
-  spawned children, the registry-of-kinds, `AgentMetadata`'s unbounded spelling, the scripted rewrite.
-- **Round 2** (revision 2): not ready, 1 FATAL / 10 MAJOR / 8 MINOR. Fatal: carrying the parent's live
-  grant handed a spawned child the parent's whole set (fixed: minted set + parent expiry, §2.3). Majors:
-  the per-run runner check rested on a wrong "shared runner" premise and widened callers (fixed:
-  one-runner-per-session enforced); the tool bridge's configuration-built authority (fixed: attenuated);
-  DACL growth from deployment mounts (fixed: dedup in the mount step, G-C5d); Linux claims; container
-  networking unchecked (fixed: `UnmediatedShell{network}`); more implicit caps and budgets; the unenforced
-  workflow token budget (kept optional); restore equality and legacy records; `per_request` skipping the
-  ceiling; server/session authority mismatches and workflow nodes. Minors: tag names and 002 §9 Q3,
-  factory functions for fallible values, G-C11's scope, the runner's missing audit row, the shared SID,
-  hostile tests' limits, the persisted kind, pdf's required grants and shared scratch.
-- **Round 3** (revision 3): not ready, 0 FATAL / 9 MAJOR / 7 MINOR. Majors: no ceiling primitive, and a
-  raw session's missing ceiling was itself implicit (fixed: required `per_request(ceiling)`,
-  all-or-nothing refusal, chat-client secrets held apart); the restore ordering of sources was false
-  (fixed: same source required); expiry checked only at run start (fixed: every turn and tool dispatch,
-  named `Expiry`); uncovered child paths, `multi_agent::spawn` and `WorkflowChatClient` (fixed); workflow
-  validation could not see node sessions (fixed: the tag carries the source, re-checked per call); the
-  runner had no session identity (fixed: engine-minted nonce with epoch); the bridged tool body still saw
-  the caller's full set, and the bundled approval was standing (fixed: `ctx` swap, `BridgeApproval`);
-  deployment paths writable across sessions through never-revoked ACEs (fixed: refused overlap); legacy
-  records bricked (fixed: `migrate_record`). Minors: Windows path normalisation and the empty-prefix grant,
-  Linux mount order, dedup scope, `UnmediatedShell` vs the native shell, the null-pointer wording,
-  helpers that re-send `StartRun`, ungated recording (G-C12), `examples/` in the caller list, and Y8's
-  slice.
+- **Round 1** (revision 1): 3 FATAL / 9 MAJOR / 6 MINOR. No caller authority at runner creation; null
+  capabilities; an unacknowledged exemption list.
+- **Round 2** (revision 2): 1 FATAL / 10 MAJOR / 8 MINOR. Carrying the parent's grant to a child; the per-run
+  runner check; the bridge's configuration-built authority.
+- **Round 3** (revision 3): 0 FATAL / 9 MAJOR / 7 MINOR. The ceiling primitive, restore ordering, runner
+  identity, the bridge `ctx`, never-revoked ACEs over deployment paths.
+- **Round 4**, two reviewers. Code (slice 2), 1 FATAL / 3 MAJOR / 8 MINOR, most of it executed: the in-memory
+  ledger did not survive the process (fixed by the grant model, proven across processes), spelling aliases,
+  a dedup gate that could not fail, no session-level nonce test. Fixing them found a DACL edit race (fixed,
+  proven by mutant). Design (revision 4), 1 FATAL / 15 MAJOR / 13 MINOR: undeclared tool approval ran
+  unapproved; mid-run expiry contradicted ADR-242; defaulted principals; null registries; G-R13 rows with no
+  gate; YAML divergences (`-1` unbounded, unknown `profile`, empty ceilings); spawn ignoring the target; hidden
+  substitutions beyond Docker. All folded in above.

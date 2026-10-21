@@ -53,6 +53,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.output.set({'x': 1})\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
@@ -84,6 +85,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\n"
                           "agent.output.set({'answer': 42, 'note': 'done'})\nprint('script ran')\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));

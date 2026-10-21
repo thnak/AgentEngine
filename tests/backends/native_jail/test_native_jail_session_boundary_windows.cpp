@@ -73,6 +73,7 @@ int main() {
     ExecState state_b{};
     EffectContext ctx{};
     ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
 
     static constexpr char kCanaryValue[] = "leak_should_not_cross_sessions_98765";
 

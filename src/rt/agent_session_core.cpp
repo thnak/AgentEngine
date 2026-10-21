@@ -9,6 +9,11 @@
 
 namespace agentengine::rt {
 
+std::uint64_t agent_session_detail::next_session_identity() noexcept {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 // agent_session.hpp:785
 void AgentSessionCore::cancel() noexcept {
     std::stop_source source;

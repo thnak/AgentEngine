@@ -37,7 +37,9 @@
 #include <crtdbg.h>
 #endif
 
+#include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/native_jail_backend.hpp"
+#include "backends/native_jail/native_jail_win32_helpers.hpp"
 #include "../../support/crt_fail_fast.hpp"
 #include "../../support/error_detail.hpp"
 
@@ -70,6 +72,7 @@ int main() {
     std::filesystem::path work_dir =
         std::filesystem::temp_directory_path() / "ae_native_jail_backend_concurrency_test";
     std::error_code ec;
+    std::filesystem::remove_all(work_dir, ec);  // a fresh DACL: grants left by an earlier run are not this run's
     std::filesystem::create_directories(work_dir, ec);
     AE_CHECK(!ec, "setup: scratch mount directory exists");
 
@@ -136,6 +139,21 @@ int main() {
     AE_CHECK(unexpected_error_count.load() == 0,
               "concurrency: no create()/exec() call observed a spurious failure from a racing "
               "sibling call's map mutation");
+
+    // ADR-244 §2.4: every sandbox's read-write grant is its own capability SID's, revoked on destroy. Concurrent
+    // DACL edits are serialized, so no revoke is lost to a sibling's stale write: once every sandbox is gone, no
+    // AppContainer SID can write the shared mount.
+    auto profile = agentengine::native_jail::AppContainerProfile::ensure(
+        L"AgentEngine.NativeJail", L"AgentEngine Native Jail",
+        L"AgentEngine native-jail sandbox AppContainer profile (008 SS1b, ADR-004)");
+    auto writer = profile.has_value()
+                      ? agentengine::native_jail::appcontainer_writer(work_dir.wstring(), profile->sid())
+                      : agentengine::result<std::optional<std::wstring>>(std::unexpected(profile.error()));
+    if (writer.has_value() && writer->has_value()) {
+        std::cerr << "  a write grant survived: " << agentengine::native_jail::narrow(**writer) << "\n";
+    }
+    AE_CHECK(writer.has_value() && !writer->has_value(),
+             "concurrency: after every sandbox is destroyed, no AppContainer SID holds write on the shared mount");
 
     // A second pass, this time deliberately overlapping create_python_worker()'s own emplace path
     // is out of scope here (it needs a real worker exe + PythonWorkerSessionConfig, exercised by

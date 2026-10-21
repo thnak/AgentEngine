@@ -8,7 +8,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <mutex>
+#include <algorithm>
+#include <cwchar>
 #include <optional>
+#include <random>
 #include <unordered_set>
 #include <vector>
 
@@ -122,50 +125,64 @@ std::wstring build_minimal_environment_block() {
     return &*profile;
 }
 
-// Correction (2026-08-23, independent red-team pass, REAL GAP finding): `AppContainerProfile::
-// grant_path()` is explicitly documented as additive, non-idempotent -- "callers grant each mount
-// exactly once." `create_python_worker()`'s read-only grants on the worker binary directory,
-// `python_home`, and `extra_sys_path` are host-DEPLOYMENT-fixed paths, identical across every
-// session, not session-scoped mount paths -- calling `grant_path()` on them from every session
-// creation appended a fresh, redundant ACE to the SAME shared profile's DACL every time, growing it
-// without bound over a long-running host's lifetime purely from ordinary session churn (no attack
-// needed). Deduped here, matching `shared_profile()`'s own "one profile, reused across sessions"
-// lifetime model one field over -- a path is granted at most once for the life of this process.
-[[nodiscard]] result<void> grant_ro_deduped(AppContainerProfile const& profile, std::wstring const& path) {
-    if (path.empty()) return {};
-    static std::mutex granted_mutex;
-    static std::unordered_set<std::string> granted;  // ADR-244 §2.4: keyed on the normalised path
-
-    std::string const key = sandbox_detail::host_path_key(narrow(path));
-    std::lock_guard<std::mutex> guard(granted_mutex);
-    if (granted.contains(key)) return {};
-    auto result = profile.grant_path(path, /*read_write=*/false);
-    if (!result.has_value()) return result;
-    granted.insert(key);
-    return {};
+// ADR-244 §2.4: the key a path is compared under -- the directory's own identity, not its spelling. The final
+// path (`GetFinalPathNameByHandleW`) resolves 8.3 short names, `\\?\` prefixes, junctions and case, so two
+// spellings of one directory get one key. A path that cannot be opened keys by its spelling; its grant fails
+// later anyway.
+[[nodiscard]] std::string identity_key(std::wstring const& path) {
+    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return sandbox_detail::host_path_key(narrow(path));
+    std::wstring final_path(MAX_PATH, L'\0');
+    DWORD n = GetFinalPathNameByHandleW(h, final_path.data(), static_cast<DWORD>(final_path.size()), VOLUME_NAME_DOS);
+    if (n >= final_path.size()) {
+        final_path.resize(n + 1);
+        n = GetFinalPathNameByHandleW(h, final_path.data(), static_cast<DWORD>(final_path.size()), VOLUME_NAME_DOS);
+    }
+    CloseHandle(h);
+    if (n == 0 || n >= final_path.size()) return sandbox_detail::host_path_key(narrow(path));
+    final_path.resize(n);
+    if (final_path.starts_with(L"\\\\?\\UNC\\")) {
+        final_path = L"\\\\" + final_path.substr(8);
+    } else if (final_path.starts_with(L"\\\\?\\")) {
+        final_path = final_path.substr(4);
+    }
+    return sandbox_detail::host_path_key(narrow(final_path));
 }
 
-// ADR-244 §2.4: AppContainer ACEs on the shared profile are never revoked (ADR-041), so a read-write grant
-// over a deployment path (the worker's directory, `python_home`, an `extra_sys_path` entry) made once by any
-// session would let it plant modules every later worker imports. This process-wide ledger refuses that
-// overlap in both orders: a read-write mount over a recorded deployment path, and a deployment path under
-// (or over) a path some earlier mount already made writable.
+// ADR-244 §2.4: a deployment path (the worker's directory, `python_home`, an `extra_sys_path` entry) is never
+// writable by any sandbox, in this process or another. Three layers:
+//   1. This process: the ledger below refuses a read-write mount and a deployment path that overlap, in either
+//      order, by directory identity. It is permanent for the process: a directory a sandbox could once write
+//      may hold what it wrote.
+//   2. Other processes, after the fact: a deployment path whose DACL gives write to the profile SID or to any
+//      capability SID (a live or crashed sandbox's grant, or one an older engine made on the shared SID) is
+//      refused.
+//   3. Other processes, later: every deployment path carries an allow ACE for a marker capability SID that no
+//      token ever holds (it grants nothing). A read-write mount whose DACL names it -- the path is, or lies
+//      inside, some process's deployment path -- is refused.
+// Not covered, disclosed in ADR-244 §6: a read-write mount strictly inside a deployment path made before that path
+// was first recorded (no layer sees below the path), and one over an ancestor made by another process while a
+// worker using the path is alive.
 class GrantLedger {
 public:
-    [[nodiscard]] result<void> record_deployment(std::string const& key) {
+    [[nodiscard]] result<void> admit(std::vector<std::string> const& deployment, std::vector<std::string> const& writable) {
         std::lock_guard<std::mutex> guard(mutex_);
-        for (std::string const& w : writable_) {
-            if (overlaps(key, w)) return refuse(key);
+        for (std::string const& w : writable) {
+            for (std::string const& d : deployment) {
+                if (overlaps(w, d)) return refuse(w);
+            }
+            for (std::string const& d : deployment_) {
+                if (overlaps(w, d)) return refuse(w);
+            }
         }
-        deployment_.insert(key);
-        return {};
-    }
-    [[nodiscard]] result<void> record_writable(std::string const& key) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        for (std::string const& d : deployment_) {
-            if (overlaps(key, d)) return refuse(key);
+        for (std::string const& d : deployment) {
+            for (std::string const& w : writable_) {
+                if (overlaps(d, w)) return refuse(d);
+            }
         }
-        writable_.insert(key);
+        deployment_.insert(deployment.begin(), deployment.end());
+        writable_.insert(writable.begin(), writable.end());
         return {};
     }
 
@@ -173,29 +190,63 @@ private:
     [[nodiscard]] static bool overlaps(std::string const& a, std::string const& b) {
         return capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a);
     }
-    [[nodiscard]] static result<void> refuse(std::string const& key) {
-        return std::unexpected(ae::error{
-            failure_class::policy,
-            "a read-write mount and an interpreter deployment path overlap at '" + key +
-                "'; deployment paths are never writable (grants on the shared AppContainer profile are "
-                "never revoked)",
-            "sandbox.deployment_path_writable"});
-    }
+    [[nodiscard]] static result<void> refuse(std::string const& key);
 
     std::mutex                      mutex_;
     std::unordered_set<std::string> deployment_;
     std::unordered_set<std::string> writable_;
 };
 
+[[nodiscard]] result<void> refuse_deployment(std::string const& where, std::string const& why) {
+    return std::unexpected(ae::error{
+        failure_class::policy,
+        "a read-write mount and an interpreter deployment path overlap at '" + where + "' (" + why +
+            "); deployment paths are never writable by a sandbox",
+        "sandbox.deployment_path_writable"});
+}
+
+result<void> GrantLedger::refuse(std::string const& key) { return refuse_deployment(key, "this process"); }
+
 [[nodiscard]] GrantLedger& grant_ledger() {
     static GrantLedger ledger;
     return ledger;
 }
 
-// Grants every mount of an already-authorized spec on the shared profile: read-only ones once per path
-// (`grant_ro_deduped`, ADR-004 finding 9), read-write ones after the ledger check above.
+// The marker capability SID of layer 3. Derived from a fixed name, so every process derives the same SID.
+[[nodiscard]] result<PSID> deployment_marker_sid() {
+    static std::mutex marker_mutex;
+    static std::optional<OwnedSid> marker;
+    std::lock_guard<std::mutex> guard(marker_mutex);
+    if (!marker.has_value()) {
+        auto derived = OwnedSid::derive_capability(L"agentengine.native-jail.deployment-path");
+        if (!derived.has_value()) return std::unexpected(derived.error());
+        marker.emplace(std::move(*derived));
+    }
+    return marker->get();
+}
+
+// A fresh capability SID for one sandbox's read-write mounts, from a random name.
+[[nodiscard]] result<OwnedSid> fresh_rw_sid() {
+    std::random_device rd;
+    std::wstring name = L"agentengine.native-jail.rw.";
+    for (int i = 0; i < 4; ++i) {
+        wchar_t chunk[9];
+        std::swprintf(chunk, 9, L"%08x", static_cast<unsigned>(rd()));
+        name += chunk;
+    }
+    return OwnedSid::derive_capability(name);
+}
+
+// Grants every mount of an already-authorized spec. `deployment` lists the paths that must never be writable
+// (empty for a plain sandbox). Everything is checked before anything is granted.
 [[nodiscard]] result<void> grant_spec_mounts(AppContainerProfile const& profile, SandboxSpec const& spec,
+                                             std::vector<std::wstring> const& deployment, RwGrants& rw,
                                              std::wstring& cwd) {
+    auto marker = deployment_marker_sid();
+    if (!marker.has_value()) return std::unexpected(marker.error());
+
+    std::vector<std::wstring> ro_paths;
+    std::vector<std::wstring> rw_paths;
     for (MountSpec const& mount : spec.mounts) {
         if (!std::holds_alternative<std::string>(mount.source)) {
             return std::unexpected(ae::error{
@@ -205,18 +256,63 @@ private:
                 "native_jail.blob_mount_unsupported",
             });
         }
-        std::string const& host = std::get<std::string>(mount.source);
-        std::wstring const host_path = widen(host);
-        if (mount.read_write) {
-            if (auto r = grant_ledger().record_writable(sandbox_detail::host_path_key(host)); !r) return r;
-            auto granted = profile.grant_path(host_path, /*read_write=*/true);
-            if (!granted.has_value()) return std::unexpected(granted.error());
-            if (cwd.empty()) cwd = host_path;
-        } else if (auto granted = grant_ro_deduped(profile, host_path); !granted.has_value()) {
-            return granted;
+        (mount.read_write ? rw_paths : ro_paths).push_back(widen(std::get<std::string>(mount.source)));
+    }
+
+    // Layer 3: a read-write mount over (or inside) any process's deployment path.
+    for (std::wstring const& path : rw_paths) {
+        auto marked = dacl_names(path, *marker);
+        if (marked.has_value() && *marked) return refuse_deployment(narrow(path), "it is a recorded deployment path");
+    }
+    // Layer 2: a deployment path some sandbox can already write.
+    for (std::wstring const& path : deployment) {
+        auto writer = appcontainer_writer(path, profile.sid());
+        if (!writer.has_value()) return std::unexpected(writer.error());
+        if (writer->has_value()) {
+            return refuse_deployment(narrow(path), "its DACL gives write to " + narrow(**writer) +
+                                            "; remove that entry with icacls /remove");
         }
     }
+    // Layer 1.
+    std::vector<std::string> deployment_keys;
+    std::vector<std::string> writable_keys;
+    for (std::wstring const& path : deployment) deployment_keys.push_back(identity_key(path));
+    for (std::wstring const& path : rw_paths) writable_keys.push_back(identity_key(path));
+    if (auto admitted = grant_ledger().admit(deployment_keys, writable_keys); !admitted) return admitted;
+
+    for (std::wstring const& path : deployment) {
+        if (auto r = grant_sid_path(path, *marker, /*read_write=*/false); !r) return r;
+    }
+    for (std::wstring const& path : ro_paths) {
+        if (auto r = profile.grant_path(path, /*read_write=*/false); !r) return r;
+    }
+    if (!rw_paths.empty()) {
+        auto sid = fresh_rw_sid();
+        if (!sid.has_value()) return std::unexpected(sid.error());
+        rw.sid = std::move(*sid);
+        for (std::wstring const& path : rw_paths) {
+            // The profile SID reads (traverse included); only this sandbox's capability SID writes.
+            if (auto r = profile.grant_path(path, /*read_write=*/false); !r) return r;
+            if (auto r = grant_sid_path(path, rw.sid->get(), /*read_write=*/true); !r) return r;
+            rw.paths.push_back(path);
+        }
+        cwd = rw_paths.front();
+    }
     return {};
+}
+
+// The capability list for a launch: the sandbox's read-write SID, when it has one.
+[[nodiscard]] SECURITY_CAPABILITIES launch_capabilities(PSID app_container, RwGrants const& rw,
+                                                        SID_AND_ATTRIBUTES& slot) {
+    SECURITY_CAPABILITIES sec_cap{};
+    sec_cap.AppContainerSid = app_container;
+    if (rw.sid.has_value()) {
+        slot.Sid = rw.sid->get();
+        slot.Attributes = SE_GROUP_ENABLED;
+        sec_cap.Capabilities = &slot;
+        sec_cap.CapabilityCount = 1;
+    }
+    return sec_cap;
 }
 
 // Bounded pipe drain: reads until EOF (the write end closes once the child -- the only other
@@ -276,7 +372,7 @@ result<SandboxHandle> NativeJailBackend::create_blocking(SandboxSpec const& spec
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
 
-    if (auto granted = grant_spec_mounts(**profile, spec, instance->cwd); !granted.has_value()) {
+    if (auto granted = grant_spec_mounts(**profile, spec, {}, instance->rw, instance->cwd); !granted.has_value()) {
         return std::unexpected(granted.error());
     }
 
@@ -341,10 +437,8 @@ result<ExecOutcome> NativeJailBackend::exec_blocking(SandboxHandle& handle, Exec
         return win32_error("CreateFileW(NUL)", failure_class::fatal, "native_jail.nul_stdin_open_failed");
     }
 
-    SECURITY_CAPABILITIES sec_cap{};
-    sec_cap.AppContainerSid = (*profile)->sid();
-    sec_cap.Capabilities = nullptr;
-    sec_cap.CapabilityCount = 0;
+    SID_AND_ATTRIBUTES rw_slot{};
+    SECURITY_CAPABILITIES sec_cap = launch_capabilities((*profile)->sid(), inst.rw, rw_slot);
 
     // Correction (2026-08-23, independent red-team pass, BLOCKING finding, AC-S1 falsified by
     // execution): this attribute list used to be 2 entries (SECURITY_CAPABILITIES,
@@ -659,14 +753,29 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     // every other mount -- there is no separate, unchecked grant path any more. They are recorded in the
     // grant ledger first, so no read-write mount (here or in any later sandbox) can overlap them.
     SandboxSpec effective = spec;
-    std::vector<std::string> deployment;
-    deployment.push_back(narrow(std::filesystem::path(session.worker_exe_path).parent_path().wstring()));
-    if (!session.python_home.empty()) deployment.push_back(narrow(session.python_home));
+    std::vector<std::wstring> deployment;
+    deployment.push_back(std::filesystem::path(session.worker_exe_path).parent_path().wstring());
+    if (!session.python_home.empty()) deployment.push_back(session.python_home);
     for (std::wstring const& p : session.extra_sys_path) {
-        if (!p.empty()) deployment.push_back(narrow(p));
+        if (!p.empty()) deployment.push_back(p);
     }
-    for (std::string const& path : deployment) {
-        effective.mounts.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false});
+    for (std::wstring const& path : deployment) {
+        effective.mounts.push_back(MountSpec{.source = narrow(path), .guest_path = narrow(path), .read_write = false});
+    }
+
+    // The relay opens files under `session.mount_roots` on the host side, so each root must be one of the
+    // checked read-write mounts, never a path that reached the worker some other way.
+    for (auto const& [id, root] : session.mount_roots) {
+        std::string const key = sandbox_detail::host_path_key(narrow(root));
+        bool const mounted = std::ranges::any_of(spec.mounts, [&](MountSpec const& m) {
+            return m.read_write && std::holds_alternative<std::string>(m.source) &&
+                   sandbox_detail::host_path_key(std::get<std::string>(m.source)) == key;
+        });
+        if (!mounted) {
+            return std::unexpected(ae::error{failure_class::contract,
+                                             "mount root '" + id + "' is not among the spec's read-write mounts",
+                                             "native_jail.mount_root_not_mounted"});
+        }
     }
 
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §6 finding B1: this is a
@@ -676,18 +785,14 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     if (auto authorized = authorize_spec(effective); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
-    for (std::string const& path : deployment) {
-        if (auto r = grant_ledger().record_deployment(sandbox_detail::host_path_key(path)); !r) {
-            return std::unexpected(r.error());
-        }
-    }
 
     auto profile = shared_profile();
     if (!profile.has_value()) return std::unexpected(profile.error());
 
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
-    if (auto granted = grant_spec_mounts(**profile, effective, instance->cwd); !granted.has_value()) {
+    if (auto granted = grant_spec_mounts(**profile, effective, deployment, instance->rw, instance->cwd);
+        !granted.has_value()) {
         return std::unexpected(granted.error());
     }
 
@@ -714,10 +819,8 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     SetHandleInformation(down_write.h, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(up_read.h, HANDLE_FLAG_INHERIT, 0);
 
-    SECURITY_CAPABILITIES sec_cap{};
-    sec_cap.AppContainerSid = (*profile)->sid();
-    sec_cap.Capabilities = nullptr;
-    sec_cap.CapabilityCount = 0;
+    SID_AND_ATTRIBUTES rw_slot{};
+    SECURITY_CAPABILITIES sec_cap = launch_capabilities((*profile)->sid(), instance->rw, rw_slot);
 
     HANDLE inherit_list[2] = {down_read.h, up_write.h};
 

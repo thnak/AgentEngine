@@ -316,6 +316,17 @@ if(WIN32)
     LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
     TIMEOUT 30)
 
+  # ---- Read-write mounts on a per-sandbox capability SID; deployment paths never writable (ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_rw_capability_windows
+    LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
+    TIMEOUT 120)
+
+  # ---- G-C5(e): every AppContainer grant goes through grant_spec_mounts (a source scan, ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_grant_sites
+    LIBS agentengine_warnings
+    DEFINITIONS AE_SOURCE_ROOT="${PROJECT_SOURCE_DIR}"
+    TIMEOUT 30)
+
   # ---- AppContainerProfile::grant_path()/revoke_path() ACE lifecycle (docs/planning/office-document-
   # extraction-design-draft.md "Prove pass 2" -- the two central safety claims Revision 8's pool-
   # elimination collapse and Revision 9/10's revoke_path() safety net rest on, argued from code reading

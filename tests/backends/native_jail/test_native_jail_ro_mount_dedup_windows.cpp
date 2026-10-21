@@ -1,11 +1,13 @@
 // Proves decisions/ADR-244-required-choices-step-1b.md §2.4: a read-only `SandboxSpec.mounts` entry on
 // `NativeJailBackend::create()` is granted to the shared AppContainer profile once, however many sandboxes
-// mount it (ADR-004 finding 9). This replaced `grant_ro_path_once()`, which granted outside any capability
-// check; the mount now has to be covered by a `cap::SandboxMount` grant like any other.
+// mount it. This replaced `grant_ro_path_once()`, which granted outside any capability check; the mount now has
+// to be covered by a `cap::SandboxMount` grant like any other.
 //
-//   1. The first create with the read-only mount grants real access -- the path's DACL gains an entry
-//      (positive control: the counter sees a grant).
-//   2. Ten more creates mounting the same path do not grow the DACL.
+// The DACL entry count alone cannot show this: Windows merges an identical ACE, so even an undeduplicated grant
+// leaves the count flat (measured, ADR-244 §6). The proof counts DACL *writes* instead
+// (`native_jail::acl_write_count`), which an unconditional grant would raise on every create.
+//   1. The first create writes the grant (positive control: the counter moves) and the DACL gains an entry.
+//   2. Ten more creates mounting the same path write nothing.
 //   3. A create whose grants do not cover the mount is refused (`sandbox.mount_not_authorized`).
 #include <windows.h>
 
@@ -16,6 +18,7 @@
 #include <string>
 
 #include "agentengine/rt/block_on.hpp"
+#include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/native_jail_backend.hpp"
 #include "../../support/error_detail.hpp"
 
@@ -89,15 +92,19 @@ int main() {
     std::wstring const scratch_w = scratch.wstring();
 
     DWORD const before = dacl_entry_count(scratch_w);
+    std::uint64_t const writes_before = native_jail::acl_write_count();
     AE_CHECK(create_and_destroy(backend, ro_spec(scratch, true)), "a create with a granted read-only mount succeeds");
+    std::uint64_t const writes_after_first = native_jail::acl_write_count();
     DWORD const after_first = dacl_entry_count(scratch_w);
-    AE_CHECK(after_first > before, "the first create grants real access -- the DACL gains an entry");
+    AE_CHECK(writes_after_first > writes_before && after_first > before,
+             "the first create writes the grant (positive control) -- the DACL gains an entry");
 
     for (int i = 0; i < 10; ++i) {
         AE_CHECK(create_and_destroy(backend, ro_spec(scratch, true)), "a repeat create with the same mount succeeds");
     }
-    AE_CHECK(dacl_entry_count(scratch_w) == after_first,
-             "10 further creates mounting the same read-only path do not accumulate ACEs");
+    AE_CHECK(native_jail::acl_write_count() == writes_after_first,
+             "10 further creates mounting the same read-only path write nothing to the DACL");
+    AE_CHECK(dacl_entry_count(scratch_w) == after_first, "and the DACL entry count is unchanged");
 
     {
         EffectContext ctx;

@@ -77,6 +77,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         auto const t0 = std::chrono::steady_clock::now();
         ExecRequest req{"python", "while True:\n    pass\n"};
@@ -138,6 +139,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "while True:\n    pass\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         NativeJailBackend::set_test_post_terminate_hook(nullptr);
@@ -173,6 +175,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         // Try to allocate ~512 MiB, well past the 64 MiB cap -- either the worker is killed by the Job
         // Object before the allocation completes (outcome: oom/timeout/crash, never ok with success

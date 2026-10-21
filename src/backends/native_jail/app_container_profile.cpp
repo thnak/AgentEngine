@@ -5,7 +5,11 @@
 #include <userenv.h>
 #include <aclapi.h>
 
+#include <sddl.h>
+
+#include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace agentengine::native_jail {
@@ -149,15 +153,135 @@ AppContainerProfile& AppContainerProfile::operator=(AppContainerProfile&& other)
     return *this;
 }
 
-result<void> AppContainerProfile::grant_path(std::wstring const& path, bool read_write) const {
-    if (sid_ == nullptr) {
-        return std::unexpected(ae::error{failure_class::contract,
-                                          "grant_path called on a moved-from AppContainerProfile",
-                                          "app_container.no_sid"});
-    }
+namespace {
 
-    DWORD mask = read_write ? (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE)
-                             : (GENERIC_READ | GENERIC_EXECUTE);
+std::atomic<std::uint64_t> g_acl_writes{0};
+
+[[nodiscard]] ae::error acl_error(char const* what, DWORD rc, char const* code) {
+    return ae::error{failure_class::fatal, std::string(what) + " failed: Win32 error " + std::to_string(rc), code};
+}
+
+// Every write bit an ACE can carry for a file or directory, generic or specific.
+constexpr DWORD kWriteBits = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | DELETE |
+                             FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+
+// Calls `visit(sid, mask, inherited, flags)` for every access-allowed ACE in `path`'s DACL; true at the first hit.
+template <class Visit>
+[[nodiscard]] result<bool> any_allowed_ace(std::wstring const& path, Visit visit) {
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                     &dacl, nullptr, &sd);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(acl_error("GetNamedSecurityInfoW", rc, "app_container.get_security_info_failed"));
+    }
+    bool found = false;
+    for (DWORD i = 0; dacl != nullptr && i < dacl->AceCount && !found; ++i) {
+        void* raw = nullptr;
+        if (!GetAce(dacl, i, &raw)) continue;
+        auto const* header = static_cast<ACE_HEADER const*>(raw);
+        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+        auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+        PSID sid = &ace->SidStart;
+        found = visit(sid, ace->Mask, (header->AceFlags & INHERITED_ACE) != 0, header->AceFlags);
+    }
+    LocalFree(sd);
+    return found;
+}
+
+// True for an AppContainer capability SID (S-1-15-3-...).
+[[nodiscard]] bool is_capability_sid(PSID sid) {
+    SID_IDENTIFIER_AUTHORITY const app_package = SECURITY_APP_PACKAGE_AUTHORITY;
+    auto const* auth = GetSidIdentifierAuthority(sid);
+    return std::memcmp(auth, &app_package, sizeof app_package) == 0 && *GetSidSubAuthorityCount(sid) >= 1 &&
+           *GetSidSubAuthority(sid, 0) == SECURITY_CAPABILITY_BASE_RID;
+}
+
+[[nodiscard]] std::wstring sid_string(PSID sid) {
+    LPWSTR text = nullptr;
+    if (!ConvertSidToStringSidW(sid, &text)) return L"?";
+    std::wstring out = text;
+    LocalFree(text);
+    return out;
+}
+
+}  // namespace
+
+std::uint64_t acl_write_count() noexcept { return g_acl_writes.load(std::memory_order_relaxed); }
+
+result<OwnedSid> OwnedSid::derive_capability(std::wstring const& name) {
+    // DeriveCapabilitySidsFromName has no import-library entry in every SDK this builds with; it lives in
+    // kernelbase.dll on every Windows 10+ host, which the AppContainer launch already requires.
+    using DeriveFn = BOOL(WINAPI*)(LPCWSTR, PSID**, DWORD*, PSID**, DWORD*);
+    auto const derive = reinterpret_cast<DeriveFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "DeriveCapabilitySidsFromName")));
+    if (derive == nullptr) {
+        return std::unexpected(ae::error{failure_class::fatal, "DeriveCapabilitySidsFromName is unavailable",
+                                         "app_container.capability_derive_unavailable"});
+    }
+    PSID* groups = nullptr;
+    DWORD group_count = 0;
+    PSID* caps = nullptr;
+    DWORD cap_count = 0;
+    if (!derive(name.c_str(), &groups, &group_count, &caps, &cap_count) || cap_count == 0) {
+        return std::unexpected(acl_error("DeriveCapabilitySidsFromName", GetLastError(),
+                                         "app_container.capability_derive_failed"));
+    }
+    OwnedSid out;
+    out.bytes_.resize(GetLengthSid(caps[0]));
+    CopySid(static_cast<DWORD>(out.bytes_.size()), out.bytes_.data(), caps[0]);
+    for (DWORD i = 0; i < group_count; ++i) LocalFree(groups[i]);
+    for (DWORD i = 0; i < cap_count; ++i) LocalFree(caps[i]);
+    LocalFree(groups);
+    LocalFree(caps);
+    return out;
+}
+
+// One `SetEntriesInAclW` + `SetNamedSecurityInfoW` round trip, counted by `acl_write_count`.
+static result<void> apply_explicit_access(std::wstring const& path, EXPLICIT_ACCESSW& ea) {
+    PACL existing_dacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                                     &existing_dacl, nullptr, &sd);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(acl_error("GetNamedSecurityInfoW", rc, "app_container.get_security_info_failed"));
+    }
+    PACL new_dacl = nullptr;
+    rc = SetEntriesInAclW(1, &ea, existing_dacl, &new_dacl);
+    LocalFree(sd);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(acl_error("SetEntriesInAclW", rc, "app_container.set_entries_failed"));
+    }
+    rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr,
+                               nullptr, new_dacl, nullptr);
+    LocalFree(new_dacl);
+    g_acl_writes.fetch_add(1, std::memory_order_relaxed);
+    if (rc != ERROR_SUCCESS) {
+        return std::unexpected(acl_error("SetNamedSecurityInfoW", rc, "app_container.set_security_info_failed"));
+    }
+    return {};
+}
+
+// Every DACL edit is a read-modify-write (`GetNamedSecurityInfoW`, then `SetNamedSecurityInfoW` of the edited copy),
+// so two edits of one path race: a grant that read the DACL before a sibling's revoke writes the revoked ACE back.
+// Measured (ADR-244 §2.4, test_native_jail_backend_concurrency_windows): 8 threads granting and revoking per-sandbox
+// SIDs on one directory resurrected ACEs until the DACL hit its 64 KB limit (Win32 error 122). One lock, across
+// processes, serializes every edit with the check before it.
+constexpr wchar_t kDaclEditLock[] = L"AgentEngine.NativeJail.DaclEdit";
+
+result<void> grant_sid_path(std::wstring const& path, PSID sid, bool read_write) {
+    CrossProcessLock const lock(kDaclEditLock);
+    DWORD const mask = read_write ? (GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | DELETE)
+                                  : (GENERIC_READ | GENERIC_EXECUTE);
+    // Idempotent by the DACL itself: an explicit (OI)(CI) allow for `sid` already carrying the mask means there is
+    // nothing to write. Skipping the write also skips re-propagating the ACE through a large tree.
+    auto present = any_allowed_ace(path, [&](PSID ace_sid, ACCESS_MASK ace_mask, bool inherited, BYTE flags) {
+        bool const tree = (flags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) ==
+                          (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
+        return !inherited && tree && EqualSid(ace_sid, sid) && (ace_mask & mask) == mask;
+    });
+    if (!present.has_value()) return std::unexpected(present.error());
+    if (*present) return {};
 
     EXPLICIT_ACCESSW ea{};
     ea.grfAccessPermissions = mask;
@@ -165,102 +289,62 @@ result<void> AppContainerProfile::grant_path(std::wstring const& path, bool read
     ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;  // (OI)(CI) -- applies under the tree
     ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
     ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-    ea.Trustee.ptstrName = static_cast<LPWSTR>(sid_);
-
-    PACL existing_dacl = nullptr;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
-                                      DACL_SECURITY_INFORMATION, nullptr, nullptr,
-                                      &existing_dacl, nullptr, &sd);
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "GetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
-            "app_container.get_security_info_failed",
-        });
-    }
-
-    PACL new_dacl = nullptr;
-    rc = SetEntriesInAclW(1, &ea, existing_dacl, &new_dacl);
-    LocalFree(sd);
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "SetEntriesInAclW failed: Win32 error " + std::to_string(rc),
-            "app_container.set_entries_failed",
-        });
-    }
-
-    rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
-                                DACL_SECURITY_INFORMATION, nullptr, nullptr, new_dacl, nullptr);
-    LocalFree(new_dacl);
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "SetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
-            "app_container.set_security_info_failed",
-        });
-    }
-    return {};
+    ea.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+    return apply_explicit_access(path, ea);
 }
 
-result<void> AppContainerProfile::revoke_path(std::wstring const& path) const {
-    if (sid_ == nullptr) {
-        return std::unexpected(ae::error{failure_class::contract,
-                                          "revoke_path called on a moved-from AppContainerProfile",
-                                          "app_container.no_sid"});
+result<void> revoke_sid_path(std::wstring const& path, PSID sid) {
+    // A path that no longer exists (or never existed -- finding 33's fixed, up-to-three-children
+    // enumeration always calls this against every child slot regardless of whether that call ever
+    // reached the point of creating it) has no ACE left to strip. Treat it as trivially satisfied,
+    // the same "nothing to collide with" reasoning finding 15's own cleanup fix already applies.
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        DWORD const rc = GetLastError();
+        if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) return {};
     }
-
+    CrossProcessLock const lock(kDaclEditLock);
     EXPLICIT_ACCESSW ea{};
     ea.grfAccessPermissions = 0;  // ignored by SetEntriesInAclW for REVOKE_ACCESS
     ea.grfAccessMode = REVOKE_ACCESS;
     ea.grfInheritance = NO_INHERITANCE;
     ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
     ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-    ea.Trustee.ptstrName = static_cast<LPWSTR>(sid_);
+    ea.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+    return apply_explicit_access(path, ea);
+}
 
-    PACL existing_dacl = nullptr;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    DWORD rc = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
-                                      DACL_SECURITY_INFORMATION, nullptr, nullptr,
-                                      &existing_dacl, nullptr, &sd);
-    // A path that no longer exists (or never existed -- finding 33's fixed, up-to-three-children
-    // enumeration always calls this against every child slot regardless of whether that call ever
-    // reached the point of creating it) has no ACE left to strip. Treat it as trivially satisfied,
-    // the same "nothing to collide with" reasoning finding 15's own cleanup fix already applies.
-    if (rc == ERROR_FILE_NOT_FOUND || rc == ERROR_PATH_NOT_FOUND) {
-        return {};
-    }
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "GetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
-            "app_container.get_security_info_failed",
-        });
-    }
+result<std::optional<std::wstring>> appcontainer_writer(std::wstring const& path, PSID package_sid) {
+    std::optional<std::wstring> writer;
+    auto found = any_allowed_ace(path, [&](PSID sid, ACCESS_MASK mask, bool, BYTE) {
+        if ((mask & kWriteBits) == 0) return false;
+        if (!EqualSid(sid, package_sid) && !is_capability_sid(sid)) return false;
+        writer = sid_string(sid);
+        return true;
+    });
+    if (!found.has_value()) return std::unexpected(found.error());
+    return writer;
+}
 
-    PACL new_dacl = nullptr;
-    rc = SetEntriesInAclW(1, &ea, existing_dacl, &new_dacl);
-    LocalFree(sd);
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "SetEntriesInAclW failed: Win32 error " + std::to_string(rc),
-            "app_container.set_entries_failed",
-        });
-    }
+result<bool> dacl_names(std::wstring const& path, PSID sid) {
+    return any_allowed_ace(path, [&](PSID ace_sid, ACCESS_MASK, bool, BYTE) { return EqualSid(ace_sid, sid) != 0; });
+}
 
-    rc = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
-                                DACL_SECURITY_INFORMATION, nullptr, nullptr, new_dacl, nullptr);
-    LocalFree(new_dacl);
-    if (rc != ERROR_SUCCESS) {
-        return std::unexpected(ae::error{
-            failure_class::fatal,
-            "SetNamedSecurityInfoW failed: Win32 error " + std::to_string(rc),
-            "app_container.set_security_info_failed",
-        });
+result<void> AppContainerProfile::grant_path(std::wstring const& path, bool read_write) const {
+    if (sid_ == nullptr) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                         "grant_path called on a moved-from AppContainerProfile",
+                                         "app_container.no_sid"});
     }
-    return {};
+    return grant_sid_path(path, sid_, read_write);
+}
+
+result<void> AppContainerProfile::revoke_path(std::wstring const& path) const {
+    if (sid_ == nullptr) {
+        return std::unexpected(ae::error{failure_class::contract,
+                                         "revoke_path called on a moved-from AppContainerProfile",
+                                         "app_container.no_sid"});
+    }
+    return revoke_sid_path(path, sid_);
 }
 
 }  // namespace agentengine::native_jail

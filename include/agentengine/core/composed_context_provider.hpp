@@ -142,7 +142,7 @@ public:
     // collide with `smuggler`'s stale tag, and `operator=` wrongly allowed the merge, leaking the FIRST
     // session's content into the SECOND. Closed by retagging with `AgentSession::session_identity_` (a
     // monotonic, process-wide, never-reused counter value -- `agent_session.hpp`'s own comment on that
-    // member and `agent_session_detail::g_next_session_identity`) instead of `this`. `owner_`'s TYPE
+    // member and `agent_session_detail::next_session_identity()`) instead of `this`. `owner_`'s TYPE
     // changed accordingly, from `void const*` to `std::uint64_t` (`0` now means "untagged", matching
     // `nullptr`'s old role -- real identities start at `1`).
     //
@@ -313,7 +313,7 @@ private:
     // constructor/`operator=`'s own comments above for the full, same-day-revised rationale. `0` for a
     // bare, standalone instance never reached through `AgentSession::history_provider()` and never
     // move-constructed/move-assigned from anything that was (real identities from
-    // `agent_session_detail::g_next_session_identity` start at `1`). PROPAGATED (not reset) by the move
+    // `agent_session_detail::next_session_identity()` start at `1`). PROPAGATED (not reset) by the move
     // constructor above -- the original ADR-116 shape left this unset on every freshly move-constructed
     // instance, which a same-day independent red-team pass found let a session's live, tagged content
     // pass through an untagged intermediate variable and defeat `operator=`'s whole check; propagating

@@ -111,6 +111,7 @@
 #include "agentengine/sandbox/net_egress_proxy.hpp"  // VerifiedEndpoint -- set_test_connect_resolver_override
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
+#include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/job_object_limits.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
 
@@ -161,6 +162,22 @@ struct PythonWorkerSessionConfig {
     std::chrono::milliseconds init_timeout_ms{10000};
     std::chrono::milliseconds idle_cpu_window_ms{1000};
     std::chrono::milliseconds idle_cpu_budget_ms{100};
+};
+
+// ADR-244 §2.4: one sandbox's read-write mounts, granted to its own capability SID. Revoked when the sandbox goes
+// (normal destroy, or a create that fails after granting); after a crash the ACEs stay but name a SID no later
+// token holds.
+struct RwGrants {
+    std::optional<OwnedSid>   sid;
+    std::vector<std::wstring> paths;
+
+    RwGrants() = default;
+    RwGrants(RwGrants const&) = delete;
+    RwGrants& operator=(RwGrants const&) = delete;
+    ~RwGrants() {
+        if (!sid.has_value()) return;
+        for (std::wstring const& path : paths) (void)revoke_sid_path(path, sid->get());
+    }
 };
 
 class NativeJailBackend {
@@ -305,6 +322,9 @@ private:
     // library implementations and hard-errors on this one) -- `Instance` stays private, just not
     // opaque across the header boundary.
     struct Instance {
+        // Declared first, so it is destroyed last: the job (and every process in it) is gone before the
+        // read-write ACEs are revoked.
+        RwGrants        rw;
         JobObjectLimits job;
         ResourceLimits  limits;
         std::wstring    cwd;  // first read-write mount's host path, if any; empty = inherit

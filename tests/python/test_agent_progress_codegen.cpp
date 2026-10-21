@@ -58,6 +58,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.progress.report('x')\n"};
         auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
@@ -87,6 +88,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.report_progress = [&reported](ContentItem item) {
             if (auto const* text = std::get_if<Text>(&item.value)) reported.push_back(text->text);
         };

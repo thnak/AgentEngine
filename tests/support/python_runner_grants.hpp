@@ -15,6 +15,8 @@
 namespace ae_test {
 
 inline constexpr agentengine::SessionNonce kTestSessionNonce{0xAE24'4000'0000'0001ull, 1};
+// The principal test contexts run under. A standing bridge approval for the empty principal approves nobody.
+inline agentengine::Principal const kTestPrincipal{"ae-test-host", ""};
 
 [[nodiscard]] inline agentengine::CapabilitySet python_runner_host_grant(
         agentengine::native_jail::MediatedPythonConfig const& config) {
@@ -25,9 +27,12 @@ inline constexpr agentengine::SessionNonce kTestSessionNonce{0xAE24'4000'0000'00
     return agentengine::CapabilitySet::grant_root(std::move(grants));
 }
 
-[[nodiscard]] inline agentengine::result<void> initialize_runner(agentengine::native_jail::MediatedPythonRunner& runner) {
+// Creates the runner for the session `nonce` names (the runner binds it at creation).
+[[nodiscard]] inline agentengine::result<void> initialize_runner(agentengine::native_jail::MediatedPythonRunner& runner,
+                                                                 agentengine::SessionNonce nonce = kTestSessionNonce) {
     agentengine::EffectContext ctx;
-    ctx.session_nonce = kTestSessionNonce;
+    ctx.session_nonce = nonce;
+    ctx.principal = kTestPrincipal;
     return runner.initialize(python_runner_host_grant(runner.config()), ctx);
 }
 

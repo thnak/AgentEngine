@@ -172,6 +172,12 @@ narrower and weaker claim than this RFC makes.
 > materialise the agent's granted worktree mounts and harvest changes back, authorised against
 > `FsRead`/`FsWrite` (025 §5). `none` is `NoSandboxBackend`, a real conformer that registers only as
 > `named_only` and can never win `Strict`.
+>
+> *Amended by [ADR-244](../decisions/ADR-244-required-choices-step-1b.md) §2.4 (2026-10-21):* `create()` checks
+> every `SandboxSpec` mount and egress entry against the spec's `cap::SandboxMount` / `cap::SandboxNetOut`
+> grants unconditionally (`authorize_spec`); an empty grant set refuses every mount. Paths a backend needs
+> for itself (an interpreter's home, a worker binary's directory) are listed as read-only mounts and
+> checked the same way, never granted on the side.
 
 ```cpp
 struct SandboxBackend {                              // concept

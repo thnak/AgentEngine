@@ -40,7 +40,7 @@ std::vector<cap::SandboxMount> MediatedPythonRunner::required_mounts(MediatedPyt
     auto deployment = [&out](std::string path) {
         if (!path.empty()) out.push_back(cap::SandboxMount{path, path, /*read_write=*/false});
     };
-    deployment(std::filesystem::path(std::string(AE_PYTHON_WORKER_EXE_PATH)).parent_path().string());
+    deployment(narrow(std::filesystem::path(std::string(AE_PYTHON_WORKER_EXE_PATH)).parent_path().wstring()));
     deployment(config.python_home);
     for (std::string const& p : config.extra_sys_path) deployment(p);
     return out;
@@ -51,6 +51,14 @@ result<void> MediatedPythonRunner::initialize(CapabilitySet const& host_grant, E
         return std::unexpected(error{failure_class::contract,
                                       "MediatedPythonRunner::initialize() called twice",
                                       "python.already_initialized"});
+    }
+    // ADR-244 §2.4: the runner belongs to the session that creates it -- bound here, at creation, so the
+    // mounts granted for that session never serve whichever session happens to run first.
+    if (!ctx.session_nonce.minted()) {
+        return std::unexpected(error{failure_class::policy,
+                                      "initialize() carries no session nonce; the Python runner is created for "
+                                      "one session, by a context that session minted",
+                                      "codeact.no_session"});
     }
 
     PythonWorkerSessionConfig session;
@@ -102,6 +110,10 @@ result<void> MediatedPythonRunner::initialize(CapabilitySet const& host_grant, E
     if (!created.has_value()) return std::unexpected(created.error());
 
     handle_ = std::move(*created);
+    {
+        std::lock_guard<std::mutex> lock(bind_mutex_);
+        bound_session_ = ctx.session_nonce;
+    }
     initialized_ = true;
     return {};
 }
@@ -125,9 +137,7 @@ result<ExecOutcome> MediatedPythonRunner::run_blocking(ExecRequest request, Exec
     }
     {
         std::lock_guard<std::mutex> lock(bind_mutex_);
-        if (!bound_session_.has_value()) {
-            bound_session_ = ctx.session_nonce;
-        } else if (bound_session_->identity != ctx.session_nonce.identity) {
+        if (bound_session_->identity != ctx.session_nonce.identity) {
             return std::unexpected(error{failure_class::policy,
                                           "the Python runner is bound to a different session",
                                           "codeact.runner_bound_to_other_session"});

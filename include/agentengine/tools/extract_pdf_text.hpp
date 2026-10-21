@@ -106,6 +106,12 @@ AE_JSON_SCHEMA(ExtractPdfTextReply, preview, truncated, total_bytes, total_page_
 
 namespace extract_pdf_text_detail {
 
+// A path as UTF-8 (`path::string()` is the ANSI code page under MSVC, while mounts and the backend use UTF-8).
+[[nodiscard]] inline std::string utf8_path(std::filesystem::path const& p) {
+    auto const u8 = p.u8string();
+    return std::string(u8.begin(), u8.end());
+}
+
 inline constexpr std::uint64_t kDefaultPreviewByteCap = 8000;  // mirrors read_content_detail's own
 
 // Must match pdf_worker_main.cpp's own constants exactly (kMagic/kKindMeta/kKindPage) -- see this
@@ -274,8 +280,8 @@ template <sandbox::NetEgressBackend Proxy>
 #endif
     // The worker binary's own directory also holds pdfium.dll on Windows (copied at build time), which no
     // default AppContainer ACE covers (ADR-004 §6 finding 1).
-    add(std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path().string());
-    add(scratch_dir().string());
+    add(utf8_path(std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path()));
+    add(utf8_path(scratch_dir()));
     return out;
 }
 
@@ -396,7 +402,7 @@ template <class Backend>
     if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
-                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
+                                 std::string(mode) + " \"" + utf8_path(pdf_file) + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
     result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "native-jail");
     co_await backend.destroy(*handle);
@@ -435,7 +441,7 @@ template <class Backend>
     if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
-                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
+                                 std::string(mode) + " \"" + utf8_path(pdf_file) + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
     result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "linux-native-jail");
     co_await backend.destroy(*handle);
