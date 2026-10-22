@@ -729,6 +729,7 @@ struct DirectSpawn {
     }
     result<rt::AgentSpawnReply> spawn(Principal p, std::optional<std::uint64_t> remaining, std::uint64_t quota) {
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         ctx.principal = std::move(p);
         ctx.remaining_token_budget = remaining;
@@ -772,6 +773,7 @@ struct DropSpawn {
         (void)registry.register_target("X", std::move(d));
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         ctx.principal = Principal{"p-drop", "t"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.charge_delegated_usage = [this](Usage const& u, std::uint64_t d) {
             ++charges;
             charged.input_tokens += u.input_tokens;
@@ -1049,6 +1051,7 @@ int main() {
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         (void)rt::block_on(body(assistant_text("upstream agent said: " + kInjection), ctx));
@@ -1146,6 +1149,7 @@ int main() {
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         // A fan-in merge: the host's user item first (so the merged message keeps role user), then an agent's reply.
@@ -1433,11 +1437,13 @@ int main() {
         req.input = make_delegated_message(DelegationSource{"agent.spawn", "p-e", 1}, "task");
         req.principal = Principal{"p-e", "t"};
         req.capabilities = CapabilitySet::grant_root({});
-        req.token_budget = 1'000'000;
+        req.token_budget = agentengine::Bound<std::uint64_t>::at_most(1'000'000);
         req.charge_usage = [&charged](Usage const& u, std::uint64_t) {
             charged.input_tokens += u.input_tokens;
             charged.output_tokens += u.output_tokens;
         };
+        req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+        req.authority_source = agentengine::authority_mode::single_trusted_caller;
         bool threw = false;
         try {
             (void)rt::block_on(run_child_agent_session<ThrowClient>("child-e", std::move(req), [](ThrowClient&) {}));
@@ -1457,12 +1463,14 @@ int main() {
             req.input = make_delegated_message(DelegationSource{"agent.spawn", "p-d", 1}, "task");
             req.principal = Principal{"p-d", "t"};
             req.capabilities = CapabilitySet::grant_root({});
-            req.token_budget = 1'000'000;
+            req.token_budget = agentengine::Bound<std::uint64_t>::at_most(1'000'000);
             req.charge_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
                 ++charges;
                 charged.input_tokens += u.input_tokens;
                 charged.output_tokens += u.output_tokens;
             };
+            req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+            req.authority_source = agentengine::authority_mode::single_trusted_caller;
             return req;
         };
         {
@@ -1500,6 +1508,7 @@ int main() {
             node.initialize("r4-park-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
             EffectContext ctx;
+            ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
             ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
                 ++charges;
                 charged.input_tokens += u.input_tokens;
@@ -1526,6 +1535,7 @@ int main() {
             node.initialize("r4-ok-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
             EffectContext ctx;
+            ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
             ctx.charge_delegated_usage = [&charges](Usage const&, std::uint64_t) { ++charges; };
             auto const out = rt::block_on(body(r3_user("go"), ctx));
             check(out.has_value() && charges == 0 && out->usage.input_tokens == 100 && out->usage.output_tokens == 100,
@@ -1677,6 +1687,7 @@ int main() {
         node.set_capabilities(&held);
         rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.charge_delegated_usage = [&](Usage const& u, std::uint64_t d) {
             ++charges;
             charged.input_tokens += u.input_tokens;
@@ -1780,6 +1791,7 @@ int main() {
         Usage charged{};
         int charges = 0;
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.agent_turn_sink = [&sink_events](RunEvent const&) { ++sink_events; };
         ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
             ++charges;
@@ -1893,6 +1905,7 @@ int main() {
         rt::WorkflowChatClient client(inner);
         auto const charged = std::make_shared<std::atomic<std::uint64_t>>(0);
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.charge_delegated_usage = [charged](Usage const& u, std::uint64_t) {
             *charged += u.input_tokens + u.output_tokens;
         };

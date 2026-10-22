@@ -181,6 +181,45 @@ and ask authority, provider secrets); ADR-244 §5.
   that way. A `McpAuthority::single_trusted_caller(held)` borrows `held`, as the server already borrowed
   its `ToolTable`.
 
+## Implementation notes (slice 3c)
+
+- **Gate tests:** `tests/rt/agent_spawn/test_rt_spawn_authority.cpp` A1–A4 (`run_child_agent_session`), P1–P3
+  (`perform_agent_spawn`), M1–M3 (`multi_agent::spawn`), R1 (bounded reflection), K1–K2 (chat-client secrets),
+  B1 (`Bundle::ask`/`run` over the bridge). Builds and runs on both platforms (links `worktree_store` for
+  `compute_digest`, unlike the WIN32-only spawn tests).
+- **Mutants:** 22, one per new check (the child's source, principal, missing choices and expiry; the spawn's
+  expiry and source checks at step [0], each of the three budget terms, the turn cap and the expiry hand-off;
+  `multi_agent::spawn`'s re-initialisation, expiry, carried-authority, child-choices, budget and charge; the
+  reflection authority on later iterations; the model call's secrets, both ways; `set_chat_client_secrets`
+  accepting a non-secret; the bridge unioning `chat_client_grants` into the held set). All killed. The
+  non-secret mutant first failed to build (`if (false)` left the loop variable unused under `-Werror`) and was
+  rewritten with an opaque condition. Run on the LAN build server; the script restores each file from an
+  in-memory copy, and every file was compared against a scratchpad backup afterwards.
+- **Interim mappings from 3a, now closed:** `agent_spawn_child_run.hpp`'s `single_trusted_caller()` over
+  `req.capabilities` and its `unbounded()` budget for an unset one. `ChildSpawnRequest`'s budget and turn cap
+  are `optional<Bound>` with no default (the former `max_turns = 25` is gone); tests state what they relied on
+  (unset budget `unbounded()`, turn cap `at_most(25)`, `single_trusted_caller`), mapped by a script and read by
+  hand.
+- **Choices made here, each narrower than the alternative:**
+  - A `per_request` child's ceiling is exactly its minted set, so its one run's authority is admitted against
+    itself; it holds no capabilities of its own (`set_capabilities` is not called).
+  - `perform_agent_spawn` checks the source and the expiry at step [0], before the quota slot, the cost token
+    and the worktree; the child's admission checks the expiry again.
+  - `multi_agent::spawn` re-initialises the factory's session (new nonce epoch) under the caller's source, keeps
+    the factory's turn cap and tightens its budget; a factory session with no choices is refused
+    (`choice.missing.spawn.child_choices`). It now charges the child's spend to the caller, which it did not.
+  - With chat-client secrets set, the model call's context carries those and nothing else; tools and spawned
+    children read the run's authority, which never holds them. `push_side_summary` no longer lists the API
+    key's `cap::Secret` (the builders' and the bridge's summaries read the run's authority).
+- **Hand-built contexts in tests** (`test_rt_agent_spawn`, `test_delegation_provenance`, `test_rt_multi_agent`,
+  example 24) now state `authority_source = single_trusted_caller`, the session kind they stand in for.
+  `test_session_builder` B3/B4 and `test_agent_session_bridge` P11 asserted the secret in the bundle's
+  capabilities, which this slice removes; they now assert it is held by the session for the model call and
+  absent from the capabilities.
+- **Found while merging slice 3b (PR #214):** `test_rt_workflow_batch_coalescing` C20 failed on CI's gcc-14 leg,
+  the same plain-`int` counter race slice 3a recorded for C1 under clang. Fixed on that PR (atomic counters,
+  aee8b570), test-only.
+
 ## Round 4 — 2026-10-21, two reviewers
 
 One reviewer attacked the code slice 2 shipped (PR #213), with executed probes; the other attacked revision 4's

@@ -560,8 +560,12 @@ int main() {
         ae::AgentSessionOptions s = ae_test::declared_options<Helper>();
         s.chat_client_grants = {ae::cap::Secret{"api-key", std::chrono::seconds{0}}};
         auto ok = ae::make_agent_session<Helper>(ScriptedChatClient{}, s);
-        check(ok.has_value() && ok->capabilities().contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
-              "P11 control: the ChatClient's own secret reaches the session");
+        // ADR-244 §2.3 (slice 3c): held for the model call only -- never in the run's authority, which tools read.
+        check(ok.has_value() && ok->session().chat_client_secrets() != nullptr &&
+                  ok->session().chat_client_secrets()->contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
+              "P11 control: the ChatClient's own secret reaches the session, as the chat client's");
+        check(ok.has_value() && !ok->capabilities().contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
+              "P11: the ChatClient's secret is not in the run's authority (ADR-244 §2.3)");
     }
 
     // ---- P12: recorded fields -------------------------------------------------------------------------------------

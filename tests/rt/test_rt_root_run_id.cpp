@@ -269,6 +269,9 @@ int main() {
         req.input        = user_message("go");
         req.principal    = make_embedded_principal("parent", "tenant-a");
         req.root_run_id  = "ROOT:run:3";
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+        req.authority_source = agentengine::authority_mode::single_trusted_caller;
         std::shared_ptr<RecordingClient::State> child_state;
         auto reply = drive(rt::run_child_agent_session<RecordingClient>(
             "spawned-1", std::move(req), [&child_state](RecordingClient& c) { child_state = c.shared_state(); }));

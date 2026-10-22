@@ -258,7 +258,10 @@ private:
         req.input         = text_message(a.label);
         req.capabilities  = minted->capabilities;
         req.principal     = ctx.principal;
-        req.max_turns     = 5;
+        req.max_turns     = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.authority_source     = ctx.authority_source;
+        req.authority_expires_at = ctx.authority_expires_at;
         std::string const child_script = child_script_text_;
         auto response = co_await run_child_agent_session<ScriptedChatClient>(
             "child-1", std::move(req), [this, &child_script](ScriptedChatClient& c) {
@@ -304,7 +307,9 @@ int main() {
         req.input        = text_message("do the sub-task");
         req.capabilities = minted->capabilities;
         req.principal    = Principal{"caller-1", ""};
-        req.max_turns    = 5;
+        req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.authority_source = agentengine::authority_mode::single_trusted_caller;
 
         std::shared_ptr<ScriptedChatClient::State> observed;
         auto response = agentengine::rt::block_on(run_child_agent_session<ScriptedChatClient>(

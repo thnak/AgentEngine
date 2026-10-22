@@ -314,6 +314,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(2)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-1", ""};
 
@@ -352,6 +353,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"some_other_agent", SpawnBudget::mint_root(5)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-2", ""};
 
@@ -387,6 +389,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(0)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-3", ""};
 
@@ -421,6 +424,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(5)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-4", ""};
 
@@ -628,6 +632,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"policy-helper", SpawnBudget::mint_root(2)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-t8", ""};
 
@@ -666,6 +671,7 @@ int main() {
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({AgentCall{"policy-helper-unwired", SpawnBudget::mint_root(2)}});
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-t9", ""};
         agentengine::Ref const caller_ref{"session:caller-t9", ""};
@@ -709,6 +715,7 @@ int main() {
             CapabilitySet const caller_held =
                 CapabilitySet::grant_root({AgentCall{"root-helper", SpawnBudget::mint_root(2)}});
             EffectContext ctx;
+            ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
             ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
             ctx.principal    = Principal{"caller-root", ""};
             ctx.run_id       = "spawner:run:5";
