@@ -56,7 +56,7 @@ AE_JSON_SCHEMA(SlowReply, ok)
 
 // Sleeps long enough that a task is still "working" when the ownership checks below run, so the
 // cancel path is exercised against a live task rather than an already-terminal one.
-struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable> {
+struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "slow_backgroundable";
     static constexpr std::string_view description = "Sleeps, then succeeds.";
     using Args  = SlowArgs;

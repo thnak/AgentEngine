@@ -30,6 +30,7 @@ int main() {
         check(!req.output_schema_json.has_value(), "ChatRequest.output_schema_json defaults nullopt");
 
         ToolDescriptor tool;
+        tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         tool.name = "search";
         tool.description = "Search the web.";
         req.tools.push_back(tool);

@@ -131,7 +131,7 @@ template <agentengine::rt::AppendLogStore StoreT>
 class AgentSpawnToolProvider;
 
 template <agentengine::rt::AppendLogStore StoreT>
-struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool<StoreT>, agentengine::CapturesSessionState> {
+struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool<StoreT>, agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "agent.spawn";
     static constexpr std::string_view description =
         "Run a sub-agent (from a host-curated, closed set) on the given input and return its "
@@ -637,15 +637,18 @@ public:
     // HistoryProvider<Window<N>>/ScheduleWakeupTool's own precedents already establish.
     static constexpr std::string_view name = "agent_spawn";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
+    // `spawn_approval` (ADR-244 slice 4a): whether each `agent_spawn` call needs approval -- required, no default.
     AgentSpawnToolProvider(SpawnTargetRegistry const& registry, SpawnPump<StoreT>& pump,
                             agentengine::Ref caller_worktree_ref, std::string caller_mount_id,
-                            SpawnQuota quota, SpawnQuotaTracker& quota_tracker)
+                            SpawnQuota quota, SpawnQuotaTracker& quota_tracker,
+                            agentengine::approval_mode spawn_approval)
         : registry_(registry),
           pump_(pump),
           caller_worktree_ref_(std::move(caller_worktree_ref)),
           caller_mount_id_(std::move(caller_mount_id)),
           quota_(quota),
-          quota_tracker_(quota_tracker) {}
+          quota_tracker_(quota_tracker),
+          spawn_approval_(spawn_approval) {}
 
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext&, agentengine::EffectContext& ctx) {
@@ -655,7 +658,9 @@ public:
         // all, not a per-agent_id scan; the per-target check is the LIVE one inside
         // perform_agent_spawn()'s own step [2].
         if (ctx.capabilities && ctx.capabilities->contains_kind(agentengine::capability_kind::agent_call)) {
-            c.tools.push_back(agentengine::make_tool_descriptor(AgentSpawnTool<StoreT>{*this}));
+            agentengine::ToolDescriptor d = agentengine::make_tool_descriptor(AgentSpawnTool<StoreT>{*this});
+            d.approval = spawn_approval_;  // ADR-244 slice 4a: AgentSpawnTool is ApprovalChosenByHost
+            c.tools.push_back(std::move(d));
         }
         co_return c;
     }
@@ -680,6 +685,8 @@ private:
     std::string                caller_mount_id_;
     SpawnQuota                 quota_;
     SpawnQuotaTracker&         quota_tracker_;
+    // ADR-244 §2.2 (slice 4a): whether an `agent_spawn` call needs approval -- the host's, stated at construction.
+    agentengine::approval_mode spawn_approval_;
 };
 
 // Item 6 is now landed (see this file's own top comment for the account). Explicitly out of scope,

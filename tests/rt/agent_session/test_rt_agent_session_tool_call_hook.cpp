@@ -110,7 +110,7 @@ struct PlainReply { int value = 0; };
 AE_JSON_SCHEMA(PlainReply, value)
 
 struct PlainTool : agentengine::Tool<PlainTool, agentengine::Capabilities<>,
-                                       agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                       agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "plain_tool";
     static constexpr std::string_view description = "A capability-free tool that never needs approval.";
     using Args = PlainArgs;

@@ -136,7 +136,7 @@ struct ExecuteCodeTool
                           agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
                                                      agentengine::cap::decl::FsWrite<"work">>,
                           agentengine::EffectClass<agentengine::effect_class::at_most_once>,
-                          agentengine::CapturesSessionState> {
+                          agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description = "Execute Python code in this session's real interpreter.";
     using Args = ExecuteCodeArgs;
@@ -163,7 +163,7 @@ AE_JSON_SCHEMA(NoopReply, label)
 }
 
 struct NoopTool : agentengine::Tool<NoopTool, agentengine::Capabilities<>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "noop_tool";
     static constexpr std::string_view description = "Does nothing; a second tool for B6's multi-call round.";
     using Args = NoopArgs;

@@ -203,6 +203,7 @@ spec:
         ae::ToolRegistry registry;
         auto reg1 = registry.register_tool("web_search", [] {
             ae::ToolDescriptor d;
+            d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
             d.name = "web_search";
             d.invoke = [](ae::json::Value const&, ae::EffectContext&)
                 -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };
@@ -210,6 +211,7 @@ spec:
         }(), ae::tool_provenance::native);
         auto reg2 = registry.register_tool("code_interpreter", [] {
             ae::ToolDescriptor d;
+            d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
             d.name = "code_interpreter";
             d.invoke = [](ae::json::Value const&, ae::EffectContext&)
                 -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };

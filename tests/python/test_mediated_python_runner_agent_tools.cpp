@@ -54,7 +54,7 @@ AE_JSON_SCHEMA(EchoReply, message)
 
 // Needs cap::decl::Entropy purely as a stand-in "this tool requires some capability" declaration,
 // the same pattern test_tool_bridge.cpp's own EchoTool already uses.
-struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
+struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
@@ -73,7 +73,7 @@ struct RefreshedReply {
 };
 AE_JSON_SCHEMA(RefreshedReply, label)
 
-struct RefreshedTool : Tool<RefreshedTool> {
+struct RefreshedTool : Tool<RefreshedTool, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "refreshed_tool";
     static constexpr std::string_view description = "Present only after the second refresh.";
     using Args = RefreshedArgs;

@@ -220,6 +220,38 @@ and ask authority, provider secrets); ADR-244 §5.
   the same plain-`int` counter race slice 3a recorded for C1 under clang. Fixed on that PR (atomic counters,
   aee8b570), test-only.
 
+## Implementation notes (slice 4a)
+
+- **Gate tests:** `tests/core/tools/test_tool_approval_choice.cpp` T1-T6 (the declaration, `admit_call`,
+  `invoke_tool`, `background_task`, the session's per-turn table, `ToolRegistry::register_tool`), each refusal with
+  a control on the same tool with the mode stated; `tests/compile_fail/tool_rejects_missing_approval.cpp` and
+  `tool_rejects_two_approvals.cpp` with `tool_approval_positive_control.cpp`. Mode-carrying checks were added to
+  `test_codeact_tool_union` (MCP adapter), `test_wasm_tool_bridge`, `test_mandatory_sandbox_provider_composed`,
+  `test_live_shell_sandbox_provider` (P1b); `test_session_shell_wiring` and `test_rt_agent_spawn` T5 already fail
+  without the mode.
+- **Mutants:** 12, all killed (`static_assert` allowing none, allowing two; the declared mode folded to
+  `never_require` for a host-chosen tool; the descriptor dropping the declared mode; `admit_call`,
+  `background_task`, the session table and the registry skipping their refusal; the MCP adapter, the mandatory
+  provider, the live-shell provider and `run_shell` dropping the host's mode). Run on the LAN server. First pass
+  surfaced three runner faults, not engine faults: wrong compile-fail test names, a failure grep that matched
+  `run_failed`, and mutants that left a parameter unused under `-Werror`; the mandatory-provider mutant
+  *survived* until a check that `run_command` carries the host's mode was added.
+- **Scanner gap found by the suites:** the first bulk pass covered `Tool<>` declarations only. About 40 test files
+  build a `ToolDescriptor` by hand; they ran unapproved before and were refused after. They now state
+  `never_require` (the old behaviour, stated), and a second scan found no hand-built descriptor in shipped code
+  without a mode (the WASM backend's own plugin descriptor is a different type).
+- **Choices made here:**
+  - `MandatorySandboxProvider` has one mode for `run_command` and the four task-branch tools; a host that wants a
+    different mode for commit than for run raises it on the descriptor (`cli_chat.cpp` does this per tool name).
+  - `schedule_wakeup` and the tool-optimizer tools state `never_require`: the tools have no effect outside the
+    session, and `schedule_wakeup` is only offered to a session holding its capability.
+  - The sandbox providers are default-constructed, so their mode is a setter and an unset provider fails the first
+    turn that offers its tools, not construction (§6).
+- **Test-only fix in this slice:** `test_tool_approval_choice` T4 needs a `cap::Background` grant for
+  `background_task`; without it the control fails for the wrong reason.
+- **Baselines:** Linux `test_json_dump_escape` and three containerd tests; `test_docker_persistent_shell_surface`
+  failed once under `-j8` and passed twice alone. Windows: the 13 Docker-backed tests (Docker is down locally).
+
 ## Round 4 — 2026-10-21, two reviewers
 
 One reviewer attacked the code slice 2 shipped (PR #213), with executed probes; the other attacked revision 4's

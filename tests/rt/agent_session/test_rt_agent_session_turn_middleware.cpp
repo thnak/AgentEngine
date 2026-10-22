@@ -93,6 +93,7 @@ struct FixedProvider {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name        = "provider_tool";
         td.description = "a real tool contributed by the fan-out provider, not by the turn middleware";
         c.tools.push_back(std::move(td));

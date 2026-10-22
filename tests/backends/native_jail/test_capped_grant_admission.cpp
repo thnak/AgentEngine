@@ -75,7 +75,7 @@ ae::result<ProbeReply> record_bound(ae::EffectContext& ctx) {
 struct GrantEnforcingProbe
     : ae::Tool<GrantEnforcingProbe,
                ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>,
-               ae::EnforcesGrantedCaps> {
+               ae::EnforcesGrantedCaps, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "grant_enforcing_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
@@ -84,7 +84,7 @@ struct GrantEnforcingProbe
 };
 
 struct PlainProbe
-    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>> {
+    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "plain_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
@@ -247,7 +247,7 @@ int main() {
         check(sandbox.has_value(), "setup: SessionShellSandbox::create succeeds");
         if (!sandbox) return 1;
 
-        ae::ToolDescriptor const shell_tool = (*sandbox)->tool_descriptor();
+        ae::ToolDescriptor const shell_tool = (*sandbox)->tool_descriptor(ae::approval_mode::never_require);
         check(shell_tool.enforces_granted_caps, "setup: run_shell's live descriptor carries EnforcesGrantedCaps");
         auto const table = ae::ToolTable::from_descriptors({shell_tool});
 

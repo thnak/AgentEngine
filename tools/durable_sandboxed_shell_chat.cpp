@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
     SandboxProvider sandbox_provider;
     auto bound = sandbox_provider.bind_root_branch(cli_ledger, owner, staging_root, *branch_quota,
                                                      *run_quota, *storage_quota, session_id);
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
     if (!bound.has_value()) {
         std::cerr << "FATAL: failed to bind this session's real, durable sandbox: "
                   << bound.error().message << " (" << bound.error().code << ")\n";

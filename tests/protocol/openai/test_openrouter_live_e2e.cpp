@@ -140,6 +140,7 @@ constexpr char const* kXTitle = "AgentEngine Live E2E";
 // rejects a malformed projection with HTTP 400, which is the point of declaring it here.
 [[nodiscard]] ToolDescriptor weather_tool() {
     ToolDescriptor t;
+    t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     t.name = "get_weather";
     t.description = "Get the current weather for a city.";
     t.args_schema_json =

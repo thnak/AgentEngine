@@ -135,6 +135,7 @@ int main() {
         MandatorySandboxProvider<PrintingSurface> provider;
         provider.bind_sandbox(ledger, std::move(*root), owner, fresh("ae_test_145_" + label), *branch_quota,
                               *run_quota, storage_quota);
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         std::vector<Message> history;
         SessionContext session_ctx{label, principal, history};
         EffectContext ctx;

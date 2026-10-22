@@ -1817,6 +1817,14 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
             }
         }
 
+        // ADR-244 §2.2 (slice 4a): every tool the turn offers has a stated approval mode, or the turn does not start.
+        for (ToolDescriptor const& d : contribution->tools) {
+            if (d.approval.has_value()) continue;
+            error const missing = tool_approval_missing(d.name);
+            emit_run_event(run_event_kind::run_failed,
+                           run_event_payload::RunFailed{missing.code, missing.message, "run.tool_approval_missing"});
+            co_return std::unexpected(missing);
+        }
         ToolTable const tool_table = ToolTable::from_descriptors(contribution->tools);
         // Gap-16 fix (2026-08-14): `contribution->instructions` used to be read this far and then
         // never referenced again -- silently dropped, never reaching the model. The ONE explicit

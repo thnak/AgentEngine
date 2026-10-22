@@ -236,7 +236,7 @@ struct OneWeatherToolReply {
 };
 AE_JSON_SCHEMA(OneWeatherToolReply, condition)
 
-struct OneWeatherTool : agentengine::Tool<OneWeatherTool> {
+struct OneWeatherTool : agentengine::Tool<OneWeatherTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Get the current weather for a city.";
     using Args = OneWeatherToolArgs;

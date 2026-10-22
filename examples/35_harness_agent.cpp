@@ -55,7 +55,7 @@ struct DraftReply {
 AE_JSON_SCHEMA(DraftReply, result)
 
 // Read-only and capability-free: usable while the agent is still planning.
-struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>> {
+struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_brief";
     static constexpr std::string_view description = "Read the assignment brief.";
     using Args  = DraftArgs;
@@ -65,7 +65,7 @@ struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>> {
 
 // Has an effect: held back by the plan gate until the plan exists.
 int g_published = 0;
-struct Publish : Tool<Publish> {
+struct Publish : Tool<Publish, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "publish";
     static constexpr std::string_view description = "Publish the final text.";
     using Args  = DraftArgs;

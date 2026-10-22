@@ -175,7 +175,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, stdout_text)
     return std::to_string(numbers[0] + numbers[1]);
 }
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Execute a snippet of code in the session's interpreter and return what it printed. This is "

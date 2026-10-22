@@ -66,7 +66,7 @@ AE_JSON_SCHEMA(PingReply, ok)
 
 // The agent's own single native tool -- the "agent_tools" source (union_codeact_tools's own first
 // source). Gated exactly like any other universe member unless explicitly passed as always_on.
-struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
+struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "ping";
     static constexpr std::string_view description = "The agent's own tool, offered as always_on.";
     using Args = PingArgs;
@@ -76,6 +76,7 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
 
 [[nodiscard]] ToolDescriptor make_fixture_tool(std::string name, std::string description) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name = std::move(name);
     d.description = std::move(description);
     d.effect_class = effect_class::pure;

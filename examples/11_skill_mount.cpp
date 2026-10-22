@@ -54,7 +54,7 @@ AE_JSON_SCHEMA(CountReply, count)
 
 // EffectClass<pure>, no Capabilities<> -- this example is about tool-table MEMBERSHIP and mount
 // state, not capability-binding mechanics (see 06_capabilities_and_denial.cpp for that).
-struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
+struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "word_count";
     static constexpr std::string_view description = "Counts whitespace-separated words.";
     using Args = CountArgs;

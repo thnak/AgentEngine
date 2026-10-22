@@ -66,7 +66,7 @@ AE_JSON_SCHEMA(ProbeReply, seen)
 
 int g_probe_runs = 0;
 
-struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>> {
+struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "probe";
     static constexpr std::string_view description = "Counts its runs. Every argument is optional.";
     using Args = ProbeArgs;
@@ -79,7 +79,7 @@ struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::e
 
 struct BackgroundProbeTool
     : ae::Tool<BackgroundProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>,
-               ae::Backgroundable> {
+               ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "background_probe";
     static constexpr std::string_view description = "Backgroundable probe. Every argument is optional.";
     using Args = ProbeArgs;

@@ -226,6 +226,7 @@ int main() {
         if (!root_r.has_value()) return EXIT_FAILURE;
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
+        parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         check(parent.history_provider().is_bound(), "bind_sandbox() leaves the provider bound");
 
         auto contribution = drive(parent.history_provider().on_context(call.session_ctx, call.ctx));
@@ -316,6 +317,7 @@ int main() {
         if (root_r.has_value()) {
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
+            live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
 
             ScriptedChatClient& client = live.emplace_chat_client();
             std::string const args_json = json::dump(json::Value::make_object(
@@ -415,6 +417,7 @@ int main() {
                 child.history_provider().bind_sandbox(ledger, std::move(*new_root), owner,
                                                           scratch_root / "child-reused", branch_quota,
                                                           run_quota, storage_quota);
+                child.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(child.history_provider().is_bound(), "the cleared session re-binds successfully");
                 check(child.history_provider().runtime()->branch_name() != old_branch_name,
                       "the re-bound branch is genuinely new, not the relinquished one");
@@ -436,6 +439,7 @@ int main() {
                                                                  scratch_root / "temp-parent",
                                                                  *tiny_branch_quota_r, run_quota,
                                                                  storage_quota);
+                temp_parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(temp_parent.history_provider().would_fork_succeed().has_value(),
                       "would_fork_succeed() reports success while quota remains");
 
@@ -470,6 +474,7 @@ int main() {
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota,
                                                         run_quota, storage_quota);
+            ungranted.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             check(ungranted.history_provider().is_bound(),
                   "bind_sandbox() alone leaves the provider bound (the identity/quota gate)");
 

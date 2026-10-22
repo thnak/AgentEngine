@@ -36,7 +36,7 @@ struct AgentOwnArgs { std::string text; };
 AE_JSON_SCHEMA(AgentOwnArgs, text)
 struct AgentOwnReply { std::string text; };
 AE_JSON_SCHEMA(AgentOwnReply, text)
-struct AgentOwnTool : ae::Tool<AgentOwnTool> {
+struct AgentOwnTool : ae::Tool<AgentOwnTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "agent_own_tool";
     static constexpr std::string_view description = "One of the agent's own declared tools.";
     using Args = AgentOwnArgs;
@@ -48,7 +48,7 @@ struct SkillUnlockedArgs { std::string text; };
 AE_JSON_SCHEMA(SkillUnlockedArgs, text)
 struct SkillUnlockedReply { std::string text; };
 AE_JSON_SCHEMA(SkillUnlockedReply, text)
-struct SkillUnlockedTool : ae::Tool<SkillUnlockedTool> {
+struct SkillUnlockedTool : ae::Tool<SkillUnlockedTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "skill_unlocked_tool";
     static constexpr std::string_view description = "A tool a mounted skill's allowed-tools names.";
     using Args = SkillUnlockedArgs;
@@ -63,7 +63,7 @@ struct CollidingArgs { std::string text; };
 AE_JSON_SCHEMA(CollidingArgs, text)
 struct CollidingReply { std::string text; };
 AE_JSON_SCHEMA(CollidingReply, text)
-struct CollidingWithAgentOwnTool : ae::Tool<CollidingWithAgentOwnTool> {
+struct CollidingWithAgentOwnTool : ae::Tool<CollidingWithAgentOwnTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "agent_own_tool";  // deliberately same as AgentOwnTool
     static constexpr std::string_view description = "Collides with AgentOwnTool's own name.";
     using Args = CollidingArgs;
@@ -75,7 +75,7 @@ struct McpEchoArgs { std::string text; };
 AE_JSON_SCHEMA(McpEchoArgs, text)
 struct McpEchoReply { std::string text; };
 AE_JSON_SCHEMA(McpEchoReply, text)
-struct McpEchoTool : ae::Tool<McpEchoTool> {
+struct McpEchoTool : ae::Tool<McpEchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mcp_echo_tool";
     static constexpr std::string_view description = "An MCP-server-side tool, reached via a real round trip.";
     using Args = McpEchoArgs;
@@ -87,7 +87,7 @@ struct McpAlwaysFailsArgs { bool noop; };
 AE_JSON_SCHEMA(McpAlwaysFailsArgs, noop)
 struct McpAlwaysFailsReply { bool ok; };
 AE_JSON_SCHEMA(McpAlwaysFailsReply, ok)
-struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool> {
+struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mcp_always_fails";
     static constexpr std::string_view description = "Always returns an MCP execution error.";
     using Args = McpAlwaysFailsArgs;
@@ -190,7 +190,7 @@ int main() {
         // ADR-237 §5.1: the adapter is a `task` producer now; its body never parks (the sender
         // drives the in-process server synchronously), so the shared test driver is enough.
         auto descriptors = ae::test_support::run_task_sync<ae::result<std::vector<ae::ToolDescriptor>>>(
-            mcp::mcp_tools_as_descriptors(client));
+            mcp::mcp_tools_as_descriptors(client, ae::approval_mode::never_require));
         check(descriptors.has_value() && descriptors->size() == 2,
               "U5: mcp_tools_as_descriptors() lists both real MCP-side tools");
 
@@ -203,6 +203,9 @@ int main() {
             }
             check(echo_descriptor != nullptr && fails_descriptor != nullptr,
                   "U5: both descriptors are individually findable by their real MCP tool names");
+            bool all_stated = true;
+            for (auto const& d : *descriptors) all_stated = all_stated && d.approval == ae::approval_mode::never_require;
+            check(all_stated, "U5 (ADR-244 slice 4a): every adapted descriptor carries the host's approval mode");
             check(echo_descriptor && echo_descriptor->capability_ceiling.size() == 1 &&
                       std::holds_alternative<ae::cap::ToolCall>(echo_descriptor->capability_ceiling[0]) &&
                       std::get<ae::cap::ToolCall>(echo_descriptor->capability_ceiling[0]).tool_name ==

@@ -252,7 +252,7 @@ AE_JSON_SCHEMA(QuarantineSecretReply, redacted_text)
 // ALWAYS `agent_initiated` -- `text` is a model-supplied argument, never engine-verified content, so
 // nothing minted through this tool is ever grant-eligible (this file's own top comment).
 struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_class::pure>,
-                                    CapturesSessionState> {
+                                    CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "quarantine_secret";
     static constexpr std::string_view description =
         "Hide a piece of text you're about to say (e.g. a credential you noticed in a tool result "

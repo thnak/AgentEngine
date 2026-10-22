@@ -59,7 +59,7 @@ AE_JSON_SCHEMA(MountSkillReply, ok, message)
 // ADR-237 §5.2: instance form -- it holds the state it mutates, so the descriptor IS the real code and
 // the old poison static `invoke()` sentinel is gone.
 struct MountSkillTool
-    : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>, ae::CapturesSessionState> {
+    : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>, ae::CapturesSessionState, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description = "Activate an advertised skill.";
     using Args = MountSkillArgs;

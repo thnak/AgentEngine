@@ -106,6 +106,7 @@ struct ToolContributingProvider {
                                                                              ae::EffectContext&) {
         ae::ContextContribution c;
         ae::ToolDescriptor      td;
+        td.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
         td.name = "provider_tool";
         c.tools.push_back(td);
         co_return c;

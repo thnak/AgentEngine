@@ -41,7 +41,7 @@ AE_JSON_SCHEMA(GatedReply, unused)
 std::shared_ptr<ae::CapabilitySet const> g_last_observed_capabilities;
 bool                                     g_last_observed_capabilities_was_null = true;
 
-struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>> {
+struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
@@ -55,7 +55,7 @@ struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>>
 
 // Same gate, but Backgroundable too -- claim 7's own target (the harder, detached-thread call site).
 struct GatedBackgroundableTool
-    : ae::Tool<GatedBackgroundableTool, ae::Capabilities<ae::cap::decl::Entropy>, ae::Backgroundable> {
+    : ae::Tool<GatedBackgroundableTool, ae::Capabilities<ae::cap::decl::Entropy>, ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_backgroundable_tool";
     static constexpr std::string_view description = "Requires cap::Entropy, runs backgrounded.";
     using Args  = GatedArgs;

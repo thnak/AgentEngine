@@ -101,7 +101,7 @@ AE_JSON_SCHEMA(AskReply, ok)
 // §5.2: instance form -- the ask-pending body IS `invoke`, and the old poison static one is gone.
 struct AskPendingTool : agentengine::Tool<AskPendingTool, agentengine::Capabilities<>,
                                             agentengine::EffectClass<agentengine::effect_class::at_most_once>,
-                                            agentengine::CapturesSessionState> {
+                                            agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description = "Always ask-pends -- a scripted regression fixture.";
     using Args = AskArgs;

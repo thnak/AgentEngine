@@ -208,7 +208,7 @@ bool wait_up_to(std::atomic<bool> const& flag, std::chrono::milliseconds timeout
 }
 
 struct RendezvousToolA : agentengine::Tool<RendezvousToolA, Capabilities<>,
-                                             EffectClass<effect_class::pure>, Parallelizable> {
+                                             EffectClass<effect_class::pure>, Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "rendezvous_a";
     static constexpr std::string_view description = "Blocks until rendezvous_b has also started.";
     using Args = NoArgs;
@@ -222,7 +222,7 @@ struct RendezvousToolA : agentengine::Tool<RendezvousToolA, Capabilities<>,
     }
 };
 struct RendezvousToolB : agentengine::Tool<RendezvousToolB, Capabilities<>,
-                                             EffectClass<effect_class::pure>, Parallelizable> {
+                                             EffectClass<effect_class::pure>, Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "rendezvous_b";
     static constexpr std::string_view description = "Blocks until rendezvous_a has also started.";
     using Args = NoArgs;
@@ -241,7 +241,7 @@ std::atomic<int> g_group_concurrent{0};
 std::atomic<int> g_group_max_concurrent{0};
 
 struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<effect_class::pure>,
-                                        agentengine::ExclusivityGroup<"db-write">> {
+                                        agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "group_x";
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 1.";
     using Args = NoArgs;
@@ -258,7 +258,7 @@ struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<ef
     }
 };
 struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<effect_class::pure>,
-                                        agentengine::ExclusivityGroup<"db-write">> {
+                                        agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "group_y";
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 2.";
     using Args = NoArgs;
@@ -285,7 +285,7 @@ std::mutex g_completion_mutex;
 std::vector<std::string> g_completion_order;  // cleared before each iteration below
 
 struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<effect_class::pure>,
-                                        Parallelizable> {
+                                        Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "delay_a";
     static constexpr std::string_view description =
             "Waits for delay_b to signal completion, then records its own completion.";
@@ -299,7 +299,7 @@ struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<ef
     }
 };
 struct DelayToolB : agentengine::Tool<DelayToolB, Capabilities<>, EffectClass<effect_class::pure>,
-                                        Parallelizable> {
+                                        Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "delay_b";
     static constexpr std::string_view description = "Records completion, then signals delay_a.";
     using Args = NoArgs;

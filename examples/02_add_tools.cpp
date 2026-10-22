@@ -68,7 +68,7 @@ AE_JSON_SCHEMA(WeatherReply, forecast)
 // Empty capability ceiling: this tool only formats its own argument, so it needs no capability
 // grant to run, and `never_require` approval (the default, undeclared here) is the honest policy
 // for it -- 007's "declare only what the effect actually needs."
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Gets the current weather for a location.";
     using Args = WeatherArgs;

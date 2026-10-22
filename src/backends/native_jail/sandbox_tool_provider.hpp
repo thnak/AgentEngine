@@ -101,8 +101,9 @@ public:
     // `host_scratch_root`: a real host directory (need not already exist -- created idempotently,
     // see file-top comment) under which this provider creates exactly one per-session subdirectory.
     // Host-only, configuration-time value (I2/I3: never derived from model output).
-    explicit SandboxToolProvider(std::filesystem::path host_scratch_root)
-        : host_scratch_root_(std::move(host_scratch_root)) {}
+    // `run_shell_approval` (ADR-244 slice 4a): whether each `run_shell` call needs approval -- required.
+    SandboxToolProvider(std::filesystem::path host_scratch_root, approval_mode run_shell_approval)
+        : host_scratch_root_(std::move(host_scratch_root)), run_shell_approval_(run_shell_approval) {}
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
                                                                   EffectContext& ctx) {
@@ -113,7 +114,7 @@ public:
         }
         ctx.sandbox_fs = sandbox_->filesystem_adapter();
         ContextContribution contribution;
-        contribution.tools.push_back(sandbox_->tool_descriptor());
+        contribution.tools.push_back(sandbox_->tool_descriptor(run_shell_approval_));
         co_return contribution;
     }
 
@@ -150,6 +151,7 @@ private:
     }
 
     std::filesystem::path host_scratch_root_;
+    approval_mode run_shell_approval_;  // ADR-244 slice 4a
     std::unique_ptr<SessionShellSandbox> sandbox_;
 };
 

@@ -142,7 +142,7 @@ int main() {
         SandboxHandle const never_loaded{"nonexistent-handle"};
         EffectContext ctx = make_ctx();
         auto descriptors =
-            wasm_tools_as_descriptors_from(never_created_backend, never_loaded, "bad::id", ctx);
+            wasm_tools_as_descriptors_from(never_created_backend, never_loaded, "bad::id", ctx, approval_mode::never_require);
         AE_CHECK(!descriptors.has_value(), "delimiter guard: a plugin_id containing '::' is rejected");
         if (!descriptors) {
             AE_CHECK(descriptors.error().code == "wasm.tool_name_ambiguous",
@@ -183,7 +183,7 @@ int main() {
     }
 
     // -- 1. Adaptation shape ---------------------------------------------------------------------
-    auto descriptors = wasm_tools_as_descriptors_from(backend, *handle, "bridge-plugin", load_ctx);
+    auto descriptors = wasm_tools_as_descriptors_from(backend, *handle, "bridge-plugin", load_ctx, approval_mode::never_require);
     AE_CHECK(descriptors.has_value() && descriptors->size() == 8,
               "adapt: all 8 real fixture tools are adapted into agentengine::ToolDescriptor");
 
@@ -197,6 +197,11 @@ int main() {
     }
     AE_CHECK(echo_descriptor != nullptr && now_descriptor != nullptr,
               "adapt: plugin-qualified names are individually findable");
+    if (descriptors) {
+        bool all_stated = true;
+        for (auto const& d : *descriptors) all_stated = all_stated && d.approval == approval_mode::never_require;
+        AE_CHECK(all_stated, "adapt (ADR-244 slice 4a): every adapted descriptor carries the host's approval mode");
+    }
     if (echo_descriptor) {
         AE_CHECK(echo_descriptor->capability_ceiling.size() == 1 &&
                       std::holds_alternative<cap::ToolCall>(echo_descriptor->capability_ceiling[0]) &&

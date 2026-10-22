@@ -109,6 +109,7 @@ namespace agentengine {
 bool tool_call_requires_approval(ToolDescriptor const& tool,
                                  call_provenance provenance) noexcept {
     using namespace tool_pipeline_detail;
+    // An unset mode (ADR-244: refused at admission, before this is reached) counts as requiring approval.
     bool const tool_requires = tool.approval != approval_mode::never_require;
     if (provenance == call_provenance::text_derived) {
         return tool_requires || !is_auto_declassifiable_text_derived_call(tool);
@@ -165,6 +166,8 @@ task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet cons
         co_return std::unexpected(
             error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
     }
+    // ADR-244 §2.2 (slice 4a): a tool whose approval was never stated does not run -- not even to be asked.
+    if (!tool->approval.has_value()) co_return std::unexpected(tool_approval_missing(tool->name));
 
     // -- step 2: validate (+ step 3: taint, recorded not deeply propagated) ----------------------
     // ADR-197: argument text that did not parse is refused here, never coerced to `{}` -- a tool
@@ -395,6 +398,8 @@ task<result<void>> background_task(ToolTable const& table, CapabilitySet const& 
         co_return std::unexpected(
             error{failure_class::contract, "unknown tool: " + request.tool_name, "tool.unknown_name"});
     }
+    // ADR-244 §2.2 (slice 4a): a tool whose approval was never stated does not run -- not even to be asked.
+    if (!tool->approval.has_value()) co_return std::unexpected(tool_approval_missing(tool->name));
     // -- step 2: validate -- ADR-197, the same refusal `admit_call()` makes ----------------------
     if (!request.arguments_parse_error.empty()) co_return std::unexpected(malformed_arguments_error(request));
 

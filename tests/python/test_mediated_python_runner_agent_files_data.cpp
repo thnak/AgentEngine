@@ -66,7 +66,7 @@ AE_JSON_SCHEMA(EchoReply, message)
 // matching test_mediated_python_runner_agent_tools.cpp's own EchoTool -- Scenario 2 below only checks
 // that agent.tools/agent.files/agent.data all coexist, not tool-call enforcement (already proven by
 // G1's own test file), so the bridge's capability set is left ungranted deliberately.
-struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
+struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;

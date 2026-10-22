@@ -226,6 +226,7 @@ int main() {
         if (!root_r.has_value()) return EXIT_FAILURE;
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
+        parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
 
         auto before = drive(parent.history_provider().on_context(call.session_ctx, call.ctx));
         check(before.has_value() && before->tools.size() == 1 && before->tools[0].name == "run_command",
@@ -398,6 +399,7 @@ int main() {
             unenabled.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                           scratch_root / "unenabled", branch_quota,
                                                           run_quota, storage_quota);
+            unenabled.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             auto attempt = drive(unenabled.history_provider().start_task_branch(owner));
             check(!attempt.has_value() &&
                       attempt.error().code == "mandatory_sandbox_provider.task_branch_not_enabled",
@@ -424,6 +426,7 @@ int main() {
                 retry_session.history_provider().bind_sandbox(
                     ledger, std::move(*root_r), owner, scratch_root / "retry", branch_quota, run_quota,
                     storage_quota);
+                retry_session.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 retry_session.history_provider().bind_task_branch_tools(tiny_merge_quota);
 
                 auto child_x = drive(retry_session.history_provider().start_task_branch(owner));
@@ -503,6 +506,7 @@ int main() {
             rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root1), owner,
                                                             scratch_root / "rebind1", branch_quota,
                                                             run_quota, storage_quota);
+            rebind_leak.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             rebind_leak.history_provider().bind_task_branch_tools(merge_quota);
 
             std::uint64_t const branch_before = branch_quota.remaining();
@@ -517,6 +521,7 @@ int main() {
                 rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root2), owner,
                                                                 scratch_root / "rebind2", branch_quota,
                                                                 run_quota, storage_quota);
+                rebind_leak.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(branch_quota.remaining() == branch_before,
                       "re-binding discards the still-active task branch and refunds its BranchCost -- "
                       "no silent leak");
@@ -536,6 +541,7 @@ int main() {
             fork_leak_target.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                                   scratch_root / "fork-leak", branch_quota,
                                                                   run_quota, storage_quota);
+            fork_leak_target.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             fork_leak_target.history_provider().bind_task_branch_tools(merge_quota);
 
             std::uint64_t const before_all = branch_quota.remaining();
@@ -564,6 +570,7 @@ int main() {
         if (root_r.has_value()) {
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
+            live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             live.history_provider().bind_task_branch_tools(merge_quota);
 
             ScriptedChatClient& client = live.emplace_chat_client();
@@ -633,6 +640,7 @@ int main() {
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota, run_quota,
                                                         storage_quota);
+            ungranted.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             ungranted.history_provider().bind_task_branch_tools(merge_quota);
 
             ScriptedChatClient& client = ungranted.emplace_chat_client();

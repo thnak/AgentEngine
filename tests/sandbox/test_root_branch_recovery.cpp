@@ -110,6 +110,7 @@ int main() {
         Provider provider;
         auto bound = provider.bind_root_branch(ledger, owner, scratch_root / "phase-1", *branch_quota_r,
                                                  *run_quota_r, *storage_quota_r, "fresh");
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider.bind_task_branch_tools(*merge_quota_r);
         check(bound.has_value(), "[1] bind_root_branch() succeeds for a fresh owner/disambiguator pair");
         check(provider.is_bound(), "[1] the provider is genuinely bound afterward");
@@ -143,6 +144,7 @@ int main() {
         auto bound = provider.bind_root_branch(durable_ledger, owner, scratch_root / "phase-2a",
                                                  *branch_quota_r, *run_quota_r, *storage_quota_r,
                                                  "crash-recovery");
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider.bind_task_branch_tools(*merge_quota_r);
         check(bound.has_value(), "[2] setup: bind_root_branch() creates the root for the crash-recovery case");
         if (!bound.has_value()) return EXIT_FAILURE;
@@ -192,6 +194,7 @@ int main() {
         auto bound = provider.bind_root_branch(reopened_ledger, owner, scratch_root / "phase-2b",
                                                  *branch_quota_r, *run_quota_r, *storage_quota_r,
                                                  "crash-recovery");
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider.bind_task_branch_tools(*merge_quota_r);
         check(bound.has_value(),
               "[2] bind_root_branch() succeeds after a simulated crash, with NO manual reclaim call");
@@ -235,6 +238,7 @@ int main() {
         auto bound_x = provider_x.bind_root_branch(ledger, owner, scratch_root / "phase-3x",
                                                       *branch_quota_r, *run_quota_r, *storage_quota_r,
                                                       "disambiguator-x");
+        provider_x.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider_x.bind_task_branch_tools(*merge_quota_r);
         check(bound_x.has_value(), "[3] disambiguator \"x\" binds successfully");
 
@@ -253,6 +257,7 @@ int main() {
         auto bound_y = provider_y.bind_root_branch(ledger, owner, scratch_root / "phase-3y",
                                                       *branch_quota_r2, *run_quota_r2, *storage_quota_r2,
                                                       "disambiguator-y");
+        provider_y.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider_y.bind_task_branch_tools(*merge_quota_r2);
         check(bound_y.has_value(), "[3] disambiguator \"y\" binds successfully too, on the SAME ledger");
 

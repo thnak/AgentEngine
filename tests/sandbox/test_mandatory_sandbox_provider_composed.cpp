@@ -70,7 +70,7 @@ AE_JSON_SCHEMA(LocalToolArgs, unused)
 struct LocalToolReply { bool ok = true; };
 AE_JSON_SCHEMA(LocalToolReply, ok)
 
-struct LocalTool : Tool<LocalTool> {
+struct LocalTool : Tool<LocalTool, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "local_tool";
     static constexpr std::string_view description = "The composing provider's own always-on tool.";
     using Args = LocalToolArgs;
@@ -161,6 +161,7 @@ int main() {
             std::filesystem::remove_all(staging, ec);
             provider.run_command_provider().bind_sandbox(ledger, std::move(*root_r), owner, staging,
                                                              *branch_quota_r, *run_quota_r, *storage_quota_r);
+            provider.run_command_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             check(provider.run_command_provider().is_bound(), "bind_sandbox() leaves the provider bound");
 
             auto contribution = drive(provider.on_context(session_ctx, ctx));
@@ -177,6 +178,12 @@ int main() {
                       "until this file)");
                 check(contribution->tools.size() == 2,
                       "exactly two tools contributed once bound: local_tool + run_command");
+                for (ToolDescriptor const& d : contribution->tools) {
+                    if (d.name == "run_command") {
+                        check(d.approval == agentengine::approval_mode::never_require,
+                              "run_command carries the mode the host set (ADR-244 slice 4a)");
+                    }
+                }
             }
         }
     }

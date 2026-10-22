@@ -223,7 +223,7 @@ AE_JSON_SCHEMA(ScheduleWakeupReply, handle_id)
 // generic `invoke_tool()` step-4/7 bind could only check for bare existence, never the live count
 // `schedule_wakeup_impl()` (ADR-061 §20.5) itself already checks correctly).
 // ae-naming-lint: allow ScheduleWakeupTool — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool, agentengine::CapturesSessionState> {
+struct ScheduleWakeupTool : agentengine::Tool<ScheduleWakeupTool, agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "schedule_wakeup";
     static constexpr std::string_view description =
         "Arms a durable wake condition that fires after the given delay (019 §2's Timer/schedule wake "

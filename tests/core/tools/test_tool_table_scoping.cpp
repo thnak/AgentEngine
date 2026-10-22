@@ -41,21 +41,21 @@ struct NoteReply {
 };
 AE_JSON_SCHEMA(NoteReply, ok)
 
-struct AlphaTool : Tool<AlphaTool, EffectClass<effect_class::pure>> {
+struct AlphaTool : Tool<AlphaTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "alpha";
     static constexpr std::string_view description = "The alpha tool.";
     using Args = NoteArgs;
     using Reply = NoteReply;
     agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
-struct BetaTool : Tool<BetaTool, EffectClass<effect_class::pure>> {
+struct BetaTool : Tool<BetaTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "beta";
     static constexpr std::string_view description = "The beta tool.";
     using Args = NoteArgs;
     using Reply = NoteReply;
     agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
-struct GammaTool : Tool<GammaTool, EffectClass<effect_class::pure>> {
+struct GammaTool : Tool<GammaTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "gamma";
     static constexpr std::string_view description = "The gamma tool.";
     using Args = NoteArgs;
@@ -67,7 +67,7 @@ struct GammaTool : Tool<GammaTool, EffectClass<effect_class::pure>> {
 // tool object holding state -- so R5 can prove `ToolTable::from(...)` / the value-taking
 // `make_tool_descriptor(ToolT{...})` register a real tool and keep that instance alive for the
 // descriptor's whole lifetime (the shared counter must survive the drive).
-struct LiveTool : Tool<LiveTool, EffectClass<effect_class::pure>> {
+struct LiveTool : Tool<LiveTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "live";
     static constexpr std::string_view description = "An instance-form tool carrying state.";
     using Args  = NoteArgs;

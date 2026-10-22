@@ -130,7 +130,7 @@ template <class ProviderT>
 struct RunCommandTool
     : agentengine::Tool<RunCommandTool<ProviderT>,
                         agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_command";
     static constexpr std::string_view description =
         "Run a shell command in this session's own isolated sandbox, backed by a real, independent "
@@ -258,7 +258,7 @@ template <class ProviderT>
 struct StartTaskBranchTool
     : agentengine::Tool<StartTaskBranchTool<ProviderT>,
                         agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "start_task_branch";
     static constexpr std::string_view description =
         "Start a new, isolated task branch forked from this session's current sandbox state. Run "
@@ -280,7 +280,7 @@ template <class ProviderT>
 struct RunInTaskBranchTool
     : agentengine::Tool<RunInTaskBranchTool<ProviderT>,
                         agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_in_task_branch";
     static constexpr std::string_view description =
         "Run a shell command inside a task branch previously created by start_task_branch. Never "
@@ -302,7 +302,7 @@ struct CommitTaskBranchTool
     : agentengine::Tool<CommitTaskBranchTool<ProviderT>,
                          agentengine::Capabilities<agentengine::cap::decl::TaskBranch,
                                                     agentengine::cap::decl::TaskBranchCommit>,
-                         agentengine::CapturesSessionState> {
+                         agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "commit_task_branch";
     static constexpr std::string_view description =
         "Fold a task branch's accumulated work into the session's main branch as a new checkpoint. "
@@ -324,7 +324,7 @@ template <class ProviderT>
 struct DiscardTaskBranchTool
     : agentengine::Tool<DiscardTaskBranchTool<ProviderT>,
                         agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "discard_task_branch";
     static constexpr std::string_view description =
         "Throw away a task branch and everything it did, with no lasting effect on the main branch.";
@@ -807,6 +807,11 @@ public:
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
 
+    // ADR-244 §2.2 (slice 4a): whether a call to `run_command` and the four task-branch tools needs approval is the
+    // host's choice; the engine makes none. Unset, their descriptors carry no mode and the session refuses the turn
+    // (`choice.missing.tool.approval`). Configuration, not binding: a re-bind keeps it and a copy carries it.
+    void set_tool_approval(agentengine::approval_mode mode) noexcept { tool_approval_ = mode; }
+
     // OPTIONAL, side-effect-free advisory pre-check: does this session currently look like it could
     // fork right now? Never authoritative -- state can change between this call and the actual
     // `fork_from()` -- but lets a caller (e.g. a future `agent.spawn` tool body) reject an obviously-
@@ -848,6 +853,7 @@ public:
         // *this* was previously bound to, independent of `other`), refunding into the quota that
         // actually granted them. See that method's own comment.
         discard_all_active_task_branches_and_refund();
+        tool_approval_ = other.tool_approval_;
         if (!other.runtime_.has_value()) {
             ledger_ = nullptr;
             owner_.reset();
@@ -913,23 +919,23 @@ public:
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext&, agentengine::EffectContext&) {
         agentengine::ContextContribution contribution;
+        // Every tool here is ApprovalChosenByHost: its mode is the one the host set, or none (refused).
+        auto offer = [&](agentengine::ToolDescriptor d) {
+            d.approval = tool_approval_;
+            contribution.tools.push_back(std::move(d));
+        };
         if (runtime_.has_value()) {
-            contribution.tools.push_back(
-                agentengine::make_tool_descriptor(RunCommandTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(RunCommandTool<MandatorySandboxProvider>{*this}));
         }
         // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
         // tools are contributed only once BOTH `runtime_` is bound AND a host has opted in with a
         // real `MergeCost` quota. Every tool re-derives its own `caller` from `ctx.principal`, the
         // same "never assume owner_" discipline `run_command`'s own tool already established.
         if (runtime_.has_value() && merge_quota_ != nullptr) {
-            contribution.tools.push_back(
-                agentengine::make_tool_descriptor(StartTaskBranchTool<MandatorySandboxProvider>{*this}));
-            contribution.tools.push_back(
-                agentengine::make_tool_descriptor(RunInTaskBranchTool<MandatorySandboxProvider>{*this}));
-            contribution.tools.push_back(
-                agentengine::make_tool_descriptor(CommitTaskBranchTool<MandatorySandboxProvider>{*this}));
-            contribution.tools.push_back(
-                agentengine::make_tool_descriptor(DiscardTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(StartTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(RunInTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(CommitTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(DiscardTaskBranchTool<MandatorySandboxProvider>{*this}));
         }
         co_return contribution;
     }
@@ -1144,6 +1150,7 @@ private:
     // `bind_task_branch_tools()` is the only thing that ever sets it, and every task-branch method
     // checks it alongside `runtime_.has_value()` before doing anything.
     agentengine::rt::AsyncQuota<agentengine::MergeCost>* merge_quota_ = nullptr;
+    std::optional<agentengine::approval_mode> tool_approval_;  // ADR-244 slice 4a: the host's, see set_tool_approval()
     std::map<std::string, SandboxRuntime<Store>> task_branches_;
     std::unique_ptr<agentengine::rt::AsyncMutex> task_branch_mutex_;
 };

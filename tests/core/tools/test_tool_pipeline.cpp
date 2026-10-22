@@ -43,7 +43,7 @@ struct EchoReply {
 };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
@@ -88,7 +88,7 @@ AE_JSON_SCHEMA(PureReply, ok)
 // Declares NO Capabilities<...> (empty ceiling by construction) and EffectClass<pure> -- the ONLY
 // shape `is_auto_declassifiable_text_derived_call` (tool_pipeline.hpp) accepts without a human.
 struct PureNoCapTool
-    : agentengine::Tool<PureNoCapTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+    : agentengine::Tool<PureNoCapTool, agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "pure_no_cap";
     static constexpr std::string_view description = "A capability-free, pure tool.";
     using Args = PureArgs;
@@ -187,7 +187,7 @@ struct PureReadAlwaysTool
 // background_task()'s own step 5, which used to read `tool->approval` alone.
 struct BackgroundNetTool
     : agentengine::Tool<BackgroundNetTool, agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
-                          agentengine::Backgroundable> {
+                          agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "background_net";
     static constexpr std::string_view description = "Backgroundable, real egress, never_require.";
     using Args = PureArgs;

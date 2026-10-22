@@ -85,7 +85,7 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
 };
 
 struct FreeTool : agentengine::Tool<FreeTool, agentengine::Capabilities<>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "free_tool";
     static constexpr std::string_view description = "Never needs approval.";
     using Args = ValueArgs;

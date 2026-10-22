@@ -43,6 +43,7 @@ using agentengine::tool_provenance;
 
 ToolDescriptor make_descriptor(std::string name, std::vector<Capability> ceiling = {}) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name              = std::move(name);
     d.description       = "test tool";
     d.capability_ceiling = std::move(ceiling);

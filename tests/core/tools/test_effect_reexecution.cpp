@@ -34,7 +34,7 @@ struct PureReply {
 };
 AE_JSON_SCHEMA(PureReply, x)
 
-struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     [[maybe_unused]] static constexpr std::string_view name = "pure_tool";
     [[maybe_unused]] static constexpr std::string_view description = "A read-only, side-effect-free tool.";
     using Args = PureArgs;
@@ -52,7 +52,7 @@ struct PaymentReply {
 AE_JSON_SCHEMA(PaymentReply, charged)
 
 // Deliberately declares NO EffectClass -- proving the conservative default applies.
-struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
+struct UndeclaredTool : agentengine::Tool<UndeclaredTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     [[maybe_unused]] static constexpr std::string_view name = "undeclared_tool";
     [[maybe_unused]] static constexpr std::string_view description = "A tool that forgot to classify itself.";
     using Args = PaymentArgs;
@@ -61,7 +61,7 @@ struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
 };
 
 struct MakePaymentTool
-    : agentengine::Tool<MakePaymentTool, agentengine::EffectClass<agentengine::effect_class::at_most_once>> {
+    : agentengine::Tool<MakePaymentTool, agentengine::EffectClass<agentengine::effect_class::at_most_once>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "make_payment";
     static constexpr std::string_view description = "019 §3's own example of a must-not-repeat effect.";
     using Args = PaymentArgs;

@@ -31,7 +31,7 @@ struct SumReply { int sum = 0; std::string note; };
 AE_JSON_SCHEMA(SumReply, sum, note)
 
 // Deterministic + pure: the canonical case.
-struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::Deterministic> {
+struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::Deterministic, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "sum";
     static constexpr std::string_view description = "Adds two integers.";
     using Args = SumArgs;
@@ -42,7 +42,7 @@ struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::
 // Same claim, tag order reversed, plus a later EffectClass overriding an earlier one: the fold must
 // not depend on position, and last-declared wins exactly as `declared_effect_class()` does.
 struct EchoTool : ae::Tool<EchoTool, ae::Deterministic, ae::EffectClass<ae::effect_class::at_most_once>,
-                           ae::EffectClass<ae::effect_class::pure>> {
+                           ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Returns its first argument.";
     using Args = SumArgs;
@@ -52,7 +52,7 @@ struct EchoTool : ae::Tool<EchoTool, ae::Deterministic, ae::EffectClass<ae::effe
 
 // Pure but NOT deterministic: safe to repeat, different answer each time. The case issue #81 names.
 int g_counter = 0;
-struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pure>> {
+struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "counter";
     static constexpr std::string_view description = "Returns a fresh number on every call.";
     using Args = SumArgs;
@@ -61,7 +61,7 @@ struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pur
 };
 
 // No policies at all -- the empty-pack instantiation the MSVC C3520 note in tool.hpp is about.
-struct BareTool : ae::Tool<BareTool> {
+struct BareTool : ae::Tool<BareTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "bare";
     static constexpr std::string_view description = "Declares nothing.";
     using Args = SumArgs;
@@ -113,6 +113,7 @@ int main() {
 
     // D3: a hand-built descriptor defaults to false (MCP bridge, WASM, providers -- ADR-212 §3.4).
     ae::ToolDescriptor hand_built;
+    hand_built.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
     check(!hand_built.deterministic, "D3: a default-constructed descriptor is not deterministic");
 
     // D4: rerun_comparable() -- including the hand-built combination Tool<> would have rejected.

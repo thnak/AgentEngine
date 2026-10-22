@@ -53,7 +53,7 @@ struct EchoReply {
     std::string echoed;
 };
 AE_JSON_SCHEMA(EchoReply, echoed)
-struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
+struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
@@ -69,7 +69,7 @@ struct ReaderReply {
     std::string contents;
 };
 AE_JSON_SCHEMA(ReaderReply, contents)
-struct ReaderTool : Tool<ReaderTool, Capabilities<cap::decl::FsRead<"data">>> {
+struct ReaderTool : Tool<ReaderTool, Capabilities<cap::decl::FsRead<"data">>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "read-data";
     static constexpr std::string_view description = "Read a file under the data mount.";
     using Args = ReaderArgs;
@@ -86,7 +86,7 @@ struct WriterReply {
     bool ok = false;
 };
 AE_JSON_SCHEMA(WriterReply, ok)
-struct WriterTool : Tool<WriterTool, Capabilities<cap::decl::FsWrite<"scratch">>> {
+struct WriterTool : Tool<WriterTool, Capabilities<cap::decl::FsWrite<"scratch">>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "write-scratch";
     static constexpr std::string_view description = "Write a file under the scratch mount.";
     using Args = WriterArgs;
@@ -102,7 +102,7 @@ struct SecretReply {
     std::string value;
 };
 AE_JSON_SCHEMA(SecretReply, value)
-struct SecretTool : Tool<SecretTool, Capabilities<cap::decl::Secret<"api-key">>> {
+struct SecretTool : Tool<SecretTool, Capabilities<cap::decl::Secret<"api-key">>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "read-secret";
     static constexpr std::string_view description = "Resolve the api-key secret.";
     using Args = SecretArgs;
@@ -118,7 +118,7 @@ struct FetcherReply {
     std::int64_t status = 0;
 };
 AE_JSON_SCHEMA(FetcherReply, status)
-struct FetcherTool : Tool<FetcherTool, Capabilities<cap::decl::NetOut<"api.example.com">>> {
+struct FetcherTool : Tool<FetcherTool, Capabilities<cap::decl::NetOut<"api.example.com">>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fetch-example";
     static constexpr std::string_view description = "Fetch from api.example.com.";
     using Args = FetcherArgs;
@@ -134,7 +134,7 @@ struct ClockReply {
     std::int64_t millis = 0;
 };
 AE_JSON_SCHEMA(ClockReply, millis)
-struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<0>>> {
+struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<0>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "now";
     static constexpr std::string_view description = "Read the current time.";
     using Args = ClockArgs;
@@ -151,7 +151,7 @@ struct LiveShellReply {
     int exit_code = 0;
 };
 AE_JSON_SCHEMA(LiveShellReply, exit_code)
-struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>>> {
+struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "native-live-shell";
     static constexpr std::string_view description = "Run a command in a held native shell.";
     using Args = LiveShellArgs;

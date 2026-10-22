@@ -20,7 +20,7 @@ namespace agentengine::test_driver {
 class ShellSandbox final : public RealToolSandbox {
 public:
     explicit ShellSandbox(std::unique_ptr<SessionShellSandbox> sandbox) : sandbox_(std::move(sandbox)) {}
-    [[nodiscard]] ToolDescriptor run_shell() override { return sandbox_->tool_descriptor(); }
+    [[nodiscard]] ToolDescriptor run_shell() override { return sandbox_->tool_descriptor(kRunShellApproval); }
     [[nodiscard]] FileSystemAdapter* filesystem() override { return sandbox_->filesystem_adapter(); }
 
 private:

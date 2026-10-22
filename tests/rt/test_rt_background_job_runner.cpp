@@ -121,6 +121,7 @@ using SyncInvoke = std::function<ae::result<ae::json::Value>(ae::json::Value con
 ae::ToolDescriptor tool(std::string name, SyncInvoke fn,
                         ae::effect_class cls = ae::effect_class::idempotent) {
     ae::ToolDescriptor d;
+    d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
     d.name           = std::move(name);
     d.backgroundable = true;
     d.effect_class   = cls;

@@ -35,7 +35,7 @@ struct EchoReply {
 };
 AE_JSON_SCHEMA(EchoReply, text)
 
-struct EchoTool : ae::Tool<EchoTool> {
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echoes its input text back.";
     using Args  = EchoArgs;
@@ -54,7 +54,7 @@ AE_JSON_SCHEMA(FailReply, ok)
 
 // Always fails -- proves 011 §3.1's isError:true result path, distinct from an unknown-tool
 // JSON-RPC error.
-struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool> {
+struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "always_fails";
     static constexpr std::string_view description = "Always returns an execution error.";
     using Args  = FailArgs;

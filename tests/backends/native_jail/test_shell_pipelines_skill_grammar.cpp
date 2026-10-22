@@ -69,7 +69,7 @@ public:
     [[nodiscard]] std::filesystem::path const& root() const { return root_; }
 
     Run run(std::string const& source, ae::CapabilitySet const& held) {
-        auto const table = ae::ToolTable::from_descriptors({sandbox_->tool_descriptor()});
+        auto const table = ae::ToolTable::from_descriptors({sandbox_->tool_descriptor(ae::approval_mode::never_require)});
         ae::EffectContext ctx;
         ctx.principal = ae::Principal{"skill-grammar", ""};
         ctx.capabilities = ae::borrow_capabilities(held);

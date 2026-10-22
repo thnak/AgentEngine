@@ -158,7 +158,7 @@ AE_JSON_SCHEMA(CounterReply, total)
 // the state the old closure captured.
 struct CounterTool : agentengine::Tool<CounterTool, agentengine::Capabilities<>,
                                         agentengine::EffectClass<agentengine::effect_class::pure>,
-                                        agentengine::CapturesSessionState> {
+                                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "counter_tool";
     static constexpr std::string_view description = "Adds delta to a session-scoped counter.";
     using Args  = CounterArgs;
@@ -187,7 +187,7 @@ struct BackgroundableStatefulTool
     : agentengine::Tool<BackgroundableStatefulTool, agentengine::Capabilities<>,
                          agentengine::Backgroundable,
                          agentengine::EffectClass<agentengine::effect_class::pure>,
-                         agentengine::CapturesSessionState> {
+                         agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_stateful_tool";
     static constexpr std::string_view description = "Declared Backgroundable, for S3.";
     using Args  = BgArgs;
@@ -203,7 +203,7 @@ struct BackgroundableStatefulTool
 struct StatelessBackgroundableTool
     : agentengine::Tool<StatelessBackgroundableTool, agentengine::Capabilities<>,
                          agentengine::Backgroundable,
-                         agentengine::EffectClass<agentengine::effect_class::pure>> {
+                         agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "stateless_bg_tool";
     static constexpr std::string_view description = "Declared Backgroundable with a static invoke, for S4.";
     using Args  = BgArgs;
@@ -315,7 +315,7 @@ class TestCodeActProvider;
 
 struct MountTool
     : agentengine::Tool<MountTool, agentengine::EffectClass<agentengine::effect_class::pure>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "mount";
     static constexpr std::string_view description = "Mounts a skill (test double).";
     using Args  = MountArgs;
@@ -336,7 +336,7 @@ AE_JSON_SCHEMA(UseRunnerReply, tag)
 
 struct UseRunnerTool
     : agentengine::Tool<UseRunnerTool, agentengine::EffectClass<agentengine::effect_class::pure>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "use_runner";
     static constexpr std::string_view description = "Reads the shared runner's tag (test double).";
     using Args  = UseRunnerArgs;

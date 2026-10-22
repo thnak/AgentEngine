@@ -194,7 +194,7 @@ void runner_section(Parker& parker) {
     auto sandbox = agentengine::SessionShellSandbox::create(scratch);
     AE_CHECK(sandbox.has_value(), "R2 setup: SessionShellSandbox::create succeeds");
     if (!sandbox.has_value()) return;
-    auto const table = agentengine::ToolTable::from_descriptors({(*sandbox)->tool_descriptor()});
+    auto const table = agentengine::ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({
         agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
         agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
@@ -459,6 +459,7 @@ agentengine::task<agentengine::result<agentengine::ShellExecReply>> live_flow(La
             co_return SuspendingLiveSurface(pk, counters, box);
         },
         10s);
+    provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
     if (!bound.has_value()) co_return std::unexpected(bound.error());
 
     agentengine::EffectContext ctx{};

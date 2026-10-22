@@ -56,7 +56,7 @@ struct RollReply {
 };
 AE_JSON_SCHEMA(RollReply, value)
 
-struct RollDie : Tool<RollDie> {
+struct RollDie : Tool<RollDie, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "roll_die";
     static constexpr std::string_view description = "Roll a die with the given number of sides.";
     using Args  = RollArgs;

@@ -115,6 +115,7 @@ std::string g_prompt_prefix;
 // 006's real per-run tool table entry -- the exact type ChatRequest::tools already carries.
 [[nodiscard]] ToolDescriptor weather_tool() {
     ToolDescriptor t;
+    t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     t.name = "get_weather";
     t.description = "Get the current weather for a city.";
     t.args_schema_json =

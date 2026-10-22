@@ -167,7 +167,7 @@ struct ProbeReply {
     bool ok = true;
 };
 AE_JSON_SCHEMA(ProbeReply, ok)
-struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>> {
+struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "probe";
     static constexpr std::string_view description = "records its context";
     using Args  = ProbeArgs;

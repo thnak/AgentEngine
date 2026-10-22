@@ -70,6 +70,7 @@ Message make_tool_result_msg(std::string call_id, std::string message_id) {
 
 ToolDescriptor make_marker_tool(std::string name, std::string marker) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name        = name;
     d.description = "original description";
     d.invoke      = [marker](json::Value const&, EffectContext&) -> task<result<json::Value>> {
