@@ -5,6 +5,7 @@
 // Every negative claim here was also run against a mutated guard (ADR-235 §6) -- a check that cannot fail
 // proves nothing.
 
+#include <atomic>
 #include <utility>
 #include <chrono>
 #include <cstdio>
@@ -107,11 +108,12 @@ T drive(agentengine::rt::task<T> t) {
     };
 }
 
-// Counters a batch node's three steps bump, so a test can tell which path ran.
+// Counters a batch node's three steps bump, so a test can tell which path ran. Atomic: the fan-out nodes w1..w3
+// run their synchronous calls concurrently, and a plain int lost increments (C1 under clang, C20 under gcc-14 in CI).
 struct Calls {
-    int build = 0;
-    int sync  = 0;
-    int complete = 0;
+    std::atomic<int> build{0};
+    std::atomic<int> sync{0};
+    std::atomic<int> complete{0};
 };
 
 // A model-call node: the request carries "<node>:<input>"; the synchronous "model" answers "sync(<request>)";
@@ -381,7 +383,7 @@ int main() {
         (void)sup.enable_batch_coalescing(pol);
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("x")}));
         check(r.status == workflow_status::executor_failed && f.calls->sync == 0,
-              "C8 fail: not retried under a retry policy (sync calls " + std::to_string(f.calls->sync) + ")");
+              "C8 fail: not retried under a retry policy (sync calls " + std::to_string(f.calls->sync.load()) + ")");
     }
 
     // ---- C9/C10/C21: an expired item runs synchronously once; the fan_in still joins once ---------------
