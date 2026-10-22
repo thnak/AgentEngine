@@ -822,7 +822,7 @@ private:
 // host policy calls — never reachable from anything derived from model output, I3). No convenience
 // "give me everything" shortcut exists; that is the actual property 007 §9 G1 tests, not merely a
 // comment promising it.
-class CapabilityCeiling;
+class CapabilityCeiling;  // ae-naming-lint: allow CapabilityCeiling — ADR-244
 
 // ae-naming-lint: allow CapabilitySet — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CapabilitySet {

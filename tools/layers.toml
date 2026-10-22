@@ -57,6 +57,7 @@
 
 # --- core/: trust & isolation (L1) --------------------------------------------------------------
 "include/agentengine/core/effect_context.hpp"            = { layer = "L1", reason = "the I4 attribution/capability parameter carried into every effect (007)" }
+"include/agentengine/core/authority_terms.hpp"            = { layer = "L1", reason = "authority_mode and Expiry, carried by EffectContext (ADR-244 §2.3/§2.4); std only" }
 "include/agentengine/core/fs_walk.hpp"                   = { layer = "L1", reason = "fail-closed host directory walks; direct OS filesystem access" }
 "include/agentengine/core/sharing_mode.hpp"              = { layer = "L1", reason = "worktree sub-worktree sharing modes (025 §3)" }
 "include/agentengine/core/worktree.hpp"                  = { layer = "L1", reason = "worktree umbrella (025): the sandbox's filesystem, part of the isolation environment" }

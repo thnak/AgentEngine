@@ -33,6 +33,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/session_choices.hpp"
 #include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"

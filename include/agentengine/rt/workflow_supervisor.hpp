@@ -279,8 +279,11 @@ public:
     // session had no choices yet). A workflow sends its nodes no per-request authority, so `initialize()`
     // refuses a graph with a `per_request` node (`workflow.node_requires_authority`); the body re-checks the
     // session's source on every call, so a session re-initialised after binding is caught too.
-    AgentExecutorBodyTag(Impl impl, std::optional<agentengine::authority_mode> source)
-        : impl_(std::move(impl)), source_(source) {}
+    // `source_` is assigned only from an engaged `source`: copying a disengaged optional<enum> copies its unset
+    // payload byte, which gcc-14 -O2 reports as -Wmaybe-uninitialized (a -Werror break in CI's Linux leg).
+    AgentExecutorBodyTag(Impl impl, std::optional<agentengine::authority_mode> source) : impl_(std::move(impl)) {
+        if (source.has_value()) source_ = *source;
+    }
 
     [[nodiscard]] std::optional<agentengine::authority_mode> source() const noexcept { return source_; }
 

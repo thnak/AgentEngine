@@ -14,10 +14,10 @@
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/authority_terms.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
-#include "agentengine/core/session_choices.hpp"
 #include "agentengine/core/task.hpp"  // ADR-237 5.1 (#187): blob_sink returns task<result<BlobRef>>
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
