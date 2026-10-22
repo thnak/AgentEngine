@@ -90,7 +90,7 @@ AE_JSON_SCHEMA(EchoReply, value)
 // Empty capability ceiling, never_require approval (both defaults) -- always succeeds. Used for R1
 // (convergence), R3 (failure-doesn't-abort, alongside FailingTool), R4/R5 (never-converges).
 struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
-                                     agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                     agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
@@ -105,7 +105,7 @@ AE_JSON_SCHEMA(FailingReply, unused)
 
 // Always fails at step 8 (invoke) -- R3 proves this doesn't abort the run.
 struct FailingTool : agentengine::Tool<FailingTool, agentengine::Capabilities<>,
-                                        agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                        agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "failing_tool";
     static constexpr std::string_view description = "Always fails.";
     using Args = FailingArgs;
@@ -131,7 +131,7 @@ AE_JSON_SCHEMA(WriteReply, unused)
     return invoked;
 }
 struct WriteTool : agentengine::Tool<WriteTool, agentengine::Capabilities<agentengine::cap::decl::FsWrite<"work">>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "write_tool";
     static constexpr std::string_view description = "Writes to the work mount.";
     using Args = WriteArgs;

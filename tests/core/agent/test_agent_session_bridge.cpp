@@ -80,7 +80,7 @@ std::atomic<int> g_echo_calls{0};
 std::atomic<int> g_read_calls{0};
 std::atomic<int> g_hidden_calls{0};
 
-struct EchoTool : ae::Tool<EchoTool> {  // never_require, no capabilities
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {  // never_require, no capabilities
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echo the message back.";
     using Args  = EchoArgs;
@@ -91,7 +91,7 @@ struct EchoTool : ae::Tool<EchoTool> {  // never_require, no capabilities
     }
 };
 
-struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>> {
+struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_doc";
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = EchoArgs;
@@ -102,7 +102,7 @@ struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRea
     }
 };
 
-struct ParTool : ae::Tool<ParTool, ae::Parallelizable> {
+struct ParTool : ae::Tool<ParTool, ae::Parallelizable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "par";
     static constexpr std::string_view description = "A tool that declares Parallelizable.";
     using Args  = EchoArgs;
@@ -111,7 +111,7 @@ struct ParTool : ae::Tool<ParTool, ae::Parallelizable> {
 };
 
 // Never declared by any agent below -- the "undeclared tool" of P2/P3.
-struct HiddenTool : ae::Tool<HiddenTool> {
+struct HiddenTool : ae::Tool<HiddenTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "hidden";
     static constexpr std::string_view description = "Not part of any agent's declaration.";
     using Args  = EchoArgs;
@@ -254,7 +254,7 @@ std::string render(ae::ChatRequest const& req) {
         }
     }
     for (ae::ToolDescriptor const& d : req.tools) {
-        out += "tool:" + d.name + ":" + std::to_string(static_cast<int>(d.approval)) + ":" +
+        out += "tool:" + d.name + ":" + std::to_string(d.approval ? static_cast<int>(*d.approval) : -1) + ":" +
                (d.parallelizable ? "p" : "s") + ":" + std::to_string(d.capability_ceiling.size()) + "|";
     }
     return out;

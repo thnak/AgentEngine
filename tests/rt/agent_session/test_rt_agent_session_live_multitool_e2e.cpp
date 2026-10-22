@@ -177,7 +177,7 @@ AE_JSON_SCHEMA(GetWeatherReply, temp_c, condition)
 // way into producing on its own, unlike a value like 10.0/20.0/0.0 -- if `convert_temperature`'s own
 // `celsius` argument matches this exactly, that is real evidence the model read the tool's actual
 // reply rather than estimating or hallucinating a plausible-looking one.
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description =
         "Get the current weather for a city. Returns temperature in Celsius ONLY -- never Fahrenheit.";
@@ -203,7 +203,7 @@ struct ConvertTempReply {
 };
 AE_JSON_SCHEMA(ConvertTempReply, value, unit)
 
-struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "convert_temperature";
     static constexpr std::string_view description =
         "Convert an EXACT celsius value (as returned by get_weather) to fahrenheit or kelvin. Must be "
@@ -228,7 +228,7 @@ struct GetTimeReply {
     std::string time;
 };
 AE_JSON_SCHEMA(GetTimeReply, time)
-struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_time";
     static constexpr std::string_view description = "Get the current local time for a timezone.";
     using Args = GetTimeArgs;
@@ -248,7 +248,7 @@ struct StockPriceReply {
     std::string currency;
 };
 AE_JSON_SCHEMA(StockPriceReply, price, currency)
-struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "stock_price";
     static constexpr std::string_view description = "Get the current market price for a stock ticker.";
     using Args = StockPriceArgs;

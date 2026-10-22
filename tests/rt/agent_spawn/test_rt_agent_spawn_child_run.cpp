@@ -201,7 +201,7 @@ AE_JSON_SCHEMA(SpawnReply, output)
 // `friend` declaration below; `invoke` is defined out-of-line, where `SpawnHistoryProvider` is complete.
 class SpawnHistoryProvider;
 
-struct SpawnTool : agentengine::Tool<SpawnTool, agentengine::CapturesSessionState> {
+struct SpawnTool : agentengine::Tool<SpawnTool, agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "agent.spawn";
     static constexpr std::string_view description =
         "test-only stand-in for item 1's real AgentSpawnTool -- proves item 2's drive mechanism only.";

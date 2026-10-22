@@ -96,7 +96,7 @@ struct EchoReply { int value = 0; };
 AE_JSON_SCHEMA(EchoReply, value)
 
 struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
-                                     agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                     agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;

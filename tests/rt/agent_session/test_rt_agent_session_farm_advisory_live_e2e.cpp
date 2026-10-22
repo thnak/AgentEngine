@@ -199,7 +199,7 @@ struct FieldWeatherReply {
 AE_JSON_SCHEMA(FieldWeatherReply, forecast, advice)
 
 struct CheckFieldWeatherTool
-    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_field_weather";
     static constexpr std::string_view description =
         "Gets today's local weather forecast for a named field, for deciding whether to irrigate or "
@@ -237,7 +237,7 @@ AE_JSON_SCHEMA(MountSkillReply, ok, message)
 class FarmAdvisoryProvider;
 
 struct MountSkillTool
-    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState> {
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "

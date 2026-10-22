@@ -22,6 +22,7 @@
 // that no step is skippable. Nothing here invokes a tool; `ToolDescriptor::invoke` is only ever called
 // from `tool_pipeline.hpp`'s admitted path.
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -31,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
@@ -50,7 +52,10 @@ struct ToolDescriptor {
     std::string name;
     std::string description;
     std::vector<Capability> capability_ceiling;  // from the tool's declared Capabilities<...>
-    approval_mode approval = approval_mode::never_require;
+    // ADR-244 §2.2 (slice 4a): stated, never defaulted -- nullopt is refused at the session's tool table and at
+    // admission (`choice.missing.tool.approval`). A `Tool<>` fills it from its `Approval<M>`; an
+    // `ApprovalChosenByHost` tool's provider, an MCP/WASM bridge or a hand-built descriptor states it.
+    std::optional<approval_mode> approval;
     // Milestone 7 Phase B (006 §6b): `false` unless the tool declared `Backgroundable` -- read by
     // `background_task()` (agent_session.hpp) to reject an undeclared tool at authorize, before it
     // ever reaches step 8.
@@ -228,6 +233,22 @@ template <class ToolT>
         co_return schema::to_json(*reply);
     };
     return d;
+}
+
+// ADR-244 §2.2 (slice 4a): the stated approval modes, the table `choice.missing.tool.approval` lists.
+inline constexpr std::array<std::string_view, 3> kToolApprovalOptions{
+    "approval_mode::never_require",
+    "approval_mode::always_require",
+    "approval_mode::policy_driven",
+};
+
+// The refusal for a descriptor whose approval was never stated. Read at the session's per-turn tool table
+// (the whole turn is refused) and again at admission (`admit_call`), so a table built some other way still
+// cannot run the tool.
+[[nodiscard]] inline error tool_approval_missing(std::string_view tool_name) {
+    error e = choice_missing("tool.approval", kToolApprovalOptions);
+    e.message = "tool '" + std::string(tool_name) + "': " + e.message;
+    return e;
 }
 
 // Forward-declared only -- the real type lives in core/tool_registry.hpp (gap-4 closure, ADR-054),

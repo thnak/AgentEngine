@@ -186,6 +186,7 @@ int main() {
         auto bound = provider.bind_root_branch(reopened_ledger, owner, scratch_root / "phase-b",
                                                  *branch_quota_r, *run_quota_r, *storage_quota_r,
                                                  "content-integration");
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider.bind_task_branch_tools(*merge_quota_r);
         check(bound.has_value(), "[4] bind_root_branch() succeeds after a simulated crash, with NO "
                                   "manual reclaim call anywhere in this test");

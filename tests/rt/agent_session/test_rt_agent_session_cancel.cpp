@@ -90,7 +90,7 @@ struct ProbeReply { int value = 0; };
 AE_JSON_SCHEMA(ProbeReply, value)
 
 struct ProbeTool : agentengine::Tool<ProbeTool, agentengine::Capabilities<>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "probe_tool";
     static constexpr std::string_view description = "Optionally cancels the run, then reports.";
     using Args = ProbeArgs;

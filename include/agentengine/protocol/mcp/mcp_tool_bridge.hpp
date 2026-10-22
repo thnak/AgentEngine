@@ -60,8 +60,10 @@ namespace agentengine::mcp {
     co_return json::Value::make_string(text_field->as_string());
 }
 
+// ADR-244 §2.2 (slice 4a): `approval` is the host's choice for every tool this server lists -- a remote server's
+// own annotations are model-adjacent data, never an approval decision (I3), so the engine has nothing to read.
 [[nodiscard]] inline task<std::vector<ToolDescriptor>> mcp_tools_as_descriptors_from(
-    std::vector<McpToolInfo> const& listed, std::shared_ptr<McpClient> const& client) {
+    std::vector<McpToolInfo> const& listed, std::shared_ptr<McpClient> const& client, approval_mode approval) {
     std::vector<ToolDescriptor> out;
     out.reserve(listed.size());
     for (McpToolInfo const& info : listed) {
@@ -69,6 +71,7 @@ namespace agentengine::mcp {
         descriptor.name = info.name;
         descriptor.description = info.description;
         descriptor.capability_ceiling = {cap::ToolCall{info.name}};
+        descriptor.approval = approval;
         descriptor.args_schema_json = json::dump(info.input_schema);
         descriptor.reply_schema_json = json::dump(info.output_schema);
 
@@ -85,10 +88,10 @@ namespace agentengine::mcp {
 // overload above so a caller that already has a listing (e.g. from its own caching/paging loop)
 // doesn't pay for a second `list_tools()` round trip.
 [[nodiscard]] inline task<result<std::vector<ToolDescriptor>>> mcp_tools_as_descriptors(
-    std::shared_ptr<McpClient> client) {
+    std::shared_ptr<McpClient> client, approval_mode approval) {
     auto listed = co_await client->list_tools();
     if (!listed) co_return std::unexpected(listed.error());
-    co_return co_await mcp_tools_as_descriptors_from(*listed, client);
+    co_return co_await mcp_tools_as_descriptors_from(*listed, client, approval);
 }
 
 }  // namespace agentengine::mcp

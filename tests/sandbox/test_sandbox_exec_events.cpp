@@ -130,7 +130,7 @@ AE_JSON_SCHEMA(ExecReply, ok)
 
 // Stands in for any tool whose invoke() reaches a sandbox: it brackets a (fictional) exec exactly the
 // way the real PDF-worker and mediated-shell producers do.
-struct SandboxingTool : agentengine::Tool<SandboxingTool> {
+struct SandboxingTool : agentengine::Tool<SandboxingTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "sandboxing_tool";
     static constexpr std::string_view description = "Brackets a sandbox exec during invoke().";
     using Args  = ExecArgs;
@@ -143,7 +143,7 @@ struct SandboxingTool : agentengine::Tool<SandboxingTool> {
 };
 
 // The positive control (S5): never touches the sink.
-struct SilentTool : agentengine::Tool<SilentTool> {
+struct SilentTool : agentengine::Tool<SilentTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "silent_tool";
     static constexpr std::string_view description = "Never opens a SandboxExecScope.";
     using Args  = ExecArgs;
@@ -154,7 +154,7 @@ struct SilentTool : agentengine::Tool<SilentTool> {
 // S7's fixture: Backgroundable AND brackets an exec, so the scope runs on background_task()'s own
 // detached std::thread.
 struct BackgroundableSandboxingTool
-    : agentengine::Tool<BackgroundableSandboxingTool, agentengine::Backgroundable> {
+    : agentengine::Tool<BackgroundableSandboxingTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_sandboxing_tool";
     static constexpr std::string_view description = "Backgroundable; also opens a SandboxExecScope.";
     using Args  = ExecArgs;
@@ -519,7 +519,7 @@ int main() {
         auto sandbox = SessionShellSandbox::create(scratch);
         check(sandbox.has_value(), "S9 setup: SessionShellSandbox::create succeeds");
         if (sandbox.has_value()) {
-            auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor()});
+            auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
             // The same real grants test_session_shell_wiring.cpp's own positive case uses -- run_shell
             // is genuinely capability-gated (I2), so an empty set makes this a policy refusal that
             // never reaches the producer at all, which would prove nothing about the events.

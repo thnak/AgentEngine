@@ -34,6 +34,7 @@ void check(bool cond, char const* what) {
 agentengine::ToolDescriptor make_descriptor(std::string name, std::string description,
                                              std::string args_schema_json) {
     agentengine::ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name = std::move(name);
     d.description = std::move(description);
     d.args_schema_json = std::move(args_schema_json);

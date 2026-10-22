@@ -314,6 +314,21 @@ agentengine_compile_fail_test(eval_run_trial_rejects_prewrapped_summarizer
 # ---- ADR-244 §2.1 / G-C1 compile-fail proof ---------------------------------------------------
 # `Bound<T>` has no default constructor: an aggregate that omits a `Bound` member does not compile, so
 # an omitted limit cannot mean "unbounded". The positive control states every member.
+# ADR-244 §2.2 (slice 4a): every Tool<> declares exactly one approval choice.
+agentengine_compile_fail_control(compile_fail_tool_approval_positive_control
+  SOURCE tool_approval_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_missing_approval
+  SOURCE tool_rejects_missing_approval.cpp
+  CONTROL compile_fail_tool_approval_positive_control
+  EXPECT "exactly one approval choice"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_two_approvals
+  SOURCE tool_rejects_two_approvals.cpp
+  CONTROL compile_fail_tool_approval_positive_control
+  EXPECT "exactly one approval choice"
+  LIBS agentengine::core)
+
 agentengine_compile_fail_control(compile_fail_bound_positive_control
   SOURCE bound_positive_control.cpp
   LIBS agentengine::core)

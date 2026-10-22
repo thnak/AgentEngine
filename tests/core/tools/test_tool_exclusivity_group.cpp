@@ -30,7 +30,7 @@ struct NoopReply { bool ok; };
 AE_JSON_SCHEMA(NoopReply, ok)
 
 // -- Baseline: declares neither Parallelizable nor ExclusivityGroup<...> ------------------------
-struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
+struct UndeclaredTool : agentengine::Tool<UndeclaredTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "undeclared";
     static constexpr std::string_view description = "Declares no concurrency policy at all.";
     using Args = NoopArgs;
@@ -39,7 +39,7 @@ struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
 };
 
 // -- Bare Parallelizable, unchanged from before this ADR -- must NOT populate exclusivity_group --
-struct ParallelizableOnlyTool : agentengine::Tool<ParallelizableOnlyTool, agentengine::Parallelizable> {
+struct ParallelizableOnlyTool : agentengine::Tool<ParallelizableOnlyTool, agentengine::Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "parallelizable_only";
     static constexpr std::string_view description = "Declares bare Parallelizable, no group.";
     using Args = NoopArgs;
@@ -50,7 +50,7 @@ struct ParallelizableOnlyTool : agentengine::Tool<ParallelizableOnlyTool, agente
 // -- Two INDEPENDENT tool types sharing one named group -- the real point of a fixed_string NTTP
 // over a type-tag: unrelated declaration sites correlate by NAME, not by C++ type identity. --------
 struct DbWriteTool
-    : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGroup<"db-write">> {
+    : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "db_write";
     static constexpr std::string_view description = "Writes a row; must not race another db-write.";
     using Args = NoopArgs;
@@ -58,7 +58,7 @@ struct DbWriteTool
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 struct DbCompactTool
-    : agentengine::Tool<DbCompactTool, agentengine::ExclusivityGroup<"db-write">> {
+    : agentengine::Tool<DbCompactTool, agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "db_compact";
     static constexpr std::string_view description = "Compacts storage; same exclusivity as db_write.";
     using Args = NoopArgs;
@@ -68,7 +68,7 @@ struct DbCompactTool
 
 // -- A distinct group name must not collide with "db-write" above -------------------------------
 struct CacheFlushTool
-    : agentengine::Tool<CacheFlushTool, agentengine::ExclusivityGroup<"cache-flush">> {
+    : agentengine::Tool<CacheFlushTool, agentengine::ExclusivityGroup<"cache-flush">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "cache_flush";
     static constexpr std::string_view description = "Flushes a cache; its own, separate group.";
     using Args = NoopArgs;

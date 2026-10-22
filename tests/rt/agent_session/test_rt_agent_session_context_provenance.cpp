@@ -100,6 +100,7 @@ struct SkillLikeProvider {
         c.messages.push_back(std::move(advertisement));
 
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name        = "skill_tool";
         td.description = "a tool this provider contributes";
         c.tools.push_back(std::move(td));

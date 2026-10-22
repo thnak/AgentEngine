@@ -10,6 +10,6 @@ using namespace agentengine;
 
 // must not compile: BadTool declares two exclusivity groups; which one would even apply is
 // ambiguous, and this project's convention is to reject outright rather than guess.
-struct BadTool : Tool<BadTool, ExclusivityGroup<"db-write">, ExclusivityGroup<"cache-flush">> {};
+struct BadTool : Tool<BadTool, ExclusivityGroup<"db-write">, ExclusivityGroup<"cache-flush">, Approval<approval_mode::never_require>> {};
 
 int main() { return 0; }

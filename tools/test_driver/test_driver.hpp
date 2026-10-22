@@ -141,7 +141,7 @@ struct TextReply { std::string text; };
 AE_JSON_SCHEMA(TextReply, text)
 
 // Returns its input. Never needs approval.
-struct EchoTool : Tool<EchoTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct EchoTool : Tool<EchoTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Returns its text argument unchanged.";
     using Args = TextArgs;
@@ -161,7 +161,7 @@ struct GatedEchoTool : Tool<GatedEchoTool, Capabilities<>, EffectClass<effect_cl
 };
 
 // Always fails, so a test can exercise the tool-error path.
-struct FailTool : Tool<FailTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct FailTool : Tool<FailTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fail";
     static constexpr std::string_view description = "Always fails with the given text as the error message.";
     using Args = TextArgs;
@@ -241,8 +241,14 @@ struct Fixture {
 // read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. ADR-237 §5.2: run_shell is
 // the owner-less stand-in -- its invoke fails loudly if called, and the live descriptor comes from the
 // session's sandbox.
+// ADR-244 slice 4a: run_shell is ApprovalChosenByHost, and the driver is its host. A run_shell call needs no
+// approval here -- the session's sandbox is the boundary, and the scenarios that exercise approval use gated_echo.
+inline constexpr approval_mode kRunShellApproval = approval_mode::never_require;
+
 [[nodiscard]] inline std::vector<ToolDescriptor> real_tool_standins() {
-    return {make_tool_descriptor(RunShellTool{}), make_tool_descriptor<tools::ReadSandboxFile>({})};
+    ToolDescriptor shell = make_tool_descriptor(RunShellTool{});
+    shell.approval = kRunShellApproval;
+    return {std::move(shell), make_tool_descriptor<tools::ReadSandboxFile>({})};
 }
 
 [[nodiscard]] inline CapabilitySet real_tool_grant() {

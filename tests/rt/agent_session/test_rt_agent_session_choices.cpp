@@ -138,7 +138,7 @@ AE_JSON_SCHEMA(GatedArgs, unused)
 struct GatedReply { bool unused = false; };
 AE_JSON_SCHEMA(GatedReply, unused)
 
-struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy.";
     using Args  = GatedArgs;

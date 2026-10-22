@@ -194,7 +194,7 @@ AE_JSON_SCHEMA(GetWeatherReply, temp_c)
 // Deliberately ORDINARY -- no Approval<> override at all, so this tool's default approval_mode never
 // requires a human. The whole point of HITL-4 is that this tool's own execution should NEVER be
 // gated on anything a human decides about SendMessageTool.
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Get the current weather for a city, in Celsius.";
     using Args = GetWeatherArgs;

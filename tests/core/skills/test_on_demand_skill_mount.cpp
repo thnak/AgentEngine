@@ -53,7 +53,7 @@ AE_JSON_SCHEMA(FakeToolReply, ok)
 
 // EffectClass<pure>, no Capabilities<> -- matches test_tool_table_scoping.cpp's own fixture shape, so
 // this test is entirely about table membership/mount state, not capability-binding mechanics.
-struct FakeTool : Tool<FakeTool, EffectClass<effect_class::pure>> {
+struct FakeTool : Tool<FakeTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fake_tool";
     static constexpr std::string_view description = "A tool a test skill names via allowed-tools.";
     using Args = FakeToolArgs;

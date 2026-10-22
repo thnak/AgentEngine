@@ -124,7 +124,7 @@ struct ProbeReply {
 };
 AE_JSON_SCHEMA(ProbeReply, ok)
 
-struct ProbeTool : Tool<ProbeTool, Backgroundable> {
+struct ProbeTool : Tool<ProbeTool, Backgroundable, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "probe";
     static constexpr std::string_view description = "Records the run identity it was called with.";
     using Args  = ProbeArgs;

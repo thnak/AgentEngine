@@ -46,7 +46,7 @@ struct EchoReply {
     std::string text;
 };
 AE_JSON_SCHEMA(EchoReply, text)
-struct EchoTool : ae::Tool<EchoTool> {
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echoes its input text back.";
     using Args  = EchoArgs;
@@ -62,7 +62,7 @@ struct FailReply {
     bool ok;
 };
 AE_JSON_SCHEMA(FailReply, ok)
-struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool> {
+struct AlwaysFailsTool : ae::Tool<AlwaysFailsTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "always_fails";
     static constexpr std::string_view description = "Always returns an execution error.";
     using Args  = FailArgs;

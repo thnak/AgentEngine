@@ -39,7 +39,7 @@ struct GatedReply {
 };
 AE_JSON_SCHEMA(GatedReply, unused)
 
-struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>> {
+struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;

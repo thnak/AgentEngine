@@ -199,7 +199,8 @@ int main() {
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     Session live;
     live.initialize("composed-containerd-live-session", real_owner_principal, ae_test::trusted_unbounded());

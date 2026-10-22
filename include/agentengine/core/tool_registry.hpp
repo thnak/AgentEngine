@@ -65,6 +65,14 @@ public:
                 error{failure_class::contract, reason, "tool_registry.duplicate_name"});
         }
 
+        // ADR-244 §2.2 (slice 4a): a tool without a stated approval mode is not registered, so a named table built
+        // from this registry cannot hold one either.
+        if (!descriptor.approval.has_value()) {
+            error missing = tool_approval_missing(name);
+            exclusions_[name] = missing.message;
+            return std::unexpected(std::move(missing));
+        }
+
         if (provenance != tool_provenance::native) {
             CapabilitySet const grant = CapabilitySet::grant_root(outer_grant);
             for (Capability const& requirement : descriptor.capability_ceiling) {

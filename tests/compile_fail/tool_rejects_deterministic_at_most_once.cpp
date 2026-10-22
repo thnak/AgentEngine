@@ -6,6 +6,6 @@
 
 using namespace agentengine;
 
-struct BadTool : Tool<BadTool, Deterministic, EffectClass<effect_class::at_most_once>> {};
+struct BadTool : Tool<BadTool, Deterministic, EffectClass<effect_class::at_most_once>, Approval<approval_mode::never_require>> {};
 
 int main() { return 0; }

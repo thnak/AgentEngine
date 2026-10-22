@@ -10,6 +10,6 @@ using namespace agentengine;
 
 // must not compile: BadTool claims both "unconditionally concurrency-safe" and "concurrency-safe
 // except within group db-write" about itself at once.
-struct BadTool : Tool<BadTool, Parallelizable, ExclusivityGroup<"db-write">> {};
+struct BadTool : Tool<BadTool, Parallelizable, ExclusivityGroup<"db-write">, Approval<approval_mode::never_require>> {};
 
 int main() { return 0; }

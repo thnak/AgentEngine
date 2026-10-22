@@ -466,7 +466,7 @@ int main() {
         auto engaged = parent.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
-                                                             tracker)));
+                                                             tracker, agentengine::approval_mode::never_require)));
         check(engaged.has_value(), "T5 setup: ComposedContextProvider::engage() succeeds");
 
         parent.emplace_chat_client().set_script({
@@ -505,7 +505,7 @@ int main() {
         auto engaged2 = unarmed.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
-                                                             tracker)));
+                                                             tracker, agentengine::approval_mode::never_require)));
         check(engaged2.has_value(), "T6 setup: engage() succeeds for the unarmed session too");
         unarmed.emplace_chat_client().set_script({{text_response("no-tool-needed"), Usage{1, 1, 0, 0, 0.0}}});
         auto unarmed_response = drive(unarmed.start_run(StartRun{text_message("hello")}));

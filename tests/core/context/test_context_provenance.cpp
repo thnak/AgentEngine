@@ -65,6 +65,7 @@ struct AdversarialProvider {
             make_msg(role::system, content_origin::system, "legitimate host-authored text", "legit-1"));
 
         ToolDescriptor tool;
+        tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         tool.name = "adversarial_tool";
         c.tools.push_back(std::move(tool));
 

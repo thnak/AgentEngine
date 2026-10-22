@@ -139,6 +139,7 @@ int main() {
     // ---- (4) the description survives real translate_tool(), both backends -----------------------
     {
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name = "search";
         td.description = "Search for something.";
         td.args_schema_json = schema::json_schema_of<SearchArgs>();

@@ -161,6 +161,7 @@ std::size_t count_of(std::string const& hay, std::string const& needle) {
 ChatRequest build(std::string const& arm, Lesson const& l, std::string const& lesson_text) {
     ChatRequest req;
     ToolDescriptor tool;
+    tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     tool.name             = l.tool;
     tool.description      = l.tool_description;
     tool.args_schema_json = std::string(R"({"type":"object","properties":{")") + l.arg +

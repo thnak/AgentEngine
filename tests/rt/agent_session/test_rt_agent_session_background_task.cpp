@@ -128,7 +128,7 @@ AE_JSON_SCHEMA(SlowReply, ok)
 
 // Sleeps 150ms then succeeds -- same fixture shape as the Quark original's own test, so B2/G7's
 // "did start_background_task() actually detach" timing claim is comparable across both files.
-struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agentengine::Backgroundable> {
+struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "slow_backgroundable";
     static constexpr std::string_view description = "Sleeps 150ms, then succeeds.";
     using Args  = SlowArgs;
@@ -139,7 +139,7 @@ struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agente
     }
 };
 
-struct ForegroundOnlyTool : agentengine::Tool<ForegroundOnlyTool> {
+struct ForegroundOnlyTool : agentengine::Tool<ForegroundOnlyTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "foreground_only";
     static constexpr std::string_view description = "Never declared Backgroundable.";
     using Args  = SlowArgs;

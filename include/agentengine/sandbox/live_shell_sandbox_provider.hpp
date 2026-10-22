@@ -104,7 +104,7 @@ AE_JSON_SCHEMA(ShellExecReply, ok, exit_code, output, output_bytes, timed_out, s
 template <class ProviderT>
 struct ShellExecTool
     : agentengine::Tool<ShellExecTool<ProviderT>, agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
-                        agentengine::CapturesSessionState> {
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "shell_exec";
     static constexpr std::string_view description =
         "Run a command in this session's own persistent, isolated shell. The working directory, exported "
@@ -186,6 +186,11 @@ public:
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
 
+    // ADR-244 §2.2 (slice 4a): whether a `shell_exec` call needs approval is the host's choice; the engine makes
+    // none. Unset, the contributed descriptor carries no mode and the session refuses the turn
+    // (`choice.missing.tool.approval`). Configuration, not binding: a re-bind keeps it and a copy carries it.
+    void set_tool_approval(agentengine::approval_mode mode) noexcept { tool_approval_ = mode; }
+
     // Fork/copy (§8.1): a child branch, the same quotas/limits/policy, the snapshots (data, same owner), and NO
     // live environment. A failed fork (BranchCost spent) leaves the copy unbound, never aliased.
     LiveShellSandboxProvider(LiveShellSandboxProvider const& other) { *this = other; }
@@ -193,6 +198,7 @@ public:
         if (this == &other) return *this;
         release_on_destroy();
         unbind();
+        tool_approval_ = other.tool_approval_;
         if (!other.runtime_.has_value()) return *this;
         auto child = agentengine::rt::block_on(other.runtime_->spawn_child_branch(
             *other.owner_, *other.branch_quota_, other.runtime_->staging_root().parent_path()));
@@ -231,8 +237,9 @@ public:
         agentengine::ContextContribution contribution;
         if (!runtime_.has_value()) co_return contribution;
         co_await check_lifetime(lifetime_event::context, std::nullopt, &ctx);
-        contribution.tools.push_back(
-            agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this}));
+        agentengine::ToolDescriptor d = agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this});
+        d.approval = tool_approval_;  // ShellExecTool is ApprovalChosenByHost
+        contribution.tools.push_back(std::move(d));
         co_return contribution;
     }
 
@@ -469,6 +476,7 @@ private:
         deadline_ = other.deadline_;
         lifetime_ = std::move(other.lifetime_);
         clock_ = std::move(other.clock_);
+        tool_approval_ = other.tool_approval_;
         runtime_ = std::move(other.runtime_);
         surface_ = std::move(other.surface_);
         sync_ = other.sync_;
@@ -495,6 +503,7 @@ private:
     std::chrono::milliseconds deadline_{0};
     Lifetime lifetime_{};
     LiveShellClock clock_;
+    std::optional<agentengine::approval_mode> tool_approval_;  // ADR-244 slice 4a: the host's, see set_tool_approval()
     std::optional<SandboxRuntime<Store>> runtime_;
     std::unique_ptr<Surface> surface_;
     LiveShellSync sync_;

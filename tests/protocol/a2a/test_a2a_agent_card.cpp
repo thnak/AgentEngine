@@ -30,7 +30,7 @@ AE_JSON_SCHEMA(EchoArgs, message)
 struct EchoReply { std::string echoed; };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : ae::Tool<EchoTool> {
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echoes its input back.";
     using Args  = EchoArgs;
@@ -43,7 +43,7 @@ AE_JSON_SCHEMA(SearchArgs, query)
 struct SearchReply { std::string result; };
 AE_JSON_SCHEMA(SearchReply, result)
 
-struct SearchTool : ae::Tool<SearchTool> {
+struct SearchTool : ae::Tool<SearchTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "search";
     static constexpr std::string_view description = "Searches for the given query.";
     using Args  = SearchArgs;

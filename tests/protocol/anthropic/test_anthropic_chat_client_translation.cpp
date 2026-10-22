@@ -187,6 +187,7 @@ int main() {
     // ---- E1: tool-schema shaping is flat -- input_schema, no "function" wrapper --------------------
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "Get the weather for a location";
         t.args_schema_json = R"({"type":"object","properties":{"location":{"type":"string"}},"required":["location"]})";
@@ -203,6 +204,7 @@ int main() {
     }
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "weather";
         t.args_schema_json = R"({"type":"object","properties":{}})";
@@ -682,6 +684,7 @@ int main() {
     // ---- E1: a complex/nested args_schema_json passes through translate_tool completely unchanged -----
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "book_flight";
         t.description = "Book a flight with multiple passengers and stops";
         t.args_schema_json = R"({"type":"object","properties":{)"
@@ -720,14 +723,17 @@ int main() {
         ChatRequest req;
         req.messages.push_back(text_message(role::user, "hi"));
         ToolDescriptor t1;
+        t1.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t1.name = "tool_one";
         t1.description = "first";
         t1.args_schema_json = R"({"type":"object","properties":{}})";
         ToolDescriptor t2;
+        t2.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t2.name = "tool_two";
         t2.description = "second";
         t2.args_schema_json = R"({"type":"object","properties":{}})";
         ToolDescriptor t3;
+        t3.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t3.name = "tool_three";
         t3.description = "third";
         t3.args_schema_json = R"({"type":"object","properties":{}})";
@@ -932,6 +938,7 @@ int main() {
         req.messages.push_back(text_message(role::system, "be helpful"));
         req.messages.push_back(text_message(role::user, "hi"));
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "weather";
         t.args_schema_json = R"({"type":"object","properties":{}})";
@@ -963,6 +970,7 @@ int main() {
     {
         // translate_tool directly, with a non-default TTL, mirroring the earlier E4-R1 single-tool case.
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "weather";
         t.args_schema_json = R"({"type":"object","properties":{}})";
@@ -1034,6 +1042,7 @@ int main() {
         req2.messages.push_back(text_message(role::system, "be helpful"));
         req2.messages.push_back(text_message(role::user, "hi"));
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "weather";
         t.args_schema_json = R"({"type":"object","properties":{}})";

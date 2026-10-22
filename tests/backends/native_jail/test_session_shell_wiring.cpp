@@ -57,7 +57,7 @@ int main() {
         return 1;
     }
 
-    auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor()});
+    auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
 
     // -- Positive case: granted capabilities, a real script that writes a file --------------------
     {

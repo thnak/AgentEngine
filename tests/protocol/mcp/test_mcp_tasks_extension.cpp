@@ -49,7 +49,7 @@ struct SlowReply {
 AE_JSON_SCHEMA(SlowReply, ok)
 
 // Sleeps long enough that a polling test can observe "still working" before it finishes.
-struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable> {
+struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "slow_backgroundable";
     static constexpr std::string_view description = "Sleeps, then succeeds.";
     using Args  = SlowArgs;
@@ -63,7 +63,7 @@ struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgrounda
 // Backgroundable but always fails -- proves §12's "failed status MUST NOT represent isError:true;
 // that is completed with error details in result" on the ASYNC path, symmetric with C2's own
 // synchronous proof of the same isError/JSON-RPC-error split.
-struct FailingBackgroundableTool : ae::Tool<FailingBackgroundableTool, ae::Backgroundable> {
+struct FailingBackgroundableTool : ae::Tool<FailingBackgroundableTool, ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "failing_backgroundable";
     static constexpr std::string_view description = "Sleeps briefly, then fails.";
     using Args  = SlowArgs;
@@ -76,7 +76,7 @@ struct FailingBackgroundableTool : ae::Tool<FailingBackgroundableTool, ae::Backg
 };
 
 // NOT Backgroundable -- proves the extension cannot force a synchronous-only tool into the background.
-struct ForegroundOnlyTool : ae::Tool<ForegroundOnlyTool> {
+struct ForegroundOnlyTool : ae::Tool<ForegroundOnlyTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "foreground_only";
     static constexpr std::string_view description = "Never declared Backgroundable.";
     using Args  = SlowArgs;

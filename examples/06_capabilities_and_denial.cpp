@@ -60,7 +60,7 @@ AE_JSON_SCHEMA(WriteReply, written)
 // capability check IS the gate for this tool, not a human approval step (see 05_human_approval.cpp
 // for a tool that needs the latter instead of, or in addition to, a capability).
 struct WriteNoteTool
-    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>> {
+    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "write_note";
     static constexpr std::string_view description = "Writes a note into the work mount.";
     using Args = WriteArgs;

@@ -25,6 +25,13 @@ enum class approval_mode { never_require, always_require, policy_driven };  // a
 template <approval_mode M>
 struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// decisions/ADR-244-required-choices-step-1b.md §2.2 (slice 4a): the tool's approval mode is the host's, stated
+// where the tool is wired (its provider's constructor), not in the declaration. `make_tool_descriptor` leaves
+// `ToolDescriptor::approval` unset for such a tool; the provider sets it, and a descriptor left unset is refused
+// (`choice.missing.tool.approval`). For engine-shipped tools whose risk depends on the deployment (a shell, a
+// spawn), where a fixed `Approval<M>` would be the engine choosing for the developer.
+struct ApprovalChosenByHost {};  // ae-naming-lint: allow ApprovalChosenByHost — ADR-244
+
 // §5's concurrency claim ("safe to run concurrently with other calls in a batch") -- a declared
 // tag only; M2 proves a single native tool call, never a parallel batch (006 §8 G4 is deferred,
 // see the M2 breakdown's "what's explicitly deferred" list), so this carries no pipeline logic yet.
@@ -122,6 +129,13 @@ template <approval_mode M>
 struct policy_approval<Approval<M>> {
     static std::optional<approval_mode> get() { return M; }
 };
+// ADR-244 slice 4a: how many approval declarations a policy is -- `Approval<M>` or `ApprovalChosenByHost`.
+template <class Policy>
+struct policy_declares_approval : std::false_type {};
+template <approval_mode M>
+struct policy_declares_approval<Approval<M>> : std::true_type {};
+template <>
+struct policy_declares_approval<ApprovalChosenByHost> : std::true_type {};
 
 template <class Policy>
 struct policy_effect_class {
@@ -263,6 +277,20 @@ struct Tool {
                   "ADR-158: a tool may declare at most one ExclusivityGroup<Name> -- see "
                   "decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §5");
 
+    // ADR-244 §2.2 (slice 4a, red-team D1): whether a call needs approval is a stated choice. A tool without one
+    // used to run unapproved (`never_require` by omission), whatever the agent declared.
+    static constexpr int kApprovalDeclarationCount = [] {
+        int count = 0;
+        ([&count] {
+            if (tool_detail::policy_declares_approval<Policies>::value) ++count;
+        }(), ...);
+        return count;
+    }();
+    static_assert(kApprovalDeclarationCount == 1,
+                  "ADR-244: a tool declares exactly one approval choice -- Approval<approval_mode::never_require>, "
+                  "Approval<approval_mode::always_require>, Approval<approval_mode::policy_driven>, or "
+                  "ApprovalChosenByHost (its provider states the mode)");
+
     // ADR-212 §3.3: `Deterministic` is only ever checked by running the call again, and only a
     // `pure` tool may be re-run freely on another node: `at_most_once` needs operator acknowledgement
     // (019 §6), and an `idempotent` re-run is only safe under the original idempotency key, which a
@@ -308,10 +336,10 @@ struct Tool {
         return result;
     }
 
-    // `never_require` if the tool declared no `Approval<...>` -- an explicit, read default, not a
-    // silent one: a tool author who wants approval gating must say so (§4's vocabulary is opt-in).
-    [[nodiscard]] static approval_mode declared_approval() {
-        approval_mode mode = approval_mode::never_require;
+    // ADR-244 slice 4a: the declared `Approval<M>`; nullopt for `ApprovalChosenByHost`, whose provider sets the
+    // descriptor's mode (the static_assert above guarantees exactly one of the two).
+    [[nodiscard]] static std::optional<approval_mode> declared_approval() {
+        std::optional<approval_mode> mode;
         ([&mode] {
             if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = *m;
         }(), ...);
@@ -319,8 +347,7 @@ struct Tool {
     }
 
     // Milestone 4 Phase F4: `at_most_once` if the tool declared no `EffectClass<...>` -- the
-    // conservative default, deliberately the OPPOSITE direction from `declared_approval()`'s own
-    // least-restrictive default. 019 §3's whole point is "never guess" about repeatability; an
+    // conservative default (approval, since ADR-244 slice 4a, has no default at all). 019 §3's whole point is "never guess" about repeatability; an
     // author who forgot to classify a tool must not have it silently treated as safe to re-run
     // (`pure`) -- undeclared defaults to the assumption that re-running it COULD do real-world
     // damage, until the author explicitly says otherwise.

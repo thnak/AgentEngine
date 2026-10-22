@@ -152,7 +152,10 @@ int main(int argc, char** argv) {
     MandatorySandboxProvider<DockerExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    // ADR-244 slice 4a: this demo's host choice -- neither shell tier asks a human (it installs no approval
+    // decider); the sandboxes are the boundary.
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     // ---- The session itself, via the already-shipped, already-tested §2b builder ---------------
     using Builder = quickstart::ComposedQuickstartSessionBuilder<

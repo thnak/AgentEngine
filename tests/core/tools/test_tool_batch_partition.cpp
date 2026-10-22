@@ -26,7 +26,7 @@ AE_JSON_SCHEMA(NoopArgs, ignored)
 struct NoopReply { bool ok; };
 AE_JSON_SCHEMA(NoopReply, ok)
 
-struct PlainTool : agentengine::Tool<PlainTool> {
+struct PlainTool : agentengine::Tool<PlainTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "plain";
     static constexpr std::string_view description = "Declares no concurrency policy at all.";
     using Args = NoopArgs;
@@ -34,7 +34,7 @@ struct PlainTool : agentengine::Tool<PlainTool> {
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-struct ParallelTool : agentengine::Tool<ParallelTool, agentengine::Parallelizable> {
+struct ParallelTool : agentengine::Tool<ParallelTool, agentengine::Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "parallel_a";
     static constexpr std::string_view description = "Bare Parallelizable.";
     using Args = NoopArgs;
@@ -42,7 +42,7 @@ struct ParallelTool : agentengine::Tool<ParallelTool, agentengine::Parallelizabl
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-struct ParallelToolB : agentengine::Tool<ParallelToolB, agentengine::Parallelizable> {
+struct ParallelToolB : agentengine::Tool<ParallelToolB, agentengine::Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "parallel_b";
     static constexpr std::string_view description = "Bare Parallelizable, second independent tool.";
     using Args = NoopArgs;
@@ -50,7 +50,7 @@ struct ParallelToolB : agentengine::Tool<ParallelToolB, agentengine::Paralleliza
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-struct DbWriteTool : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGroup<"db-write">> {
+struct DbWriteTool : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "db_write";
     static constexpr std::string_view description = "ExclusivityGroup<db-write>, member 1.";
     using Args = NoopArgs;
@@ -58,7 +58,7 @@ struct DbWriteTool : agentengine::Tool<DbWriteTool, agentengine::ExclusivityGrou
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-struct DbCompactTool : agentengine::Tool<DbCompactTool, agentengine::ExclusivityGroup<"db-write">> {
+struct DbCompactTool : agentengine::Tool<DbCompactTool, agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "db_compact";
     static constexpr std::string_view description = "ExclusivityGroup<db-write>, member 2.";
     using Args = NoopArgs;
@@ -66,7 +66,7 @@ struct DbCompactTool : agentengine::Tool<DbCompactTool, agentengine::Exclusivity
     agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
-struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::ExclusivityGroup<"cache-flush">> {
+struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::ExclusivityGroup<"cache-flush">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "cache_flush";
     static constexpr std::string_view description = "A DIFFERENT ExclusivityGroup, its own class.";
     using Args = NoopArgs;
@@ -83,7 +83,7 @@ struct CacheFlushTool : agentengine::Tool<CacheFlushTool, agentengine::Exclusivi
 // (what `make_tool_descriptor_with_invoke<T>()` used to set unconditionally), and the tool is
 // registered by value.
 struct StatefulTool : agentengine::Tool<StatefulTool, agentengine::Parallelizable,
-                                        agentengine::CapturesSessionState> {
+                                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "stateful";
     static constexpr std::string_view description = "Session-state-capturing AND (mistakenly) Parallelizable.";
     using Args = NoopArgs;

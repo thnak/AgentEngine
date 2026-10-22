@@ -484,6 +484,7 @@ int main() {
             check(static_cast<bool>(policy), ".policy() installs a real PolicyDecider");
             if (policy) {
                 ToolDescriptor td{};
+                td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
                 check(agentengine::test_support::run_task_sync<policy_decision>(policy(Principal{"p", ""}, td, false)) ==
                           policy_decision::auto_deny,
                       "the host-authored decision function is genuinely reachable, unmodified, through "

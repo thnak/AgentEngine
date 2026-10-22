@@ -165,6 +165,7 @@ int main() {
         auto root = drive(ledger.create_root_branch(owner, name));
         // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory); drive it here
         // so this lambda keeps its own synchronous `result<void>` shape for its call sites.
+        p.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         return agentengine::rt::block_on(p.bind_sandbox(
             ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
             LiveShellLimits{30min, 2h, 100},

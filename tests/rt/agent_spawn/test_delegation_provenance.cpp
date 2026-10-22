@@ -230,7 +230,8 @@ public:
         c.messages.insert(c.messages.begin(), mem);
         if (!spawn_) {
             spawn_ = std::make_unique<AgentSpawnToolProvider<InMemoryAppendLogStore>>(
-                *g_registry, *g_pump, Ref{"session:probe", ""}, "/caller", g_quota, *g_tracker);
+                *g_registry, *g_pump, Ref{"session:probe", ""}, "/caller", g_quota, *g_tracker,
+                approval_mode::never_require);
         }
         auto sp = co_await spawn_->on_context(sc, ctx);
         if (sp) {
@@ -496,7 +497,8 @@ public:
         c.messages.assign(sc.history.begin(), sc.history.end());
         if (!spawn_) {
             spawn_ = std::make_unique<AgentSpawnToolProvider<InMemoryAppendLogStore>>(
-                *g_registry, *g_pump, Ref{"session:probe", ""}, "/caller", g_quota, *g_tracker);
+                *g_registry, *g_pump, Ref{"session:probe", ""}, "/caller", g_quota, *g_tracker,
+                approval_mode::never_require);
         }
         auto sp = co_await spawn_->on_context(sc, ctx);
         if (sp) {
@@ -588,7 +590,7 @@ struct NoArgs2 {
 AE_JSON_SCHEMA(NoArgs2, unused)
 std::mutex g_par_mutex;
 std::vector<std::optional<std::uint64_t>> g_par_seen;
-struct ParProbeTool : Tool<ParProbeTool, Capabilities<>, EffectClass<effect_class::pure>, Parallelizable> {
+struct ParProbeTool : Tool<ParProbeTool, Capabilities<>, EffectClass<effect_class::pure>, Parallelizable, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "par_probe";
     static constexpr std::string_view description = "records its remaining budget";
     using Args = NoArgs2;
@@ -800,7 +802,7 @@ struct ParkToolReply {
     bool done = false;
 };
 AE_JSON_SCHEMA(ParkToolReply, done)
-struct ParkTool : Tool<ParkTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ParkTool : Tool<ParkTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "park_tool";
     static constexpr std::string_view description = "a tool whose run suspends";
     using Args = ParkToolArgs;

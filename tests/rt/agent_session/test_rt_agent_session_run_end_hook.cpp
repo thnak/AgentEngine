@@ -86,7 +86,7 @@ struct GatedTool : Tool<GatedTool, Capabilities<>, EffectClass<effect_class::pur
 
 // Cancels the session it is told about, from inside a tool body -- a cancel BETWEEN turns.
 rt::AgentSessionCore* g_cancel_target = nullptr;
-struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_tool";
     static constexpr std::string_view description = "Cancels the run.";
     using Args = GateArgs;

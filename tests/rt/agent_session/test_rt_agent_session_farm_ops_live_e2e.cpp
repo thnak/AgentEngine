@@ -297,7 +297,7 @@ struct FieldWeatherReply {
 AE_JSON_SCHEMA(FieldWeatherReply, forecast, advice)
 
 struct CheckFieldWeatherTool
-    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_field_weather";
     static constexpr std::string_view description =
         "Gets today's local weather forecast for a named field, for deciding whether to irrigate or "
@@ -321,7 +321,7 @@ struct PestPressureReply {
 AE_JSON_SCHEMA(PestPressureReply, level, recommendation)
 
 struct CheckPestPressureTool
-    : Tool<CheckPestPressureTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckPestPressureTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_pest_pressure";
     static constexpr std::string_view description =
         "Gets today's measured pest pressure for a named field, for deciding whether spraying is "
@@ -354,7 +354,7 @@ struct AnimalHealthReply {
 AE_JSON_SCHEMA(AnimalHealthReply, status, notes)
 
 struct CheckAnimalHealthTool
-    : Tool<CheckAnimalHealthTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckAnimalHealthTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_animal_health";
     static constexpr std::string_view description =
         "Gets today's health status for a named herd or flock, for deciding on its feeding plan.";
@@ -391,7 +391,7 @@ AE_JSON_SCHEMA(FeedRationReply, ration_kg_per_day, notes)
 }
 
 struct CalculateFeedRationTool
-    : Tool<CalculateFeedRationTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CalculateFeedRationTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "calculate_feed_ration";
     static constexpr std::string_view description =
         "Computes today's total feed ration (kg) for a named herd or flock, given its animal count "
@@ -426,7 +426,7 @@ AE_JSON_SCHEMA(MountSkillReply, ok, message)
 class FarmOpsProvider;
 
 struct MountSkillTool
-    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState> {
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -466,7 +466,7 @@ AE_JSON_SCHEMA(ScheduleTaskReply, ok, message)
     return tasks;
 }
 
-struct ScheduleTaskTool : Tool<ScheduleTaskTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ScheduleTaskTool : Tool<ScheduleTaskTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "schedule_task";
     static constexpr std::string_view description =
         "Schedules a farm task (irrigation run, vet visit, harvest, market trip, etc.) to happen in "
@@ -491,7 +491,7 @@ struct CancelTaskReply {
 };
 AE_JSON_SCHEMA(CancelTaskReply, ok, message)
 
-struct CancelTaskTool : Tool<CancelTaskTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTaskTool : Tool<CancelTaskTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_task";
     static constexpr std::string_view description =
         "Cancels a previously scheduled farm task by its description text.";
@@ -529,7 +529,7 @@ AE_JSON_SCHEMA(MarketPriceReply, commodity, price_per_kg)
 }
 
 struct GetMarketPriceTool
-    : Tool<GetMarketPriceTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<GetMarketPriceTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_market_price";
     static constexpr std::string_view description =
         "Gets today's local market price per kilogram for a named commodity (e.g. rice, chicken, "
@@ -557,7 +557,7 @@ struct SellOrderReply {
 AE_JSON_SCHEMA(SellOrderReply, ok, message, total_value)
 
 struct PlaceSellOrderTool
-    : Tool<PlaceSellOrderTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<PlaceSellOrderTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "place_sell_order";
     static constexpr std::string_view description =
         "Places a sell order for a quantity (kg) of a named commodity at today's market price.";
@@ -590,7 +590,7 @@ struct ExecuteCodeReply {
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
 struct ExecuteCodeTool
-    : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, CapturesSessionState> {
+    : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Runs a snippet of real Python code in a sandboxed interpreter and returns what it printed "

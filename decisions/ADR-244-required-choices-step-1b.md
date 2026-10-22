@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2 and 3 (3a, 3b, 3c) built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c) and 4a built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -58,7 +58,7 @@ default-constructible slot hold `std::optional<ResourceLimits>`, set at `create(
 | Session authority, token budget, turn cap | `initialize(id, principal, SessionChoices)`; `SessionChoices{authority, token_budget, max_turns}`; `set_max_turns` takes `Bound` | a compile error; a never-initialised or cleared session fails `start_run` with `choice.missing.session` |
 | Bridge and builder sessions | `AgentSessionOptions{session_id, principal, choices}` and the builders' `principal`, `secret_source`: required, no defaults (today `"s-agent"`, `"p-agent"`, `"p-quickstart"`, an `InMemorySecretStore`) | a compile error; `choice.missing.principal` / `.session_id` / `.secret_source` |
 | `AgentMetadata` turn cap, token budget, approval, concurrency, strictness | `std::optional<Bound<…>>`, `std::optional<approval_mode>`, …, `std::optional<SandboxProfileDescriptor>` | `validate_agent_metadata` (`agent_registry.hpp:559`), extended, fails `choice.missing.<field>`; the CRTP path `static_assert`s each tag |
-| Tool approval | every `Tool<>` declares `Approval<…>` (`static_assert`); `ToolDescriptor::approval` has no default | a compile error; a hand-built descriptor or a YAML tool without one fails registration, `choice.missing.tool.approval` |
+| Tool approval | every `Tool<>` declares exactly one of `Approval<…>` or `ApprovalChosenByHost` (`static_assert`); `ToolDescriptor::approval` is `std::optional`, no default | a compile error; a descriptor left unset (a host-chosen tool whose provider was given no mode, a hand-built one) fails `ToolRegistry::register_tool`, the session's per-turn table (the turn fails before the model is called) and `admit_call`/`background_task`, `choice.missing.tool.approval` |
 | Sandbox registry at bind | `register_agent`, `bind_agent_session`, `make_agent_session` take the registry by reference (no `nullptr` default) | a compile error; an empty registry fails `choice.missing.sandbox_backend` |
 | Spawn targets and requests, spawn quota, bounded reflection | `Bound` parameters and fields, no defaults | a compile error |
 | Workflow termination | `TerminationBound::max_rounds`, `deadline_ms`: `Bound`, required | a compile error; YAML `choice.missing.workflow.<field>`, and a present but invalid value (`-1`, non-numeric) is refused |
@@ -281,7 +281,18 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      call only (the bridge and both quickstart builders use it). Tests: `test_rt_spawn_authority` A1–A4,
      P1–P3, M1–M3, R1, K1, K2, B1, with planted mutants.
 4. **Agent metadata, tools, builders, spawn, workflows, reflection (G-C3, G-C8's null registry):**
-   `validate_agent_metadata`, tool approval, CRTP `static_assert`s and `BoundValue` tags, the registry
+   - **4a, tool approval (built):** `ApprovalChosenByHost` marks a tool whose mode the host states where it
+     wires the tool: `AgentSpawnToolProvider` and `SandboxToolProvider` take it as a constructor argument,
+     `SessionShellSandbox::tool_descriptor`, `mcp_tools_as_descriptors` and `wasm_tools_as_descriptors_from`
+     as a parameter, `MandatorySandboxProvider`/`LiveShellSandboxProvider` through `set_tool_approval` (their
+     descriptors stay unset, and refused, until it is called). `run_shell`, `run_command`, the four task-branch
+     tools, `shell_exec` and `agent_spawn` are host-chosen. The engine's own tools with no effect outside the
+     session (`search_tools`, `mount_tool`, `unmount_tool`, `quarantine_secret`, and `schedule_wakeup`, which is
+     offered only to a session holding its capability) state `Approval<never_require>`. Every other `Tool<>` in
+     the tree states its mode; the tests and examples that had none state `never_require`, the old default.
+     Tests: `test_tool_approval_choice` T1–T6, `compile_fail` `tool_rejects_missing_approval` and
+     `tool_rejects_two_approvals` (control `tool_approval_positive_control`), with planted mutants.
+   - **4b and 4c (to do):** `validate_agent_metadata`, CRTP `static_assert`s and `BoundValue` tags, the registry
    parameter, builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
    (`as_bounded_integer`, option tables, `fallback`, `capabilities` for `per_request`); 002 §3 and §9 Q3
    amended.
@@ -314,6 +325,11 @@ jail run); a test whose outcome changes is read by hand, never re-baselined.
   marker makes the whole tree non-writable to sandboxes. A deployment installs the worker in a directory of its
   own.
 - **The containerd surface's host bind is unchecked** until slice 6.
+- **The sandbox providers' approval is checked per turn, not at construction**: they are default-constructed
+  (`AgentSession::clear_in_process_state` needs that), so `set_tool_approval` is a setter and an unset provider
+  fails the first turn that offers its tools, with the tool named. The engine's five session-internal tools
+  carry the engine's stated `never_require`; a host that wants a human in front of `schedule_wakeup` does not
+  grant its capability (or overrides the descriptor in its provider).
 - **`extract_pdf_text` keeps its own backend instance** (and on Linux its cgroup root) until ADR-243 gives tools
   a backend seam; its scratch directory is shared across sessions.
 - **Server/session authority mismatch is caught per request**, not at construction (`RunStarter` hides the

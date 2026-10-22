@@ -91,6 +91,7 @@ struct FixedProvider {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         ToolDescriptor sensitive;
+        sensitive.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         sensitive.name        = "sensitive_tool";
         sensitive.description = "a tool the turn middleware redacts before the model ever sees it";
         c.tools.push_back(std::move(sensitive));

@@ -58,7 +58,7 @@ struct SearchReply {
 };
 AE_JSON_SCHEMA(SearchReply, hits, truncated)
 
-struct WebSearchTool : agentengine::Tool<WebSearchTool> {
+struct WebSearchTool : agentengine::Tool<WebSearchTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     [[maybe_unused]] static constexpr std::string_view name = "web_search";
     using Args = SearchArgs;
     using Reply = SearchReply;

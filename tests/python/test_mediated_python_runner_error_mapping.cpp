@@ -58,7 +58,7 @@ struct BlockedReply {
     std::string unused;
 };
 AE_JSON_SCHEMA(BlockedReply, unused)
-struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
+struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "blocked_net_tool";
     static constexpr std::string_view description = "Always fails as if net_egress_proxy blocked the address.";
     using Args = BlockedArgs;

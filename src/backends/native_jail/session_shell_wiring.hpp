@@ -95,7 +95,7 @@ class SessionShellSandbox;
 
 struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
                             EffectClass<effect_class::at_most_once>, EnforcesGrantedCaps,
-                            CapturesSessionState> {
+                            CapturesSessionState, ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_shell";
     static constexpr std::string_view description =
         "Run a shell command or script inside this session's own sandboxed working directory. "
@@ -145,8 +145,12 @@ public:
     // that holds THIS sandbox and dispatches to `run()` below. The tool's own `CapturesSessionState`
     // declaration correctly refuses to let this descriptor ever be `Backgroundable` -- this object is
     // exactly the kind of session-scoped state `tool_pipeline.hpp`'s own comment on that field
-    // describes.
-    [[nodiscard]] ToolDescriptor tool_descriptor() { return make_tool_descriptor(RunShellTool{*this}); }
+    // describes. ADR-244 slice 4a: `RunShellTool` is ApprovalChosenByHost, so the caller states the mode here.
+    [[nodiscard]] ToolDescriptor tool_descriptor(approval_mode approval) {
+        ToolDescriptor d = make_tool_descriptor(RunShellTool{*this});
+        d.approval = approval;
+        return d;
+    }
 
     // The same mediated filesystem view `run_shell` itself uses -- exposed so a caller can also
     // populate `EffectContext::sandbox_fs` (the Phase 0 seam, `core/effect_context.hpp`) with it

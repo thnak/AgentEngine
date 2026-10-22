@@ -111,7 +111,7 @@ AE_JSON_SCHEMA(ProgressReply, ok)
 
 // Reports progress exactly once, then succeeds. Not Backgroundable -- exercises the ordinary
 // invoke_tool() bracket at the three real rt/agent_session.hpp call sites.
-struct ProgressTool : agentengine::Tool<ProgressTool> {
+struct ProgressTool : agentengine::Tool<ProgressTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "progress_tool";
     static constexpr std::string_view description = "Reports progress once during invoke().";
     using Args  = ProgressArgs;
@@ -123,7 +123,7 @@ struct ProgressTool : agentengine::Tool<ProgressTool> {
 };
 
 // Never reports progress -- the positive control (P2).
-struct SilentTool : agentengine::Tool<SilentTool> {
+struct SilentTool : agentengine::Tool<SilentTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "silent_tool";
     static constexpr std::string_view description = "Never calls report_progress().";
     using Args  = ProgressArgs;
@@ -133,7 +133,7 @@ struct SilentTool : agentengine::Tool<SilentTool> {
 
 // Backgroundable AND reports progress from inside invoke() -- the tool D's own regression check
 // runs on tool_pipeline.hpp::background_task()'s genuinely detached std::thread.
-struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool, agentengine::Backgroundable> {
+struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_progress_tool";
     static constexpr std::string_view description = "Backgroundable; also calls report_progress().";
     using Args  = ProgressArgs;
@@ -174,7 +174,7 @@ public:
 // Backgroundable; reports (via its own Reply, reusing ProgressReply::ok) whether ctx.sandbox_fs was
 // null when its invoke() ran on background_task()'s detached thread -- E's own regression check.
 struct BackgroundableSandboxFsTool
-    : agentengine::Tool<BackgroundableSandboxFsTool, agentengine::Backgroundable> {
+    : agentengine::Tool<BackgroundableSandboxFsTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "bg_sandbox_fs_tool";
     static constexpr std::string_view description =
         "Backgroundable; reports whether ctx.sandbox_fs was null when invoke() ran.";

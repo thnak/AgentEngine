@@ -286,6 +286,7 @@ struct World {
         auto c = counters;
         // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory). This helper
         // keeps its own synchronous `result<void>` shape for its call sites and drives the task here.
+        p.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         return agentengine::rt::block_on(p.bind_sandbox(
             ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
             storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
@@ -316,7 +317,7 @@ struct NoArgs {
     int unused = 0;
 };
 AE_JSON_SCHEMA(NoArgs, unused)
-struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_tool";
     static constexpr std::string_view description = "Cancels the run.";
     using Args = NoArgs;
@@ -408,6 +409,17 @@ int main() {
         auto refused = w.bind(p, LiveShellLimits{0ms, 1h, 1});
         check(!refused.has_value() && refused.error().code == "live_shell.limits_required" && !p.is_bound(),
               "P1: a zero ceiling is refused and nothing is bound");
+    }
+
+    // ---- P1b (ADR-244 slice 4a): the contributed tool carries the mode the host set, and none until it is set
+    {
+        World w("p1b");
+        PerRunProvider p;
+        EffectContext ctx = ctx_for("owner");
+        auto bound = w.bind(p, LiveShellLimits{1s, 1h, 1});
+        auto tool  = shell_tool(p, ctx);
+        check(bound.has_value() && tool.has_value() && tool->approval == agentengine::approval_mode::never_require,
+              "P1b: shell_exec carries the mode the host set");
     }
 
     // ---- P2, P3

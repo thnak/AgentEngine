@@ -86,8 +86,9 @@ int main() {
 
     // -- Part 1: first on_context() lazily creates the sandbox, contributes run_shell, and --------
     //    populates ctx.sandbox_fs (ADR-096 §2 Design B's central claim) -------------------------
-    SandboxToolProvider provider(scratch_root);
+    SandboxToolProvider provider(scratch_root, agentengine::approval_mode::never_require);
     agentengine::ToolDescriptor first_descriptor;
+    first_descriptor.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     {
         agentengine::EffectContext ctx = make_ctx(agentengine::CapabilitySet::grant_root({}));
         std::vector<agentengine::Message> history;

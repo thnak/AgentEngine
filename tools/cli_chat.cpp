@@ -494,7 +494,7 @@ struct WordCountReply {
 };
 AE_JSON_SCHEMA(WordCountReply, count)
 
-struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
+struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "word_count";
     static constexpr std::string_view description =
         "Counts whitespace-separated words in a string. A trivial, capability-free demo tool -- "
@@ -579,7 +579,7 @@ print(r.count)
 template <class ProviderT>
 struct ExecuteCodeTool : Tool<ExecuteCodeTool<ProviderT>,
                               Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
-                              EffectClass<effect_class::at_most_once>, CapturesSessionState> {
+                              EffectClass<effect_class::at_most_once>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Execute Python code in this session's real interpreter and return what it printed. State "
@@ -623,7 +623,7 @@ AE_JSON_SCHEMA(MountSkillReply, ok, message)
 // `QuarantineSecretTool` uses: no external effect, but state that belongs to the session.
 template <class ProviderT>
 struct MountSkillTool
-    : Tool<MountSkillTool<ProviderT>, EffectClass<effect_class::pure>, CapturesSessionState> {
+    : Tool<MountSkillTool<ProviderT>, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -791,7 +791,8 @@ public:
         // (`--shell=mediated|both`), and like `run_command` a session-level tool, outside skill
         // scoping. Its descriptor's closure reaches this session's one `SessionShellSandbox`, whose
         // ExecState is what makes `cd` persist from call to call.
-        if (shell_) contribution.tools.push_back(shell_->tool_descriptor());
+        // ADR-244 slice 4a: the same base choice as run_command; `require_approval_for()` below can raise it.
+        if (shell_) contribution.tools.push_back(shell_->tool_descriptor(agentengine::approval_mode::never_require));
 
         // See `require_approval_for()`. Applied to the WHOLE contribution rather than to the
         // run_command half alone, so raising a CodeAct or skill-gated tool later needs no new code
@@ -1504,6 +1505,8 @@ template <class Inner>
         actor.history_provider().run_command_provider().bind_sandbox(
             cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
             *storage_quota);
+        // ADR-244 slice 4a: this CLI's base choice; `require_approval_for()` raises the tools a deployment names.
+        actor.history_provider().run_command_provider().set_tool_approval(agentengine::approval_mode::never_require);
     }
 
     // Issue #47: the mediated tier. Rooted at the SAME directory as `execute_code`'s "work" mount, and

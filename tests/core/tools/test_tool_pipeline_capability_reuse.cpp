@@ -45,7 +45,7 @@ bool g_live_during_call[2] = {false, false};
 int g_call_index = -1;
 
 struct StashingTool
-    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "stashing_tool";
     static constexpr std::string_view description = "Stashes a copy of its own bound capability.";
     using Args = StashArgs;

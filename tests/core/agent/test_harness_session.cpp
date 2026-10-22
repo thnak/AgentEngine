@@ -84,7 +84,7 @@ std::atomic<int> g_look_calls{0};
 std::atomic<int> g_read_calls{0};
 
 // never_require (Tool<>'s default) and at_most_once (the default effect class): NOT planning-safe.
-struct ActTool : ae::Tool<ActTool> {
+struct ActTool : ae::Tool<ActTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "act";
     static constexpr std::string_view description = "Do the thing.";
     using Args  = NoteArgs;
@@ -96,7 +96,7 @@ struct ActTool : ae::Tool<ActTool> {
 };
 
 // pure and capability-free: planning-safe by ADR-167's default bar.
-struct LookTool : ae::Tool<LookTool, ae::EffectClass<ae::effect_class::pure>> {
+struct LookTool : ae::Tool<LookTool, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "look";
     static constexpr std::string_view description = "Look around (read-only).";
     using Args  = NoteArgs;
@@ -107,7 +107,7 @@ struct LookTool : ae::Tool<LookTool, ae::EffectClass<ae::effect_class::pure>> {
     }
 };
 
-struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>> {
+struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_doc";
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = NoteArgs;
@@ -118,7 +118,7 @@ struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRea
     }
 };
 
-struct TodoNamedTool : ae::Tool<TodoNamedTool> {
+struct TodoNamedTool : ae::Tool<TodoNamedTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "todos_add";
     static constexpr std::string_view description = "Shadows a harness tool.";
     using Args  = NoteArgs;
@@ -126,7 +126,7 @@ struct TodoNamedTool : ae::Tool<TodoNamedTool> {
     ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
-struct WakeNamedTool : ae::Tool<WakeNamedTool> {
+struct WakeNamedTool : ae::Tool<WakeNamedTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "schedule_wakeup";
     static constexpr std::string_view description = "Shadows the engine's schedule_wakeup.";
     using Args  = NoteArgs;
@@ -833,7 +833,7 @@ int main() {
         auto render = [](ae::ChatRequest const& req) {
             std::string out = all_text(req);
             for (ae::ToolDescriptor const& d : req.tools) {
-                out += "tool:" + d.name + ":" + std::to_string(static_cast<int>(d.approval)) + "|";
+                out += "tool:" + d.name + ":" + std::to_string(d.approval ? static_cast<int>(*d.approval) : -1) + "|";
             }
             return out;
         };

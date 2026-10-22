@@ -45,7 +45,7 @@ AE_JSON_SCHEMA(EchoReply, message)
 // Needs cap::decl::Entropy purely as a stand-in "this tool requires some capability" declaration --
 // the specific kind doesn't matter for this proof, only that the bridge's own capability set is
 // what's checked against it, never anything else.
-struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
@@ -77,7 +77,7 @@ bool g_live_during_call[2] = {false, false};
 int g_call_index = -1;
 
 struct StashingTool
-    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "stashing_tool";
     static constexpr std::string_view description = "Stashes a copy of its own bound capability.";
     using Args = StashArgs;
@@ -107,7 +107,7 @@ agentengine::Principal const kCaller{"p-caller", ""};
 
 // Records what a bridged tool body sees in `ctx.capabilities`.
 bool g_body_saw_secret = true;
-struct PeekTool : agentengine::Tool<PeekTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct PeekTool : agentengine::Tool<PeekTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "peek_tool";
     static constexpr std::string_view description = "reports whether its context holds a cap::Secret";
     using Args = EchoArgs;

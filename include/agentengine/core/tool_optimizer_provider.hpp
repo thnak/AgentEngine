@@ -143,7 +143,7 @@ struct ToolOptimizerState {
 [[nodiscard]] result<UnmountToolReply> real_unmount_tool(ToolOptimizerState& state,
                                                          UnmountToolArgs args, EffectContext& ctx);
 
-struct SearchToolsTool : Tool<SearchToolsTool, EffectClass<effect_class::pure>, CapturesSessionState> {
+struct SearchToolsTool : Tool<SearchToolsTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "search_tools";
     static constexpr std::string_view description =
         "Search the full universe of tools available this run (including ones not currently "
@@ -162,7 +162,7 @@ private:
     std::shared_ptr<ToolOptimizerState> state_;
 };
 
-struct MountToolTool : Tool<MountToolTool, EffectClass<effect_class::pure>, CapturesSessionState> {
+struct MountToolTool : Tool<MountToolTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_tool";
     static constexpr std::string_view description =
         "Activate a tool you've seen from search_tools (or already know the name of), so it becomes "
@@ -181,7 +181,7 @@ private:
     std::shared_ptr<ToolOptimizerState> state_;
 };
 
-struct UnmountToolTool : Tool<UnmountToolTool, EffectClass<effect_class::pure>, CapturesSessionState> {
+struct UnmountToolTool : Tool<UnmountToolTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "unmount_tool";
     static constexpr std::string_view description =
         "Deactivate a currently-mounted tool, shrinking your own declared tool surface back down -- "

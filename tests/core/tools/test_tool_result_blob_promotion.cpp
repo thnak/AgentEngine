@@ -41,7 +41,7 @@ AE_JSON_SCHEMA(EchoPayloadReply, payload)
 
 struct EchoPayloadTool
     : agentengine::Tool<EchoPayloadTool, agentengine::Capabilities<>,
-                         agentengine::EffectClass<agentengine::effect_class::pure>> {
+                         agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_payload";
     static constexpr std::string_view description = "Echoes its payload back, unchanged.";
     using Args = EchoPayloadArgs;
@@ -55,7 +55,7 @@ struct EchoPayloadTool
 struct EchoPayloadBackgroundableTool
     : agentengine::Tool<EchoPayloadBackgroundableTool, agentengine::Capabilities<>,
                          agentengine::EffectClass<agentengine::effect_class::pure>,
-                         agentengine::Backgroundable> {
+                         agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_payload_bg";
     static constexpr std::string_view description = "Backgroundable twin of echo_payload.";
     using Args = EchoPayloadArgs;
