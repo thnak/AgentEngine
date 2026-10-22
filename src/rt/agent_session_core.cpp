@@ -1949,7 +1949,15 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         }
         for (;;) {
             emit_run_event(run_event_kind::model_call_started);
-            response = co_await run_model_call(request, effect_context_);
+            // ADR-244 §2.3 (slice 3c): with chat-client secrets set, the model call's context carries those and
+            // nothing else -- the run's authority stays out of the model call, and the secrets out of the run's.
+            if (chat_client_secrets_ != nullptr) {
+                EffectContext model_call_ctx = effect_context_;
+                model_call_ctx.capabilities  = chat_client_secrets_;
+                response = co_await run_model_call(request, model_call_ctx);
+            } else {
+                response = co_await run_model_call(request, effect_context_);
+            }
             emit_run_event(run_event_kind::model_call_finished);
             if (response || !should_retry_stream(response.error())) break;
             ++stream_retries_used_;

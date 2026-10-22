@@ -274,13 +274,18 @@ int main() {
         if (built.has_value()) {
             check(built->session().has_chat_client(),
                   "the built session has a ChatClientT emplaced (ModelCallGateway<OpenAIChatClient>)");
-            check(built->capabilities().size() == 2,
-                  "capabilities() holds BOTH the implicit cap::Secret from api_key_from_env() AND the "
-                  "explicit .grant() -- neither silently dropped, neither silently duplicated");
-            check(built->capabilities().contains(
+            // ADR-244 §2.3 (slice 3c): the key's cap::Secret is the chat client's, held for the model call only.
+            check(built->capabilities().size() == 1 &&
+                      built->capabilities().contains(Capability{cap::FsRead{"scratch", "", std::nullopt}}),
+                  "capabilities() holds exactly the explicit .grant() -- the run's authority, which tools read");
+            check(!built->capabilities().contains(
                       Capability{cap::Secret{"openai-api-key", std::chrono::seconds{0}}}),
-                  "the api_key_from_env()-derived cap::Secret grant is really present, matching the "
-                  "SecretRef name the constructed OpenAIChatClient will resolve against at call time");
+                  "the api_key_from_env()-derived cap::Secret is NOT in the run's authority (ADR-244 §2.3)");
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"openai-api-key", std::chrono::seconds{0}}}),
+                  "the cap::Secret is held as the chat client's own secret, matching the SecretRef name the "
+                  "constructed OpenAIChatClient will resolve against at call time");
 
             // ---- §3's own load-bearing claim: MOVE the Bundle, then dereference through the new
             // location. If Store/CapabilitySet were stack-owned (the design draft's original, WRONG
@@ -292,7 +297,7 @@ int main() {
             auto moved = std::move(*built);
             check(moved.session().has_chat_client(),
                   "after moving the Bundle, the session (heap-owned via unique_ptr) is still wired");
-            check(moved.capabilities().size() == 2,
+            check(moved.capabilities().size() == 1,
                   "after moving the Bundle, CapabilitySet (heap-owned, stable address) still reads back "
                   "correctly -- the session's internal CapabilitySet const* still points at live memory");
         }
@@ -312,14 +317,19 @@ int main() {
                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "correcting the credential name on a second call: build() still succeeds");
         if (built.has_value()) {
-            check(built->capabilities().size() == 1,
+            // ADR-244 §2.3 (slice 3c): the auto-derived grant is the chat client's secret, not the run's authority.
+            check(built->capabilities().size() == 0, "the run's authority holds no auto-derived cap::Secret at all");
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->size() == 1,
                   "exactly ONE auto-derived cap::Secret grant survives -- the first call's 'wrong-name' "
                   "grant was overwritten, not left behind as a phantom, unusable second entry");
-            check(built->capabilities().contains(
-                      Capability{cap::Secret{"right-name", std::chrono::seconds{0}}}),
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"right-name", std::chrono::seconds{0}}}),
                   "the surviving grant is for the SECOND (corrected) name");
-            check(!built->capabilities().contains(
-                      Capability{cap::Secret{"wrong-name", std::chrono::seconds{0}}}),
+            check(built->session().chat_client_secrets() != nullptr &&
+                      !built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"wrong-name", std::chrono::seconds{0}}}),
                   "the FIRST (wrong) name's grant is genuinely gone, not merely shadowed");
         }
     }

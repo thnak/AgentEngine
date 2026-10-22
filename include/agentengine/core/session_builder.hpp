@@ -496,6 +496,20 @@ public:
             session_->start_run(agentengine::rt::StartRun{detail::user_message(std::move(text))}));
     }
 
+    // ADR-244 §2.3 (slice 3c): `ask()`/`run()` on a `per_request` session, which admits a run only with the
+    // caller's authority -- carried here as given, checked by the session (expiry, ceiling), never filled in.
+    [[nodiscard]] agentengine::result<std::string> ask(std::string text, agentengine::rt::RequestAuthority authority) {
+        auto r = run(std::move(text), std::move(authority));
+        if (!r) return std::unexpected(r.error());
+        return agentengine::text_of(r->message);
+    }
+    [[nodiscard]] agentengine::result<agentengine::rt::AgentResponse> run(std::string text,
+                                                                          agentengine::rt::RequestAuthority authority) {
+        std::lock_guard<std::mutex> guard(*ask_mutex_);
+        return agentengine::rt::block_on(session_->start_run(
+            agentengine::rt::StartRun{detail::user_message(std::move(text)), std::nullopt, std::move(authority)}));
+    }
+
     // decisions/archive/ADR-234 (issue #60): drive any session coroutine `fn(session)` under the SAME `ask_mutex_`
     // serialization and the same `rt::block_on()` drive as `ask()`/`run()`. The harness (core/harness.hpp)
     // uses it for its bounded-reflection run (several `start_run()`s that must not interleave with another
@@ -1095,10 +1109,10 @@ public:
 
         // primary_secret_grant_ is guaranteed set here: it and api_key_ref_ are only ever written
         // together, in api_key(), and the has_value() check above already confirmed api_key_ref_.
-        std::vector<agentengine::Capability> all_grants = grants_;
-        all_grants.push_back(*primary_secret_grant_);
+        // ADR-244 §2.3 (slice 3c): the API key's `cap::Secret` is the chat client's, held for the model call only
+        // (`set_chat_client_secrets` below) -- never in this set, which tools, children and the summary read.
         auto capabilities = std::make_unique<agentengine::CapabilitySet>(
-            agentengine::CapabilitySet::grant_root(std::move(all_grants)));
+            agentengine::CapabilitySet::grant_root(grants_));
 
         Primary primary = detail::make_primary<P, Store>(host_, port_, model_, *api_key_ref_, caps_, *store_,
                                                          path_prefix_, runtime_);
@@ -1110,6 +1124,9 @@ public:
         // BreakerConfig) -- never a move of an already-built ChatClientT.
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
+        if (auto set = session->set_chat_client_secrets({*primary_secret_grant_}); !set) {
+            return std::unexpected(set.error());
+        }
         // Item 6 (docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16) -- see this file's
         // own top comment (2026-08-23 UPDATE) for the full account.
         session->set_static_instructions(agentengine::trust::push_side_summary(*capabilities));
@@ -1290,10 +1307,10 @@ public:
                 "quickstart_builder.no_providers"});
         }
 
-        std::vector<agentengine::Capability> all_grants = grants_;
-        all_grants.push_back(*primary_secret_grant_);
+        // ADR-244 §2.3 (slice 3c): the API key's `cap::Secret` is the chat client's, held for the model call only
+        // (`set_chat_client_secrets` below) -- never in this set, which tools, children and the summary read.
         auto capabilities = std::make_unique<agentengine::CapabilitySet>(
-            agentengine::CapabilitySet::grant_root(std::move(all_grants)));
+            agentengine::CapabilitySet::grant_root(grants_));
 
         Primary primary = detail::make_primary<P, Store>(host_, port_, model_, *api_key_ref_, caps_, *store_,
                                                          path_prefix_, runtime_);
@@ -1302,6 +1319,9 @@ public:
         session->initialize(session_id_, principal_, *choices_);
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
+        if (auto set = session->set_chat_client_secrets({*primary_secret_grant_}); !set) {
+            return std::unexpected(set.error());
+        }
         // Item 6 (docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16) -- see this file's
         // own top comment (2026-08-23 UPDATE) for the full account.
         session->set_static_instructions(agentengine::trust::push_side_summary(*capabilities));

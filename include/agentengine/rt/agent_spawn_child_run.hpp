@@ -1,5 +1,6 @@
 #pragma once
-// (Also implements ADR-193: the child applies only its target's named settings; events and whole-run usage go back.)
+// (Also implements ADR-193: the child applies only its target's named settings; events and whole-run usage go back;
+// and ADR-244 §2.3 slice 3c: the child runs under its caller's authority source, with stated bounds.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 2 / §4.2 (the nested-agent-run
 // invocation mechanism) for rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` --
 // OpenQuestions.md OQ-14, named the project's own "sharpest case". THIS FILE IS ITEM 2 ONLY:
@@ -38,6 +39,7 @@
 // the identical pattern before ADR-237 §5.1 (Phase G) made that body a coroutine -- actually true
 // here, not merely assumed.
 
+#include <array>
 #include <atomic>
 #include <exception>
 #include <functional>
@@ -45,13 +47,16 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"
+#include "agentengine/core/session_choices.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // ApprovalDecider, PolicyDecider (GitHub issue #30 / ADR-151)
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/delegated_run_guard.hpp"
@@ -76,15 +81,19 @@ struct ChildSpawnRequest {
                                                 // re-derived or widened.
     agentengine::Principal principal;          // the CALLER's own principal -- re-derived below via
                                                 // trust::derive_on_behalf_of(), never reused directly.
-    std::optional<std::uint64_t> token_budget;  // threaded through as-is; item 1's
-                                                 // SpawnTargetDescriptor::child_token_budget (§9
-                                                 // I2-3) is what picks a real, never-unbounded value
-                                                 // -- this function does not default it for the
-                                                 // caller.
-    std::uint64_t max_turns = 25;               // finite by default (§4.2's own reasoning: an
-                                                 // unbounded child turn loop is a real availability
-                                                 // hazard, not merely a convenience gap -- matches
-                                                 // QuickstartSessionBuilder's own §7 red-team finding).
+    // ADR-244 §2.3 (slice 3c): the child's token budget and turn cap, stated by the caller -- nullopt is refused
+    // (`choice.missing.spawn.token_budget` / `.max_turns`), never defaulted here. `perform_agent_spawn` states
+    // `tighter(target, caller's remaining budget)` and the target's declared turn cap.
+    std::optional<agentengine::Bound<std::uint64_t>> token_budget{};
+    std::optional<agentengine::Bound<std::uint64_t>> max_turns{};
+    // ADR-244 §2.3 (slice 3c): the caller's authority source (`EffectContext::authority_source`) and, under
+    // `per_request`, the expiry its run was admitted with (`EffectContext::authority_expires_at`). The child runs
+    // under the same source: `per_request` makes it a per_request session whose one run carries the derived
+    // principal, `capabilities` and this expiry, checked at the child's admission; `single_trusted_caller` makes
+    // it hold `capabilities` itself. nullopt is refused (`choice.missing.spawn.authority_source`): a child never
+    // picks a source of its own. Host-set only (I3): `perform_agent_spawn` copies both from its own context.
+    std::optional<agentengine::authority_mode> authority_source{};
+    std::optional<agentengine::Expiry>         authority_expires_at{};
     // §4.6 (item 6, OQ-16): the caller (perform_agent_spawn(), rt/agent_spawn.hpp) is expected to set
     // this to `trust::push_side_summary(capabilities)` above -- an accurate, freshly-computed manifest
     // of the CHILD's own granted surface, never a copy of the parent's. Empty by default (this file
@@ -163,21 +172,41 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
         co_return std::unexpected(child_principal.error());
     }
 
+    // ADR-244 §2.3 (slice 3c): every choice the child runs under is stated by its caller; nothing is defaulted.
+    if (!req.authority_source.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.authority_source", std::array<std::string_view, 1>{
+                                          "the caller's EffectContext::authority_source (set by the session)"}));
+    }
+    if (!req.token_budget.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.token_budget",
+            std::array<std::string_view, 2>{"Bound<std::uint64_t>::at_most(n)", "Bound<std::uint64_t>::unbounded()"}));
+    }
+    if (!req.max_turns.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.max_turns",
+            std::array<std::string_view, 2>{"Bound<std::uint64_t>::at_most(n)", "Bound<std::uint64_t>::unbounded()"}));
+    }
+    bool const per_request = *req.authority_source == agentengine::authority_mode::per_request;
+    if (per_request && !req.authority_expires_at.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.authority_expires_at",
+            std::array<std::string_view, 1>{"the caller's EffectContext::authority_expires_at (per_request)"}));
+    }
+
     agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT> child;
-    // ADR-244 slice 3a: today's behaviour, stated. The child holds `req.capabilities` itself, which is what
-    // `single_trusted_caller` means, and `req`'s own fields keep their meaning (an unset budget is none). Slice 3c
-    // replaces this: the child inherits the parent's source from `ctx.authority_source`, and its budget and turn
-    // cap become `tighter(target, ...)` (§2.3).
+    // Under `per_request` the child's ceiling is exactly the set it was minted, and its one run carries that set as
+    // its authority (below); it holds nothing of its own. Under `single_trusted_caller` it holds the set itself.
     child.initialize(child_id, *child_principal,
                      agentengine::SessionChoices{
-                         agentengine::AuthoritySource::single_trusted_caller(),
-                         req.token_budget ? agentengine::Bound<std::uint64_t>::at_most(*req.token_budget)
-                                          : agentengine::Bound<std::uint64_t>::unbounded(),
-                         agentengine::Bound<std::uint64_t>::at_most(req.max_turns)});
+                         per_request ? agentengine::AuthoritySource::per_request(req.capabilities)
+                                     : agentengine::AuthoritySource::single_trusted_caller(),
+                         *req.token_budget, *req.max_turns});
     // ADR-241 §8.4: before start_run() -- the child's runs are charged to the caller's ROOT run, not their own.
     child.set_inherited_root_run_id(req.root_run_id);
     configure_chat_client(child.emplace_chat_client());
-    child.set_capabilities(&req.capabilities);
+    if (!per_request) child.set_capabilities(&req.capabilities);
     // §4.6 (item 6, OQ-16) -- see `ChildSpawnRequest::instructions`'s own comment above. No-op when
     // the caller left it empty (matches `set_static_instructions()`'s own "no-op until set" default).
     if (!req.instructions.empty()) {
@@ -257,7 +286,16 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     std::optional<agentengine::result<agentengine::rt::AgentResponse>> run_result;
     {
         delegated_run_detail::ChargeOnUnwind guard{charge};
-        run_result.emplace(co_await child.start_run(agentengine::rt::StartRun{std::move(req.input)}));
+        agentengine::rt::StartRun run{std::move(req.input)};
+        if (per_request) {
+            // ADR-244 §2.3: the derived principal, the minted set (borrowed from this frame, which outlives the run)
+            // and the caller's expiry -- never the caller's whole grant. The child's admission checks the expiry.
+            run.authority = agentengine::rt::RequestAuthority{
+                *child_principal,
+                std::shared_ptr<agentengine::CapabilitySet const>(std::shared_ptr<void>{}, &req.capabilities),
+                *req.authority_expires_at};
+        }
+        run_result.emplace(co_await child.start_run(std::move(run)));
         guard.completed();  // the normal path charges below; a throw or a dropped (suspended) frame charges here
     }
     agentengine::result<agentengine::rt::AgentResponse>& response = *run_result;

@@ -371,9 +371,9 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
         }
     }
 
-    // I2: the caller's authority, narrowed to the agent's declaration -- plus the ChatClient's own secrets.
+    // I2: the caller's authority, narrowed to the agent's declaration. The ChatClient's own secrets are held apart
+    // (ADR-244 §2.3, slice 3c): the model call's context only, never this set, which tools and children read.
     std::vector<Capability> held = narrow_to_ceiling(opts.grants, meta.capability_ceiling);
-    held.insert(held.end(), opts.chat_client_grants.begin(), opts.chat_client_grants.end());
     auto capabilities = std::make_unique<CapabilitySet>(CapabilitySet::grant_root(std::move(held)));
 
     ChatClientCapabilities const client_caps = client.capabilities();
@@ -382,6 +382,11 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     session->initialize(opts.session_id, opts.principal, std::move(choices));
     session->emplace_chat_client(std::move(client));
     session->set_capabilities(capabilities.get());
+    if (!opts.chat_client_grants.empty()) {
+        if (auto set = session->set_chat_client_secrets(opts.chat_client_grants); !set) {
+            return std::unexpected(set.error());
+        }
+    }
 
     std::vector<ToolDescriptor> declared = declared_descriptors(meta);
     if (filter) filter(declared);

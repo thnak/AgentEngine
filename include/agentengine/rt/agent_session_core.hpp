@@ -561,6 +561,29 @@ public:
         capabilities_ = std::shared_ptr<agentengine::CapabilitySet const>(
             capabilities, [](agentengine::CapabilitySet const*) noexcept {});
     }
+    // ADR-244 §2.3 (slice 3c): the bound chat client's own credentials (a `cap::Secret` for its API key) -- held by
+    // the session for the model call only. Once set, the model call's context carries exactly this set, and the
+    // run's authority (the session's own or a request's), which tools and spawned children read, never holds
+    // them. Only `cap::Secret` is accepted (`session.chat_client_grant_not_secret`). Unset, the model call sees
+    // the run's authority, as before. Configuration-time, like `set_capabilities()`; not copied by `fork()`.
+    [[nodiscard]] agentengine::result<void> set_chat_client_secrets(std::vector<agentengine::Capability> secrets) {
+        for (agentengine::Capability const& c : secrets) {
+            if (agentengine::capability_kind_of(c) != agentengine::capability_kind::secret) {
+                return std::unexpected(agentengine::error{
+                    agentengine::failure_class::policy,
+                    "set_chat_client_secrets() takes cap::Secret only (the chat client's own credentials); every "
+                    "other capability is the run's authority",
+                    "session.chat_client_grant_not_secret"});
+            }
+        }
+        chat_client_secrets_ = std::make_shared<agentengine::CapabilitySet const>(
+            agentengine::CapabilitySet::grant_root(std::move(secrets)));
+        return {};
+    }
+    [[nodiscard]] agentengine::CapabilitySet const* chat_client_secrets() const noexcept {
+        return chat_client_secrets_.get();
+    }
+
     [[nodiscard]] agentengine::CapabilitySet const* capabilities() const noexcept {
         return capabilities_.get();
     }
@@ -1417,6 +1440,8 @@ private:
     // deleter) construction never deletes the pointee -- ownership of the real CapabilitySet stays
     // with whoever calls set_capabilities(), unchanged from before this type change.
     std::shared_ptr<CapabilitySet const>                capabilities_;
+    // ADR-244 §2.3 (slice 3c): the chat client's own secrets, the model call's context only (`set_chat_client_secrets`).
+    std::shared_ptr<CapabilitySet const>                chat_client_secrets_;
     // ADR-116 follow-on: this object's own permanent, process-wide-unique identity -- see
     // `agent_session_detail::next_session_identity()`'s own comment for why this exists (a real,
     // empirically-confirmed ABA hole from using this session's raw address as `ComposedContextProvider

@@ -40,12 +40,13 @@
 // bound).
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
-#include "agentengine/rt/agent_session.hpp"  // StartRun, AgentResponse
+#include "agentengine/rt/agent_session.hpp"  // StartRun, AgentResponse, RequestAuthority
 
 namespace agentengine::rt {
 
@@ -99,29 +100,12 @@ namespace bounded_reflection_detail {
     return m;
 }
 
-}  // namespace bounded_reflection_detail
-
-// `SessionT` is any type exposing `task<result<AgentResponse>> start_run(StartRun)` (deduced, not
-// concept-constrained -- matches this file's one real caller shape, `AgentSession<...>`; a
-// dedicated concept is not worth inventing for a single template parameter with no second
-// conformer). `Evaluator` is any callable `task<result<EvaluationVerdict>>(AgentResponse const&)`.
-// `max_iterations` must be >= 1; the FIRST `start_run()` always happens regardless of any bound --
-// this is "keep retrying if unsatisfied, up to N", not "call N times unconditionally".
-//
-// `max_total_tokens` (independent review, 2026-09-03; default 0 == no additional bound, so every
-// existing call site's behavior is unchanged): an OPT-IN hard ceiling on the cumulative
-// input+output tokens spent across every iteration this call makes. `max_iterations` alone bounds
-// call count, never cost -- a host that sets no per-run `TokenBudget` and no `max_total_tokens` here
-// can still see `max_iterations` calls at whatever cost each one happens to incur, with nothing in
-// this file throttling it. Checked AFTER each iteration completes (so the iteration that crosses the
-// ceiling is the one reported, never silently discarded) -- exceeding it aborts the loop immediately
-// with a real, distinguishable error, the same "never laundered into a different outcome" posture
-// this file already applies to evaluator failures.
+// ADR-244 §2.3 (slice 3c): `authority` is carried on every iteration's `StartRun` -- a `per_request` session admits
+// each one against it (its expiry included), a `single_trusted_caller` session takes nullopt.
 template <class SessionT, class Evaluator>
-task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, Message initial_input,
-                                                              std::uint32_t max_iterations,
-                                                              Evaluator evaluator,
-                                                              std::uint64_t max_total_tokens = 0) {
+task<result<ReflectionOutcome>> run_reflection(SessionT& session, std::optional<RequestAuthority> authority,
+                                               Message initial_input, std::uint32_t max_iterations,
+                                               Evaluator evaluator, std::uint64_t max_total_tokens) {
     if (max_iterations == 0) {
         co_return std::unexpected(error{failure_class::contract,
                                           "run_with_bounded_reflection: max_iterations must be >= 1",
@@ -129,7 +113,7 @@ task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, M
     }
 
     std::uint64_t total_tokens_used = 0;
-    StartRun request{std::move(initial_input)};
+    StartRun request{std::move(initial_input), std::nullopt, authority};
     for (std::uint32_t iteration = 1; iteration <= max_iterations; ++iteration) {
         result<AgentResponse> response = co_await session.start_run(std::move(request));
         if (!response) co_return std::unexpected(response.error());
@@ -154,12 +138,50 @@ task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, M
                                           total_tokens_used};
         }
 
-        request = StartRun{bounded_reflection_detail::make_feedback_message(std::move(verdict->feedback))};
+        request = StartRun{make_feedback_message(std::move(verdict->feedback)), std::nullopt, authority};
     }
 
     // Unreachable: the loop above co_returns on or before iteration == max_iterations every time.
     co_return std::unexpected(
         error{failure_class::fatal, "unreachable", "bounded_reflection.unreachable"});
+}
+
+}  // namespace bounded_reflection_detail
+
+// `SessionT` is any type exposing `task<result<AgentResponse>> start_run(StartRun)` (deduced, not
+// concept-constrained -- matches this file's one real caller shape, `AgentSession<...>`; a
+// dedicated concept is not worth inventing for a single template parameter with no second
+// conformer). `Evaluator` is any callable `task<result<EvaluationVerdict>>(AgentResponse const&)`.
+// `max_iterations` must be >= 1; the FIRST `start_run()` always happens regardless of any bound --
+// this is "keep retrying if unsatisfied, up to N", not "call N times unconditionally".
+//
+// `max_total_tokens` (independent review, 2026-09-03; default 0 == no additional bound, so every
+// existing call site's behavior is unchanged): an OPT-IN hard ceiling on the cumulative
+// input+output tokens spent across every iteration this call makes. `max_iterations` alone bounds
+// call count, never cost -- a host that sets no per-run `TokenBudget` and no `max_total_tokens` here
+// can still see `max_iterations` calls at whatever cost each one happens to incur, with nothing in
+// this file throttling it. Checked AFTER each iteration completes (so the iteration that crosses the
+// ceiling is the one reported, never silently discarded) -- exceeding it aborts the loop immediately
+// with a real, distinguishable error, the same "never laundered into a different outcome" posture
+// this file already applies to evaluator failures.
+template <class SessionT, class Evaluator>
+task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, Message initial_input,
+                                                              std::uint32_t max_iterations,
+                                                              Evaluator evaluator,
+                                                              std::uint64_t max_total_tokens = 0) {
+    return bounded_reflection_detail::run_reflection(session, std::nullopt, std::move(initial_input), max_iterations,
+                                                     std::move(evaluator), max_total_tokens);
+}
+
+// ADR-244 §2.3 (slice 3c): the same loop on a `per_request` session, each iteration carrying `authority`.
+template <class SessionT, class Evaluator>
+task<result<ReflectionOutcome>> run_with_bounded_reflection(SessionT& session, RequestAuthority authority,
+                                                              Message initial_input, std::uint32_t max_iterations,
+                                                              Evaluator evaluator,
+                                                              std::uint64_t max_total_tokens = 0) {
+    return bounded_reflection_detail::run_reflection(session, std::optional<RequestAuthority>(std::move(authority)),
+                                                     std::move(initial_input), max_iterations, std::move(evaluator),
+                                                     max_total_tokens);
 }
 
 }  // namespace agentengine::rt

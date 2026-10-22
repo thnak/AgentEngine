@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3a and 3b built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2 and 3 (3a, 3b, 3c) built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -270,8 +270,16 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      declared turn cap or budget of 0 refused in `validate_agent_metadata` and the YAML compiler (Y8 flipped).
      Tests: `test_rt_authority_surfaces` S1–S7, `test_mcp_capability_grant` claims 1, 2 and 8, Y8, with
      planted mutants.
-   - **3c:** both spawn paths inherit the parent's authority source, children `tighter()`, the reflection and
-     ask authority parameter, provider secrets invisible to tools.
+   - **3c, spawn, reflection, ask, provider secrets (built):** `ChildSpawnRequest` states its source, expiry,
+     budget and turn cap (nullopt refused, `choice.missing.spawn.*`); `perform_agent_spawn` copies the
+     caller's source and expiry, refuses a context with none and an expired caller before anything is spent
+     (`agent_spawn.authority_expired`), and states `tighter(target budget, declared budget, remaining)` and the
+     declared turn cap; `multi_agent::spawn` re-initialises the factory's child under the caller's source,
+     tightens its budget, refuses a carried authority (`multi_agent.request_authority_unexpected`) and charges
+     the caller; `run_with_bounded_reflection`, `Bundle::ask`/`run` and the harness take a `RequestAuthority`
+     overload; `AgentSessionCore::set_chat_client_secrets` holds the chat client's `cap::Secret`s for the model
+     call only (the bridge and both quickstart builders use it). Tests: `test_rt_spawn_authority` A1–A4,
+     P1–P3, M1–M3, R1, K1, K2, B1, with planted mutants.
 4. **Agent metadata, tools, builders, spawn, workflows, reflection (G-C3, G-C8's null registry):**
    `validate_agent_metadata`, tool approval, CRTP `static_assert`s and `BoundValue` tags, the registry
    parameter, builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
@@ -311,6 +319,12 @@ jail run); a test whose outcome changes is read by hand, never re-baselined.
 - **Server/session authority mismatch is caught per request**, not at construction (`RunStarter` hides the
   session's mode); it fails closed with a named code.
 - **Workflows cannot carry a caller's per-request authority** to node sessions yet; such nodes are refused.
+- **`multi_agent::spawn`'s factory states the child's turn cap and budget**; `spawn()` keeps the turn cap and
+  only tightens the budget, since the factory is the host's statement of the target (slice 4 adds target
+  validation). `TrialSpec::extra_capabilities` (`eval_trial.hpp`) still merges a host's chat-client secret
+  into the trial's own grants; slice 4 makes `TrialSpec` state it apart.
+- **A chat client whose session never calls `set_chat_client_secrets`** sees the run's authority in its model
+  call, as before; the bridge and the quickstart builders always call it, a hand-wired session chooses.
 - **Unenforced, so optional:** `TerminationBound::token_budget`, `AgentMetadata::telemetry`,
   `stateless_pool_size`; and a raw session with no event sink records nothing to an audit trail.
 - **`RuntimeConfig{}`'s thread counts** stay defaulted (sizing moves to ADR-243's `Engine`); `A2aServer`'s task

@@ -48,6 +48,8 @@
 // rt/agent_spawn_child_run.hpp). No new capability-minting logic lives here -- this file is
 // orchestration/wiring plus the one new SpawnPump synchronization primitive §4.4c calls for.
 
+#include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -62,6 +64,7 @@
 #include <utility>
 
 #include "agentengine/core/agent_registry.hpp"        // AgentMetadata
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/agent_spawn_worktree.hpp"  // allocate_spawn_seq, derive_spawn_child_id,
                                                        // check_child_id, mint_spawn_worktree
 #include "agentengine/core/content.hpp"               // Message, ContentItem, Text, role, content_origin
@@ -444,6 +447,20 @@ template <agentengine::rt::AppendLogStore StoreT>
     // ADR-193 round 2: refused BEFORE anything is spent -- this check used to run after the quota slot, the
     // non-refundable SpawnCostBudget token and the worktree were already taken, so a caller with nothing left
     // still burned all three on every refused spawn.
+    // ADR-244 §2.3 (slice 3c): the child runs under the caller's authority source, so a context no session built
+    // (no source) is refused, and a `per_request` caller's expiry is checked at this spawn -- both before anything
+    // is spent. The child's own admission checks the expiry again.
+    if (!ctx.authority_source.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.authority_source", std::array<std::string_view, 1>{
+                                          "the caller's EffectContext::authority_source (set by the session)"}));
+    }
+    if (*ctx.authority_source == agentengine::authority_mode::per_request &&
+        (!ctx.authority_expires_at.has_value() || !ctx.authority_expires_at->live(std::chrono::steady_clock::now()))) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+                                                    "agent.spawn: the caller's per-request authority has expired",
+                                                    "agent_spawn.authority_expired"});
+    }
     if (ctx.remaining_token_budget.has_value() && *ctx.remaining_token_budget == 0) {
         co_return std::unexpected(agentengine::error{agentengine::failure_class::resource,
                                                     "agent.spawn: the caller's token budget is spent",
@@ -535,14 +552,26 @@ template <agentengine::rt::AppendLogStore StoreT>
     // ADR-241 §8.4: the root run, not this (possibly itself spawned) caller's run. An empty value (a direct host
     // dispatch with no session) falls back to the caller's own run id, so the child still shares ONE bucket with it.
     child_request.root_run_id   = ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id;
-    child_request.token_budget  = target->child_token_budget;
+    // ADR-244 §2.3 (slice 3c): the child's budget is the tightest of the target's two statements and what the caller
+    // has left; its turn cap is the target's declared one.
     // ADR-193 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
     // tree could spend (children x child budget) past the root's.
     // A spawn with nothing left was refused at [0], before anything was spent. `remaining_token_budget` is
     // recomputed before every sequential call (round 2), so it already reflects every earlier sibling's charge.
-    if (ctx.remaining_token_budget.has_value()) {
-        child_request.token_budget = std::min(target->child_token_budget, *ctx.remaining_token_budget);
+    using BoundU64 = agentengine::Bound<std::uint64_t>;
+    BoundU64 budget = BoundU64::at_most(target->child_token_budget);
+    if (target->metadata.token_budget.has_value()) {
+        budget = BoundU64::tighter(budget, BoundU64::at_most(*target->metadata.token_budget));
     }
+    if (ctx.remaining_token_budget.has_value()) {
+        budget = BoundU64::tighter(budget, BoundU64::at_most(*ctx.remaining_token_budget));
+    }
+    child_request.token_budget = budget;
+    child_request.max_turns    = BoundU64::at_most(target->metadata.max_turns);
+    // ADR-244 §2.3 (slice 3c): the child runs under the caller's source; under `per_request` its one run is admitted
+    // against the caller's expiry. Both are engine-set on `ctx` by the caller's session (I3), never by a tool.
+    child_request.authority_source     = ctx.authority_source;
+    child_request.authority_expires_at = ctx.authority_expires_at;
     // §4.6 (item 6, OQ-16, landed 2026-08-23): the child's OWN manifest, computed from its OWN
     // already-attenuated `child_grant->capabilities` -- never a copy of the caller's own
     // `push_side_summary(*ctx.capabilities)`, which would misrepresent what the child actually holds.

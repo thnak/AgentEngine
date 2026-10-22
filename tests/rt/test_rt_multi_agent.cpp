@@ -294,6 +294,7 @@ int main() {
         EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(parent_caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
 
         // S2: a narrower_grant subsumed by the parent's live capabilities lets the gated tool through.
         g_last_observed_principal_id.clear();
@@ -312,6 +313,7 @@ int main() {
         EffectContext ctx_empty;
         ctx_empty.capabilities = agentengine::borrow_capabilities(empty_caller_caps);
         ctx_empty.principal     = Principal{"caller", "tenant-a"};
+        ctx_empty.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
         auto denied = drive(agentengine::rt::multi_agent::spawn(
             ctx_empty, factory, StartRun{user_message("hi")},
             std::vector<agentengine::Capability>{agentengine::cap::Entropy{}}));
@@ -350,6 +352,7 @@ int main() {
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
         SessionFactory<CannedChatClient, agentengine::rt::NoSessionState,
                        agentengine::HistoryProvider<agentengine::Window<0>>>
             null_factory = [](Principal const&) {
@@ -568,6 +571,7 @@ int main() {
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
 
         // R1: fails twice with a RETRYABLE class, succeeds on the third attempt -- Budget debits
         // spawn-count exactly 3 times (once per attempt actually made).
