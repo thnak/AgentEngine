@@ -14,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/authority_terms.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
@@ -51,6 +52,11 @@ struct SessionNonce {
 struct EffectContext {
     Principal                             principal;
     SessionNonce                          session_nonce;
+    // ADR-244 §2.3: written by the session in every branch of its dispatch-authority step, never by a tool or
+    // from model output. nullopt on a context no session built. A spawned child inherits the source from here.
+    std::optional<authority_mode>         authority_source;
+    // The admitted request's expiry under `per_request`; nullopt under `single_trusted_caller`.
+    std::optional<Expiry>                 authority_expires_at;
     // ADR-061 §20.3: a shared_ptr, not a raw pointer, since Tier 3 populates this per-request from a
     // RequestAuthority-owned CapabilitySet (rt/agent_session.hpp) that must outlive the coroutine
     // frame that constructed it -- a raw pointer borrowed from that frame would dangle once the

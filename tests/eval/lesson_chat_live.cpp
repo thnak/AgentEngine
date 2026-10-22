@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/json_value.hpp"
@@ -269,7 +270,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
     using MemProvider = MemoryProvider<NoneSummarizer, InMemoryWorktreeObjectStore, rt::InMemoryAppendLogStore>;
     using Composed = ComposedContextProvider<HistoryProvider<Window<0>>, MemProvider, ev::EvalStubToolProvider>;
     rt::AgentSession<Client, rt::NoSessionState, Composed> session;
-    session.initialize("lesson-chat", store.principal(), std::nullopt, /*max_turns=*/8);
+    session.initialize("lesson-chat", store.principal(), ae_test::trusted(std::nullopt, /*max_turns=*/8));
     session.set_capabilities(&held);
     if (arm == "approved") session.set_approved_lessons(&registry);
     MemProvider memory{store.object_store(), store.ref_store(), store.mount(), store.read_cap(), store.write_cap(),

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_premount.hpp"
@@ -191,7 +192,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, PremountProvider> session;
-        session.initialize("premount", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+        session.initialize("premount", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
 
@@ -229,7 +230,7 @@ int main() {
         (void)script.push(ae::testing::text_turn("done"));
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, PremountProvider> session;
-        session.initialize("no-premount", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/2);
+        session.initialize("no-premount", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/2));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
         auto outcome = drive(session.start_run(ae::rt::StartRun{user_message("hi")}));

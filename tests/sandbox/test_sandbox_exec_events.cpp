@@ -50,6 +50,7 @@
 #include <utility>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
@@ -323,7 +324,7 @@ int main() {
     // ---- S4: end to end through a real AgentSession and its own event stream ---------------------
     {
         Session session;
-        session.initialize("s4", Principal{"p", ""});
+        session.initialize("s4", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response({{"c1", "sandboxing_tool"}}), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -360,7 +361,7 @@ int main() {
     // ---- S5: positive control -- a silent tool emits nothing -------------------------------------
     {
         Session session;
-        session.initialize("s5", Principal{"p", ""});
+        session.initialize("s5", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response({{"c1", "silent_tool"}}), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -387,7 +388,7 @@ int main() {
     // ---- S6: the per-call bracket leaks nothing across calls or rounds ---------------------------
     {
         Session session;
-        session.initialize("s6", Principal{"p", ""});
+        session.initialize("s6", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             // Round 1: two calls in ONE round, both sandboxing.
             {tool_call_response({{"c1", "sandboxing_tool"}, {"c2", "sandboxing_tool"}}),

@@ -16,6 +16,7 @@
 #ifdef AGENTENGINE_WITH_HTTPS
 
 #include "agentengine/pal/net.hpp"
+#include "../../support/session_choices.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -222,7 +223,7 @@ int main() {
     auto run_against = [&](ScriptedSseServer& server, std::uint32_t retries) {
         using OpenAISession = AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState, NoToolsHistory>;
         OpenAISession session;
-        session.initialize("s-real", Principal{"p", ""});
+        session.initialize("s-real", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
                                      ChatClientCapabilities{}, store, "/v1", sandbox::resolve_host,
                                      std::string{}, std::string{}, std::string{}, std::string{},
@@ -243,7 +244,7 @@ int main() {
         using AnthropicSession =
             AgentSession<anthropic::AnthropicChatClient<InMemorySecretStore>, NoSessionState, NoToolsHistory>;
         AnthropicSession session;
-        session.initialize("s-real-a", Principal{"p", ""});
+        session.initialize("s-real-a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
                                      ChatClientCapabilities{}, store, "/v1", "2023-06-01",
                                      sandbox::resolve_host, std::string{}, std::string{}, std::string{},

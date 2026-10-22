@@ -59,6 +59,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -604,7 +605,7 @@ int main() {
     // ---- T10 (ADR-163): a real agent-kind node's real usage reaches the terminal push exactly. ----
     {
         ScriptedSession session;
-        session.initialize("t10", Principal{"p10", ""});
+        session.initialize("t10", Principal{"p10", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_message("agent-answer"), Usage{100, 50, 0, 0, 0.0}}});
 
@@ -638,7 +639,7 @@ int main() {
     // ---- T11: the reported delta is per-CALL, not cumulative, across a suspend/resume round-trip. ----
     {
         ScriptedSession session;
-        session.initialize("t11", Principal{"p11", ""});
+        session.initialize("t11", Principal{"p11", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_message("agent-answer"), Usage{100, 50, 0, 0, 0.0}}});
 
@@ -699,7 +700,7 @@ int main() {
         // (a) the wrapped graph has a real agent-kind node.
         {
             ScriptedSession inner_session;
-            inner_session.initialize("t12a-inner", Principal{"p12a-inner", ""});
+            inner_session.initialize("t12a-inner", Principal{"p12a-inner", ""}, ae_test::trusted_unbounded());
             inner_session.emplace_chat_client().set_script(
                 {{text_message("inner-agent-answer"), Usage{7, 3, 0, 0, 0.0}}});
 
@@ -713,7 +714,7 @@ int main() {
             inner->initialize(wf, {agent_session_as_executor_body(inner_session)});
 
             AgentSession<WorkflowChatClient> outer;
-            outer.initialize("t12a-outer", Principal{"p12a-outer", ""});
+            outer.initialize("t12a-outer", Principal{"p12a-outer", ""}, ae_test::trusted_unbounded());
             outer.emplace_chat_client(inner);
 
             agentengine::result<AgentResponse> const r =
@@ -743,7 +744,7 @@ int main() {
             inner->initialize(wf, {echo_body()});
 
             AgentSession<WorkflowChatClient> outer;
-            outer.initialize("t12b-outer", Principal{"p12b-outer", ""});
+            outer.initialize("t12b-outer", Principal{"p12b-outer", ""}, ae_test::trusted_unbounded());
             outer.emplace_chat_client(inner);
 
             agentengine::result<AgentResponse> const r =

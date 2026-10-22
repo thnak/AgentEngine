@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -100,7 +101,7 @@ int main() {
     // --- S1: no cap::Schedule granted at all -- fails closed, nothing registered -------------------
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("s-sched-1", Principal{"p-owner", ""});
+        session.initialize("s-sched-1", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
         session.set_capabilities(&held);
@@ -119,7 +120,7 @@ int main() {
     // --- S2: delay exceeds the grant's own max_horizon -- fails closed ------------------------------
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("s-sched-2", Principal{"p-owner", ""});
+        session.initialize("s-sched-2", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Schedule{std::chrono::seconds{60}, 5}});
@@ -144,7 +145,7 @@ int main() {
     // --- S3: a successful call -- real StandingEffect + StateChanged event, not ToolCallStarted -----
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("s-sched-3", Principal{"p-owner", ""});
+        session.initialize("s-sched-3", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Schedule{std::chrono::seconds{3600}, 5}});
@@ -184,7 +185,7 @@ int main() {
     // --- S4: max_active is enforced against a LIVE count, at registration ---------------------------
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("s-sched-4", Principal{"p-owner", ""});
+        session.initialize("s-sched-4", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Schedule{std::chrono::seconds{3600}, 1}});
@@ -208,7 +209,7 @@ int main() {
     // --- S5/S6: due_standing_effects() timing + cancel_standing_effect() interop --------------------
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("s-sched-5", Principal{"p-owner", ""});
+        session.initialize("s-sched-5", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Schedule{std::chrono::seconds{3600}, 5}});

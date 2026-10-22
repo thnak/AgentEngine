@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "agentengine/rt/project_supervisor.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -128,7 +129,7 @@ int main() {
         // PassivatableHandle's own closure-over-a-concrete-ActorRef<A> trick existed to absorb in the
         // Quark original, re-proven here with zero Quark involvement.
         AgentSession<OneShotChatClient> member_a;
-        member_a.initialize("member-a", Principal{"p1", "tenant-1"});
+        member_a.initialize("member-a", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member_a.emplace_chat_client();
         auto ran_a = drive(member_a.start_run(StartRun{user_message("hi")}));
         check(ran_a.has_value(), "Q1 setup: member_a's run converges");
@@ -136,7 +137,7 @@ int main() {
         AgentSession<OneShotChatClient, agentengine::rt::NoSessionState,
                      agentengine::HistoryProvider<agentengine::Window<8>>>
             member_b;
-        member_b.initialize("member-b", Principal{"p1", "tenant-1"});
+        member_b.initialize("member-b", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member_b.emplace_chat_client();
         auto ran_b = drive(member_b.start_run(StartRun{user_message("hi")}));
         check(ran_b.has_value(), "Q1 setup: member_b's run converges");
@@ -191,7 +192,7 @@ int main() {
               "Q5 setup: the workflow converges before this test checkpoints it");
 
         AgentSession<OneShotChatClient> member;
-        member.initialize("member-c", Principal{"p1", "tenant-1"});
+        member.initialize("member-c", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member.emplace_chat_client();
         auto ran = drive(member.start_run(StartRun{user_message("hi")}));
         check(ran.has_value(), "Q5 setup: member-c's run converges");
@@ -212,17 +213,17 @@ int main() {
     // ---- Q3: a failing member store is reported by index/kind, WITHOUT aborting later checkpoints --
     {
         AgentSession<OneShotChatClient> healthy_first;
-        healthy_first.initialize("ok-first", Principal{"p1", ""});
+        healthy_first.initialize("ok-first", Principal{"p1", ""}, ae_test::trusted_unbounded());
         healthy_first.emplace_chat_client();
         (void)drive(healthy_first.start_run(StartRun{user_message("hi")}));
 
         AgentSession<OneShotChatClient> failing_member;
-        failing_member.initialize("fails", Principal{"p1", ""});
+        failing_member.initialize("fails", Principal{"p1", ""}, ae_test::trusted_unbounded());
         failing_member.emplace_chat_client();
         (void)drive(failing_member.start_run(StartRun{user_message("hi")}));
 
         AgentSession<OneShotChatClient> healthy_last;
-        healthy_last.initialize("ok-last", Principal{"p1", ""});
+        healthy_last.initialize("ok-last", Principal{"p1", ""}, ae_test::trusted_unbounded());
         healthy_last.emplace_chat_client();
         (void)drive(healthy_last.start_run(StartRun{user_message("hi")}));
 

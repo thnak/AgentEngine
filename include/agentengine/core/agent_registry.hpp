@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "agentengine/core/agent.hpp"
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/fixed_string.hpp"
@@ -560,6 +561,13 @@ using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_d
                                                           ChatClientRegistry const* registry = nullptr,
                                                           SandboxBackendRegistry const* sandbox_registry = nullptr) {
     using namespace agent_detail;
+    // ADR-244 §2.1: zero is refused at every check site -- a turn cap or budget of 0 is not "none allowed" (that
+    // has its own mechanism) and not "unset". Both surfaces arrive here (I6), so `MaxTurns<0>` and YAML
+    // `max_turns: 0` are refused alike (the YAML compiler also refuses it at parse).
+    if (auto r = check_bound("max_turns", Bound<std::uint64_t>::at_most(meta.max_turns)); !r) return r;
+    if (meta.token_budget.has_value()) {
+        if (auto r = check_bound("token_budget", Bound<std::uint64_t>::at_most(*meta.token_budget)); !r) return r;
+    }
     if (auto r = check_chat_client_id(meta.chat_client_id); !r) return r;
     if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) return r;
     if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return r;

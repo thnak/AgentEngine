@@ -106,7 +106,12 @@ int main() {
 
     // Build a session, run a turn, then snapshot it.
     Session session;
-    session.initialize("s-checkpoint", Principal{"p-demo", "tenant-9"});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-checkpoint", Principal{"p-demo", "tenant-9"},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     auto turn = drive(session.start_run(StartRun{user_message("hi")}));
     check(turn.has_value(), "the run succeeds before checkpointing");
@@ -121,12 +126,16 @@ int main() {
     check(loaded.has_value() && loaded->has_value(), "the saved session loads back as a real record");
 
     if (loaded.has_value() && loaded->has_value()) {
+        // ADR-244: the restarted host restates the choices the session ran under (a record never carries the
+        // capability ceiling, and a restore that would change the authority mode or widen a budget is refused).
         Session fresh_session;
+        fresh_session.initialize("s-new-instance", Principal{"p-new-instance", ""},
+                                 agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                             agentengine::Bound<std::uint64_t>::unbounded(),
+                                                             agentengine::Bound<std::uint64_t>::unbounded()});
         fresh_session.emplace_chat_client();
-        check(fresh_session.session_id().empty(),
-              "the fresh instance starts with no identity of its own");
 
-        fresh_session.restore_from_record(**loaded);
+        check(fresh_session.restore_from_record(**loaded).has_value(), "the record restores into the fresh instance");
         check(fresh_session.session_id() == "s-checkpoint",
               "session_id round-trips bit-identical through the real store");
         check(fresh_session.principal().id == "p-demo" &&

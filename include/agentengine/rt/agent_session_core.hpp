@@ -33,6 +33,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/session_choices.hpp"
 #include "agentengine/core/standing_effect.hpp"
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
@@ -83,8 +84,8 @@ struct SessionCaller {
 // supplies, in place of the coarser `SessionCaller`. Deliberately ONE bundle carrying identity and
 // capability grant TOGETHER, not two fields that must be kept in agreement -- §20.1's own rationale:
 // keeping `caller` (identity) and a separate capabilities field as two things that must agree is
-// exactly the two-sources-of-truth shape this ADR found buggy repeatedly elsewhere. A session with
-// `require_authority_ == true` (`set_require_authority()`, below) consults ONLY `authority`, never
+// exactly the two-sources-of-truth shape this ADR found buggy repeatedly elsewhere. A
+// `per_request` session (ADR-244 §2.3, `SessionChoices::authority`) consults ONLY `authority`, never
 // `caller`, on a `StartRun`/`ResolveInteraction` that carries both (ADR-061 §20.4) -- there is no
 // agreement check because there is no code path where both are read.
 // ae-naming-lint: allow RequestAuthority — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
@@ -94,21 +95,19 @@ struct RequestAuthority {
     // the coroutine frame that constructed this RequestAuthority (ADR-061 §20.1/§20.3) -- a raw
     // pointer/reference into that frame would dangle the moment start_run()/resolve_interaction()
     // returns, while EffectContext::capabilities (core/effect_context.hpp) is read again by a LATER,
-    // unrelated call.
+    // unrelated call. Null authorizes nothing (ADR-244 §2.3).
     std::shared_ptr<agentengine::CapabilitySet const> capabilities;
-    std::chrono::steady_clock::time_point expiry{};
-    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
-        return now < expiry;
-    }
+    // ADR-244 §2.3: `Expiry::at(t)` or `Expiry::never()`, required -- the old default meant "already expired".
+    agentengine::Expiry expiry;
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept { return expiry.live(now); }
 };
 
 // ae-naming-lint: allow StartRun — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct StartRun {
     Message input;
     std::optional<SessionCaller> caller = std::nullopt;
-    // ADR-061 §20.1: additive, defaulted -- every existing `StartRun{input}`/`StartRun{input, caller}`
-    // call site is unaffected. Consulted only by a `require_authority_ == true` session (§20.4); a
-    // non-Tier-3 session's admission check is byte-for-byte unchanged from before this field existed.
+    // ADR-061 §20.1. Required by a `per_request` session and refused by a `single_trusted_caller` one
+    // (`run.authority_unexpected`, ADR-244 §2.3).
     std::optional<RequestAuthority> authority = std::nullopt;
 };
 
@@ -296,6 +295,14 @@ struct SuspendedRoundRecord {  // ae-naming-lint: allow SuspendedRoundRecord —
 // `delete_session()` had been hand-building one directly, silently contradicting this comment's own
 // former "only two places" claim; `make_tombstone_record()` closes that gap rather than leaving a
 // fourth hand-built site for the next one to find.
+// ADR-244 §2.3: the choices a recorded session ran under. The ceiling is not recorded -- it is host
+// configuration, restated by the session a record is restored into, which must use the same mode.
+struct RecordedChoices {  // ae-naming-lint: allow RecordedChoices — ADR-244
+    authority_mode       authority;
+    Bound<std::uint64_t> token_budget;
+    Bound<std::uint64_t> max_turns;
+};
+
 // ae-naming-lint: allow AgentSessionRecord — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct AgentSessionRecord {
     std::string session_id;
@@ -305,10 +312,10 @@ struct AgentSessionRecord {
     std::uint64_t run_counter = 0;
     std::uint64_t turn_index = 0;
     std::vector<Interaction> open_interactions;
-    // ADR-061 §22.1: whether this session required per-request authority (Tier 3). Carried through
-    // fork_from()/restore_from_record() (below) so a fork or a restart of a Tier-3 session cannot
-    // silently downgrade to the caller-only admission path -- fail-closed direction (§21a Finding 1).
-    bool require_authority = false;
+    // ADR-244 §2.3 (replacing ADR-061 §22.1's `require_authority` flag): what the session ran under, so a
+    // restart cannot come back under a different authority mode or a wider budget. nullopt is a record written
+    // before ADR-244: restore refuses it (`session.record_without_choices`); `migrate_record()` converts it.
+    std::optional<RecordedChoices> choices;
     // ADR-241 §8.4 (S2 step 1): the INHERITED root run id of a child/node session (empty for a top-level session,
     // which is its own root on every run) and the principal's `delegation_root`. Both are additive and optional on
     // the wire (absent = empty), so an older record still loads. Without them a restored delegated child would get
@@ -319,18 +326,43 @@ struct AgentSessionRecord {
 };
 
 // ADR-061 §24.1: the ONE other sanctioned way to construct an AgentSessionRecord outside
-// to_record() -- replacing delete_session()'s previous direct field-by-field build. The
-// `require_authority` value chosen here is inert either way (load_agent_session_snapshot(), below,
-// returns nullopt for any deleted==true record before require_authority is ever read back), but it
-// is now a real, explicit choice this function states, not an omission the type system happened to
-// paper over.
+// to_record() -- replacing delete_session()'s previous direct field-by-field build. A tombstone
+// records no choices: load_agent_session_snapshot(), below, returns nullopt for any deleted==true
+// record before they could be read back.
 [[nodiscard]] inline AgentSessionRecord make_tombstone_record(std::string session_id) {
     AgentSessionRecord rec;
-    rec.session_id        = std::move(session_id);
-    rec.deleted            = true;
-    rec.require_authority = false;
+    rec.session_id = std::move(session_id);
+    rec.deleted    = true;
     return rec;
 }
+
+// ADR-244 §2.3: converts a record written before ADR-244 by stating the choices it is to carry. Infers nothing:
+// a record that already carries choices is refused (`session.record_has_choices`), so this never rewrites one.
+[[nodiscard]] inline result<AgentSessionRecord> migrate_record(AgentSessionRecord record, SessionChoices const& choices) {
+    if (record.choices.has_value()) {
+        return std::unexpected(error{failure_class::contract,
+                                      "migrate_record() converts a record written before ADR-244; this one already "
+                                      "carries choices",
+                                      "session.record_has_choices"});
+    }
+    record.choices = RecordedChoices{choices.authority.mode(), choices.token_budget, choices.max_turns};
+    return record;
+}
+
+namespace agent_session_detail {
+[[nodiscard]] inline json::Value bound_to_json(Bound<std::uint64_t> b) {
+    if (b.is_unbounded()) return json::Value::make_string("unbounded");
+    return json::Value::make_number(static_cast<double>(*b.limit()));
+}
+[[nodiscard]] inline std::optional<Bound<std::uint64_t>> bound_from_json(json::Value const* v) {
+    if (v == nullptr) return std::nullopt;
+    if (v->is_string() && v->as_string() == "unbounded") return Bound<std::uint64_t>::unbounded();
+    if (!v->is_number() || v->as_number() < 0) return std::nullopt;
+    auto const n = static_cast<std::uint64_t>(v->as_number());
+    if (static_cast<double>(n) != v->as_number()) return std::nullopt;  // not an integer
+    return Bound<std::uint64_t>::at_most(n);
+}
+}  // namespace agent_session_detail
 
 // interaction_to_json()/interaction_from_json() live in interaction_codec.hpp -- shared with
 // rt::WorkflowSupervisor's own record codec (see that header's own banner for why this used to be a
@@ -340,7 +372,7 @@ struct AgentSessionRecord {
     std::vector<json::Value> interactions;
     interactions.reserve(rec.open_interactions.size());
     for (Interaction const& i : rec.open_interactions) interactions.push_back(interaction_to_json(i));
-    return json::Value::make_object({
+    std::vector<std::pair<std::string, json::Value>> members{
         {"session_id", json::Value::make_string(rec.session_id)},
         {"principal_id", json::Value::make_string(rec.principal_id)},
         {"principal_tenant_id", json::Value::make_string(rec.principal_tenant_id)},
@@ -348,19 +380,26 @@ struct AgentSessionRecord {
         {"run_counter", json::Value::make_number(static_cast<double>(rec.run_counter))},
         {"turn_index", json::Value::make_number(static_cast<double>(rec.turn_index))},
         {"open_interactions", json::Value::make_array(std::move(interactions))},
-        {"require_authority", json::Value::make_bool(rec.require_authority)},
         // ADR-241 §8.4: additive, optional on read (absent = empty).
         {"root_run_id", json::Value::make_string(rec.root_run_id)},
         {"principal_delegation_root", json::Value::make_string(rec.principal_delegation_root)},
-    });
+    };
+    if (rec.choices.has_value()) {
+        members.emplace_back(
+            "choices",
+            json::Value::make_object({
+                {"authority", json::Value::make_string(std::string(authority_mode_name(rec.choices->authority)))},
+                {"token_budget", agent_session_detail::bound_to_json(rec.choices->token_budget)},
+                {"max_turns", agent_session_detail::bound_to_json(rec.choices->max_turns)},
+            }));
+    }
+    return json::Value::make_object(std::move(members));
 }
 
-// ADR-061 §22.1: `require_authority` is REQUIRED below, matching this function's own established
-// strictness for every other field (deleted/run_counter/turn_index are all required, none defaulted-
-// on-absence) -- a deliberate breaking change to the record wire schema: a pre-this-change persisted
-// snapshot fails to deserialize ("malformed AgentSessionRecord") rather than silently defaulting
-// require_authority to false. Accepted without a migration path: no real snapshot deployment exists
-// yet (Milestones 8-9, where one first would, have not started).
+// ADR-244 §2.3: `choices` is optional on read so a record written before ADR-244 still loads, as one without
+// choices, which restore refuses and `migrate_record()` converts. A pre-ADR-244 record's `require_authority`
+// flag is ignored: migration states the mode, nothing is inferred from it. Present-but-malformed choices are
+// malformed, never defaulted.
 [[nodiscard]] inline result<AgentSessionRecord> agent_session_record_from_json(json::Value const& v) {
     json::Value const* session_id           = v.find("session_id");
     json::Value const* principal_id         = v.find("principal_id");
@@ -369,13 +408,11 @@ struct AgentSessionRecord {
     json::Value const* run_counter          = v.find("run_counter");
     json::Value const* turn_index           = v.find("turn_index");
     json::Value const* open_interactions    = v.find("open_interactions");
-    json::Value const* require_authority    = v.find("require_authority");
     if (session_id == nullptr || !session_id->is_string() || principal_id == nullptr ||
         !principal_id->is_string() || principal_tenant_id == nullptr ||
         !principal_tenant_id->is_string() || deleted == nullptr || !deleted->is_bool() ||
         run_counter == nullptr || !run_counter->is_number() || turn_index == nullptr ||
-        !turn_index->is_number() || open_interactions == nullptr || !open_interactions->is_array() ||
-        require_authority == nullptr || !require_authority->is_bool()) {
+        !turn_index->is_number() || open_interactions == nullptr || !open_interactions->is_array()) {
         return std::unexpected(error{failure_class::contract, "malformed AgentSessionRecord",
                                       "rt.agent_session.record.malformed"});
     }
@@ -386,7 +423,21 @@ struct AgentSessionRecord {
     rec.deleted             = deleted->as_bool();
     rec.run_counter         = static_cast<std::uint64_t>(run_counter->as_number());
     rec.turn_index          = static_cast<std::uint64_t>(turn_index->as_number());
-    rec.require_authority   = require_authority->as_bool();
+    if (json::Value const* c = v.find("choices"); c != nullptr) {
+        json::Value const* mode = c->is_object() ? c->find("authority") : nullptr;
+        std::optional<Bound<std::uint64_t>> const budget =
+            c->is_object() ? agent_session_detail::bound_from_json(c->find("token_budget")) : std::nullopt;
+        std::optional<Bound<std::uint64_t>> const turns =
+            c->is_object() ? agent_session_detail::bound_from_json(c->find("max_turns")) : std::nullopt;
+        bool const per_request = mode != nullptr && mode->is_string() && mode->as_string() == "per_request";
+        bool const trusted     = mode != nullptr && mode->is_string() && mode->as_string() == "single_trusted_caller";
+        if ((!per_request && !trusted) || !budget.has_value() || !turns.has_value()) {
+            return std::unexpected(error{failure_class::contract, "malformed AgentSessionRecord choices",
+                                          "rt.agent_session.record.malformed"});
+        }
+        rec.choices = RecordedChoices{per_request ? authority_mode::per_request : authority_mode::single_trusted_caller,
+                                      *budget, *turns};
+    }
     // ADR-241 §8.4: the two additive fields. Absent (an older record) is empty; present-but-not-a-string is
     // malformed, never silently ignored.
     for (auto const& [key, dest] : {std::pair<char const*, std::string*>{"root_run_id", &rec.root_run_id},
@@ -484,15 +535,18 @@ public:
     // TestKit<A>-style default-construction expectation this slice needs to satisfy), so a normal
     // constructor is fine -- kept as a separate initialize() anyway, matching the original API shape
     // exactly, since most existing call sites (once ported in a later slice) construct-then-configure.
-    void initialize(std::string session_id, agentengine::Principal principal,
-                     std::optional<std::uint64_t> token_budget = std::nullopt,
-                     std::optional<std::uint64_t> max_turns = std::nullopt) {
-        session_id_   = std::move(session_id);
-        principal_    = std::move(principal);
-        token_budget_ = token_budget;
-        max_turns_    = max_turns;
+    // ADR-244 §2.2: `choices` has no default -- where the session's authority comes from, its token budget and
+    // its turn cap are stated here or the call does not compile. A zero bound is refused at the first run
+    // (`choice.zero_bound`), before any effect.
+    void initialize(std::string session_id, agentengine::Principal principal, agentengine::SessionChoices choices) {
+        session_id_ = std::move(session_id);
+        principal_  = std::move(principal);
+        choices_.emplace(std::move(choices));
         advance_session_nonce();
     }
+
+    // ADR-244 §2.6: what this session runs under; nullopt for a session never initialised, or cleared.
+    [[nodiscard]] std::optional<agentengine::SessionChoices> const& choices() const noexcept { return choices_; }
 
 
     // ADR-061 §26.1: no longer `noexcept` (§28.1) -- constructing the owning `shared_ptr`'s control
@@ -510,16 +564,6 @@ public:
     [[nodiscard]] agentengine::CapabilitySet const* capabilities() const noexcept {
         return capabilities_.get();
     }
-
-    // ADR-061 §20.2: session-level, set once at wiring time -- replacing an earlier, abandoned design
-    // (§17.2) that put this on every StartRun/ResolveInteraction message individually, which §21a
-    // Finding proved forgettable on a session's second message. A Tier-3 listener wiring up a session
-    // it fronts MUST call this with `true` unconditionally; this ADR does not consider a default-
-    // `false` Tier-3 session a safe configuration (§20.2's own named residual -- no construction-level
-    // guard catches a listener that forgets this call; it is a real, still-open, documented risk, not
-    // silently assumed closed).
-    void set_require_authority(bool require) noexcept { require_authority_ = require; }
-    [[nodiscard]] bool require_authority() const noexcept { return require_authority_; }
 
     void set_approval_decider(agentengine::ApprovalDecider approve) { approval_decider_ = std::move(approve); }
     [[nodiscard]] agentengine::ApprovalDecider const& approval_decider() const noexcept {
@@ -631,8 +675,17 @@ public:
         return background_execution_disabled_;
     }
 
-    void set_max_turns(std::optional<std::uint64_t> max_turns) noexcept { max_turns_ = max_turns; }
-    [[nodiscard]] std::optional<std::uint64_t> max_turns() const noexcept { return max_turns_; }
+    // ADR-244 §2.2: a `Bound`, on an initialised session (`choice.missing.session` otherwise). `at_most(0)` is
+    // refused at the next run, like any other zero bound.
+    [[nodiscard]] result<void> set_max_turns(agentengine::Bound<std::uint64_t> max_turns) {
+        if (!choices_.has_value()) return std::unexpected(missing_session_choices());
+        choices_->max_turns = max_turns;
+        return {};
+    }
+    // nullopt == unbounded, or no choices made.
+    [[nodiscard]] std::optional<std::uint64_t> max_turns() const noexcept {
+        return choices_ ? choices_->max_turns.limit() : std::nullopt;
+    }
 
     // docs/planning/agent-spawn-runtime-design-draft.md §4.6 (item 6, OQ-16, OpenQuestions.md).
     // New, small, opt-in -- every existing session unaffected until it's called, matching every
@@ -851,7 +904,7 @@ public:
     // session-configuration method on this class (`set_approval_decider`, `set_policy_decider`,
     // `set_suspend_for_approval`) -- I1's "one session, one executor" contract, not a per-call lock,
     // is what makes that safe; a host driving this session from more than one concurrent caller is
-    // already the require_authority_ Tier-3 path's own documented contract, unaffected by this.
+    // already the per_request (Tier-3) path's own documented contract, unaffected by this.
     bool set_interaction_expiry(std::string const& interaction_id, std::int64_t expires_at_ns) noexcept;
 
     // ---- The two real entry points -----------------------------------------------------------
@@ -923,7 +976,11 @@ public:
     // may reasonably want to assert the record shape without going through the lock.
     [[nodiscard]] AgentSessionRecord to_record() const;
 
-    void restore_from_record(AgentSessionRecord const& rec);
+    // ADR-244 §2.3: restores into an initialised session, whose choices restate the record's (the ceiling is never
+    // recorded). Refused, leaving the session untouched: no choices here (`choice.missing.session`), a record
+    // written before ADR-244 (`session.record_without_choices`), or a different authority mode or a budget wider
+    // than the record's (`session.choices_widened`). The session keeps its own, possibly tighter, choices.
+    [[nodiscard]] result<void> restore_from_record(AgentSessionRecord const& rec);
 
     // The real, in-flight-safe way to read this session's durable state out: acquires
     // session_mutex_ for the whole read, the same I1 guard every other public entry point uses --
@@ -1010,6 +1067,9 @@ private:
     [[nodiscard]] result<void> apply_dispatch_authority(
             std::optional<RequestAuthority> const& authority,
             std::chrono::steady_clock::time_point now);
+    // ADR-061 §20.4: StartRun/ResolveInteraction admission by authority mode; `choices_` must be set.
+    [[nodiscard]] result<void> admit(std::optional<SessionCaller> const& caller,
+                                     std::optional<RequestAuthority> const& authority);
 
     // ADR-061 §20.5/§20.6/§19.6: schedule_wakeup's real logic is now `StandingEffectRegistry::
     // schedule_wakeup_impl()` (rt/standing_effect_registry.hpp) -- UNLOCKED, taking exactly what it
@@ -1373,11 +1433,15 @@ private:
     void advance_session_nonce() noexcept {
         effect_context_.session_nonce = agentengine::SessionNonce{session_identity_, ++nonce_epoch_};
     }
-    // ADR-061 §20.2: session-level, set once at wiring time by whichever Tier-3 listener fronts this
-    // session (set_require_authority(), above). Defaults to false -- unchanged behavior for every
-    // embedded/non-Tier-3 session.
-    bool                                                  require_authority_ = false;
-    std::optional<std::uint64_t>                        token_budget_;
+    // ADR-244 §2.2/§2.3 (replacing ADR-061 §20.2's `require_authority_` and the optional budget and turn cap):
+    // set by initialize(), copied by fork, carried by the record, reset by clear. nullopt refuses every run.
+    std::optional<agentengine::SessionChoices>           choices_;
+    [[nodiscard]] std::optional<std::uint64_t> token_budget_limit() const noexcept {
+        return choices_ ? choices_->token_budget.limit() : std::nullopt;
+    }
+    [[nodiscard]] static agentengine::error missing_session_choices() {
+        return agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions);
+    }
     std::uint64_t                                        run_tokens_consumed_ = 0;
     // GitHub issue #35 follow-up (ADR-163): the full-fidelity sibling of `run_tokens_consumed_` above
     // -- that field deliberately collapses `Usage::input_tokens + output_tokens` into one number for
@@ -1389,7 +1453,6 @@ private:
     // (`run_model_call()`'s own round loop) -- never a second, independent tracking path that could
     // drift from what `run_tokens_consumed_` itself already counts.
     agentengine::Usage                                    run_usage_{};
-    std::optional<std::uint64_t>                         max_turns_;
     ApprovalDecider                                      approval_decider_{};
     // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md. Unset by default -- see
     // set_policy_decider()'s own comment above for exactly where this is (and is not) consulted.

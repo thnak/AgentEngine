@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "agentengine/core/json_value.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
 
@@ -205,7 +206,7 @@ int main() {
     // ============================================================================================
     {
         AgentSession<ScriptedChatClient, TurnCounterState> session;
-        session.initialize("state-1", Principal{"p-carol", ""});
+        session.initialize("state-1", Principal{"p-carol", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_response("ok"), Usage{1, 1, 0, 0, 0.0}}});
 
         check(session.state().turns_seen == 0 && session.state().last_note.empty(),
@@ -230,8 +231,8 @@ int main() {
     {
         AgentSession<ScriptedChatClient, TurnCounterState> session_a;
         AgentSession<ScriptedChatClient, TurnCounterState> session_b;
-        session_a.initialize("state-a", Principal{"p-a", ""});
-        session_b.initialize("state-b", Principal{"p-b", ""});
+        session_a.initialize("state-a", Principal{"p-a", ""}, ae_test::trusted_unbounded());
+        session_b.initialize("state-b", Principal{"p-b", ""}, ae_test::trusted_unbounded());
 
         session_a.state().turns_seen = 5;
         session_a.state().last_note  = "a-only";
@@ -248,7 +249,7 @@ int main() {
         // Default third template parameter (Window<0>, unbounded): the ChatClientT sees the WHOLE
         // accumulated history every turn.
         AgentSession<RecordingChatClient> session;
-        session.initialize("win-default", Principal{"p-hank", ""});
+        session.initialize("win-default", Principal{"p-hank", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         auto r1 = drive(session.start_run(StartRun{user_message("first")}));
@@ -269,7 +270,7 @@ int main() {
         AgentSession<RecordingChatClient, agentengine::rt::NoSessionState,
                      agentengine::HistoryProvider<agentengine::Window<2>>>
             session;
-        session.initialize("win-windowed", Principal{"p-hank", ""});
+        session.initialize("win-windowed", Principal{"p-hank", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         auto r1 = drive(session.start_run(StartRun{user_message("alpha")}));
@@ -297,7 +298,7 @@ int main() {
         using ForkSession = AgentSession<ScriptedChatClient, TurnCounterState>;
 
         ForkSession source;
-        source.initialize("fork-source", Principal{"p-iris", "tenant-5"});
+        source.initialize("fork-source", Principal{"p-iris", "tenant-5"}, ae_test::trusted_unbounded());
         source.state().turns_seen = 7;
         source.metadata()["k"] = "v";
         source.emplace_chat_client().set_script(
@@ -367,7 +368,7 @@ int main() {
     // ============================================================================================
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("redact-unknown", Principal{"p-june", ""});
+        session.initialize("redact-unknown", Principal{"p-june", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         auto bad = session.redact("no-such-id", "gdpr", "operator-1");
         check(!bad.has_value() && bad.error().code == "session.redact.unknown_message_id",
@@ -375,7 +376,7 @@ int main() {
     }
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("redact", Principal{"p-june", ""});
+        session.initialize("redact", Principal{"p-june", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({{text_response("reply-a"), Usage{1, 1, 0, 0, 0.0}},
                             {text_response("reply-b"), Usage{1, 1, 0, 0, 0.0}}});
@@ -443,7 +444,7 @@ int main() {
     // ============================================================================================
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("interact", Principal{"p-omar", ""});
+        session.initialize("interact", Principal{"p-omar", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         check(!session.has_open_interactions(), "INT0: a fresh session has no open interactions");
@@ -492,8 +493,9 @@ int main() {
               "AgentSessionRecord.open_interactions IS carried)");
 
         AgentSession<ScriptedChatClient> restored;
+        restored.initialize("interact", Principal{"p-omar", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.3
         restored.emplace_chat_client();
-        restored.restore_from_record(rec);
+        check(restored.restore_from_record(rec).has_value(), "INT5: the record restores");
         check(restored.has_open_interactions() && restored.open_interactions().size() == 2,
               "INT5: restoring the record into a FRESH instance recovers both open interactions");
         check(restored.open_interactions()[0].reason == interaction_reason::auth &&

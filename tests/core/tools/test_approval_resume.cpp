@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
@@ -265,7 +266,7 @@ ae::CapabilitySet const& no_caps() {
 int u1_hidden_runs(bool hide) {
     runs().clear();
     Session s;
-    s.initialize("s-u1", ae::Principal{"p1", ""});
+    s.initialize("s-u1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg({{"c1", "other_tool"}, {"c2", "hidden_tool"}}),
                                         text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
@@ -403,7 +404,7 @@ std::pair<std::size_t, int> a10_tightened(bool tighten) {
     reset_runs();
     Session s;
     Events ev;
-    s.initialize("s-a10", ae::Principal{"p1", ""});
+    s.initialize("s-a10", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 9}}), text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
     s.set_suspend_for_approval(true);
@@ -432,7 +433,7 @@ std::pair<std::size_t, int> a10_tightened(bool tighten) {
 int u2_replays(bool clear_before_answer) {
     ask_invocations() = 0;
     AskSession s;
-    s.initialize("s-u2", ae::Principal{"p1", ""});
+    s.initialize("s-u2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     ae::Message call_msg;
     call_msg.role = ae::role::assistant;
     ae::ContentItem item;
@@ -460,7 +461,7 @@ int u2_replays(bool clear_before_answer) {
 int a1_policy_tool_runs(ae::policy_decision verdict) {
     runs().clear();
     Session s;
-    s.initialize("s-a1", ae::Principal{"p1", ""});
+    s.initialize("s-a1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}, {"c2", "policy_tool"}}),
                                         text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
@@ -524,7 +525,7 @@ std::pair<std::size_t, bool> l6_deliver(std::string screened, bool automatic, bo
         (void)reg.approve("p1", kLessonText, ae::LessonApproval{"alice", "t", "", false, false, std::move(screened)});
     }
     LessonSession s;
-    s.initialize("s-l6", ae::Principal{"p1", ""});
+    s.initialize("s-l6", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     CaptureClient& client = s.emplace_chat_client();
     s.set_capabilities(&no_caps());
     if (instructions) {
@@ -569,7 +570,7 @@ int main() {
         runs().clear();
         Session s;
         Events ev;
-        s.initialize("s-a2", ae::Principal{"p1", ""});
+        s.initialize("s-a2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}, {"c2", "other_tool"}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -616,7 +617,7 @@ int main() {
         runs().clear();
         Session s;
         Events ev;
-        s.initialize("s-a3", ae::Principal{"p1", ""});
+        s.initialize("s-a3", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}}), text_msg(ae::role::assistant, "ok")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
@@ -631,7 +632,7 @@ int main() {
     {
         runs().clear();
         Session s;
-        s.initialize("s-s1", ae::Principal{"p1", ""});
+        s.initialize("s-s1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         // Round 1 (discarded by the fork): old_tool, held for an external hook decision.
         s.emplace_chat_client().set_script({calls_msg({{"c-old", "old_tool"}}), calls_msg({{"c-new", "gated_tool"}}),
                                             text_msg(ae::role::assistant, "done")});
@@ -644,7 +645,7 @@ int main() {
         (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "first")}));
         std::string const old_id = s.has_open_interactions() ? s.open_interactions().front().interaction_id : "";
         Session fresh;
-        fresh.initialize("s-s1", ae::Principal{"p1", ""});
+        fresh.initialize("s-s1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.fork_from(fresh, "s-s1");
         s.set_capabilities(&no_caps());
         // Round 2 is not hook-touched, so nothing overwrites the discarded round's stored state under the reused id.
@@ -661,7 +662,7 @@ int main() {
     // ---- S2 --------------------------------------------------------------------------------------------------
     {
         Session s;
-        s.initialize("s-s2", ae::Principal{"p1", ""});
+        s.initialize("s-s2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}}), text_msg(ae::role::assistant, "ok")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
@@ -672,7 +673,11 @@ int main() {
         restored.interaction_id = "s-s2:interaction:7";
         restored.reason         = ae::interaction_reason::input;
         rec.open_interactions.push_back(restored);
-        s.restore_from_record(rec);
+        // ADR-244 §2.3: a hand-built record states the choices it ran under, like one to_record() wrote.
+        rec.choices = ae::rt::RecordedChoices{ae::authority_mode::single_trusted_caller,
+                                              ae::Bound<std::uint64_t>::unbounded(),
+                                              ae::Bound<std::uint64_t>::unbounded()};
+        check(s.restore_from_record(rec).has_value(), "S2 setup: the hand-built record restores");
         s.set_capabilities(&no_caps());
         auto refused = drive(s.resolve_interaction(ResolveInteraction{"s-s2:interaction:7", true}));
         check(!refused && refused.error().code == "session.resolve_interaction.unsupported_reason",
@@ -689,7 +694,7 @@ int main() {
     {
         Session s;
         Events ev;
-        s.initialize("s-f1", ae::Principal{"p1", ""});
+        s.initialize("s-f1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script(
             {std::unexpected(ae::error{ae::failure_class::transient, "overloaded", "provider.overloaded"})});
         s.set_capabilities(&no_caps());
@@ -742,7 +747,7 @@ int main() {
               "L4: blank / control-character ids and the reserved prefix anywhere in a human approver id are refused");
 
         Session s;
-        s.initialize("s-l4", ae::Principal{"p1", ""});
+        s.initialize("s-l4", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         check(!s.set_unattended_approvals(" ") && !s.disable_system_channel_fence("ops\nroot") &&
                   !s.enable_unattended_mode("\t") && !s.unattended_approvals() && s.system_channel_fence_enabled(),
               "L4: blank / multi-line operator ids are refused by every unattended opt-in");
@@ -788,7 +793,7 @@ int main() {
     {
         runs().clear();
         Session s;
-        s.initialize("s-m1", ae::Principal{"p1", ""});
+        s.initialize("s-m1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         ae::Message bad = calls_msg({{"c1", "gated_tool"}});
         std::get<ae::ToolCall>(bad.content[0].value).arguments_json = "{not json";
         s.emplace_chat_client().set_script({bad, text_msg(ae::role::assistant, "done")});
@@ -807,7 +812,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a7", ae::Principal{"p1", ""});
+        s.initialize("s-a7", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
                                             calls_msg_v({{"c2", "gated_tool", 666}}),
                                             text_msg(ae::role::assistant, "done")});
@@ -820,7 +825,7 @@ int main() {
         (void)drive(s.resolve_interaction(ResolveInteraction{first_id, false}));  // denied; round 2 suspends on 666
         check(s.has_open_interactions() && ev.requested.size() == 2 && ev.requested[1].arguments_json == "{\"value\":666}",
               "A7 setup: the first round was denied and the second suspended on gated_tool{value:666}");
-        s.restore_from_record(checkpoint);  // roll back onto the same, live object -- history_ still ends in round 2
+        check(s.restore_from_record(checkpoint).has_value(), "A7 setup: the checkpoint restores");  // roll back onto the same, live object -- history_ still ends in round 2
         s.set_capabilities(&no_caps());
         ResolveInteraction approve{first_id, true};
         approve.approver_id = "alice";
@@ -836,7 +841,7 @@ int main() {
         // Control: the live round-2 interaction, on a session that was not restored, does resolve and run.
         reset_runs();
         Session live;
-        live.initialize("s-a7c", ae::Principal{"p1", ""});
+        live.initialize("s-a7c", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         live.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
                                                calls_msg_v({{"c2", "gated_tool", 666}}),
                                                text_msg(ae::role::assistant, "done")});
@@ -854,7 +859,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a8", ae::Principal{"p1", ""});
+        s.initialize("s-a8", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "gated_tool", 666}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -888,7 +893,7 @@ int main() {
     {
         reset_runs();
         Session s;
-        s.initialize("s-a9", ae::Principal{"p1", ""});
+        s.initialize("s-a9", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "other_tool", 5}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -912,7 +917,7 @@ int main() {
         reset_runs();
         int wrapped = 0;
         Session s;
-        s.initialize("s-a10w", ae::Principal{"p1", ""});
+        s.initialize("s-a10w", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 42}}), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
@@ -938,7 +943,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a11", ae::Principal{"p1", ""});
+        s.initialize("s-a11", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 3}}), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         tap(s, ev);
@@ -974,7 +979,7 @@ int main() {
 
         TwoAskSession a;
         Events aev;
-        a.initialize("s-a11c", ae::Principal{"p1", ""});
+        a.initialize("s-a11c", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         a.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
         a.set_capabilities(&no_caps());
         tap(a, aev);
@@ -1006,7 +1011,7 @@ int main() {
         two_ask_context_fails() = false;
         TwoAskSession s;
         Events ev;
-        s.initialize("s-a12", ae::Principal{"p1", ""});
+        s.initialize("s-a12", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         int asks = 0;
@@ -1042,7 +1047,7 @@ int main() {
     {
         Session s;
         Events ev;
-        s.initialize("s-f2", ae::Principal{"p1", ""});
+        s.initialize("s-f2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({text_msg(ae::role::assistant, "never reached")});
         s.set_capabilities(&no_caps());
         tap(s, ev);

@@ -10,7 +10,8 @@
 // embeds a Workflow as an `ExecutorBody` participant INSIDE another workflow's graph; this one makes a
 // Workflow satisfy the `ChatClient` calling convention instead. Full design history, ten independent
 // red-team rounds, and every rejected alternative: docs/planning/workflow-as-chatclient-adapter-
-// design-draft.md.
+// design-draft.md. decisions/ADR-244-required-choices-step-1b.md §2.3: refused inside a `per_request`
+// session (`chat_stream()`), since the wrapped nodes run at the host's authority.
 //
 // DELIBERATELY NO `chat()` -- `ChatClient` (core/chat_client.hpp) only requires `capabilities()` +
 // `chat_stream()`; this type conforms via `chat_stream()` alone. Round 8 of the design's own red-team
@@ -597,6 +598,19 @@ public:
         agentengine::ChatRequest const& request, agentengine::EffectContext& ctx) const {
         auto pair = agentengine::make_stream<agentengine::ChatResponseUpdate>(
             std::pmr::get_default_resource());
+
+        // ADR-244 §2.3: the wrapped workflow runs its nodes under the host's own per-node contexts, never the
+        // per-request authority the outer session admitted -- so inside a per_request session this client would
+        // turn a caller's checked authority into the host's. Refused before any worker starts; the session sets
+        // `authority_source` on every admitted run (a direct call outside a session leaves it unset).
+        if (ctx.authority_source == agentengine::authority_mode::per_request) {
+            pair.producer.fail(agentengine::error{
+                agentengine::failure_class::policy,
+                "WorkflowChatClient runs its workflow's nodes at the host's authority, so it is refused inside a "
+                "per_request session; bind it to a single_trusted_caller() session",
+                "workflow_chat_client.per_request_session"});
+            return std::move(pair.consumer);
+        }
 
         // File banner's "EffectContext" paragraph: sanitized whole-struct copy, made synchronously,
         // BEFORE detaching. ctx itself (the caller's own reference) is never captured or read from the

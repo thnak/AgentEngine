@@ -69,9 +69,17 @@ struct RunEvent;
 
 namespace run_event_payload {
 
-// RunStarted, RunCanceled, ModelCallStarted, ModelCallFinished: nothing beyond the common
-// run_id/seq/kind fields is real yet.
+// RunCanceled, ModelCallStarted, ModelCallFinished: nothing beyond the common run_id/seq/kind fields is
+// real yet.
 struct Empty {};
+
+// ADR-244 §2.6: what the run was admitted under, as `AuthoritySource::describe()` and `Bound::describe()` spell
+// it ("per_request(no_ceiling)", "unbounded", "16").
+struct RunStarted {
+    std::string authority;
+    std::string token_budget;
+    std::string max_turns;
+};
 
 struct RunFailed {
     // ADR-198 (issue #106): the failure's own code -- the same one the run's result carries, so every surface reports
@@ -299,7 +307,7 @@ using RunEventPayload = std::variant<run_event_payload::Empty, run_event_payload
                                       run_event_payload::PolicyDecision, run_event_payload::CodeActAskRequested,
                                       run_event_payload::HookDecisionRequested,
                                       run_event_payload::ModelOutputDiscarded,
-                                      run_event_payload::DelegatedEvent>;
+                                      run_event_payload::DelegatedEvent, run_event_payload::RunStarted>;
 
 // 013 §1: "Ordered and monotonic per run, with a sequence number." `seq` starts at 1 for the first
 // event a given run emits -- 0 is never a real sequence number, so a default-constructed RunEvent is

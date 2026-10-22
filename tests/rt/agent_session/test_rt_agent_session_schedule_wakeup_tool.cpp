@@ -27,6 +27,7 @@
 #include <utility>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -176,7 +177,7 @@ int main() {
     // --- G1: NOT offered without a cap::Schedule grant ------------------------------------------
     {
         Session session;
-        session.initialize("s-g1", Principal{"p", ""});
+        session.initialize("s-g1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script({});  // converges immediately with the default "done" text reply
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -191,7 +192,7 @@ int main() {
     // --- G2: offered, with the real name/description/schema, once a grant exists ----------------
     {
         Session session;
-        session.initialize("s-g2", Principal{"p", ""});
+        session.initialize("s-g2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script({});
         CapabilitySet const held =
@@ -213,7 +214,7 @@ int main() {
     // --- G3: end-to-end success -- a real StandingEffect, a real handle_id round-tripped back -----
     {
         Session session;
-        session.initialize("s-g3", Principal{"p", ""});
+        session.initialize("s-g3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script(
             {tool_call_message("c1", "schedule_wakeup", R"({"delay_ms":5000,"label":"digest"})")});
@@ -252,7 +253,7 @@ int main() {
     // --- G4: end-to-end failure (horizon exceeded) -- the real error, nothing registered ----------
     {
         Session session;
-        session.initialize("s-g4", Principal{"p", ""});
+        session.initialize("s-g4", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script({tool_call_message("c1", "schedule_wakeup",
                                               R"({"delay_ms":7200000,"label":"too far out"})")});
@@ -277,7 +278,7 @@ int main() {
     // --- G5: defense in depth -- a hallucinated call against an ungranted session is refused -------
     {
         Session session;
-        session.initialize("s-g5", Principal{"p", ""});
+        session.initialize("s-g5", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script(
             {tool_call_message("c1", "schedule_wakeup", R"({"delay_ms":1000,"label":"x"})")});
@@ -300,7 +301,7 @@ int main() {
     // --- G6: max_active enforced end to end through the tool-call path, not just the direct API ----
     {
         Session session;
-        session.initialize("s-g6", Principal{"p", ""});
+        session.initialize("s-g6", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
         client.set_script({});  // two calls land in the SAME round, built directly below
         Message both_calls;

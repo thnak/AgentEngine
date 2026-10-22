@@ -37,6 +37,7 @@
 // gate fails P10/P10b (C6); run_live() that "defers" its commit (never commits) fails P15/P16 (C4).
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -633,7 +634,7 @@ int main() {
             check(w.bind(live).has_value(), "P15 setup: bind");
             std::string const branch = *live.branch_name();
             LiveSession s;
-            s.initialize("p15", Principal{"owner", ""});
+            s.initialize("p15", Principal{"owner", ""}, ae_test::trusted_unbounded());
             s.set_capabilities(&held);
             check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
                   "P15 setup: engage");
@@ -654,7 +655,7 @@ int main() {
             check(w.bind(live).has_value(), "P16 setup: bind");
             std::string const branch = *live.branch_name();
             LiveSession s;
-            s.initialize("p16", Principal{"owner", ""});
+            s.initialize("p16", Principal{"owner", ""}, ae_test::trusted_unbounded());
             s.set_capabilities(&held);
             check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
                   "P16 setup: engage");

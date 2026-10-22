@@ -1,7 +1,9 @@
 #pragma once
 // Implements rfcs/011-MCP-Conformance.md §4 -- exposing AgentEngine's own ToolTable as an MCP server, over
 // the JSON-RPC 2.0 envelope (protocol/mcp/json_rpc.hpp). Milestone 7 Phase C2
-// (docs/planning/milestone-7-protocol-conformance-breakdown.md).
+// (docs/planning/milestone-7-protocol-conformance-breakdown.md). Also implements
+// decisions/ADR-244-required-choices-step-1b.md §2.2/§2.3's server row: the authority a call is served under is
+// a stated `McpAuthority`, never a construction-time fallback.
 //
 // Scope: `server/discover`, `tools/list` (from a real ToolTable -- 011 §4's own rule, "generated
 // from tool metadata... one schema source, so an MCP listing cannot drift from the tool's actual
@@ -26,9 +28,9 @@
 // Authorization/principal establishment (011 §4: "every inbound request establishes a principal...
 // and executes with that principal's capability set, never the host's") is TRANSPORT work -- a real
 // inbound connection is what carries the credentials a principal is established FROM. This dispatcher
-// takes `held`/`approve` as given (exactly `invoke_tool()`'s own step 4/5 inputs), the same layering
-// `invoke_tool()` itself already has; a later transport sub-phase is what constructs `held` per
-// inbound call from a real authenticated connection.
+// takes its authority as a stated `McpAuthority` (ADR-244 §2.3) and `approve` as given (exactly
+// `invoke_tool()`'s own step 4/5 inputs); a transport builds the per-request `CapabilityGrant` from a
+// real authenticated connection (`capability_grant_bridge.hpp`).
 //
 // Milestone 7 Phase C4 (011 §3.6/§12, docs/research/2026-mcp-protocol-detail.md §12): the
 // `io.modelcontextprotocol/tasks` extension for `tools/call` on a `Backgroundable` tool, real since
@@ -67,6 +69,7 @@
 
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/json_value.hpp"
+#include "agentengine/core/session_choices.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
 #include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync request handler
@@ -84,11 +87,9 @@ namespace agentengine::mcp {
 // owned, refcounted value.
 //
 // REPLACE semantics, not a narrowing bound (matching `RequestAuthority`'s own already-Judged
-// precedent, §20.1: when present, authority replaces the session-level default entirely, never
-// intersected with it) -- named `CapabilityGrant`, not "Ceiling," for exactly that reason. A
-// per-request grant MAY exceed what `held_` itself grants; `held_` is this object's OWN
-// construction-time ceiling, not an upper bound imposed on every future per-request credential a host
-// might separately verify.
+// precedent, §20.1) -- named `CapabilityGrant`, not "Ceiling," for exactly that reason. ADR-244 §2.3
+// adds the bound it lacked: a grant is used only on a `per_request` server, and only when the server's
+// stated ceiling covers it; one holding more is refused, never narrowed to fit.
 //
 // Carries a `Principal` deliberately: `principal` is who this grant was actually verified for, and
 // `dispatch()` checks it against its own `caller` argument via `principal_admitted_for()` before ever
@@ -102,10 +103,45 @@ namespace agentengine::mcp {
 struct CapabilityGrant {
     Principal principal;
     std::shared_ptr<CapabilitySet const> capabilities;  // never null once accepted -- dispatch() guards
-    std::chrono::steady_clock::time_point expiry{};
-    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept {
-        return now < expiry;
+    // ADR-244 §2.3: `Expiry::at(t)` or `Expiry::never()`, required -- the old default meant "already expired".
+    Expiry expiry;
+    [[nodiscard]] bool live(std::chrono::steady_clock::time_point now) const noexcept { return expiry.live(now); }
+};
+
+// ADR-244 §2.2/§2.3: where a served call's authority comes from, stated at construction -- the server's two
+// options, nothing else, and no default. The construction-time set used to be the fallback for every call that
+// carried no grant; now it is one of the two options, chosen by name.
+//   - `per_request(ceiling)`: every request carries a `CapabilityGrant`. One without is refused
+//     (`mcp.authority_required`), and so is one holding anything outside `ceiling` (a `CapabilitySet`, or the
+//     named `CapabilitySet::no_ceiling()`) -- refused, never narrowed (`mcp.authority_exceeds_ceiling`).
+//   - `single_trusted_caller(held)`: `held` is the authority for every call, and a request carrying a grant is
+//     refused (`mcp.authority_unexpected`) rather than silently served under `held`. `held` is borrowed, as
+//     the `ToolTable` is: it must outlive the server and every task it starts.
+class McpAuthority {  // ae-naming-lint: allow McpAuthority — ADR-244
+public:
+    McpAuthority() = delete;
+
+    [[nodiscard]] static McpAuthority per_request(CapabilityCeiling ceiling) {
+        return McpAuthority(std::move(ceiling), nullptr);
     }
+    [[nodiscard]] static McpAuthority single_trusted_caller(CapabilitySet const& held) {
+        return McpAuthority(std::nullopt, &held);
+    }
+
+    [[nodiscard]] authority_mode mode() const noexcept {
+        return ceiling_.has_value() ? authority_mode::per_request : authority_mode::single_trusted_caller;
+    }
+    // Non-null exactly for `per_request`.
+    [[nodiscard]] CapabilityCeiling const* ceiling() const noexcept { return ceiling_ ? &*ceiling_ : nullptr; }
+    // Non-null exactly for `single_trusted_caller`.
+    [[nodiscard]] CapabilitySet const* held() const noexcept { return held_; }
+
+private:
+    McpAuthority(std::optional<CapabilityCeiling> ceiling, CapabilitySet const* held)
+        : ceiling_(std::move(ceiling)), held_(held) {}
+
+    std::optional<CapabilityCeiling> ceiling_;
+    CapabilitySet const*             held_;
 };
 
 // One entry of `tools/list`'s result array (011 §3.1/§4). `input_schema`/`output_schema` are
@@ -181,9 +217,10 @@ namespace server_detail {
 
 class McpServer {
 public:
-    McpServer(ToolTable const& table, CapabilitySet const& held, ApprovalDecider approve,
-              std::string server_name)
-        : table_(table), held_(held), approve_(std::move(approve)), server_name_(std::move(server_name)) {}
+    // ADR-244 §2.2: `authority` has no default and no overload without it; see `McpAuthority`.
+    McpServer(ToolTable const& table, McpAuthority authority, ApprovalDecider approve, std::string server_name)
+        : table_(table), authority_(std::move(authority)), approve_(std::move(approve)),
+          server_name_(std::move(server_name)) {}
 
     // Serves `server/discover`/`tools/list`/`tools/call`/`tasks/get`/`tasks/cancel` and nothing else --
     // an unrecognized method is `MethodNotFound`, never silently ignored.
@@ -195,17 +232,28 @@ public:
     // possible: "every inbound request establishes a principal... and executes with that
     // principal's capability set, never the host's."
     //
-    // `caller` currently binds the TASK STORE (§8a's "bound server-side as `<user_id>:<handle>`")
-    // unconditionally, and -- since ADR-061 §39/§40 -- ALSO selects the capability set whenever a
-    // `grant` is supplied: `held_` (construction-time, per-server) remains the default, but a live,
-    // principal-admitted `grant` replaces it for this one call, closing ADR-021 §8's "per-request,
-    // never per-connection" constraint (ADR-061 §7 R16/R27) for capability authority the same way
-    // `caller` itself already closed it for identity. `grant`/`now` are additive, defaulted parameters
-    // -- every pre-existing 2-argument call is unaffected (§39.4 claim 1).
+    // `caller` binds the TASK STORE (§8a's "bound server-side as `<user_id>:<handle>`")
+    // unconditionally. What authorizes the call is the server's stated `McpAuthority` (ADR-244 §2.3):
+    // under `per_request`, a live, principal-admitted `grant` inside the ceiling, closing ADR-021 §8's
+    // "per-request, never per-connection" constraint (ADR-061 §7 R16/R27); under
+    // `single_trusted_caller`, the construction-time `held` set, with a carried grant refused. `grant`
+    // stays a defaulted parameter: under `per_request` its absence is refused, not served.
     [[nodiscard]] JsonRpcResponse dispatch(
             JsonRpcRequest const& req, Principal const& caller,
             std::optional<CapabilityGrant> const& grant = std::nullopt,
             std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const {
+        // ADR-244 §2.3: the stated source first, on every method -- the same "no read-only exemption" rule as
+        // the grant checks below.
+        if (authority_.mode() == authority_mode::single_trusted_caller && grant.has_value()) {
+            return authority_error(req.id,
+                                   "this server's authority source is single_trusted_caller; a request carrying "
+                                   "its own grant is refused, not served under the server's set",
+                                   "mcp.authority_unexpected");
+        }
+        if (authority_.mode() == authority_mode::per_request && !grant.has_value()) {
+            return authority_error(req.id, "this server requires a per-request capability grant; none was supplied",
+                                   "mcp.authority_required");
+        }
         if (grant.has_value()) {
             // Three independent fail-closed guards, all required before a grant is ever consulted.
             if (!grant->capabilities) {
@@ -224,13 +272,20 @@ public:
                     req.id, JsonRpcError{kRpcInvalidRequest,
                                           "capability grant does not admit this caller", json::Value{}});
             }
+            // ADR-244 §2.3: refused, never narrowed.
+            if (!authority_.ceiling()->admits(*grant->capabilities)) {
+                return authority_error(req.id,
+                                       "capability grant holds a capability outside this server's ceiling; it is "
+                                       "refused, not narrowed",
+                                       "mcp.authority_exceeds_ceiling");
+            }
         }
         // Blanket, unconditional across every method including `server/discover`/`tools/list` (which
         // consult no capability today) -- deliberate: matches AgentSession's own `require_authority_`
         // precedent exactly, which has no read-only exemption either (rt::AgentSession::start_run()/
         // resolve_interaction() both apply the identical admission check unconditionally, ADR-061
-        // §20.4). A host that supplies a `grant` at all is choosing per-request mode for this call; a
-        // malformed grant is symptomatic of a broken credential, not something safe to partially honor.
+        // §20.4). A malformed grant is symptomatic of a broken credential, not something safe to
+        // partially honor.
         if (req.method == "server/discover") return handle_discover(req);
         if (req.method == "tools/list") return handle_tools_list(req);
         if (req.method == "tools/call") return handle_tools_call(req, caller, grant);
@@ -361,19 +416,15 @@ private:
         // principal a result computed for another. Carrying the real caller here is the identity half
         // of that fix; `IdempotencyKey`'s own derivation is fixed in tool_pipeline.hpp.
         //
-        // ADR-061 §39/§40: `effective` is `held_` unless `grant` was supplied (already validated live
-        // and principal-admitted by `dispatch()`), in which case it REPLACES `held_` for this call.
-        // `ctx.capabilities` is populated ONLY on the grant-supplied path -- deliberately NOT from
-        // `held_` on the no-grant path, which stays exactly as before this section: real, already-
-        // shipped consumers (`native_jail::has_capability()`, `trust::require_secret_capability()`)
-        // treat a null `ctx.capabilities` as deny-all today, and populating it unconditionally would
-        // silently flip that fail-closed behavior for any shell/secret-consuming tool served through
-        // this dispatcher -- a real authorization change this section does not make as a side effect.
-        CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
-        EffectContext ctx;
-        ctx.principal = caller;
-        mint_request_run(ctx);  // ADR-241 §8.4 (R5-1)
-        if (grant.has_value()) ctx.capabilities = grant->capabilities;
+        // ADR-061 §39/§40, ADR-244 §2.3: `effective` is the grant (already validated live, principal-
+        // admitted and inside the ceiling by `dispatch()`) under `per_request`, and the server's own
+        // `held` set under `single_trusted_caller`. `ctx.capabilities` is populated ONLY from a grant --
+        // deliberately NOT from `held`: real, already-shipped consumers (`native_jail::has_capability()`,
+        // `trust::require_secret_capability()`) treat a null `ctx.capabilities` as deny-all today, and
+        // populating it from `held` would silently flip that fail-closed behavior for any
+        // shell/secret-consuming tool served through this dispatcher.
+        CapabilitySet const& effective = effective_set(grant);
+        EffectContext ctx = request_context(caller, grant);
         // ADR-237 §5.2: the pipeline is async; this request handler is a genuinely-sync edge.
         ToolResult tool_result = rt::block_on(invoke_tool(table_, effective, call, ctx, approve_));
 
@@ -423,18 +474,13 @@ private:
         }
 
         ToolCallRequest call{task_id, tool_name, args_value, /*arguments_tainted=*/true};
-        // ADR-061 §39/§40: same rule as the synchronous path above -- `effective` replaces `held_`
-        // only when `grant` was supplied (already validated by `dispatch()`), and `ctx.capabilities`
-        // is populated only in that same case. `ctx` is copied BY VALUE into `background_task()`'s
-        // detached closure below (tool_pipeline.hpp), so `grant->capabilities` (an owned, refcounted
-        // shared_ptr) survives into the background thread regardless of this call having already
-        // returned -- the property `EffectContext::capabilities` becoming a shared_ptr (§20.3) made
-        // possible, and the reason this fix could not have been written before that one landed.
-        CapabilitySet const& effective = grant.has_value() ? *grant->capabilities : held_;
-        EffectContext ctx;
-        ctx.principal = caller;  // ADR-061 §7 R4/R26, same reasoning as the synchronous path above.
-        mint_request_run(ctx);    // ADR-241 §8.4 (R5-1)
-        if (grant.has_value()) ctx.capabilities = grant->capabilities;
+        // ADR-061 §39/§40: same rule as the synchronous path above. `ctx` is copied BY VALUE into
+        // `background_task()`'s detached closure below (tool_pipeline.hpp), so `grant->capabilities` (an
+        // owned, refcounted shared_ptr) survives into the background thread regardless of this call
+        // having already returned -- the property `EffectContext::capabilities` becoming a shared_ptr
+        // (§20.3) made possible.
+        CapabilitySet const& effective = effective_set(grant);
+        EffectContext ctx = request_context(caller, grant);
         // ADR-237 §5.2: `background_task` is async; this request handler is a genuinely-sync edge.
         auto started = rt::block_on(background_task(
             table_, effective, call, ctx, approve_, live_count,
@@ -528,6 +574,34 @@ private:
     // collide into) another request's egress admission bucket. An authenticated caller is thereby bounded per
     // request (8) and per principal (32); an UNAUTHENTICATED caller has an empty principal and is held by the
     // shared unattributed principal bucket whatever run id it carries (empty `caller.id`, ADR-061 SS7 R13).
+    // ADR-244 §2.3: the refusals of the stated source carry their named code in `data.error_code`, beside the
+    // JSON-RPC code a peer acts on.
+    [[nodiscard]] static JsonRpcResponse authority_error(RpcId const& id, std::string message, std::string code) {
+        return JsonRpcResponse::make_error(
+            id, JsonRpcError{kRpcInvalidRequest, std::move(message),
+                             json::Value::make_object({{"error_code", json::Value::make_string(std::move(code))}})});
+    }
+
+    // Only called once `dispatch()` has admitted the call: a grant exists exactly under `per_request`.
+    [[nodiscard]] CapabilitySet const& effective_set(std::optional<CapabilityGrant> const& grant) const {
+        return grant.has_value() ? *grant->capabilities : *authority_.held();
+    }
+
+    // The engine-set authority fields (ADR-244 §2.3), the caller's identity (ADR-061 §7 R4/R26) and a
+    // server-minted run (ADR-241 §8.4).
+    [[nodiscard]] EffectContext request_context(Principal const& caller,
+                                                std::optional<CapabilityGrant> const& grant) const {
+        EffectContext ctx;
+        ctx.principal = caller;
+        mint_request_run(ctx);
+        ctx.authority_source = authority_.mode();
+        if (grant.has_value()) {
+            ctx.capabilities         = grant->capabilities;
+            ctx.authority_expires_at = grant->expiry;
+        }
+        return ctx;
+    }
+
     void mint_request_run(EffectContext& ctx) const {
         // `mcp:<instance nonce>:<n>`: two servers in one process (or two process lifetimes) never mint the same id
         // (red-team r5 m6); the nonce is host-side randomness, never anything the client sent.
@@ -551,7 +625,7 @@ private:
     }
 
     ToolTable const&     table_;
-    CapabilitySet const& held_;
+    McpAuthority         authority_;
     ApprovalDecider       approve_;
     std::string          server_name_;
     mutable std::atomic<std::uint64_t>          request_seq_{0};  // ADR-241 §8.4: server-minted, host-side only

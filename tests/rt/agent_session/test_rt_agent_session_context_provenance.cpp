@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -127,7 +128,7 @@ int main() {
                                                SkillLikeProvider>;
 
     AgentSession<RecordingChatClient, NoSessionState, ComposedProvider> session;
-    session.initialize("prov-t1", Principal{"p1", ""});
+    session.initialize("prov-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
     // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
     // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
     // default-constructible -- see composed_context_provider.hpp's own comment on why).

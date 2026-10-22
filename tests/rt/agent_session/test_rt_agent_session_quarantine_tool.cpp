@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
 
@@ -112,7 +113,7 @@ int main() {
     // provider's DEFAULT audit hook (nullptr) -- the store still records every quarantine correctly
     // with no hook configured (QuarantineSecretStore::quarantine() only conditionally invokes it).
     AgentSession<ScriptedChatClient, NoSessionState, agentengine::QuarantineToolProvider> session;
-    session.initialize("quar-t1", Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+    session.initialize("quar-t1", Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
     session.emplace_chat_client();
 
     auto outcome = drive(session.start_run(StartRun{user_message("please handle this secret")}));

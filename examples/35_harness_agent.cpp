@@ -110,7 +110,19 @@ int main() {
         return verdict(text_of(r.message).find("Summary:") != std::string::npos);
     };
 
-    auto writer = make_harness_session<Writer>(model, AgentSessionOptions{}, std::move(harness));
+    // ADR-244: the caller's identity and choices, stated; within Writer's MaxTurns<8> and TokenBudget<2'000>.
+    auto writer = make_harness_session<Writer>(
+        model,
+        AgentSessionOptions{.session_id = "s-writer",
+                            .principal  = Principal{"p-demo", ""},
+                            .choices    = SessionChoices{AuthoritySource::single_trusted_caller(),
+                                                         Bound<std::uint64_t>::at_most(2'000),
+                                                         Bound<std::uint64_t>::at_most(8)},
+                            .grants             = {},
+                            .chat_client_grants = {},
+                            .approve_tools      = std::nullopt,
+                            .policy             = {}},
+        std::move(harness));
     if (!writer) {
         std::fprintf(stderr, "bind failed: %s\n", writer.error().message.c_str());
         return 1;

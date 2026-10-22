@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -138,7 +139,7 @@ int main() {
     // T1: a redacting turn middleware's decision actually reaches the real outbound ChatRequest.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t1", Principal{"p1", ""});
+        session.initialize("tm-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         std::tuple<RedactingMiddleware> chain{};
@@ -160,7 +161,7 @@ int main() {
     // T2: a denying turn middleware fails the round BEFORE the model is ever called.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t2", Principal{"p1", ""});
+        session.initialize("tm-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         std::tuple<DenyingMiddleware> chain{};
@@ -183,7 +184,7 @@ int main() {
     // dominant, existing case every OTHER AgentSession test in this tree already exercises.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t3", Principal{"p1", ""});
+        session.initialize("tm-t3", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));

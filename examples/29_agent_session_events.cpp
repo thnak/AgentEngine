@@ -116,7 +116,12 @@ static_assert(ChatClient<ScriptedChatClient>);
 
 int main() {
     AgentSession<ScriptedChatClient> session;
-    session.initialize("s-events-demo", Principal{"p-demo", ""});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-events-demo", Principal{"p-demo", ""},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     CapabilitySet const held = CapabilitySet::grant_root({});
     session.set_capabilities(&held);
 

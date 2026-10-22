@@ -1,7 +1,8 @@
 #pragma once
 // Implements rfcs/012-A2A-Conformance.md §2.3 -- Task management (server role): `SendMessage`, `GetTask`,
 // `CancelTask` over a REAL `AgentSession` run. Milestone 7 Phase D3
-// (docs/planning/milestone-7-protocol-conformance-breakdown.md).
+// (docs/planning/milestone-7-protocol-conformance-breakdown.md). Also implements
+// decisions/ADR-244-required-choices-step-1b.md §2.3's server row: a stated `AuthoritySource`, checked per message.
 //
 // Transport-agnostic, like `protocol/mcp/server.hpp`: no JSON-RPC/REST envelope here (that is D4+'s
 // own job, matching MCP's own "envelope first" split, C1 before C2), and no actor-messaging plumbing
@@ -53,6 +54,7 @@
 //     own "terminal is terminal" rule), never actually interrupts live work. A genuinely cancellable
 //     in-flight task needs async dispatch (`returnImmediately: true`, a backgrounded run) -- D4+ scope.
 
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -105,8 +107,16 @@ namespace server_detail {
 
 class A2aServer {
 public:
-    A2aServer(RunStarter starter, std::string context_id)
-        : starter_(std::move(starter)), context_id_(std::move(context_id)) {}
+    // ADR-244 §2.2/§2.3: `authority` is stated, with no default -- the same two options a session takes, checked
+    // here before the run starter is ever called, so a host whose starter reaches a session of a different mode
+    // (or none) is still held to what this server said it serves:
+    //   - `per_request(ceiling)`: a message without a live `RequestAuthority` inside `ceiling` is refused
+    //     (`a2a.authority_required` / `a2a.authority_expired` / `a2a.authority_exceeds_ceiling`).
+    //   - `single_trusted_caller()`: a message carrying one is refused (`a2a.authority_unexpected`); the
+    //     session the starter reaches holds the authority.
+    // A refusal is an error from `send_message()`, before any task exists: there is nothing to store or poll.
+    A2aServer(RunStarter starter, std::string context_id, AuthoritySource authority)
+        : starter_(std::move(starter)), context_id_(std::move(context_id)), authority_(std::move(authority)) {}
 
     // §A.2 `SendMessage`. Blocking mode only (see file-top comment) -- there is no `returnImmediately`
     // parameter to honour differently, since this dispatcher has exactly one dispatch shape today.
@@ -124,18 +134,17 @@ public:
     //   - R1: the task store is now keyed per-principal (see `owner_` on `StoredTask`), which needs
     //     the establishing principal at creation time.
     //
-    // ADR-061 §35/§37.3: `authority` is a NEW, trailing, DEFAULTED parameter -- unlike `caller` above,
-    // its absence does not fail open. `AgentSession::start_run()`'s own admission (§20.4,
-    // agent_session.hpp's `if (require_authority_)` branch) consults `authority` ONLY when the
-    // underlying session was put into Tier-3 mode (`set_require_authority(true)`); an unset `authority`
-    // against such a session is denied outright (`run.authority_required`), never silently admitted
-    // through the `caller` branch instead -- fails closed by the session's own construction, not by
-    // this dispatcher remembering to check anything. A non-Tier-3 session (the common, embedded/
-    // single-tenant case, 018 §1) never reads `authority` at all, so every existing 2-argument call
-    // site (`tests/protocol/a2a/test_a2a_server.cpp`, `tests/protocol/a2a/test_task_principal_binding.cpp`) is unaffected.
+    // ADR-061 §35/§37.3: `authority` is a trailing, DEFAULTED parameter -- unlike `caller` above, its
+    // absence does not fail open. This server's stated `AuthoritySource` (constructor) decides first:
+    // under `per_request` an unset one is refused here, under `single_trusted_caller` a set one is. The
+    // session behind the starter applies the same rule again at its own admission (ADR-244 §2.3), so
+    // neither layer relies on the other remembering to check.
     [[nodiscard]] task<result<Task>> send_message(
             Message const& inbound, agentengine::rt::SessionCaller const& caller,
             std::optional<agentengine::rt::RequestAuthority> authority = std::nullopt) {
+        if (result<void> admitted = admit(authority, std::chrono::steady_clock::now()); !admitted) {
+            co_return std::unexpected(admitted.error());
+        }
         agentengine::Message input = from_a2a_message(inbound);
         agentengine::rt::StartRun start{std::move(input)};
         start.caller    = caller;
@@ -276,8 +285,39 @@ private:
         return error{failure_class::contract, "unknown taskId", "a2a.unknown_task"};
     }
 
+    // ADR-244 §2.3, see the constructor. Null capabilities hold nothing, so there is nothing to check against the
+    // ceiling (and nothing here dereferences them); the session authorizes nothing with them either.
+    [[nodiscard]] result<void> admit(std::optional<agentengine::rt::RequestAuthority> const& authority,
+                                     std::chrono::steady_clock::time_point now) const {
+        CapabilityCeiling const* ceiling = authority_.ceiling();
+        if (ceiling == nullptr) {
+            if (!authority.has_value()) return {};
+            return std::unexpected(error{failure_class::policy,
+                                         "this server's authority source is single_trusted_caller; a message "
+                                         "carrying its own authority is refused",
+                                         "a2a.authority_unexpected"});
+        }
+        if (!authority.has_value()) {
+            return std::unexpected(error{failure_class::policy,
+                                         "this server requires per-request authority; the message carried none",
+                                         "a2a.authority_required"});
+        }
+        if (!authority->live(now)) {
+            return std::unexpected(
+                error{failure_class::policy, "per-request authority has expired", "a2a.authority_expired"});
+        }
+        if (authority->capabilities != nullptr && !ceiling->admits(*authority->capabilities)) {
+            return std::unexpected(error{failure_class::policy,
+                                         "per-request authority holds a capability outside this server's "
+                                         "ceiling; it is refused, not narrowed",
+                                         "a2a.authority_exceeds_ceiling"});
+        }
+        return {};
+    }
+
     RunStarter                                        starter_;
     std::string                                       context_id_;
+    AuthoritySource                                   authority_;
     mutable std::mutex                                mutex_;
     mutable std::unordered_map<std::string, StoredTask> tasks_;
 };

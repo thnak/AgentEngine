@@ -164,8 +164,16 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
     }
 
     agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT> child;
-    child.initialize(child_id, *child_principal, req.token_budget,
-                      std::optional<std::uint64_t>{req.max_turns});
+    // ADR-244 slice 3a: today's behaviour, stated. The child holds `req.capabilities` itself, which is what
+    // `single_trusted_caller` means, and `req`'s own fields keep their meaning (an unset budget is none). Slice 3c
+    // replaces this: the child inherits the parent's source from `ctx.authority_source`, and its budget and turn
+    // cap become `tighter(target, ...)` (§2.3).
+    child.initialize(child_id, *child_principal,
+                     agentengine::SessionChoices{
+                         agentengine::AuthoritySource::single_trusted_caller(),
+                         req.token_budget ? agentengine::Bound<std::uint64_t>::at_most(*req.token_budget)
+                                          : agentengine::Bound<std::uint64_t>::unbounded(),
+                         agentengine::Bound<std::uint64_t>::at_most(req.max_turns)});
     // ADR-241 §8.4: before start_run() -- the child's runs are charged to the caller's ROOT run, not their own.
     child.set_inherited_root_run_id(req.root_run_id);
     configure_chat_client(child.emplace_chat_client());

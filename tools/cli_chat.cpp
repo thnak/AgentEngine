@@ -1353,9 +1353,12 @@ template <class Inner>
     // adds the dump sink on top, via `RecordingChatClient<Inner>`'s own `(Inner, RecordingSink)`
     // constructor.
     actor.emplace_chat_client(std::move(chat_client), std::move(sink));
-    // Unbounded by default now (agent_session.hpp's own initialize(), 2026-08-12 change) -- this
-    // CLI no longer caps the internal tool-call loop's own round count at all.
-    actor.initialize(session_id, Principal{"cli-user", ""});
+    // ADR-244 §2.2: this CLI's choices, stated. One local user drives the session, which holds `held` itself;
+    // the user watches every turn and can interrupt, so neither the token budget nor the tool-call loop's round
+    // count is capped.
+    actor.initialize(session_id, Principal{"cli-user", ""},
+                     SessionChoices{AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::unbounded(),
+                                    Bound<std::uint64_t>::unbounded()});
     actor.set_capabilities(&held);
     // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback not
     // applying on this path -- see set_stream_model_calls()'s own comment in agent_session.hpp. A

@@ -31,6 +31,7 @@
 //       never touches the real filesystem.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
@@ -207,7 +208,7 @@ int main() {
     // [1] a freshly-default-constructed REAL AgentSession has NO execution capability.
     {
         Session bare;
-        bare.initialize("bare-session", Principal{"bare-owner", ""});
+        bare.initialize("bare-session", Principal{"bare-owner", ""}, ae_test::trusted_unbounded());
         auto contribution = drive(bare.history_provider().on_context(call.session_ctx, call.ctx));
         check(!bare.history_provider().is_bound(), "a bare session's provider reports unbound");
         check(contribution.has_value(), "on_context() on an unbound provider still succeeds");
@@ -218,7 +219,7 @@ int main() {
 
     // [2] bind_sandbox() establishes a real sandbox; a direct on_context()+invoke() genuinely executes.
     Session parent;
-    parent.initialize("parent-session", Principal{"parent-owner", ""});
+    parent.initialize("parent-session", Principal{"parent-owner", ""}, ae_test::trusted_unbounded());
     {
         auto root_r = drive(ledger.create_root_branch(owner, "parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"parent\") succeeds");
@@ -309,7 +310,7 @@ int main() {
         // unauthorized_spender) -- confirmed the hard way: an earlier version of this test initialized
         // `live` with an unrelated Principal{"live-owner", ""} and this exact check failed for that
         // real reason, not a defect in MandatorySandboxProvider itself.
-        live.initialize("live-session", real_owner_principal);
+        live.initialize("live-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "live"));
         check(root_r.has_value(), "create_root_branch(owner, \"live\") succeeds");
         if (root_r.has_value()) {
@@ -357,12 +358,12 @@ int main() {
     // [4] two sequential children forked from the SAME bound parent are mutually isolated.
     {
         Session sibling_a;
-        sibling_a.initialize("sibling-a", Principal{"sibling-a-owner", ""});
+        sibling_a.initialize("sibling-a", Principal{"sibling-a-owner", ""}, ae_test::trusted_unbounded());
         sibling_a.fork_from(parent, "sibling-a-session");
         check(sibling_a.history_provider().is_bound(), "sibling_a's fork_from() leaves it bound");
 
         Session sibling_b;
-        sibling_b.initialize("sibling-b", Principal{"sibling-b-owner", ""});
+        sibling_b.initialize("sibling-b", Principal{"sibling-b-owner", ""}, ae_test::trusted_unbounded());
         sibling_b.fork_from(parent, "sibling-b-session");
         check(sibling_b.history_provider().is_bound(), "sibling_b's fork_from() leaves it bound");
 
@@ -399,7 +400,7 @@ int main() {
     // [5] clear_in_process_state() relinquishes the branch and leaves the session re-bindable.
     {
         Session child;
-        child.initialize("child-to-clear", Principal{"child-owner", ""});
+        child.initialize("child-to-clear", Principal{"child-owner", ""}, ae_test::trusted_unbounded());
         child.fork_from(parent, "child-to-clear-session");
         check(child.history_provider().is_bound(), "child forked from parent starts bound");
         if (child.history_provider().is_bound()) {
@@ -427,7 +428,7 @@ int main() {
         check(tiny_branch_quota_r.has_value(), "mint_root(BranchCost, 1) succeeds");
         if (tiny_branch_quota_r.has_value()) {
             Session temp_parent;
-            temp_parent.initialize("temp-parent-would-fork", Principal{"temp-parent-owner", ""});
+            temp_parent.initialize("temp-parent-would-fork", Principal{"temp-parent-owner", ""}, ae_test::trusted_unbounded());
             auto temp_root = drive(ledger.create_root_branch(owner, "temp-parent-would-fork"));
             check(temp_root.has_value(), "create_root_branch(owner, \"temp-parent-would-fork\") succeeds");
             if (temp_root.has_value()) {
@@ -439,7 +440,7 @@ int main() {
                       "would_fork_succeed() reports success while quota remains");
 
                 Session temp_child;
-                temp_child.initialize("temp-child-would-fork", Principal{"temp-child-owner", ""});
+                temp_child.initialize("temp-child-would-fork", Principal{"temp-child-owner", ""}, ae_test::trusted_unbounded());
                 temp_child.fork_from(temp_parent, "temp-child-would-fork-session");
                 check(temp_child.history_provider().is_bound(),
                       "the real fork_from() that spends the last unit of quota still succeeds");
@@ -462,7 +463,7 @@ int main() {
     // task-branch tools.
     {
         Session ungranted;
-        ungranted.initialize("ungranted-session", real_owner_principal);
+        ungranted.initialize("ungranted-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"ungranted\") succeeds");
         if (root_r.has_value()) {

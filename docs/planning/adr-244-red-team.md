@@ -110,6 +110,77 @@ case of `path_prefix_covers` (below, m1).
 - **Linux jail**: overlapping guest paths refused (`sandbox.mount_overlap`) before anything is bound;
   `/work` and `/workshop` do not overlap (positive control).
 
+## Implementation notes (slice 3a)
+
+Slice 3 split into 3a (the session layer), 3b (servers, workflows, YAML ceiling, Y8) and 3c (spawn, reflection
+and ask authority, provider secrets); ADR-244 §5.
+
+- **Gate tests:** `tests/rt/agent_session/test_rt_agent_session_choices.cpp` C1–C15; `try_compile` cases
+  `session_choices_positive_control`, `session_initialize_without_choices`, `session_choices_omitted_member`,
+  `request_authority_without_expiry`, `agent_session_options_default`; `tools/test_preset_lint.py`
+  (`--self-test` plants four uses and catches them).
+- **Mutants** (each patched in, the covering test rebuilt and run, then reverted): missing choices admitted at
+  run start (with the second guard in `apply_dispatch_authority` removed too) and at resume; expiry unchecked;
+  ceiling unchecked; `single_trusted_caller` accepting a carried authority; restore admitting a mode change, a
+  wider budget, or a record without choices; `at_most(0)` admitted; the bridge admitting a turn cap above the
+  agent's. All killed. The resume mutant first survived: no test resolved on a session without choices; C15
+  was added for it. Removing only the second guard is not a mutant, since the entry checks still refuse.
+- **Interim mappings, each marked in the code** (today's behaviour, now stated, not yet the target):
+  - `rt/agent_spawn_child_run.hpp`: the child is `single_trusted_caller()` over `req.capabilities`, budget
+    `req.token_budget` or `unbounded()`, turn cap `at_most(req.max_turns)` (so a `max_turns` of 0 is now
+    refused at admission, `choice.zero_bound`). Slice 3c: inherit the parent's source, `tighter()`.
+  - `eval/eval_trial.hpp`: `TrialSpec`'s optional budget and turn cap map unset to `unbounded()`. The
+    `TrialSpec` fields themselves become required in slice 4.
+  - `tools/test_driver/test_driver.hpp`: fixture budget unset → `unbounded()`, turn cap
+    `min(fixture, kMaxTurnsPerRun = 32)`, as the fixture format defines; the 13 scenario goldens now record that
+    in `run_started` (read by hand: 12 at 32 turns, `file_fixture_one_sentence` at its fixture's 6).
+  - `tools/cli_chat.cpp` states `unbounded()` for both; the three `*_shell_chat.cpp` tools state
+    `at_most(25)` turns, the builder default they had.
+  - `core/harness.hpp:586` still reads `effective_budget.value_or(0)` for reflection: slice 4's
+    `run_with_bounded_reflection` row.
+- **Audit for passing-for-the-wrong-reason:** a temporary marker printed on every `choice.missing.session`
+  refusal; a full Windows run showed it only in `test_rt_agent_session_choices` (the cases that test it). The
+  marker was removed before commit.
+- **Baseline failures, unchanged by the slice:** Windows: the Docker-backed sandbox and `execution_surface`
+  tests (no Docker daemon) and `test_external_skill_discovery` D6. thnak-server (gcc and clang):
+  `test_json_dump_escape` (RLIMIT_DATA not enforced) and the three containerd tests (socket permission).
+- **Found, not caused, by the slice:** `test_rt_workflow_batch_coalescing` C1 failed 2 of 20 runs under clang
+  (0 of 20 under gcc). Its call counter is a plain `int` bumped by concurrently running fan-out nodes
+  (`tests/workflow/test_rt_workflow_batch_coalescing.cpp:113,129`), a data race in the test; the file and the
+  supervisor are untouched by this slice. Left for its own fix.
+- **gcc/clang only:** designated initializers of `AgentSessionOptions` that leave out trailing members
+  trip `-Wmissing-field-initializers`; every such site states all seven.
+
+## Implementation notes (slice 3b)
+
+- **Gate tests:** `tests/rt/agent_session/test_rt_authority_surfaces.cpp` S1–S7 (A2A both ways, the workflow
+  tag at `initialize()` and per call, `WorkflowChatClient`, the bridge ceiling, zero declared bounds);
+  `tests/protocol/mcp/test_mcp_capability_grant.cpp` rewritten for the two stated modes (claims 1 and 2 now
+  test both options, claim 8 the ceiling); `test_agent_yaml_limits` Y8 flipped to a refusal with a positive
+  control.
+- **Mutants:** 15, one per new check (MCP: trusted accepting a grant, per_request falling back to an empty
+  set, the ceiling; A2A: all four refusals; the workflow refusal at `initialize()` and per call;
+  `WorkflowChatClient`; the bridge's three ceiling rules; zero in `validate_agent_metadata` and in the YAML
+  compiler). All killed. Two needed a second pass: the A2A trusted mutant first failed to build
+  (unreachable code under `/WX`) and was rewritten with an opaque condition; the per-call workflow mutant
+  first survived, because the session's own admission refuses the same run (`run.authority_required`) and
+  `WorkflowResult` carries no error code. S4 now calls the node body directly and checks
+  `workflow.node_requires_authority`.
+- **Choices made here, each narrower than the alternative:**
+  - A `per_request` MCP server refuses a call without a grant on every method, `server/discover` and
+    `tools/list` included -- the same "no read-only exemption" rule the grant checks already had.
+  - `A2aServer` checks expiry itself as well as the session, so a host starter that reaches a session of
+    another mode (or none) is still held to what the server stated.
+  - The bridge's "no declared capabilities cannot be per_request" rule applies to native agents too, not
+    only YAML: an agent that declares nothing would refuse every non-empty authority under per_request.
+    Parsing YAML `capabilities:` into the ceiling stays slice 4.
+  - `WorkflowSupervisor::initialize_refusal()` names only this check's refusal; the older invalid-graph
+    checks still report `workflow_status::invalid` without a code.
+- **Disclosed:** `WorkflowChatClient`'s refusal reaches an `AgentSession` caller as `run.stream_incomplete`,
+  with `workflow_chat_client.per_request_session` in the message: the session wraps every failed stream
+  that way. A `McpAuthority::single_trusted_caller(held)` borrows `held`, as the server already borrowed
+  its `ToolTable`.
+
 ## Round 4 — 2026-10-21, two reviewers
 
 One reviewer attacked the code slice 2 shipped (PR #213), with executed probes; the other attacked revision 4's

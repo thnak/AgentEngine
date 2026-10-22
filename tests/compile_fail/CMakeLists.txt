@@ -324,3 +324,34 @@ agentengine_compile_fail_test(bound_omitted_member
   # deleted constructor".
   EXPECT "deleted"
   LIBS agentengine::core)
+
+# ---- ADR-244 §2.2/§2.3 / G-C1 compile-fail proofs: session choices -----------------------------------
+# A session's authority source, token budget and turn cap, a request authority's expiry and a bridged session's
+# options are all stated or the code does not compile. The positive control states each, in the same shapes.
+agentengine_compile_fail_control(compile_fail_session_choices_positive_control
+  SOURCE session_choices_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(session_initialize_without_choices
+  SOURCE session_initialize_without_choices.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  # cl: "'initialize': function does not take 2 arguments"; gcc: "no matching function for call to
+  # '...::initialize(...)'"; clang: "too few arguments to function call, expected 3, have 2" (it names the
+  # function only in a note, which the regex may not see).
+  EXPECT "initialize|too few arguments to function call, expected 3"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(session_choices_omitted_member
+  SOURCE session_choices_omitted_member.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  EXPECT "deleted"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(request_authority_without_expiry
+  SOURCE request_authority_without_expiry.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  EXPECT "deleted"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_session_options_default
+  SOURCE agent_session_options_default.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  # clang: "call to implicitly-deleted default constructor".
+  EXPECT "deleted"
+  LIBS agentengine::core)

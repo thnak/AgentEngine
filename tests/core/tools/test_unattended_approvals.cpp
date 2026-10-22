@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
@@ -197,7 +198,7 @@ struct RunOutcome {
 template <class Configure>
 RunOutcome run_script(std::vector<ae::Message> script, Configure configure) {
     ToolSession session;
-    session.initialize("s-a", ae::Principal{"p1", ""});
+    session.initialize("s-a", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client().set_script(std::move(script));
     ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
     session.set_capabilities(&held);
@@ -315,7 +316,7 @@ struct Captured {
 template <class Configure>
 Captured capture(Configure configure) {
     LessonSession session;
-    session.initialize("s-d", ae::Principal{"p1", ""});
+    session.initialize("s-d", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     configure(session);
     Captured out;
     session.set_run_event_tap([&out](ae::RunEvent const& e) {
@@ -521,7 +522,7 @@ int main() {
         clearing_calls() = 0;
         always_calls() = 0;
         ClearingSession session;
-        session.initialize("s-c", ae::Principal{"p1", ""});
+        session.initialize("s-c", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({two_calls("clearing_tool", "always_gated"), done()});
         ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
         session.set_capabilities(&held);
@@ -537,7 +538,7 @@ int main() {
         clearing_calls() = 0;
         always_calls() = 0;
         ClearingSession session;
-        session.initialize("s-c2", ae::Principal{"p1", ""});
+        session.initialize("s-c2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({two_calls("clearing_tool", "always_gated"), done()});
         ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});
         session.set_capabilities(&held);

@@ -72,13 +72,22 @@ agent's declaration supplies everything else:
 ```cpp
 #include "agentengine/core/agent_session_bridge.hpp"
 
-AgentSessionOptions opts;
-opts.session_id = "user-42";
-opts.grants     = {cap::NetOut{"api.search.example:443:https", ...}};   // what the caller holds
-opts.chat_client_grants = {cap::Secret{"anthropic-key", {}}};          // the client's own credential
+// ADR-244 §2.2: identity and choices have no defaults -- omitting `choices` does not compile, and an empty
+// session id or principal is refused at bind.
+AgentSessionOptions opts{
+    .session_id         = "user-42",
+    .principal          = {"user-42", "tenant-a"},
+    .choices            = {AuthoritySource::single_trusted_caller(),   // or per_request(ceiling)
+                           Bound<std::uint64_t>::at_most(50'000),      // token budget
+                           Bound<std::uint64_t>::at_most(12)},         // turn cap
+    .grants             = {cap::NetOut{"api.search.example:443:https", ...}},   // what the caller holds
+    .chat_client_grants = {cap::Secret{"anthropic-key", {}}},          // the client's own credential
+    .approve_tools      = std::nullopt,
+    .policy             = {},
+};
 
 auto researcher = make_agent_session<Researcher>(AnthropicChatClient<Store>{...}, opts);
-if (!researcher) { /* a 002 §6 validation failure, or an override that would widen a bound */ }
+if (!researcher) { /* a 002 §6 validation failure, or a choice above the agent's declared bound */ }
 
 // non-streaming -- the whole AgentResponse (usage, structured output)
 result<AgentResponse> r = researcher->run("Compare WASI 0.2 and 0.3.");

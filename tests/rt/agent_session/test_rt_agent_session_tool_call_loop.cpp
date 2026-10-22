@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -267,7 +268,7 @@ int main() {
             ScriptedToolLoopChatClient::make_tool_call_message("c2", "echo_tool", R"({"value":2})"),
             // 3rd chat() call falls through to the script's exhaustion default: plain text.
         });
-        session.initialize("s-r1", Principal{"p", ""});
+        session.initialize("s-r1", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -293,7 +294,7 @@ int main() {
                                                                  call_provenance::text_derived),
             // falls through to plain text next round once the denial is fed back
         });
-        session.initialize("s-r2", Principal{"p", ""});
+        session.initialize("s-r2", Principal{"p", ""}, ae_test::trusted_unbounded());
         // Grant the capability WriteTool needs -- the denial under test must come from step 5
         // (approval), not from step 4 (missing capability), or this wouldn't isolate must-fix #1.
         CapabilitySet const held = CapabilitySet::grant_root(
@@ -320,7 +321,7 @@ int main() {
             ScriptedToolLoopChatClient::make_tool_call_message("c1", "failing_tool", "{}"),
             // falls through to plain text next round -- proving the loop continued past the failure
         });
-        session.initialize("s-r3", Principal{"p", ""});
+        session.initialize("s-r3", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -338,8 +339,7 @@ int main() {
         Session session;
         ScriptedToolLoopChatClient& client = session.emplace_chat_client();
         client.set_always_tool_call("echo_tool");  // always succeeds -- never converges on its own
-        session.initialize("s-r4", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/3);
+        session.initialize("s-r4", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/3));
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -360,8 +360,7 @@ int main() {
         Session session;
         ScriptedToolLoopChatClient& client = session.emplace_chat_client();
         client.set_always_tool_call("write_tool");  // needs FsWrite -- denied at step 4 with no grant
-        session.initialize("s-r5", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/3);
+        session.initialize("s-r5", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/3));
         // Deliberately no set_capabilities() call -- capabilities_ stays nullptr.
 
         auto r = drive(session.start_run(StartRun{user_message("go")}));
@@ -385,7 +384,7 @@ int main() {
         client.set_scripted_responses({
             ScriptedToolLoopChatClient::make_tool_call_message("c1", "echo_tool", R"({"value":1})"),
         });
-        session.initialize("s-r6", Principal{"p", ""});
+        session.initialize("s-r6", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 

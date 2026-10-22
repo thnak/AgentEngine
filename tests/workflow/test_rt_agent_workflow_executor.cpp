@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -158,7 +159,7 @@ int main() {
     // ---- T1: AgentExecutorBodyTag's positive control ----------------------------------------------
     {
         ScriptedSession session;
-        session.initialize("t1", Principal{"p1", ""});
+        session.initialize("t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
 
         ExecutorBody agent_body = agent_session_as_executor_body(session);
         check(agent_body.target<AgentExecutorBodyTag>() != nullptr,
@@ -192,7 +193,7 @@ int main() {
     // ---- T3: a real end-to-end dispatch through a scripted AgentSession ---------------------------
     {
         ScriptedSession session;
-        session.initialize("t3", Principal{"p3", ""});
+        session.initialize("t3", Principal{"p3", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_message("agent-said-hello"), Usage{1, 1, 0, 0, 0.0}}});
 
@@ -215,7 +216,7 @@ int main() {
     // ---- T4: a declared ceiling the granted CapabilitySet does not satisfy -> invalid -------------
     {
         ScriptedSession session;
-        session.initialize("t4", Principal{"p4", ""});
+        session.initialize("t4", Principal{"p4", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_message("x"), Usage{}}});
 
         Workflow wf;
@@ -241,7 +242,7 @@ int main() {
     // ---- T5: cyclic reuse within ONE run accumulates real conversation history --------------------
     {
         ScriptedSession session;
-        session.initialize("t5", Principal{"p5", ""});
+        session.initialize("t5", Principal{"p5", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {text_message("round-one"), Usage{}},
             {text_message("round-two"), Usage{}},
@@ -271,7 +272,7 @@ int main() {
     // ---- real dispatch, the surviving delivery's result is still recorded. ------------------------
     {
         ScriptedSession session;
-        session.initialize("t6", Principal{"p6", ""});
+        session.initialize("t6", Principal{"p6", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_message("survivor"), Usage{}}});
 
         Workflow wf;
@@ -305,7 +306,7 @@ int main() {
     // ---- and the surviving real payload (not a failure marker) reaches the downstream sink. -------
     {
         ScriptedSession session;
-        session.initialize("t7", Principal{"p7", ""});
+        session.initialize("t7", Principal{"p7", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_message("survivor-2"), Usage{}}});
 
         Workflow wf;
@@ -352,7 +353,7 @@ int main() {
         wf.bound.max_rounds = 6;
 
         ScriptedSession session1;
-        session1.initialize("t8-session-1", Principal{"p8a", ""});
+        session1.initialize("t8-session-1", Principal{"p8a", ""}, ae_test::trusted_unbounded());
         session1.emplace_chat_client().set_script({{text_message("pre-checkpoint"), Usage{}}});
 
         WorkflowSupervisor sup1;
@@ -372,7 +373,7 @@ int main() {
         // adapter's own CALLER CONTRACT (rt/agent_workflow_executor.hpp), not something
         // restore_from_record() does for you.
         ScriptedSession session2;
-        session2.initialize("t8-session-2", Principal{"p8b", ""});
+        session2.initialize("t8-session-2", Principal{"p8b", ""}, ae_test::trusted_unbounded());
         session2.emplace_chat_client().set_script({{text_message("post-checkpoint"), Usage{}}});
 
         WorkflowSupervisor sup2;

@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
@@ -301,7 +302,7 @@ int main() {
     // ---- P1: a real tool_call_delta event, correct call_id and text ------------------------------
     {
         Session session;
-        session.initialize("p1", Principal{"p", ""});
+        session.initialize("p1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "progress_tool", R"({"noop":true})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -337,7 +338,7 @@ int main() {
     // ---- P2 (positive control): a silent tool produces no tool_call_delta event ------------------
     {
         Session session;
-        session.initialize("p2", Principal{"p", ""});
+        session.initialize("p2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "silent_tool", R"({"noop":true})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -361,7 +362,7 @@ int main() {
     // ---- P3: two sequential calls in ONE round each get their OWN correctly-tagged call_id --------
     {
         Session session;
-        session.initialize("p3", Principal{"p", ""});
+        session.initialize("p3", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {two_tool_call_response("c1", "c2", "progress_tool", R"({"noop":true})"),
              Usage{1, 1, 0, 0, 0.0}},

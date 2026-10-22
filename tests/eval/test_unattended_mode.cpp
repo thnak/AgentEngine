@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
@@ -102,7 +103,7 @@ struct Captured {
 template <class Configure>
 Captured capture(Configure configure) {
     LessonSession session;
-    session.initialize("s-l", ae::Principal{"p1", ""});
+    session.initialize("s-l", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     configure(session);
     Captured out;
     session.set_run_event_tap([&out](ae::RunEvent const& e) {

@@ -189,6 +189,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -274,7 +275,17 @@ public:
     using Impl = std::function<task<agentengine::result<ExecutorOutcome>>(agentengine::Message const&,
                                                                          agentengine::EffectContext&)>;
 
-    explicit AgentExecutorBodyTag(Impl impl) : impl_(std::move(impl)) {}
+    // ADR-244 §2.3: `source` is the wrapped session's authority source when the tag was built (nullopt: the
+    // session had no choices yet). A workflow sends its nodes no per-request authority, so `initialize()`
+    // refuses a graph with a `per_request` node (`workflow.node_requires_authority`); the body re-checks the
+    // session's source on every call, so a session re-initialised after binding is caught too.
+    // `source_` is assigned only from an engaged `source`: copying a disengaged optional<enum> copies its unset
+    // payload byte, which gcc-14 -O2 reports as -Wmaybe-uninitialized (a -Werror break in CI's Linux leg).
+    AgentExecutorBodyTag(Impl impl, std::optional<agentengine::authority_mode> source) : impl_(std::move(impl)) {
+        if (source.has_value()) source_ = *source;
+    }
+
+    [[nodiscard]] std::optional<agentengine::authority_mode> source() const noexcept { return source_; }
 
     // decisions/archive/ADR-237 §5.1 (Phase G): the tag's own call is a coroutine over `impl_`, awaited
     // (`co_await`, not a bare `co_return impl_(...)`) so a throwing `impl_` surfaces at the caller's
@@ -285,8 +296,21 @@ public:
     }
 
 private:
-    Impl impl_;
+    Impl                                      impl_;
+    std::optional<agentengine::authority_mode> source_;
 };
+
+// ADR-244 §2.3: the refusal an agent node over a `per_request` session gets, at `initialize()` and per call.
+// `node` names it: "agent node '<executor id>'" at initialize(), the session id per call (the body does not know
+// its executor id).
+[[nodiscard]] inline agentengine::error node_requires_authority(std::string_view node) {
+    return agentengine::error{agentengine::failure_class::policy,
+                              std::string(node) +
+                                  " wraps a per_request session, and a workflow sends its nodes no per-request "
+                                  "authority; give the node a single_trusted_caller() session, or start the run "
+                                  "outside the workflow with the caller's authority",
+                              "workflow.node_requires_authority"};
+}
 
 // ADR-235 (OQ-20) §3.1: the body of a `batch: true` function node -- ONE model call, split into the three
 // steps a vendor batch item needs apart: `build` the request, `call` it (the synchronous path), and
@@ -979,6 +1003,13 @@ public:
     [[nodiscard]] agentengine::result<void> enable_batch_coalescing(BatchPolicy policy = {});
     [[nodiscard]] bool batch_coalescing_enabled() const noexcept { return batch_policy_.has_value(); }
 
+    // ADR-244 §2.3: the named refusal behind an `invalid` graph, where the failed check has one -- today
+    // `workflow.node_requires_authority`, an agent node over a `per_request` session. nullopt for a valid graph
+    // and for the older checks, which report `workflow_status::invalid` without a code.
+    [[nodiscard]] std::optional<agentengine::error> const& initialize_refusal() const noexcept {
+        return initialize_refusal_;
+    }
+
     // The jobs the current run is waiting on. Unlocked, like `open_interactions()`.
     [[nodiscard]] std::vector<PendingBatchJob> pending_batches() const;
 
@@ -1400,6 +1431,10 @@ private:
     // plain closure that happens to satisfy `ExecutorBody`'s call signature.
     [[nodiscard]] bool agent_kind_bodies_are_structurally_agent_backed() const;
 
+    // ADR-244 §2.3: the first agent node whose tag records a `per_request` session, as its refusal; nullopt when
+    // there is none.
+    [[nodiscard]] std::optional<agentengine::error> agent_node_authority_refusal() const;
+
     // ADR-157 (issues #33/#38) -- the sub_workflow-kind sibling of the check above. `sub_workflows_`
     // is populated by `bind_sub_workflow()`, called AFTER `initialize()` -- so this check, run
     // DURING `initialize()`, only ever sees bindings from a PRIOR call (or none, for a fresh
@@ -1516,6 +1551,9 @@ private:
     // ADR-157 -- see initialize()'s own comment. Everything `valid_` depends on EXCEPT sub_workflow
     // binding; set once per initialize() call, read by bind_sub_workflow() to recompute `valid_`.
     bool           valid_base_  = false;
+    // ADR-244 §2.3: why the last initialize() left the graph invalid, for the checks that have a named refusal
+    // (today: an agent node over a per_request session). See initialize_refusal().
+    std::optional<agentengine::error> initialize_refusal_;
     std::uint32_t  rounds_      = 0;
     std::uint64_t  run_counter_ = 0;
     std::string    run_id_;

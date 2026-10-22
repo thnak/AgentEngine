@@ -57,6 +57,7 @@
 #include <optional>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
@@ -411,7 +412,7 @@ static_assert(agentengine::ChatClient<GatedChatClient>);
 // default `fail` edge policy used to turn that into `executor_failed`.
 void c7_cancel_during_agent_step_ends_cancelled() {
     AgentSession<GatedChatClient> session;
-    session.initialize("c7-draft", Principal{"owner", ""});
+    session.initialize("c7-draft", Principal{"owner", ""}, ae_test::trusted_unbounded());
     std::shared_ptr<Gate> const gate = session.emplace_chat_client().gate();
 
     Workflow wf;

@@ -1056,6 +1056,10 @@ overloaded(Fs...) -> overloaded<Fs...>;
     return std::visit(
         overloaded{
             [](rp::Empty const&) { return obj({}); },
+            [](rp::RunStarted const& x) {
+                return obj({{"authority", str(x.authority)}, {"token_budget", str(x.token_budget)},
+                            {"max_turns", str(x.max_turns)}});
+            },
             [](rp::RunFailed const& x) {
                 // ADR-198: `stage` only when set, so a failure whose code says it all keeps its old shape.
                 if (x.stage.empty()) return obj({{"error_code", str(x.error_code)}, {"message", str(x.message)}});
@@ -2751,8 +2755,14 @@ private:
         ds->id = "s" + std::to_string(next_session_++);
         ds->fixture = *fixture;
         Session& session = *ds->session;
-        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"}, fixture->token_budget,
-                           std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun));
+        // ADR-244 §2.2: the driver holds its fixture's grants itself; the fixture's turn cap is capped at
+        // kMaxTurnsPerRun and an unset fixture budget is none, as the fixture format defines.
+        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"},
+                           SessionChoices{AuthoritySource::single_trusted_caller(),
+                                          fixture->token_budget ? Bound<std::uint64_t>::at_most(*fixture->token_budget)
+                                                                : Bound<std::uint64_t>::unbounded(),
+                                          Bound<std::uint64_t>::at_most(
+                                              std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun))});
         if (!fixture->instructions.empty()) session.set_static_instructions(fixture->instructions);
         std::shared_ptr<ModelBackend> backend;
         if (fixture->live) {
@@ -3317,8 +3327,11 @@ private:
         step->session_id = f.name + "/" + executor_id;
         Session& session = *step->session;
         Fixture const defaults;
-        session.initialize(step->session_id, workflow_principal("test-driver/" + step->session_id), defaults.token_budget,
-                           kMaxTurnsPerRun);
+        session.initialize(step->session_id, workflow_principal("test-driver/" + step->session_id),
+                           SessionChoices{AuthoritySource::single_trusted_caller(),
+                                          defaults.token_budget ? Bound<std::uint64_t>::at_most(*defaults.token_budget)
+                                                                : Bound<std::uint64_t>::unbounded(),
+                                          Bound<std::uint64_t>::at_most(kMaxTurnsPerRun)});
         session.set_static_instructions("You are the '" + executor_id + "' step of the " + f.name + " workflow.");
         step->script.emplace();
         std::shared_ptr<ModelBackend> backend = std::make_shared<ScriptedBackend>(*step->script);

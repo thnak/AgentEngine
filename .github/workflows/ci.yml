@@ -626,6 +626,13 @@ jobs:
       - name: Run egress test-seam lint
         run: python tools/egress_seam_lint.py
 
+      # ADR-244 G-C11: the tests' session-choice preset (ae_test::) stays in tests/.
+      - name: Test-preset lint self-test
+        run: python tools/test_preset_lint.py --self-test
+
+      - name: Run test-preset lint
+        run: python tools/test_preset_lint.py
+
   milestone-status-lint:
     name: Milestone-status drift lint (ADR-026)
     runs-on: ubuntu-latest

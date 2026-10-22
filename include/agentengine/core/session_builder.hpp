@@ -183,7 +183,10 @@
 //    added, and `max_turns_` now defaults to a FINITE value (25, an arbitrary but reasonable safety net)
 //    instead of mirroring `AgentSession`'s own raw unbounded default -- a deliberate divergence, named
 //    here rather than silently matching the lower-level API. `.max_turns(std::nullopt)` remains a
-//    legitimate way to opt back into genuinely unbounded turns, an explicit host choice. Also found (test
+//    legitimate way to opt back into genuinely unbounded turns, an explicit host choice. [Superseded by
+//    ADR-244 slice 3a: the 25-turn default was itself an engine choice. `.max_turns()`/`.token_budget()`
+//    are gone; `.choices(SessionChoices)` states the authority source, budget and turn cap, and `build()`
+//    without it fails `choice.missing.session`. `Bound::unbounded()` is the explicit form.] Also found (test
 //    -gap, not a functional bug): the design draft's account of `.policy()`/`.approve_tools()` claimed
 //    "proven end to end," but B9/B10 only ever call the extracted `ApprovalDecider`/`PolicyDecider`
 //    directly, never through a live `start_run()` round -- the SAME overclaim shape finding 3 already
@@ -712,7 +715,7 @@ private:
 // at this class's own instantiation with a named diagnostic, not a cascade of opaque errors deep inside
 // `AgentSession<ChatClientT, ...>`.
 //
-// Deliberately duplicates QuickstartSessionBuilder's session_id()/principal()/max_turns()/token_budget()/
+// Deliberately duplicates QuickstartSessionBuilder's session_id()/principal()/choices()/
 // store()/grant()/approve_tools()/policy() rather than sharing them through a common base -- the same,
 // already-named simplification §2b's own comment makes for the identical reason: extracting a shared
 // base would mean touching the already-shipped, already-red-teamed §2a class too, a larger, separate-
@@ -734,16 +737,11 @@ public:
         principal_ = std::move(p);
         return *this;
     }
-    // Same divergence from AgentSession's own raw `std::nullopt` default, and the same reason, as
-    // QuickstartSessionBuilder::max_turns()'s own comment (this file's top comment, finding 7) -- a
-    // scripted ChatClientT that keeps returning an approval-denied tool call can hang a run exactly the
-    // same way a real backend can.
-    RawQuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
-        max_turns_ = n;
-        return *this;
-    }
-    RawQuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
-        token_budget_ = n;
+    // ADR-244 §2.2: where the session's authority comes from, its token budget and its turn cap -- stated,
+    // with no default (this builder's former finite default of 25 turns was an engine choice). build()
+    // fails `choice.missing.session` without it.
+    RawQuickstartSessionBuilder& choices(agentengine::SessionChoices c) {
+        choices_.emplace(std::move(c));
         return *this;
     }
 
@@ -797,6 +795,10 @@ public:
     // `built_` must already read `true` to stop a retry from moving an already-moved-from client into a
     // second session -- the exact hazard this flag exists to prevent in the first place.
     [[nodiscard]] agentengine::result<BundleT> build() {
+        // ADR-244 §2.2: checked first, before anything is consumed.
+        if (!choices_.has_value()) {
+            return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
+        }
         if (built_) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -823,7 +825,7 @@ public:
             agentengine::CapabilitySet::grant_root(std::move(grants_)));
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, token_budget_, max_turns_);
+        session->initialize(session_id_, principal_, *choices_);
         built_ = true;  // see this method's own doc comment for exactly why HERE, not earlier
         session->emplace_chat_client(std::move(client_));
         session->set_capabilities(capabilities.get());
@@ -842,8 +844,7 @@ private:
     std::vector<agentengine::Capability> grants_;
     std::optional<std::vector<std::string>> approved_tool_names_;
     agentengine::PolicyDecider policy_decider_;
-    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
-    std::optional<std::uint64_t> token_budget_;
+    std::optional<agentengine::SessionChoices> choices_;
     bool built_ = false;
 };
 
@@ -968,19 +969,11 @@ public:
         return *this;
     }
 
-    // Red-team finding 7 (header top comment) -- `AgentSession::initialize()`'s raw default is
-    // `std::nullopt` (genuinely unbounded, `agent_session.hpp`'s own `run_rounds()` loop condition:
-    // `!max_turns_.has_value() || turn_index < *max_turns_`). This builder deliberately does NOT mirror
-    // that default -- see `max_turns_`'s own member default below for why -- so these two setters exist
-    // to opt OUT of the safe default, not just to set a value the raw API already defaults to.
-    // `std::nullopt` is a legitimate, explicit choice here (a host who has their own external timeout/
-    // cancellation layer and genuinely wants unbounded turns), not a value that shouldn't be reachable.
-    QuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
-        max_turns_ = n;
-        return *this;
-    }
-    QuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
-        token_budget_ = n;
+    // ADR-244 §2.2: where the session's authority comes from, its token budget and its turn cap -- stated,
+    // with no default (this builder's former finite default of 25 turns was an engine choice). build()
+    // fails `choice.missing.session` without it.
+    QuickstartSessionBuilder& choices(agentengine::SessionChoices c) {
+        choices_.emplace(std::move(c));
         return *this;
     }
 
@@ -1080,6 +1073,10 @@ public:
     // environment variable was unset at build time). MOVES `store_` out (see this file's own top
     // comment on why, and on the resulting single-use behavior change).
     [[nodiscard]] agentengine::result<BundleT> build() {
+        // ADR-244 §2.2: checked first, before anything is consumed.
+        if (!choices_.has_value()) {
+            return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
+        }
         if (!api_key_ref_.has_value()) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -1107,7 +1104,7 @@ public:
                                                          path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, token_budget_, max_turns_);
+        session->initialize(session_id_, principal_, *choices_);
         // Constructs ModelCallGateway<Primary> IN PLACE from (Primary&&, std::tuple<>&&) -- §2a's "one
         // rung above bare" default (retry+circuit-breaker, empty fallback chain, default RetryPolicy/
         // BreakerConfig) -- never a move of an already-built ChatClientT.
@@ -1137,16 +1134,7 @@ private:
     std::vector<agentengine::Capability> grants_;  // explicit .grant() calls only -- see api_key()
     std::optional<std::vector<std::string>> approved_tool_names_;
     agentengine::PolicyDecider policy_decider_;
-    // Red-team finding 7 (header top comment): deliberately DIVERGES from `AgentSession::initialize()`'s
-    // own raw default (`std::nullopt`, genuinely unbounded) -- a live-reproduced hang was found where a
-    // model that keeps retrying an `.approve_tools()`-denied call never terminates the round, and
-    // `Bundle::ask()`'s "bounded resume()" guard (§0b finding 1) does NOT catch this class of hang
-    // (every `chat()` call here is synchronous, so the WHOLE unbounded turn loop runs inside that one
-    // guarded `resume()`, invisible to it). 25 is an arbitrary but reasonable safety net for a
-    // "quickstart" surface whose whole purpose is a safe, working default -- `.max_turns(std::nullopt)`
-    // opts back into genuinely unbounded, an explicit, informed host choice, not the silent default.
-    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
-    std::optional<std::uint64_t> token_budget_;
+    std::optional<agentengine::SessionChoices> choices_;
     std::string host_        = detail::default_endpoint<P>::host;
     std::uint16_t port_      = detail::default_endpoint<P>::port;
     std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;
@@ -1169,7 +1157,7 @@ using AnthropicSessionBuilder = QuickstartSessionBuilder<Provider::anthropic>;
 // sources}` directly in the tuple).
 //
 // Deliberately duplicates QuickstartSessionBuilder's session_id()/principal()/declare_capabilities()/
-// endpoint()/max_turns()/token_budget()/api_key()/store()/api_key_from_env()/grant()/approve_tools()/
+// endpoint()/choices()/api_key()/store()/api_key_from_env()/grant()/approve_tools()/
 // policy() rather than sharing them through a common base -- a real, named simplification, not an
 // oversight: extracting a CRTP mixin would mean touching the already-shipped, already-red-teamed §2a
 // class too, a larger, separate-risk refactor. Named here as a candidate follow-up if red-team finds
@@ -1216,12 +1204,11 @@ public:
         runtime_ = &rt;
         return *this;
     }
-    ComposedQuickstartSessionBuilder& max_turns(std::optional<std::uint64_t> n) {
-        max_turns_ = n;
-        return *this;
-    }
-    ComposedQuickstartSessionBuilder& token_budget(std::optional<std::uint64_t> n) {
-        token_budget_ = n;
+    // ADR-244 §2.2: where the session's authority comes from, its token budget and its turn cap -- stated,
+    // with no default (this builder's former finite default of 25 turns was an engine choice). build()
+    // fails `choice.missing.session` without it.
+    ComposedQuickstartSessionBuilder& choices(agentengine::SessionChoices c) {
+        choices_.emplace(std::move(c));
         return *this;
     }
     ComposedQuickstartSessionBuilder& api_key(agentengine::SecretRef ref) {
@@ -1276,6 +1263,10 @@ public:
     // missing `.providers(...)` all produce a `result<BundleT>` error, never a partially-wired session
     // silently missing its whole history/context slot.
     [[nodiscard]] agentengine::result<BundleT> build() {
+        // ADR-244 §2.2: checked first, before anything is consumed.
+        if (!choices_.has_value()) {
+            return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
+        }
         if (!api_key_ref_.has_value()) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -1308,7 +1299,7 @@ public:
                                                          path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, token_budget_, max_turns_);
+        session->initialize(session_id_, principal_, *choices_);
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
         // Item 6 (docs/planning/agent-spawn-runtime-design-draft.md §4.6, OQ-16) -- see this file's
@@ -1340,8 +1331,7 @@ private:
     std::vector<agentengine::Capability> grants_;
     std::optional<std::vector<std::string>> approved_tool_names_;
     agentengine::PolicyDecider policy_decider_;
-    std::optional<std::uint64_t> max_turns_ = std::uint64_t{25};
-    std::optional<std::uint64_t> token_budget_;
+    std::optional<agentengine::SessionChoices> choices_;
     std::string host_        = detail::default_endpoint<P>::host;
     std::uint16_t port_      = detail::default_endpoint<P>::port;
     std::string path_prefix_ = detail::default_endpoint<P>::path_prefix;

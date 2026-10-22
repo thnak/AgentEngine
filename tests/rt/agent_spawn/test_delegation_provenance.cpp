@@ -49,6 +49,7 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/delegation.hpp"
 #include "agentengine/core/history_provider.hpp"
@@ -317,7 +318,7 @@ ChainResult run_chain(ChainOptions const& opt) {
     (void)registry.register_target("C", std::move(cdesc));
 
     AgentSession<ChainClient, NoSessionState, ChainProvider<0>> a;
-    a.initialize("session-A", Principal{"p-A", "tenant-1"}, opt.a_budget);
+    a.initialize("session-A", Principal{"p-A", "tenant-1"}, ae_test::trusted(opt.a_budget));
     a.emplace_chat_client().label = "A";
     CapabilitySet const held = CapabilitySet::grant_root({cap::AgentCall{"B", trust::SpawnBudget::mint_root(3)},
                                                           cap::AgentCall{"C", trust::SpawnBudget::mint_root(3)}});
@@ -553,7 +554,7 @@ FanResult run_fan(std::uint64_t a_budget, Principal root, ApprovedLessonRegistry
     (void)registry.register_target("C", std::move(cd));
 
     AgentSession<FanClient, NoSessionState, FanProvider> a;
-    a.initialize("session-A", root, a_budget);
+    a.initialize("session-A", root, ae_test::trusted(a_budget));
     a.emplace_chat_client().label = "A";
     CapabilitySet const held = CapabilitySet::grant_root({cap::AgentCall{"B", trust::SpawnBudget::mint_root(3)},
                                                           cap::AgentCall{"C", trust::SpawnBudget::mint_root(3)}});
@@ -1044,7 +1045,7 @@ int main() {
     {
         std::vector<ChatRequest> seen;
         AgentSession<CaptureClient, NoSessionState, HistoryProvider<Window<8>>> node;
-        node.initialize("node-B", Principal{"p-wf", ""});
+        node.initialize("node-B", Principal{"p-wf", ""}, ae_test::trusted_unbounded());
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
         EffectContext ctx;
@@ -1069,7 +1070,7 @@ int main() {
               "assistant turn");
         std::vector<ChatRequest> seen2;
         AgentSession<CaptureClient, NoSessionState, HistoryProvider<Window<8>>> first;
-        first.initialize("node-A", Principal{"p-wf", ""});
+        first.initialize("node-A", Principal{"p-wf", ""}, ae_test::trusted_unbounded());
         first.emplace_chat_client().seen = &seen2;
         auto body2 = rt::agent_session_as_executor_body(first);
         Message user_in;
@@ -1141,7 +1142,7 @@ int main() {
     {
         std::vector<ChatRequest> seen;
         AgentSession<CaptureClient, NoSessionState, HistoryProvider<Window<8>>> node;
-        node.initialize("node-merge", Principal{"p-wf", ""});
+        node.initialize("node-merge", Principal{"p-wf", ""}, ae_test::trusted_unbounded());
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
         EffectContext ctx;
@@ -1303,7 +1304,7 @@ int main() {
         // B3: parallel calls cannot see each other's charges, so they split what is left.
         g_par_seen.clear();
         AgentSession<ParClient, NoSessionState, ParProvider> s;
-        s.initialize("session-par", Principal{"p-par", "t"}, std::optional<std::uint64_t>{1000});
+        s.initialize("session-par", Principal{"p-par", "t"}, ae_test::trusted(std::optional<std::uint64_t>{1000}));
         s.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});
         s.set_capabilities(&held);
@@ -1351,7 +1352,7 @@ int main() {
     {
         // W6 (X2): a failing workflow agent node's spend reaches the workflow's usage and the outer session.
         AgentSession<NodeClient> node;
-        node.initialize("node", Principal{"p-node", ""}, std::optional<std::uint64_t>{100});
+        node.initialize("node", Principal{"p-node", ""}, ae_test::trusted(std::optional<std::uint64_t>{100}));
         auto inner = std::make_shared<rt::WorkflowSupervisor>();
         workflow::Workflow wf;
         wf.id = "x2";
@@ -1363,7 +1364,7 @@ int main() {
         wf.bound.max_rounds = 2;
         inner->initialize(wf, {rt::agent_session_as_executor_body(node)});
         AgentSession<rt::WorkflowChatClient> outer;
-        outer.initialize("outer", Principal{"p-outer", ""}, std::optional<std::uint64_t>{1'000'000});
+        outer.initialize("outer", Principal{"p-outer", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         outer.emplace_chat_client(inner);
         Message in;
         in.role = role::user;
@@ -1383,8 +1384,7 @@ int main() {
     {
         // C2: cancelling a workflow cancels its running agent node (the workflow-node analogue of C1).
         AgentSession<LoopNodeClient, NoSessionState, DangerOnlyProvider> node;
-        node.initialize("loop-node", Principal{"p-loop", ""}, std::optional<std::uint64_t>{1'000'000},
-                        std::optional<std::uint64_t>{8});
+        node.initialize("loop-node", Principal{"p-loop", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}, std::optional<std::uint64_t>{8}));
         auto sup = std::make_shared<rt::WorkflowSupervisor>();
         g_loop_sup = sup.get();
         workflow::Workflow wf;
@@ -1497,7 +1497,7 @@ int main() {
             g_park_enabled = true;
             g_parked = false;
             AgentSession<ParkClient> node;
-            node.initialize("r4-park-node", Principal{"p-r4", ""}, std::optional<std::uint64_t>{1'000'000});
+            node.initialize("r4-park-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
             EffectContext ctx;
             ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
@@ -1523,7 +1523,7 @@ int main() {
             int charges = 0;
             g_park_enabled = false;
             AgentSession<ParkClient> node;
-            node.initialize("r4-ok-node", Principal{"p-r4", ""}, std::optional<std::uint64_t>{1'000'000});
+            node.initialize("r4-ok-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
             EffectContext ctx;
             ctx.charge_delegated_usage = [&charges](Usage const&, std::uint64_t) { ++charges; };
@@ -1637,7 +1637,7 @@ int main() {
         (void)registry.register_target("B", std::move(b));
         (void)registry.register_target("C", std::move(cdesc));
         AgentSession<ChainClient, NoSessionState, ChainProvider<0>> a;
-        a.initialize("session-A", Principal{"p-A", "tenant-1"}, std::uint64_t{10'000'000});
+        a.initialize("session-A", Principal{"p-A", "tenant-1"}, ae_test::trusted(std::uint64_t{10'000'000}));
         a.emplace_chat_client().label = "A";
         CapabilitySet const held = CapabilitySet::grant_root({cap::AgentCall{"B", trust::SpawnBudget::mint_root(3)},
                                                               cap::AgentCall{"C", trust::SpawnBudget::mint_root(3)}});
@@ -1670,7 +1670,7 @@ int main() {
         g_park_enabled = true;
         g_parked = false;
         AgentSession<DiscardStreamClient, NoSessionState, ParkToolProvider> node;
-        node.initialize("r5-w-node", Principal{"p-r5", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r5-w-node", Principal{"p-r5", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         node.set_stream_model_calls(true);
         node.set_stream_retries(1);
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -1743,7 +1743,7 @@ int main() {
         g_r3_calls = 0;
         g_r3_throws = true;
         AgentSession<AlternatingThrowClient> node;
-        node.initialize("r3-throw-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r3-throw-node", Principal{"p-r3", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         rt::WorkflowSupervisor sup;
         workflow::Workflow wf;
         wf.id = "r3-c1";
@@ -1774,7 +1774,7 @@ int main() {
         g_r3_calls = 0;
         g_r3_throws = true;
         AgentSession<AlternatingThrowClient> node;
-        node.initialize("r3-tap-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r3-tap-node", Principal{"p-r3", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
         int sink_events = 0;
         Usage charged{};
@@ -1807,9 +1807,11 @@ int main() {
         g_r3_in = 500;
         g_r3_out = 500;
         AgentSession<SetSpendClient> node;
-        node.initialize("r3-refused-node", Principal{"p-r3", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r3-refused-node", Principal{"p-r3", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         auto const direct = rt::block_on(node.start_run(StartRun{r3_user("an earlier, direct run")}));
-        node.set_require_authority(true);
+        // ADR-244 §2.3 (formerly set_require_authority(true) here): the node now runs per_request, so the workflow,
+        // which carries no authority, is refused before the node's run starts.
+        node.initialize("r3-refused-node", Principal{"p-r3", ""}, ae_test::per_request_no_ceiling(std::optional<std::uint64_t>{1'000'000}));
         rt::WorkflowSupervisor sup;
         sup.initialize(r3_one_node("r3-refused", workflow::executor_kind::agent),
                        {rt::agent_session_as_executor_body(node)});
@@ -1824,12 +1826,12 @@ int main() {
         g_r3_in = 500;
         g_r3_out = 500;
         AgentSession<SetSpendClient> node;
-        node.initialize("r3-node2", Principal{"p-node2", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r3-node2", Principal{"p-node2", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         auto inner = std::make_shared<rt::WorkflowSupervisor>();
         inner->initialize(r3_one_node("r3-c2", workflow::executor_kind::agent),
                           {rt::agent_session_as_executor_body(node)});
         AgentSession<rt::WorkflowChatClient> outer;
-        outer.initialize("r3-outer", Principal{"p-outer", ""}, std::optional<std::uint64_t>{5'000});
+        outer.initialize("r3-outer", Principal{"p-outer", ""}, ae_test::trusted(std::optional<std::uint64_t>{5'000}));
         outer.emplace_chat_client(inner);
         auto const r1 = rt::block_on(outer.start_run(StartRun{r3_user("one")}));
         Usage const u1 = outer.run_usage();
@@ -1851,7 +1853,7 @@ int main() {
         g_r3_out = 500;
         g_r3_spend_calls = 0;
         AgentSession<SetSpendClient> node;
-        node.initialize("r3-shared-node", Principal{"p-shared", ""}, std::optional<std::uint64_t>{100'000'000});
+        node.initialize("r3-shared-node", Principal{"p-shared", ""}, ae_test::trusted(std::optional<std::uint64_t>{100'000'000}));
         auto inner = std::make_shared<rt::WorkflowSupervisor>();
         inner->initialize(r3_one_node("r3-c2-shared", workflow::executor_kind::agent),
                           {rt::agent_session_as_executor_body(node)});
@@ -1860,7 +1862,7 @@ int main() {
         std::atomic<std::uint64_t> total{0};
         auto const drive_outer = [&inner, &wrong, &total](char const* id) {
             AgentSession<rt::WorkflowChatClient> outer;
-            outer.initialize(id, Principal{id, ""}, std::optional<std::uint64_t>{100'000'000});
+            outer.initialize(id, Principal{id, ""}, ae_test::trusted(std::optional<std::uint64_t>{100'000'000}));
             outer.emplace_chat_client(inner);
             for (int i = 0; i < kRuns; ++i) {
                 auto const res = rt::block_on(outer.start_run(StartRun{r3_user("go")}));
@@ -1884,7 +1886,7 @@ int main() {
         g_r3_in = 500;
         g_r3_out = 500;
         AgentSession<SetSpendClient> node;
-        node.initialize("r3-abandon-node", Principal{"p-ab", ""}, std::optional<std::uint64_t>{1'000'000});
+        node.initialize("r3-abandon-node", Principal{"p-ab", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
         auto inner = std::make_shared<rt::WorkflowSupervisor>();
         inner->initialize(r3_one_node("r3-abandon", workflow::executor_kind::agent),
                           {rt::agent_session_as_executor_body(node)});
@@ -1910,7 +1912,7 @@ int main() {
         g_r3_out = 500;
         auto const run_nested = [](std::optional<std::uint64_t> node_budget) {
             AgentSession<SetSpendClient> node;
-            node.initialize("r3-nested-node", Principal{"p-nest", ""}, node_budget);
+            node.initialize("r3-nested-node", Principal{"p-nest", ""}, ae_test::trusted(node_budget));
             auto inner = std::make_shared<rt::WorkflowSupervisor>();
             inner->initialize(r3_one_node("r3-nested-inner", workflow::executor_kind::agent),
                               {rt::agent_session_as_executor_body(node)});

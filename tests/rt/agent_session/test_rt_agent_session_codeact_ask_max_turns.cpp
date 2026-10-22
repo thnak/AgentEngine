@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -185,8 +186,7 @@ int main() {
     // (test_rt_agent_session_tool_call_loop.cpp's own R4/R5) is already held to.
     {
         Session session;
-        session.initialize("codeact-max-turns", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                             /*max_turns=*/std::uint64_t{3});
+        session.initialize("codeact-max-turns", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/std::uint64_t{3}));
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         ScriptedChatClient& client = session.emplace_chat_client();
@@ -235,7 +235,7 @@ int main() {
     // purely so this test itself terminates; the session's OWN bound is genuinely absent.
     {
         Session session;
-        session.initialize("codeact-unbounded", Principal{"p", ""});  // max_turns defaults to nullopt
+        session.initialize("codeact-unbounded", Principal{"p", ""}, ae_test::trusted_unbounded());  // max_turns defaults to nullopt
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         (void)session.emplace_chat_client();
@@ -264,7 +264,7 @@ int main() {
     // record, not silently retain it forever (the leak this file's own top comment documents).
     {
         Session session;
-        session.initialize("codeact-clear-leak", Principal{"p", ""});  // max_turns defaults to nullopt
+        session.initialize("codeact-clear-leak", Principal{"p", ""}, ae_test::trusted_unbounded());  // max_turns defaults to nullopt
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         (void)session.emplace_chat_client();

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "agentengine/core/content_replay_gateway.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/block_on.hpp"
 
@@ -132,7 +133,7 @@ int main() {
         };
 
         AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-        session.initialize("cr-t1", Principal{"p1", ""});
+        session.initialize("cr-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(ScriptedGatewayInner{state}, trigger);
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
@@ -166,7 +167,7 @@ int main() {
         };
 
         AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-        session.initialize("cr-t2", Principal{"p1", ""});
+        session.initialize("cr-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(ScriptedGatewayInner{state}, trigger, /*max_replay_attempts=*/2,
                                      /*session_lifetime_cap=*/8);
 

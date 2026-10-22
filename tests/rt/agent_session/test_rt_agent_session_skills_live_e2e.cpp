@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -286,8 +287,7 @@ int main() {
                                  /*seed=*/std::nullopt, /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false,
                                  /*session_id=*/std::string{"skills-live-e2e-session"});
-    session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
     // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
     // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is

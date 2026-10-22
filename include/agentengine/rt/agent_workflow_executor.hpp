@@ -98,9 +98,18 @@ namespace agentengine::rt {
 template <class ChatClientT, class StateT, class HistoryProviderT>
 [[nodiscard]] AgentExecutorBodyTag agent_session_as_executor_body(
         AgentSession<ChatClientT, StateT, HistoryProviderT>& session) {
+    // ADR-244 §2.3: the tag records the session's authority source now (initialize() refuses a per_request one)
+    // and the body re-checks it on every call, before anything else -- a workflow sends no per-request authority.
+    std::optional<agentengine::authority_mode> const source =
+        session.choices().has_value() ? std::optional(session.choices()->authority.mode()) : std::nullopt;
     return AgentExecutorBodyTag(
         [&session](agentengine::Message const& in,
                    agentengine::EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            if (session.choices().has_value() &&
+                session.choices()->authority.mode() == agentengine::authority_mode::per_request) {
+                co_return std::unexpected(node_requires_authority("the agent node over session '" +
+                                                                  session.session_id() + "'"));
+            }
             // Re-affirmed on every call (idempotent when `ctx.capabilities` is unchanged across a
             // run, the common case) rather than once at bind time, so a caller that mutates
             // `WorkflowSupervisor`'s own `contexts_[i]` between rounds (not done by any code in this
@@ -191,7 +200,8 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
                           "#196: the outcome is handed to the promise after completed(); that must not throw");
             charge_if_unfinished.completed();
             co_return outcome;
-        });
+        },
+        source);
 }
 
 }  // namespace agentengine::rt

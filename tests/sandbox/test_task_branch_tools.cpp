@@ -34,6 +34,7 @@
 //       proving the capability ceiling is load-bearing through the real pipeline, not merely declared.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
@@ -218,7 +219,7 @@ int main() {
 
     // [1] the opt-in gate.
     Session parent;
-    parent.initialize("parent-session", real_owner_principal);
+    parent.initialize("parent-session", real_owner_principal, ae_test::trusted_unbounded());
     {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-parent\") succeeds");
@@ -390,7 +391,7 @@ int main() {
     // [5b] every verb fails closed if bind_task_branch_tools() was never called, even when bound.
     {
         Session unenabled;
-        unenabled.initialize("unenabled-session", Principal{"unenabled-owner", ""});
+        unenabled.initialize("unenabled-session", Principal{"unenabled-owner", ""}, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-unenabled"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-unenabled\") succeeds");
         if (root_r.has_value()) {
@@ -416,7 +417,7 @@ int main() {
         if (tiny_merge_quota_r.has_value()) {
             auto& tiny_merge_quota = *tiny_merge_quota_r;
             Session retry_session;
-            retry_session.initialize("retry-session", real_owner_principal);
+            retry_session.initialize("retry-session", real_owner_principal, ae_test::trusted_unbounded());
             auto root_r = drive(ledger.create_root_branch(owner, "tb-retry"));
             check(root_r.has_value(), "create_root_branch(owner, \"tb-retry\") succeeds");
             if (root_r.has_value()) {
@@ -495,7 +496,7 @@ int main() {
     //     still has an ACTIVE task branch must not silently leak its BranchCost unit.
     {
         Session rebind_leak;
-        rebind_leak.initialize("rebind-leak-session", real_owner_principal);
+        rebind_leak.initialize("rebind-leak-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root1 = drive(ledger.create_root_branch(owner, "tb-rebind-1"));
         check(root1.has_value(), "create_root_branch(owner, \"tb-rebind-1\") succeeds");
         if (root1.has_value()) {
@@ -528,7 +529,7 @@ int main() {
     //     new forked state, not leak it underneath the new fork's own genuine cost.
     {
         Session fork_leak_target;
-        fork_leak_target.initialize("fork-leak-target", Principal{"fork-leak-owner", ""});
+        fork_leak_target.initialize("fork-leak-target", Principal{"fork-leak-owner", ""}, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-fork-leak"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-fork-leak\") succeeds");
         if (root_r.has_value()) {
@@ -557,7 +558,7 @@ int main() {
     // [6] driven through the REAL invoke_tool() pipeline: start/run/commit as three real tool calls.
     {
         Session live;
-        live.initialize("live-session", real_owner_principal);
+        live.initialize("live-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-live"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-live\") succeeds");
         if (root_r.has_value()) {
@@ -625,7 +626,7 @@ int main() {
     // proving the capability ceiling is load-bearing, not merely declared and never actually checked.
     {
         Session ungranted;
-        ungranted.initialize("ungranted-session", real_owner_principal);
+        ungranted.initialize("ungranted-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-ungranted\") succeeds");
         if (root_r.has_value()) {

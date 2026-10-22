@@ -39,6 +39,7 @@
 #endif
 
 #include "agentengine/pal/net.hpp"
+#include "../support/session_choices.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -501,7 +502,7 @@ int main() {
     {
         using Session = rt::AgentSession<CannedChatClient>;
         Session session;
-        session.initialize("s-canary-checkpoint", Principal{"p-test", ""});
+        session.initialize("s-canary-checkpoint", Principal{"p-test", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(rt::StartRun{[] {

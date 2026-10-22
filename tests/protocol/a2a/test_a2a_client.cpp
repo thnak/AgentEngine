@@ -20,6 +20,7 @@
 #include <string>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/protocol/a2a/client.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
@@ -80,7 +81,7 @@ struct Harness {
     Session session;
 
     Harness() {
-        session.initialize("s-a2a-client", ae::Principal{"p-owner", ""});
+        session.initialize("s-a2a-client", ae::Principal{"p-owner", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
     }
 
@@ -124,7 +125,7 @@ a2a::AgentCard make_card(std::string skill_name) {
 
 int main() {
     Harness h;
-    a2a::A2aServer server(h.starter(), "ctx-remote");
+    a2a::A2aServer server(h.starter(), "ctx-remote", ae::AuthoritySource::single_trusted_caller());
 
     a2a::RemoteAgentTransport transport;
     // ADR-061 §7 R1/R2: the transport is what establishes the caller, and every server verb now

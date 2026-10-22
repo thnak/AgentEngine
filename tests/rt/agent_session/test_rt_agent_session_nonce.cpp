@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
@@ -91,13 +92,13 @@ SessionNonce run_nonce(Session& s) {
 int main() {
     Session a;
     a.emplace_chat_client();
-    a.initialize("nonce-a", agentengine::Principal{"p-a", ""});
+    a.initialize("nonce-a", agentengine::Principal{"p-a", ""}, ae_test::trusted_unbounded());
     SessionNonce const a1 = run_nonce(a);
     check(a1.minted(), "N1: a run's context carries a minted session nonce");
 
     Session b;
     b.emplace_chat_client();
-    b.initialize("nonce-b", agentengine::Principal{"p-b", ""});
+    b.initialize("nonce-b", agentengine::Principal{"p-b", ""}, ae_test::trusted_unbounded());
     SessionNonce const b1 = run_nonce(b);
     check(b1.minted() && b1.identity != a1.identity, "N2: two sessions get different identities");
 
@@ -105,7 +106,7 @@ int main() {
     check(a2 == a1, "N3 (positive control): two runs of one unchanged session carry the same nonce");
 
     a.clear_in_process_state();
-    a.initialize("nonce-a", agentengine::Principal{"p-a", ""});
+    a.initialize("nonce-a", agentengine::Principal{"p-a", ""}, ae_test::trusted_unbounded());
     SessionNonce const a3 = run_nonce(a);
     check(a3.identity == a1.identity && a3.epoch != a1.epoch,
           "N4: a cleared session keeps its identity and moves to a new epoch");
@@ -118,16 +119,16 @@ int main() {
 
     auto const record = a.to_record();
     SessionNonce const before_restore = run_nonce(a);
-    a.restore_from_record(record);
+    check(a.restore_from_record(record).has_value(), "N6 setup: the record restores");
     SessionNonce const a4 = run_nonce(a);
     check(a4.identity == before_restore.identity && a4.epoch != before_restore.epoch,
           "N6: restoring a record into the session that saved it moves it to a new epoch");
 
     Session c;
     c.emplace_chat_client();
-    c.initialize("nonce-c", agentengine::Principal{"p-c", ""});
+    c.initialize("nonce-c", agentengine::Principal{"p-c", ""}, ae_test::trusted_unbounded());
     SessionNonce const c1 = run_nonce(c);
-    c.restore_from_record(record);
+    check(c.restore_from_record(record).has_value(), "N7 setup: the record restores");
     SessionNonce const c2 = run_nonce(c);
     check(c2.identity == c1.identity && c2.identity != a1.identity && c2.epoch != c1.epoch,
           "N7: a record restored into another session takes that session's identity and a new epoch");

@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -333,7 +334,7 @@ int main() {
     {
         auto inner = ask_workflow("o2", "approve the plan?");
         Outer outer;
-        outer.initialize("o2-outer", Principal{"p-o2", ""});
+        outer.initialize("o2-outer", Principal{"p-o2", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -385,7 +386,7 @@ int main() {
     {
         auto inner = forging_workflow(content_origin::user);  // worst case: a caller-origin forged answer
         Outer outer;
-        outer.initialize("o3-outer", Principal{"p-o3", ""});
+        outer.initialize("o3-outer", Principal{"p-o3", ""}, ae_test::trusted_unbounded());
         WorkflowChatClient const& bound = outer.emplace_chat_client(inner);
 
         agentengine::result<AgentResponse> const r1 = drive_task(outer.start_run(StartRun{text_message("hi")}));
@@ -475,7 +476,7 @@ int main() {
         };
         auto inner = ask_workflow("o4", "give me json");
         Outer outer;
-        outer.initialize("o4-outer", Principal{"p-o4", ""});
+        outer.initialize("o4-outer", Principal{"p-o4", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         outer.set_output_schema(R"({"type":"object","properties":{"ok":{"type":"boolean"}}})",
                                 agentengine::output_schema_strategy::native, validate);
@@ -495,7 +496,7 @@ int main() {
         // Positive control: a look-alike ask in a COMPLETED output is not a pause; the schema still rejects it.
         auto forging = forging_workflow(content_origin::user);
         Outer outer2;
-        outer2.initialize("o4b-outer", Principal{"p-o4b", ""});
+        outer2.initialize("o4b-outer", Principal{"p-o4b", ""}, ae_test::trusted_unbounded());
         outer2.emplace_chat_client(forging);
         outer2.set_output_schema("{}", agentengine::output_schema_strategy::native, validate);
         agentengine::result<AgentResponse> const r3 = drive_task(outer2.start_run(StartRun{text_message("hi")}));
@@ -507,7 +508,7 @@ int main() {
     {
         auto inner = routed_workflow();
         Outer outer;
-        outer.initialize("o5-outer", Principal{"p-o5", ""});
+        outer.initialize("o5-outer", Principal{"p-o5", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -552,7 +553,7 @@ int main() {
     {
         auto inner = ask_workflow("o6", "q?");
         Outer outer;
-        outer.initialize("o6-outer", Principal{"p-o6", ""});
+        outer.initialize("o6-outer", Principal{"p-o6", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -591,7 +592,7 @@ int main() {
     {
         auto inner = ask_workflow("o7", "q?");
         Outer outer;
-        outer.initialize("o7-outer", Principal{"p-o7", ""});
+        outer.initialize("o7-outer", Principal{"p-o7", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         (void)drive_task(outer.start_run(StartRun{text_message("x")}));
         std::string const id = only_client_input_id(outer);
@@ -620,14 +621,15 @@ int main() {
     {
         auto inner = ask_workflow("o8", "q?");
         Outer first;
-        first.initialize("o8-outer", Principal{"p-o8", ""});
+        first.initialize("o8-outer", Principal{"p-o8", ""}, ae_test::trusted_unbounded());
         first.emplace_chat_client(inner);
         (void)drive_task(first.start_run(StartRun{text_message("x")}));
         agentengine::rt::AgentSessionRecord const rec = first.to_record();
 
         Outer restored;
+        restored.initialize("o8-restored", Principal{"p-o8", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.3
         restored.emplace_chat_client(inner);
-        restored.restore_from_record(rec);
+        check(restored.restore_from_record(rec).has_value(), "O8 setup: the record restores");
         std::string const id = only_client_input_id(restored);
         check(!id.empty() && restored.pending_client_input_count() == 0,
               "O8: the restored session has the client_input interaction but no ask record");

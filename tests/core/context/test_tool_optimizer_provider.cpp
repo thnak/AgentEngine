@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -443,7 +444,7 @@ int main() {
             "'wired into AgentSession's provider slot' claim");
 
         ToolOptSession session;
-        session.initialize("s-tool-optimizer-session", principal);
+        session.initialize("s-tool-optimizer-session", principal, ae_test::trusted_unbounded());
         CapabilitySet const local_held = CapabilitySet::grant_root({});
         session.set_capabilities(&local_held);
         ScriptedCapturingChatClient& client = session.emplace_chat_client();
