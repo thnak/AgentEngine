@@ -26,6 +26,7 @@
 #include <optional>
 #include <thread>
 #include <vector>
+#include "agentengine/core/engine_floor.hpp"
 
 #include "backends/native_jail/seccomp_filter.hpp"
 
@@ -243,8 +244,7 @@ struct FdGuard {
 };
 
 std::string drain_pipe_bounded(int read_fd, std::uint64_t cap_bytes) {
-    constexpr std::uint64_t kDefaultSafetyCapBytes = 16ull * 1024 * 1024;
-    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : kDefaultSafetyCapBytes;
+    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : engine_floor::kOutputDrain.value;  // the named engine floor
     std::string out;
     char buf[4096];
     for (;;) {

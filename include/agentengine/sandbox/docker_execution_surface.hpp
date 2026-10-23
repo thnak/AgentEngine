@@ -89,6 +89,7 @@
 #include <vector>
 
 
+#include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/error.hpp"
 // ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with containerd_execution_surface.hpp.
 #include "agentengine/sandbox/detail/process_identity.hpp"
@@ -114,7 +115,7 @@ namespace docker_cli_detail {
 // memory without limit -- a real, reachable I8 gap (CLAUDE.md "sandbox and hostile tests are
 // resource-capped") the containerd conformer's own header comment already cites this exact rule for,
 // but this file never carried the rule over.
-constexpr int kProcessTimeoutSeconds = 30;
+constexpr int kProcessTimeoutSeconds = static_cast<int>(engine_floor::kCliInvocation.value);  // the named engine floor
 constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB, merged stdout+stderr
 
 #ifdef _WIN32

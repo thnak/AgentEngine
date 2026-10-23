@@ -155,6 +155,33 @@ endforeach()
 add_test(NAME lint_testing_includes
   COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/check_testing_includes.cmake)
 
+# ADR-244 slice 5, G-C12: every sandbox "create" event states its limits. The scan runs over the engine, and over a
+# violating and a conforming fixture: it must fail on the first (its positive control) and pass on the second.
+add_test(NAME lint_sandbox_exec_limits
+  COMMAND ${CMAKE_COMMAND} "-DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src"
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_sandbox_exec_limits.cmake)
+add_test(NAME lint_sandbox_exec_limits_rejects_violation
+  COMMAND ${CMAKE_COMMAND} -DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/tests/fixtures/sandbox_exec_scan/bad
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_sandbox_exec_limits.cmake)
+set_tests_properties(lint_sandbox_exec_limits_rejects_violation PROPERTIES WILL_FAIL TRUE)
+add_test(NAME lint_sandbox_exec_limits_accepts_conforming
+  COMMAND ${CMAKE_COMMAND} -DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/tests/fixtures/sandbox_exec_scan/good
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_sandbox_exec_limits.cmake)
+
+# ADR-244 §2.2 / G-C8 (slice 6): `build_default_sandbox_registry` stays deleted. The scan runs over the engine, tools and
+# examples, and over a violating and a conforming fixture (the first must fail it, the second pass).
+add_test(NAME lint_no_default_sandbox_registry
+  COMMAND ${CMAKE_COMMAND}
+          "-DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/include;${PROJECT_SOURCE_DIR}/src;${PROJECT_SOURCE_DIR}/tools;${PROJECT_SOURCE_DIR}/examples"
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_no_default_sandbox_registry.cmake)
+add_test(NAME lint_no_default_sandbox_registry_rejects_use
+  COMMAND ${CMAKE_COMMAND} -DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/tests/fixtures/default_registry_scan/bad
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_no_default_sandbox_registry.cmake)
+set_tests_properties(lint_no_default_sandbox_registry_rejects_use PROPERTIES WILL_FAIL TRUE)
+add_test(NAME lint_no_default_sandbox_registry_accepts_comment
+  COMMAND ${CMAKE_COMMAND} -DSCAN_ROOTS=${PROJECT_SOURCE_DIR}/tests/fixtures/default_registry_scan/good
+          -P ${PROJECT_SOURCE_DIR}/cmake/check_no_default_sandbox_registry.cmake)
+
 # ---- ADR-182 §16: one ctest per checked-in scenario, replayed with the scripted model (no network,
 # no Claude). Scenarios are exported by the test driver (scenario_export), usually by a Claude tester
 # sub-agent -- including from live-model runs, whose observed answers become the script.

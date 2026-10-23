@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c) and 4 (4a, 4b, 4c) built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c), 4 (4a, 4b, 4c), most of 5 (caps, engine floors, grant parser, SandboxExec limits) and part of 6 (registry by registration, secret prefix) built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -328,12 +328,56 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      parser (the bridge already refuses such an agent without one, `choice.missing.capability_ceiling`). Tests:
      `test_session_builder` B26-B33, `test_rt_spawn_authority` P4, `test_agent_yaml_limits` Y9,
      `test_agent_yaml_compiler` F-3b/F-3c.
-5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12):** `Bound` fields, backends read
-   `limit()`, every substitution site in the planning log removed or named as an engine floor, the
-   declarative grant parser, `SandboxExec` `limits`.
-6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10):** registry by registration, `create()`
+5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12)** (built: caps, floors, grant parser,
+   `SandboxExec` `limits`; the time-limit row and part of the substitution list remain, below):
+   - **Caps.** Every quantity on `cap::FsRead`, `FsWrite`, `NetOut`, `Exec` and `NativeExec` is a `cap::Limit`
+     (`Bound<std::uint64_t>`; the 32-bit `file_count_cap` and `max_processes` widen to it, and the parser refuses a
+     `max_processes` above 2^32-1 where a Job Object takes a 32-bit count). `std::optional` "unset is uncapped" is
+     gone; `Bound::covers` and `Bound::tighter` are exactly the old `cap_covers` and `cap_meet` rules, so attenuation
+     and clamping behave as before and an omitted cap is a compile error. The CRTP tags take a required `BoundValue`
+     per cap (`FsRead<"work", unbounded()>`, `FsWrite<"work", at_most(n), unbounded()>`,
+     `NativeExec<"node", "work", cpu, wall, memory[, live, session_wall, max_processes]>`; the held-shell pair defaults
+     to `unbounded()` because it is inert unless `live` is true and a live grant that leaves either unbounded is
+     refused at use). `capability_from_kind` states `unbounded()` in the one place a kind-only widest shape is meant.
+   - **Declarative grant.** `trust/grant_limit.hpp` parses a cap as a positive integer or the word `unbounded`
+     (`choice.missing.grant.<field>`, `choice.zero_bound`, `grant_limit.invalid`); `parse_native_exec_grant` requires
+     `cpu_ms_cap`, `wall_ms_cap` and `memory_bytes_cap`, and the held-shell pair when `live_session` is true.
+     Wiring this parser behind a YAML `capabilities:` block (so a `per_request` YAML agent can declare a ceiling)
+     is still open: the bridge refuses such an agent without one, as before.
+   - **Engine floors.** `core/engine_floor.hpp` names each host-safety bound kept under `unbounded()`: process output
+     drains (native process, Windows and Linux jail, Kata) 16 MiB, a one-shot native process's wall clock 5 min, a
+     held native shell's job memory 1 GiB, a container CLI invocation 30 s, an Anthropic request's `max_tokens` 4096.
+     Each site reads the table's constant (no local literal), `describe()` renders "unbounded (engine floor 16 MiB)",
+     and `test_engine_floor` E1-E3 prove the table complete and the Anthropic and CLI applications equal to it.
+   - **Recorded as enforced (G-C12).** `SandboxExec::limits` is stated on every "create" event (the mediated Python
+     worker, the held native shell, the live shell, the PDF extractor's worker); `lint_sandbox_exec_limits` scans the
+     engine for a "create" emitter without one and carries a violating-fixture control that must fail.
+   - **Not done in this slice (named, not hidden).** The time-limit row of §2.2 -- `rt::HttpOptions::total_timeout{0}` and
+     `EffectContext::deadline{}` -- stays: 413 `EffectContext` constructions default the deadline, and making it
+     required needs the per-call deadline to be a stated choice on `SessionChoices` first (who states it for a tool
+     call a session issues). Likewise `HistoryProvider<Window<0>>`, `ScopeOptions::max_concurrency = 0`,
+     `PluginManifest::memory_bytes_limit/wall_ms_limit = 0`, `MountSpec::quota_bytes = 0` (enforced nowhere),
+     `SandboxMount::guest_path_prefix ""` and `cap::Clock{}` (resolution 0 = finest) from the planning-log list are
+     unchanged. Each is a default someone did not choose and each is listed in ADR-242 §3a as such.
+   Tests: `compile_fail` `cap_rejects_*` (one control), `test_native_exec_capability` N13/N14,
+   `test_capped_grant_admission`, `test_engine_floor`, `lint_sandbox_exec_limits*`.
+6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10)** (built: the registry, the secret prefix;
+   the rest remains, below): registry by registration, `create()`
    factories with pinned images, cgroup root, provider Runtime (coordinated with ADR-237's #180/#182),
    `EnvSecretSource::create`, `cap::UnmediatedShell{surface, network}`, the containerd host bind.
+   - **Built.** `build_default_sandbox_registry`, its library and its test are deleted (G-C8): a host registers each
+     backend it chose by name (`tests/sandbox/test_real_backend_registration.cpp` shows the wiring for the real
+     conformers, with the wasm-below-native-jail ranking guard and Kata registered `named_only`), and
+     `lint_no_default_sandbox_registry` fails if the identifier is used again (a violating fixture is its control).
+     `EnvSecretSource` has no default prefix and `create("")` is `secret.empty_prefix`
+     (`test_secret_store` A3b, `compile_fail` `env_secret_source_no_default`).
+   - **Not built, each needs live infrastructure to prove and is left rather than written unproven.**
+     `KataBackend::create(config)` with a digest-pinned image (`sandbox.image_not_pinned`; G-C9) needs a pulled image's
+     real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag; the Docker and
+     containerd `isolation` as `Bound` limits and the containerd host bind through `authorize_spec` (§2.5) need the
+     Linux container hosts; `cap::UnmediatedShell{surface, network}` (G-C10) rides on those; the Linux jail's cgroup
+     root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
+     there, not duplicated here.
 
 Each slice updates ADR-242 §3a in the same commit (a closed cell moves to "engine enforces" and cites its test,
 G-R12) and amends the specs that state the old defaults (002 §3, 008 §2, 014's termination bound, 020 §4).

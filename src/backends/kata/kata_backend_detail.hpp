@@ -36,6 +36,7 @@
 #include <tuple>
 #include <vector>
 
+#include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/json_value.hpp"
 
 extern char** environ;
@@ -49,12 +50,12 @@ namespace {
 // `kDefaultSafetyCapBytes` (linux_native_jail_backend.cpp) -- a host-safety cap independent of and
 // underneath any future `SandboxSpec::limits`/`output_discipline.hpp` wiring, not a substitute for
 // either.
-constexpr std::size_t kOutputSafetyCapBytes = 16ull * 1024 * 1024;
+constexpr std::size_t kOutputSafetyCapBytes = engine_floor::kOutputDrain.value;  // the named engine floor
 
 // Red-team finding #2 (BLOCKING, verified by execution -- a hung/slow `ctr` call had no bound at
 // all, including inside destroy()'s own cleanup sequence). No `SandboxSpec`/`ResourceLimits` axis
 // covers this -- it bounds THIS backend's own host-side subprocess wait, not guest wall-clock time.
-constexpr int kProcessTimeoutSeconds = 30;
+constexpr int kProcessTimeoutSeconds = static_cast<int>(engine_floor::kCliInvocation.value);  // the named engine floor
 
 struct ProcessOutcome {
     int exit_code = -1;

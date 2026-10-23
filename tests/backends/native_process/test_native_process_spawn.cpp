@@ -20,6 +20,12 @@ using namespace agentengine::native_process;
 
 namespace {
 
+// ADR-244 slice 5: a request states each cap; these tests state `unbounded()` unless they exercise one.
+NativeExecRequest unlimited_request() {
+    using B = agentengine::Bound<std::uint64_t>;
+    return NativeExecRequest{{}, {}, {}, B::unbounded(), B::unbounded(), B::unbounded()};
+}
+
 int g_failures = 0;
 #define AE_CHECK(cond, label)                                                                    \
     do {                                                                                          \
@@ -92,7 +98,7 @@ int main() {
 
     // ---- S1: mandatory cwd -- fails closed rather than falling back to an ambient directory ------
     {
-        NativeExecRequest req;
+        auto req = unlimited_request();
         req.program_path = cmd_exe_path();
         req.argv = {req.program_path, "/c", "echo", "hi"};
         req.cwd = "";  // deliberately empty
@@ -105,11 +111,11 @@ int main() {
     // ---- S2 (positive control): a real spawn round-trip captures stdout and exit code -----------
     {
         std::string const tmp_dir = std::filesystem::temp_directory_path().string();
-        NativeExecRequest req;
+        auto req = unlimited_request();
         req.program_path = cmd_exe_path();
         req.argv = {req.program_path, "/c", "echo", "hello-native-process-spawn"};
         req.cwd = tmp_dir;
-        req.wall_ms_cap = 10000;
+        req.wall_ms_cap = agentengine::Bound<std::uint64_t>::at_most(10000);
         auto outcome = spawn_native_process(req);
         AE_CHECK(outcome.has_value(), "S2: a real spawn against cmd.exe succeeds");
         if (outcome.has_value()) {
@@ -123,11 +129,11 @@ int main() {
     // ---- S3: a nonzero exit code is faithfully reported ------------------------------------------
     {
         std::string const tmp_dir = std::filesystem::temp_directory_path().string();
-        NativeExecRequest req;
+        auto req = unlimited_request();
         req.program_path = cmd_exe_path();
         req.argv = {req.program_path, "/c", "exit", "3"};
         req.cwd = tmp_dir;
-        req.wall_ms_cap = 10000;
+        req.wall_ms_cap = agentengine::Bound<std::uint64_t>::at_most(10000);
         auto outcome = spawn_native_process(req);
         AE_CHECK(outcome.has_value(), "S3: spawn succeeds even though the child exits nonzero");
         if (outcome.has_value()) {
@@ -141,7 +147,7 @@ int main() {
     // ceiling even when the caller never set wall_ms_cap -- "never literally unbounded".
     {
         std::string const tmp_dir = std::filesystem::temp_directory_path().string();
-        NativeExecRequest req;
+        auto req = unlimited_request();
         req.program_path = ping_exe_path();
         // A long-running, deterministic real process that reads no stdin at all (so this test does
         // not depend on any stdin/console-handle inheritance behavior) -- 60 pings a second apart
@@ -151,7 +157,7 @@ int main() {
         // wall_ms_cap left unset -- the internal safety ceiling (5 minutes) is far too slow for a
         // test; explicitly set a short one instead to prove the MECHANISM (not the specific
         // default) actually kills a hung process rather than blocking the test suite forever.
-        req.wall_ms_cap = 500;
+        req.wall_ms_cap = agentengine::Bound<std::uint64_t>::at_most(500);
         auto const start = std::chrono::steady_clock::now();
         auto outcome = spawn_native_process(req);
         auto const elapsed = std::chrono::steady_clock::now() - start;

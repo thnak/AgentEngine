@@ -268,7 +268,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
@@ -460,9 +460,9 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount_b).has_value(),
                  "setup: tenant-b's corpus worktree bootstraps independently");
 
-        ae::cap::FsRead const  read_a{mount_a.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_a{mount_a.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_a{mount_a.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
-        ae::cap::FsRead const  read_b{mount_b.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_b{mount_b.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_b{mount_b.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         // SEPARATE indices, one per tenant's corpus -- population of an index is the caller's own
@@ -556,7 +556,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
@@ -625,7 +625,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
@@ -696,7 +696,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R12 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
@@ -808,7 +808,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R14 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
@@ -877,7 +877,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R15 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;

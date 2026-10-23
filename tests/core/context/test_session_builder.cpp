@@ -354,7 +354,7 @@ int main() {
         // itself is still movable (only QuarantineSecretStore, B7 below, genuinely needs the emplace
         // shape), so passing an already-constructed instance here works too, exercised deliberately to
         // prove the emplace-style `.store()` still accepts this call shape, not just default-args ones.
-        builder.store(AgentEngineSecretStore(std::make_unique<EnvSecretSource>()));
+        builder.store(AgentEngineSecretStore(std::move(*EnvSecretSource::create(kLegacyEnvSecretPrefix))));
         auto built = builder.session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "the generic .api_key()+.store() path builds successfully against the "
                                   "REAL production AgentEngineSecretStore, not just InMemorySecretStore");
@@ -375,7 +375,7 @@ int main() {
 #else
         setenv("QUARK_SECRET_prod-api-key-2", "sk-prod-value-abc", 1);
 #endif
-        AgentEngineSecretStore store(std::make_unique<EnvSecretSource>());
+        AgentEngineSecretStore store(std::move(*EnvSecretSource::create(kLegacyEnvSecretPrefix)));
         CapabilitySet const held =
             CapabilitySet::grant_root({Capability{cap::Secret{"prod-api-key-2", std::chrono::seconds{0}}}});
         EffectContext ctx;

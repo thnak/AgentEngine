@@ -76,6 +76,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/error.hpp"
 // ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with docker_execution_surface.hpp.
 #include "agentengine/sandbox/detail/process_identity.hpp"
@@ -91,7 +92,7 @@ namespace agentengine {
 
 namespace ctr_cli_detail {
 
-constexpr int kProcessTimeoutSeconds = 30;
+constexpr int kProcessTimeoutSeconds = static_cast<int>(engine_floor::kCliInvocation.value);  // the named engine floor
 // Machine-safety cap (CLAUDE.md "sandbox and hostile tests are resource-capped") -- a runaway
 // producer inside a contained process must not be able to grow this host process's memory unbounded.
 constexpr std::size_t kOutputSafetyCapBytes = 1u << 20;  // 1 MiB per stream

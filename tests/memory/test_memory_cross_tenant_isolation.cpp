@@ -69,8 +69,8 @@ int main() {
     ae::Mount const mount_a = ae::memory_mount(tenant_a_admin);
     ae::Mount const mount_b = ae::memory_mount(tenant_b_admin);
     ae::cap::FsWrite const write_a{ae::memory_mount_id(tenant_a_admin), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
-    ae::cap::FsRead const  read_a{ae::memory_mount_id(tenant_a_admin), "", std::nullopt};
-    ae::cap::FsRead const  read_b{ae::memory_mount_id(tenant_b_admin), "", std::nullopt};
+    ae::cap::FsRead const  read_a{ae::memory_mount_id(tenant_a_admin), "", ae::cap::Limit::unbounded()};
+    ae::cap::FsRead const  read_b{ae::memory_mount_id(tenant_b_admin), "", ae::cap::Limit::unbounded()};
 
     ae::MemoryItem secret{};
     secret.kind    = ae::memory_kind::episodic;

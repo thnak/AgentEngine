@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "agentengine/core/context_provider.hpp"
+#include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/async_quota.hpp"
@@ -74,8 +75,8 @@ class NativeShellSessionProvider {
 public:
     static constexpr std::string_view name = "native_shell_session";
     static constexpr std::string_view tool_name = "native_shell_session_exec";
-    // The job's memory cap when the grant names none: never literally unbounded (native_process_spawn.cpp's rule).
-    static constexpr std::uint64_t kDefaultMemoryBytes = 1024ull * 1024 * 1024;
+    // The job's memory limit under `memory_bytes_cap: unbounded` is the named engine floor
+    // `engine_floor::kShellMemory` (core/engine_floor.hpp), disclosed rather than a literal here.
 
     // `owned_patterns`/`mount_root`/`worktree_mount_id` mean what they mean for the one-shot native providers
     // (native_providers.hpp). `limits` is required: an invalid one leaves the provider contributing nothing.
@@ -178,16 +179,18 @@ private:
         auto view = timers_.view(event, reason, clock_());
         bool close = timers_.should_close(lifetime_, view, limits_);
         // §9: the grant's session_wall_ms_cap is an extra ceiling on the shell's whole life.
-        if (applied_ && view.alive_for.count() >= static_cast<std::int64_t>(*applied_->session_wall_ms_cap)) close = true;
+        if (applied_ && view.alive_for.count() >= static_cast<std::int64_t>(applied_->session_wall_ms_cap.limit().value_or(trust::kMaxLiveSessionWallMs))) {
+            close = true;
+        }
         if (cpu_exhausted()) close = true;
         if (close) terminate();
     }
 
     // §15.5 M5: the grant's cpu_ms_cap, as a cumulative budget over the shell's whole life, read from the host.
     [[nodiscard]] bool cpu_exhausted() const {
-        if (!applied_.has_value() || !applied_->cpu_ms_cap.has_value()) return false;
+        if (!applied_.has_value() || applied_->cpu_ms_cap.is_unbounded()) return false;
         auto const used = session_->cpu_ms_used();
-        return !used.has_value() || *used >= *applied_->cpu_ms_cap;  // unreadable accounting fails closed
+        return !used.has_value() || *used >= *applied_->cpu_ms_cap.limit();  // unreadable accounting fails closed
     }
 
     [[nodiscard]] result<NativeShellSessionReply> exec(NativeShellSessionArgs args, EffectContext& ctx) {
@@ -236,13 +239,13 @@ private:
         auto const now = clock_();
         auto const alive = timers_.view(lifetime_event::shell_exec, std::nullopt, now).alive_for;
         auto deadline = deadline_;
-        if (grant->wall_ms_cap.has_value()) {
+        if (!grant->wall_ms_cap.is_unbounded()) {
             // Saturate before the signed conversion: a cap above 2^62 ms must not wrap negative (§15.5).
-            auto const cap_ms = std::min<std::uint64_t>(*grant->wall_ms_cap, trust::kMaxLiveSessionWallMs);
+            auto const cap_ms = std::min<std::uint64_t>(*grant->wall_ms_cap.limit(), trust::kMaxLiveSessionWallMs);
             deadline = std::min(deadline, std::chrono::milliseconds(static_cast<std::int64_t>(cap_ms)));
         }
         auto const session_left =
-            std::chrono::milliseconds(static_cast<std::int64_t>(*applied_->session_wall_ms_cap)) - alive;
+            std::chrono::milliseconds(static_cast<std::int64_t>(*applied_->session_wall_ms_cap.limit())) - alive;
         deadline = std::min(deadline, std::max(session_left, std::chrono::milliseconds(1)));
 
         auto outcome = session_->exec(args.command, deadline);
@@ -284,11 +287,11 @@ private:
         NativeShellSessionConfig config;
         config.pwsh_path = it->resolved_path;
         config.cwd = mount_root_;
-        config.memory_bytes = grant.memory_bytes_cap.value_or(kDefaultMemoryBytes);
-        config.max_processes = *grant.max_processes;
+        config.memory_bytes = grant.memory_bytes_cap.limit().value_or(engine_floor::kShellMemory.value);
+        config.max_processes = static_cast<std::uint32_t>(std::min<std::uint64_t>(*grant.max_processes.limit(), UINT32_MAX));
         // §15.5 M5: the grant's CPU cap applies to the held shell as a cumulative job limit (all processes, the
         // shell's whole life), as the one-shot providers apply it per process tree.
-        config.cpu_ms = grant.cpu_ms_cap;
+        config.cpu_ms = grant.cpu_ms_cap.limit();
         // A snapshot is replayed only into a shell the same principal opens (§15.5).
         bool const replay = last_snapshot_.has_value() && snapshot_owner_ == principal_key(ctx.principal);
         auto opened = session_->open(config, replay ? &*last_snapshot_ : nullptr);
@@ -296,12 +299,16 @@ private:
         audit.exec_id = "native-live-shell-" + std::to_string(++opens_);
         audit.backend = "native-live-shell";
         audit.stage = "create";
+        audit.limits = "cpu_ms=" + grant.cpu_ms_cap.describe() + " wall_ms=" + grant.wall_ms_cap.describe() +
+                       " memory_bytes=" + engine_floor::describe(grant.memory_bytes_cap, engine_floor::kShellMemory) +
+                       " session_wall_ms=" + grant.session_wall_ms_cap.describe() +
+                       " max_processes=" + grant.max_processes.describe();
         audit.ok = opened.has_value();
         audit.error_code = opened.has_value() ? std::string{} : opened.error().code;
         ctx.sandbox_exec_sink(run_event_kind::sandbox_exec_finished, std::move(audit));
         if (!opened.has_value()) return std::unexpected(opened.error());
         applied_ = grant;
-        applied_->memory_bytes_cap = config.memory_bytes;
+        applied_->memory_bytes_cap = cap::Limit::at_most(config.memory_bytes);
         timers_.opened(clock_());
         return {};
     }

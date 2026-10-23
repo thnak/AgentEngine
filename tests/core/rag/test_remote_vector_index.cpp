@@ -221,7 +221,7 @@ int main() {
         ae::Principal const principal{"p-suspend", "tenant-1"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         SuspendingDenseIndex index{parker};
@@ -272,7 +272,7 @@ int main() {
         ae::Principal const principal{"p-suspend-hybrid", "tenant-1"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         SuspendingDenseIndex  dense{parker};

@@ -364,6 +364,48 @@ agentengine_compile_fail_test(bound_omitted_member
   EXPECT "deleted"
   LIBS agentengine::core)
 
+# ---- ADR-244 §2.2 / G-C1, G-C2 compile-fail proofs: capability caps (slice 5) -------------------------
+# Every cap on cap::FsRead/FsWrite/NetOut/Exec/NativeExec is a stated `cap::Limit` (CRTP: a `BoundValue`). The control
+# states each; a missing cap, a bare integer, a CRTP tag without one and `at_most(0)` do not compile.
+agentengine_compile_fail_control(compile_fail_cap_caps_positive_control
+  SOURCE cap_caps_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(cap_rejects_omitted_cap
+  SOURCE cap_rejects_omitted_cap.cpp
+  CONTROL compile_fail_cap_caps_positive_control
+  EXPECT "deleted"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(cap_rejects_raw_integer_cap
+  SOURCE cap_rejects_raw_integer_cap.cpp
+  CONTROL compile_fail_cap_caps_positive_control
+  # cl: C2440 "cannot convert from 'int' to 'agentengine::Bound<uint64_t>'"; gcc: "could not convert"; clang: "no
+  # viable conversion ... to 'Limit'".
+  EXPECT "convert|Bound|Limit"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(cap_rejects_untagged_crtp_cap
+  SOURCE cap_rejects_untagged_crtp_cap.cpp
+  CONTROL compile_fail_cap_caps_positive_control
+  # cl: C2976 "too few template arguments"; gcc: "wrong number of template arguments"; clang: "too few template arguments".
+  EXPECT "template argument"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(cap_rejects_zero_crtp_cap
+  SOURCE cap_rejects_zero_crtp_cap.cpp
+  CONTROL compile_fail_cap_caps_positive_control
+  EXPECT "at_most|constant"
+  LIBS agentengine::core)
+
+# ---- ADR-244 §2.2 / G-C1 (slice 6): an EnvSecretSource states its prefix ------------------------------
+agentengine_compile_fail_control(compile_fail_env_secret_source_positive_control
+  SOURCE env_secret_source_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(env_secret_source_no_default
+  SOURCE env_secret_source_no_default.cpp
+  CONTROL compile_fail_env_secret_source_positive_control
+  # cl: C2248 "cannot access private member" / C2512 "no appropriate default constructor"; gcc: "is private within
+  # this context"; clang: "calling a private constructor" / "no matching constructor".
+  EXPECT "private|no appropriate default|no matching|deleted"
+  LIBS agentengine::core)
+
 # ---- ADR-244 §2.2/§2.3 / G-C1 compile-fail proofs: session choices -----------------------------------
 # A session's authority source, token budget and turn cap, a request authority's expiry and a bridged session's
 # options are all stated or the code does not compile. The positive control states each, in the same shapes.

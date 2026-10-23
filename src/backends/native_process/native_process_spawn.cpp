@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/core/engine_floor.hpp"
 #include "backends/native_jail/job_object_limits.hpp"
 
 namespace agentengine::native_process {
@@ -83,8 +84,7 @@ std::wstring build_minimal_environment_block() {
 // project's own established convention rather than shared, since each backend's HANDLE lifetime
 // story differs slightly.
 std::string drain_pipe_bounded(HANDLE read_handle, std::uint64_t cap_bytes, bool& out_truncated) {
-    constexpr std::uint64_t kDefaultSafetyCapBytes = 16ull * 1024 * 1024;  // 16 MiB, host-safety floor
-    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : kDefaultSafetyCapBytes;
+    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : engine_floor::kOutputDrain.value;  // the named engine floor
 
     std::string out;
     char buf[4096];
@@ -223,9 +223,9 @@ result<NativeExecOutcome> spawn_native_process(NativeExecRequest const& request)
     // this file's own "never literally unbounded" rule for output above.
     native_jail::JobObjectLimits job;
     ResourceLimits limits;
-    limits.cpu_ms = request.cpu_ms_cap.value_or(0);
-    limits.wall_ms = request.wall_ms_cap.value_or(0);
-    limits.memory_bytes = request.memory_bytes_cap.value_or(0);
+    limits.cpu_ms = request.cpu_ms_cap.limit().value_or(0);  // ResourceLimits' own 0 == "no job limit" (unbounded)
+    limits.wall_ms = request.wall_ms_cap.limit().value_or(0);
+    limits.memory_bytes = request.memory_bytes_cap.limit().value_or(0);
     auto job_created = job.create(limits);
     if (!job_created.has_value()) {
         TerminateProcess(pi.hProcess, 1);
@@ -239,11 +239,10 @@ result<NativeExecOutcome> spawn_native_process(NativeExecRequest const& request)
 
     ResumeThread(pi.hThread);
 
-    constexpr std::uint64_t kDefaultWallMsSafetyCeiling = 5ull * 60 * 1000;  // 5 minutes
     auto wait_result = job.wait_or_kill(
         pi.hProcess,
         std::chrono::milliseconds{static_cast<std::int64_t>(
-            request.wall_ms_cap.value_or(kDefaultWallMsSafetyCeiling))});
+            request.wall_ms_cap.limit().value_or(engine_floor::kProcessWall.value))});
     if (!wait_result.has_value()) return std::unexpected(wait_result.error());
     native_jail::JobWaitOutcome const& wait_outcome = *wait_result;
 

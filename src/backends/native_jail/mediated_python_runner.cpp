@@ -104,6 +104,7 @@ result<void> MediatedPythonRunner::initialize(CapabilitySet const& host_grant, E
     audit.exec_id = "mediated-python-create";
     audit.backend = "mediated-python";
     audit.stage = "create";
+    audit.limits = describe_limits(spec.limits);
     audit.ok = created.has_value();
     audit.error_code = created.has_value() ? std::string{} : created.error().code;
     ctx.sandbox_exec_sink(run_event_kind::sandbox_exec_finished, std::move(audit));

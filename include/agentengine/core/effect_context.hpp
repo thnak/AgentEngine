@@ -322,11 +322,14 @@ struct EffectContext {
 // ae-naming-lint: allow SandboxExecScope — ADR-170 (issue #64); 013 §1 names the event pair, 027 has not been updated to list this producer-side helper
 class SandboxExecScope {
 public:
-    SandboxExecScope(EffectContext& ctx, std::string exec_id, std::string backend, std::string stage)
+    // `limits` (ADR-244 slice 5, G-C12): what a "create" stage was started under; every "create" bracket states it.
+    SandboxExecScope(EffectContext& ctx, std::string exec_id, std::string backend, std::string stage,
+                     std::string limits = {})
         : ctx_(ctx) {
         payload_.exec_id = std::move(exec_id);
         payload_.backend = std::move(backend);
         payload_.stage   = std::move(stage);
+        payload_.limits  = std::move(limits);
         run_event_payload::SandboxExec started = payload_;
         started.ok         = true;   // meaningless on a started event; see SandboxExec's own comment
         started.error_code = {};

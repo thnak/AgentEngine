@@ -135,9 +135,27 @@ public:
 // Prefix kept unchanged from the original Quark-backed adapter (not renamed to e.g. `AE_SECRET_`) --
 // this is a behavior-preserving port; changing an env-var convention a real deployment's config may
 // already rely on is out of scope for removing an incidental dependency.
+//
+// ADR-244 slice 6 (ADR-242 §2: nothing is chosen implicitly): the prefix is STATED, never defaulted, and an empty one
+// is refused. With `""` every secret name would read the environment variable of that exact name (`PATH`, `HOME`, a
+// cloud credential): the prefix is what scopes the source to secrets meant for it, so a source with none is ambient
+// authority over the whole environment block. A deployment that already uses the historical prefix states
+// `kLegacyEnvSecretPrefix`.
+inline constexpr std::string_view kLegacyEnvSecretPrefix = "QUARK_SECRET_";  // ae-naming-lint: allow kLegacyEnvSecretPrefix — ADR-244 slice 6 (the historical prefix, named so a host states it)
+
 class EnvSecretSource final : public SecretSource {
 public:
-    explicit EnvSecretSource(std::string_view prefix = "QUARK_SECRET_") : prefix_(prefix) {}
+    // `secret.empty_prefix` when `prefix` is empty. There is no default constructor and no default prefix.
+    [[nodiscard]] static result<std::unique_ptr<EnvSecretSource>> create(std::string_view prefix) {
+        if (prefix.empty()) {
+            return std::unexpected(error{failure_class::contract,
+                                         "EnvSecretSource needs a non-empty prefix (e.g. kLegacyEnvSecretPrefix or "
+                                         "MYAPP_SECRET_): an empty prefix would resolve any environment variable "
+                                         "by name, which is ambient authority over the whole environment",
+                                         "secret.empty_prefix"});
+        }
+        return std::unique_ptr<EnvSecretSource>(new EnvSecretSource(prefix));
+    }
 
     [[nodiscard]] result<Secret> get(std::string_view name) override {
         std::string var;
@@ -167,6 +185,8 @@ public:
     }
 
 private:
+    explicit EnvSecretSource(std::string_view prefix) : prefix_(prefix) {}
+
     std::string prefix_;
 };
 

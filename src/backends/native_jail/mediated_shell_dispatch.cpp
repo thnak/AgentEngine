@@ -112,7 +112,7 @@ result<void> require_fs_write(EffectContext const& ctx, FileSystemAdapter& fs, s
     if (!granted) {
         return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
     }
-    if (!enforce_quota || (!!granted->quota_bytes.is_unbounded() && !!granted->file_count_cap.is_unbounded())) {
+    if (!enforce_quota || (granted->quota_bytes.is_unbounded() && granted->file_count_cap.is_unbounded())) {
         return {};
     }
     auto usage = fs.usage();

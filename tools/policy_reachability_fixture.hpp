@@ -243,7 +243,8 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
     // the opt-in is monotone, so a grant without it never yields a held shell.
     {
         auto doc = yaml::parse(
-            "program: pwsh\nworktree_mount: workdir\nlive_session: true\nsession_wall_ms_cap: 3600000\n"
+            "program: pwsh\nworktree_mount: workdir\ncpu_ms_cap: unbounded\nwall_ms_cap: unbounded\n"
+            "memory_bytes_cap: unbounded\nlive_session: true\nsession_wall_ms_cap: 3600000\n"
             "max_processes: 64\n");
         auto grant = doc ? trust::parse_native_exec_grant(*doc)
                          : agentengine::result<cap::NativeExec>(std::unexpected(doc.error()));
