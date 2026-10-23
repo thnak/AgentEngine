@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <string_view>
 
-#include "agentengine/core/bound.hpp"
+#include "agentengine/core/bound_value.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/fixed_string.hpp"

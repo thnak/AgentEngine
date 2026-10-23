@@ -50,6 +50,7 @@
 #include "agentengine/rt/standing_effect_registry.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/core/choice_error.hpp"
 
 // ADDENDUM: docs/planning/agent-spawn-runtime-design-draft.md §4.2/§9 RC-1 (OpenQuestions.md OQ-14,
 // `agent.spawn`'s nested-run mechanism) adds ONE new, additive-only, opt-in member to this class --

@@ -9,7 +9,7 @@
 
 #include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/yaml_value.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 namespace {
 

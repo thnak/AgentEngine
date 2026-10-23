@@ -4,6 +4,7 @@
 // rule they name and not for some unrelated reason.
 
 #include "agentengine/core/agent_registry.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 
 using namespace agentengine;
 
