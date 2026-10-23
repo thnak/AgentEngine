@@ -329,7 +329,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `test_session_builder` B26-B33, `test_rt_spawn_authority` P4, `test_agent_yaml_limits` Y9,
      `test_agent_yaml_compiler` F-3b/F-3c.
 5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12)** (built: caps, floors, grant parser,
-   `SandboxExec` `limits`, the stated defaults; the time-limit row and the YAML `capabilities:` block remain, below):
+   `SandboxExec` `limits`, the stated defaults, the YAML `capabilities:` block; the time-limit row remains, below):
    - **Caps.** Every quantity on `cap::FsRead`, `FsWrite`, `NetOut`, `Exec` and `NativeExec` is a `cap::Limit`
      (`Bound<std::uint64_t>`; the 32-bit `file_count_cap` and `max_processes` widen to it, and the parser refuses a
      `max_processes` above 2^32-1 where a Job Object takes a 32-bit count). `std::optional` "unset is uncapped" is
@@ -342,8 +342,14 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
    - **Declarative grant.** `trust/grant_limit.hpp` parses a cap as a positive integer or the word `unbounded`
      (`choice.missing.grant.<field>`, `choice.zero_bound`, `grant_limit.invalid`); `parse_native_exec_grant` requires
      `cpu_ms_cap`, `wall_ms_cap` and `memory_bytes_cap`, and the held-shell pair when `live_session` is true.
-     Wiring this parser behind a YAML `capabilities:` block (so a `per_request` YAML agent can declare a ceiling)
-     is still open: the bridge refuses such an agent without one, as before.
+   - **YAML `capabilities:` block.** `trust/capability_yaml.hpp` parses `spec.capabilities` into the `cap::` values the C++
+     form produces (015 §2): a mapping of kind (`fs_read`, `fs_write`, `net_out`, `native_exec`) to a non-empty list of
+     entries, each with every limit stated (a positive integer or `unbounded`), a stated non-empty path prefix (`/` is the
+     whole mount), a non-empty host list, and `methods` as a list or the word `any`. An unknown kind or key, a wrong
+     type, a missing field or a `0` is refused with a named error (`capabilities.unsupported_kind`, `capabilities.invalid`,
+     `choice.missing.grant.<key>`, `choice.zero_bound`); the other kinds have no document spelling yet. The compiler
+     sets `capability_ceiling` from it, so a `per_request` YAML agent that declares a ceiling is accepted by the bridge
+     and one that declares none is still refused (`test_capability_yaml` Y1-Y5, `test_agent_yaml_compiler` F-7).
    - **Engine floors.** `core/engine_floor.hpp` names each host-safety bound kept under `unbounded()`: process output
      drains (native process, Windows and Linux jail, Kata) 16 MiB, a one-shot native process's wall clock 5 min, a
      held native shell's job memory 1 GiB, a container CLI invocation 30 s, an Anthropic request's `max_tokens` 4096.
@@ -369,7 +375,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
    - **Not done in this slice (named, not hidden).** The time-limit row of §2.2 -- `rt::HttpOptions::total_timeout{0}` and
      `EffectContext::deadline{}` -- stays: 413 `EffectContext` constructions default the deadline, and making it
      required needs the per-call deadline to be a stated choice on `SessionChoices` first (who states it for a tool
-     call a session issues). The YAML `capabilities:` block (above) is the other open item.
+     call a session issues).
    Tests: `compile_fail` `cap_rejects_*` (one control), `test_native_exec_capability` N13/N14,
    `test_capped_grant_admission`, `test_engine_floor`, `lint_sandbox_exec_limits*`.
 6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10)** (built: the registry, the secret prefix;
