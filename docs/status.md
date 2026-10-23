@@ -1,6 +1,6 @@
 # Project status: what is built, what you can use, what comes next
 
-**As of 2026-10-23** (`main` at the merge of PR #221, with PRs #222 and the YAML capabilities block in review). This page is a
+**As of 2026-10-23** (`main` at the merge of PR #222; the YAML capabilities block is in review). This page is a
 dated snapshot, not a spec. When it disagrees with an ADR or a test, the ADR and the test win; every claim below
 cites where to check it. It is kept honest the way ADR-242 §3a is: a thing is listed as "enforced" only when a test in
 this repository proves it.
@@ -20,7 +20,7 @@ you trust the caller. Do not use it yet where the person at the other end is an 
 | Platforms built in CI | Windows (MSVC, clang-cl, each Release and sanitized), Linux (gcc-14) | `.github/workflows/ci.yml` |
 | Test suite | about 445 tests on Linux gcc, 519 on Windows MSVC, on the 2026-10-23 tree | `ctest` |
 | Known environment-only failures | 3 containerd tests (they need the containerd socket, and pass under `sudo`), `test_json_dump_escape` (a memory-cap check that depends on the host) | [thnak-server runbook](guides/thnak-server-runbook.md) |
-| Required-choices work (ADR-244) | Judged 2026-10-23. Slices 1-4, most of 5 and part of 6 are merged; the stated defaults (PR #222) and the YAML `capabilities:` block are in review | [ADR-244](../decisions/ADR-244-required-choices-step-1b.md) §5 |
+| Required-choices work (ADR-244) | Judged 2026-10-23. Slices 1-5 and part of 6 are merged (PR #222 landed the stated defaults); the YAML `capabilities:` block is in review | [ADR-244](../decisions/ADR-244-required-choices-step-1b.md) §5 |
 | Direction (ADR-242) | Judged 2026-10-20 | [ADR-242](../decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) |
 | Public API and layers (ADR-243) | Proposed, not Judged; the prove phase runs per migration slice | [ADR-243](../decisions/ADR-243-layer-and-developer-api.md) |
 | Protocol conformance | MCP client role, measured 2026-08: non-auth 75/75, auth 3/49 (no OAuth client yet), so the MCP gate is **not met** | [README](../README.md), RFC 011 §10 |
@@ -40,11 +40,12 @@ A missing choice is a compile error or a named startup error, not a default. Enf
   `unbounded()`, never `0` and never omitted. Engine floors on the host-safety bounds kept under `unbounded()` are
   named and recorded on the sandbox "create" event (`core/engine_floor.hpp`).
 - The secret environment prefix and a registered (not defaulted) sandbox backend.
-- **In review, not yet on `main`:** plugin manifest limits, scope concurrency, the history window (`UnboundedWindow`),
-  the clock resolution and an empty mount grant prefix (PR #222); and a declarative agent's capability ceiling in
-  YAML (`capabilities:`), parsed strictly into the same values the C++ form produces.
+- Plugin manifest limits, scope concurrency, the history window (`UnboundedWindow`), the clock resolution and an empty
+  mount grant prefix (PR #222).
+- **In review, not yet on `main`:** a declarative agent's capability ceiling in YAML (`capabilities:`), parsed
+  strictly into the same values the C++ form produces.
 
-Two of the values in PR #222 are **declared only**: `MountSpec::quota_bytes` and `ClockResolution` are accepted but no
+Two of those values are **declared only**: `MountSpec::quota_bytes` and `ClockResolution` are accepted but no
 backend applies them yet (ADR-242 §3a).
 
 ### Execution backends
