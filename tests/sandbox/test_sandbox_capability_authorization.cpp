@@ -32,7 +32,8 @@ int g_failures = 0;
     } while (0)
 
 MountSpec host_mount(std::string host_path, std::string guest_path, bool read_write) {
-    MountSpec m;
+    MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
+                   .quota_bytes = cap::Limit::unbounded()};
     m.source     = std::move(host_path);
     m.guest_path = std::move(guest_path);
     m.read_write = read_write;
@@ -78,7 +79,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
         spec.mounts.push_back(host_mount("/srv/allowed/data", "/work", true));
         auto r = authorize_spec(spec);
         AE_CHECK(r.has_value(), "G2: a covering grant authorizes a matching mount");
@@ -88,7 +89,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
         spec.mounts.push_back(host_mount("/srv/other", "/work", true));
         auto r = authorize_spec(spec);
         AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
@@ -99,7 +100,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", /*read_write=*/false}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", /*read_write=*/false}}});
         spec.mounts.push_back(host_mount("/srv/allowed/data", "/work", /*read_write=*/true));
         auto r = authorize_spec(spec);
         AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_not_authorized",
@@ -109,7 +110,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", /*read_write=*/true}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", /*read_write=*/true}}});
         spec.mounts.push_back(host_mount("/srv/allowed/data", "/work", /*read_write=*/false));
         auto r = authorize_spec(spec);
         AE_CHECK(r.has_value(), "G4b: a read_write grant covers a read-only mount request");
@@ -121,7 +122,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
         spec.mounts.push_back(host_mount("/srv/allowed/../../../etc", "/work", true));
         auto r = authorize_spec(spec);
         AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_path_invalid",
@@ -132,7 +133,7 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
         spec.mounts.push_back(host_mount("/srv/allowed/data", "/work/../escape", true));
         auto r = authorize_spec(spec);
         AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_path_invalid",
@@ -225,8 +226,8 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/one", "", true}},
-             Capability{cap::SandboxMount{"/srv/two", "", true}}});
+            {Capability{cap::SandboxMount{"/srv/one", "/", true}},
+             Capability{cap::SandboxMount{"/srv/two", "/", true}}});
         spec.mounts.push_back(host_mount("/srv/two/data", "/work", true));
         auto r = authorize_spec(spec);
         AE_CHECK(r.has_value(), "G13: coverage is checked against every grant, not just the first");
@@ -238,8 +239,9 @@ int main() {
     {
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
-        MountSpec blob_mount;
+            {Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
+        MountSpec blob_mount{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         blob_mount.source     = BlobRef{};
         blob_mount.guest_path = "/blob";
         spec.mounts.push_back(blob_mount);
@@ -251,11 +253,24 @@ int main() {
     // every host path (`path_prefix_covers("")` is true), an unnamed "everything"; it is refused.
     {
         SandboxSpec spec;
-        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"", "", true}}});
+        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"", "/", true}}});
         spec.mounts.push_back(host_mount("/etc", "/g", false));
         auto r = authorize_spec(spec);
         AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_grant_invalid",
                  "G15: an empty-prefix SandboxMount grant is refused, not treated as covering everything");
+    }
+
+    // G15b (ADR-244 slice 5): the guest side is stated too. An empty guest prefix covers every guest path; it is
+    // refused, and "/" (every guest path, said out loud) admits the same mount.
+    {
+        SandboxSpec spec;
+        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"/srv/allowed", "", true}}});
+        spec.mounts.push_back(host_mount("/srv/allowed", "/g", false));
+        auto r = authorize_spec(spec);
+        AE_CHECK(!r.has_value() && r.error().code == "sandbox.mount_grant_invalid",
+                 "G15b: an empty guest_path_prefix is refused, not treated as covering every guest path");
+        spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{"/srv/allowed", "/", true}}});
+        AE_CHECK(authorize_spec(spec).has_value(), "G15b positive control: the stated prefix \"/\" admits it");
     }
 
     // G16 (ADR-244 §2.4): host paths compare in one normal form. On Windows `\` and `/` are the same

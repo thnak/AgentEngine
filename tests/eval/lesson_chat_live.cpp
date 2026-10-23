@@ -268,7 +268,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
 
     using Client = ActionLoggingClient<openai::OpenAIChatClient<InMemorySecretStore>>;
     using MemProvider = MemoryProvider<NoneSummarizer, InMemoryWorktreeObjectStore, rt::InMemoryAppendLogStore>;
-    using Composed = ComposedContextProvider<HistoryProvider<Window<0>>, MemProvider, ev::EvalStubToolProvider>;
+    using Composed = ComposedContextProvider<HistoryProvider<UnboundedWindow>, MemProvider, ev::EvalStubToolProvider>;
     rt::AgentSession<Client, rt::NoSessionState, Composed> session;
     session.initialize("lesson-chat", store.principal(), ae_test::trusted(std::nullopt, /*max_turns=*/8));
     session.set_capabilities(&held);
@@ -276,7 +276,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
     MemProvider memory{store.object_store(), store.ref_store(), store.mount(), store.read_cap(), store.write_cap(),
                        NoneSummarizer{}, 3};
     if (auto engaged = session.history_provider().engage(
-            std::tuple{HistoryProvider<Window<0>>{}, std::move(memory), ev::EvalStubToolProvider{std::move(tools)}});
+            std::tuple{HistoryProvider<UnboundedWindow>{}, std::move(memory), ev::EvalStubToolProvider{std::move(tools)}});
         !engaged) {
         std::fprintf(stderr, "lesson_chat_live: %s\n", engaged.error().message.c_str());
         return 2;

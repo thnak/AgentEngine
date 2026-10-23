@@ -73,7 +73,7 @@ EffectContext make_ctx() {
 }
 
 std::vector<Capability> const kAllRequiredCapabilities = {
-    cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{},
+    cap::Clock{cap::ClockResolution::finest()}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{},
 };
 
 }  // namespace
@@ -168,12 +168,13 @@ int main() {
     AE_CHECK(handle.has_value(), "setup: create() succeeds");
     if (!handle) return 1;
 
-    PluginManifest manifest;
+    PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                            .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
     manifest.id = "bridge-test";
     manifest.version = "0.1.0";
     manifest.world = plugin_world::tool;
     manifest.requested_capabilities = kAllRequiredCapabilities;
-    manifest.memory_bytes_limit = spec.limits.memory_bytes;
+    manifest.memory_bytes_limit = cap::Limit::at_most(spec.limits.memory_bytes);
 
     auto loaded = backend->load_component(*handle, manifest, bytes, load_ctx);
     AE_CHECK(loaded.has_value(), "setup: load_component() succeeds");

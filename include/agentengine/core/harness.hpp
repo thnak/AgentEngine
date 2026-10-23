@@ -22,7 +22,7 @@
 //                       resumed with `resolve()`) instead of being denied; never approves anything itself.
 //   telemetry      ON   in-memory counters over the run-event stream + an optional host sink, capped by the
 //                       agent's own `Telemetry<Capture>` (none -> off; metadata_only -> payloads stripped).
-//   compaction     OFF  `HistoryT` (a compile-time strategy) -- `HistoryProvider<Window<0>>` keeps all of it;
+//   compaction     OFF  `HistoryT` (a compile-time strategy) -- `HistoryProvider<UnboundedWindow>` keeps all of it;
 //                       `Window<N>`/`Summarize<N, S>` drop or rewrite content, so the host chooses them.
 //   skills         OFF  a host-constructed `SkillsProvider<>` (host-chosen sources); never a directory scan.
 //                       Advertisement only: a skill's `allowed-tools` unlocks nothing in a harness session.
@@ -632,7 +632,7 @@ template <class HistoryT, class ChatClientT>
 
 // The harness over any compiled `AgentMetadata` (a 015 document via `compile_agent_document()`, I6) --
 // `bind_agent_session()` plus the harness pieces. `HistoryT` is the compaction strategy (ADR-234 §4).
-template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
+template <class HistoryT = HistoryProvider<UnboundedWindow>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> bind_harness_session(AgentMetadata const& meta, ChatClientT client,
@@ -646,7 +646,7 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
 
 // The native entry point: `register_agent<A>()` + the typed `OutputSchema<T>` validator (as
 // `make_agent_session<A>()`) + the harness pieces.
-template <class A, class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
+template <class A, class HistoryT = HistoryProvider<UnboundedWindow>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts,

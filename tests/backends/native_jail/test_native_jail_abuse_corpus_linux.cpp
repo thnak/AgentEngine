@@ -82,7 +82,7 @@ int main() {
         LinuxNativeJailBackend backend;
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
-            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         ae_test::grant_listed_mounts(contained_spec);
@@ -142,7 +142,7 @@ int main() {
         LinuxNativeJailBackend backend;
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
-            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         ae_test::grant_listed_mounts(contained_spec);
@@ -192,7 +192,7 @@ int main() {
         LinuxNativeJailBackend backend;
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
-            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(short_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(short_spec);
         ae_test::grant_listed_mounts(short_spec);
@@ -250,7 +250,7 @@ int main() {
         LinuxNativeJailBackend backend;
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
-            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(contained_spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(contained_spec);
         ae_test::grant_listed_mounts(contained_spec);

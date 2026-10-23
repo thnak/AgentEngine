@@ -68,7 +68,7 @@ int main() {
         NativeJailBackend backend;
         SandboxSpec spec;
         spec.mounts.push_back(
-            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;  // generous: classification parity, not tightest-bound timing
         spec.limits.memory_bytes = c.memory_bytes;

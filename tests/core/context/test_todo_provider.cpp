@@ -244,7 +244,7 @@ int main() {
     {
         ae::TodoProvider composed_provider;
         std::vector<ae::ContextProviderDescriptor> contributors;
-        contributors.push_back(ae::make_context_provider_descriptor(ae::HistoryProvider<ae::Window<0>>{},
+        contributors.push_back(ae::make_context_provider_descriptor(ae::HistoryProvider<ae::UnboundedWindow>{},
                                                                        ae::ContextBudget{0}));
         contributors.push_back(
             ae::make_context_provider_descriptor(std::move(composed_provider), ae::ContextBudget{0}));

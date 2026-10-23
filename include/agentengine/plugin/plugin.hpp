@@ -18,8 +18,10 @@ struct PluginManifest {  // ae-naming-lint: allow PluginManifest — pre-existin
     std::string              version;   // semver
     plugin_world              world;
     std::vector<Capability>   requested_capabilities;  // request, not grant (009 §3)
-    std::uint64_t             memory_bytes_limit = 0;
-    std::uint64_t             wall_ms_limit = 0;
+    // ADR-244 slice 5: stated, not defaulted. A manifest says what the plugin is held to, or `unbounded()`; an
+    // omitted field does not compile and `0` is not "no limit" (`check_bound` refuses `at_most(0)`).
+    cap::Limit                memory_bytes_limit;
+    cap::Limit                wall_ms_limit;
 };
 
 } // namespace agentengine

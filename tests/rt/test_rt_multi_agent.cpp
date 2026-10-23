@@ -260,11 +260,11 @@ int main() {
     {
         EffectContext ctx;  // default-constructed -- capabilities is a null shared_ptr
         SessionFactory<CannedChatClient, agentengine::rt::NoSessionState,
-                       agentengine::HistoryProvider<agentengine::Window<0>>>
+                       agentengine::HistoryProvider<agentengine::UnboundedWindow>>
             factory = [](Principal const& p) {
                 auto s = std::make_unique<
                     AgentSession<CannedChatClient, agentengine::rt::NoSessionState,
-                                 agentengine::HistoryProvider<agentengine::Window<0>>>>();
+                                 agentengine::HistoryProvider<agentengine::UnboundedWindow>>>();
                 s->initialize("child", p, ae_test::trusted_unbounded());
                 s->emplace_chat_client();
                 return s;
@@ -354,10 +354,10 @@ int main() {
         ctx.principal     = Principal{"caller", "tenant-a"};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
         SessionFactory<CannedChatClient, agentengine::rt::NoSessionState,
-                       agentengine::HistoryProvider<agentengine::Window<0>>>
+                       agentengine::HistoryProvider<agentengine::UnboundedWindow>>
             null_factory = [](Principal const&) {
                 return std::unique_ptr<AgentSession<CannedChatClient, agentengine::rt::NoSessionState,
-                                                     agentengine::HistoryProvider<agentengine::Window<0>>>>{};
+                                                     agentengine::HistoryProvider<agentengine::UnboundedWindow>>>{};
             };
         auto res = drive(agentengine::rt::multi_agent::spawn(
             ctx, null_factory, StartRun{user_message("hi")}, std::vector<agentengine::Capability>{}));
@@ -566,7 +566,7 @@ int main() {
     // R1/R2: spawn_with_retry().
     {
         using ChildSession = AgentSession<FlakyChatClient, agentengine::rt::NoSessionState,
-                                           agentengine::HistoryProvider<agentengine::Window<0>>>;
+                                           agentengine::HistoryProvider<agentengine::UnboundedWindow>>;
         EffectContext ctx;
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -578,7 +578,7 @@ int main() {
         {
             auto shared_attempts = std::make_shared<std::atomic<int>>(0);
             SessionFactory<FlakyChatClient, agentengine::rt::NoSessionState,
-                           agentengine::HistoryProvider<agentengine::Window<0>>>
+                           agentengine::HistoryProvider<agentengine::UnboundedWindow>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
                     s->initialize("child", p, ae_test::trusted_unbounded());
@@ -601,7 +601,7 @@ int main() {
         {
             auto shared_attempts = std::make_shared<std::atomic<int>>(0);
             SessionFactory<FlakyChatClient, agentengine::rt::NoSessionState,
-                           agentengine::HistoryProvider<agentengine::Window<0>>>
+                           agentengine::HistoryProvider<agentengine::UnboundedWindow>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
                     s->initialize("child", p, ae_test::trusted_unbounded());
@@ -624,7 +624,7 @@ int main() {
         {
             auto shared_attempts = std::make_shared<std::atomic<int>>(0);
             SessionFactory<FlakyChatClient, agentengine::rt::NoSessionState,
-                           agentengine::HistoryProvider<agentengine::Window<0>>>
+                           agentengine::HistoryProvider<agentengine::UnboundedWindow>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
                     s->initialize("child", p, ae_test::trusted_unbounded());

@@ -89,7 +89,8 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;
-        MountSpec m;
+        MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         m.source = BlobRef{"sha256:deadbeef", "text/plain", 4, "test-store"};
         m.guest_path = "/mnt/blob";
         spec.mounts.push_back(m);
@@ -112,7 +113,8 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;  // the mount below IS granted (grant_listed_mounts): the workdir check must still fire
-        MountSpec m;
+        MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         m.source = std::string("/run/agentengine-kata");
         m.guest_path = "/mnt/workdir";
         m.read_write = true;
@@ -126,7 +128,8 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;
-        MountSpec m;
+        MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         m.source = std::string("/run/agentengine-kata/some-instance-id/upper.img");
         m.guest_path = "/mnt/quota-file";
         m.read_write = true;
@@ -141,7 +144,8 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;
-        MountSpec m;
+        MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         // A sibling directory that merely shares the workdir root as a STRING PREFIX (not a real
         // path-component ancestor) must NOT be rejected -- proves the check is component-aware, not
         // a naive substring match that would over-reject legitimate, unrelated host paths.
@@ -169,7 +173,8 @@ int main() {
 
         KataBackend backend;
         SandboxSpec spec;
-        MountSpec ro_mount;
+        MountSpec ro_mount{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         ro_mount.source = std::string(host_dir);
         ro_mount.guest_path = "/mnt/ro";
         ro_mount.read_write = false;
@@ -202,7 +207,8 @@ int main() {
         // proving the mount is a real, live bind, not a copy-on-create snapshot.
         KataBackend rw_backend;
         SandboxSpec rw_spec;
-        MountSpec rw_mount;
+        MountSpec rw_mount{.source = {}, .guest_path = {}, .read_write = false,
+                       .quota_bytes = cap::Limit::unbounded()};
         rw_mount.source = std::string(host_dir);
         rw_mount.guest_path = "/mnt/rw";
         rw_mount.read_write = true;

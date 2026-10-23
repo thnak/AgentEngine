@@ -414,12 +414,12 @@ int main() {
 
     // ---- M1/M2/M3: multi_agent::spawn ----------------------------------------------------------------------------
     {
-        ae::CapabilitySet const parent_caps = ae::CapabilitySet::grant_root({kEntropy, ae::Capability{ae::cap::Clock{}}});
+        ae::CapabilitySet const parent_caps = ae::CapabilitySet::grant_root({kEntropy, ae::Capability{ae::cap::Clock{ae::cap::ClockResolution::finest()}}});
         std::shared_ptr<CtxClient::State> state;
         std::vector<ae::RunEvent>         events;
         int                               factory_calls = 0;
         bool                              initialize_child = true;
-        art::multi_agent::SessionFactory<CtxClient, art::NoSessionState, ae::HistoryProvider<ae::Window<0>>> const
+        art::multi_agent::SessionFactory<CtxClient, art::NoSessionState, ae::HistoryProvider<ae::UnboundedWindow>> const
             factory = [&](ae::Principal const& p) {
                 ++factory_calls;
                 auto s = std::make_unique<ChildSession>();

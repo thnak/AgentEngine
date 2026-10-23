@@ -103,7 +103,7 @@ int main() {
     auto build_contributors = [&]() {
         std::vector<ae::ContextProviderDescriptor> contributors;
         contributors.push_back(ae::make_context_provider_descriptor(
-            ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{5}));
+            ae::HistoryProvider<ae::UnboundedWindow>{}, ae::ContextBudget{5}));
         contributors.push_back(ae::make_context_provider_descriptor(
             FixedMessagesProvider{{make_msg("keep-me", "f-1")}}, ae::ContextBudget{0}));
         return contributors;
@@ -150,7 +150,7 @@ int main() {
         std::vector<ae::Message> small_history{make_msg("a", "s-1")};
         std::vector<ae::ContextProviderDescriptor> contributors;
         contributors.push_back(ae::make_context_provider_descriptor(
-            ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{1000}));
+            ae::HistoryProvider<ae::UnboundedWindow>{}, ae::ContextBudget{1000}));
         ae::SessionContext session_ctx{"s-small", principal, small_history};
         auto result3 = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));
@@ -164,7 +164,7 @@ int main() {
         std::vector<ae::Message> exact_history{make_msg("a", "e-1")};
         std::vector<ae::ContextProviderDescriptor> contributors;
         contributors.push_back(ae::make_context_provider_descriptor(
-            ae::HistoryProvider<ae::Window<0>>{}, ae::ContextBudget{1}));
+            ae::HistoryProvider<ae::UnboundedWindow>{}, ae::ContextBudget{1}));
         ae::SessionContext session_ctx{"s-exact", principal, exact_history};
         auto result3b = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(
             ae::assemble_context(contributors, session_ctx, ctx));

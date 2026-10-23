@@ -1,7 +1,7 @@
 #pragma once
 // The general N-provider `ContextProvider` composite, all composed through the same real,
 // already-proven `core/context_assembly.hpp::assemble_context()`. `AgentSession<ChatClientT, StateT,
-// ComposedContextProvider<HistoryProvider<Window<0>>, SkillsProvider, MemoryProvider>>` plugs N real
+// ComposedContextProvider<HistoryProvider<UnboundedWindow>, SkillsProvider, MemoryProvider>>` plugs N real
 // contributors into `AgentSession`'s single `ContextProvider` template slot without widening
 // `AgentSession` itself (that wider change -- `AgentSession` natively taking a provider pack and
 // calling `assemble_context` inside its own turn loop -- stays deferred, named in

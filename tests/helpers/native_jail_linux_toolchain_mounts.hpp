@@ -30,12 +30,13 @@ inline void add_shell_toolchain_mounts(SandboxSpec& spec) {
     for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {
         if (!std::filesystem::exists(dir)) continue;
         spec.mounts.push_back(
-            MountSpec{.source = std::string(dir), .guest_path = dir, .read_write = false});
+            MountSpec{.source = std::string(dir), .guest_path = dir, .read_write = false, .quota_bytes = cap::Limit::unbounded()});
     }
     std::string hostile_child_dir =
         std::filesystem::path(AE_HOSTILE_CHILD_POSIX_EXE).parent_path().string();
     spec.mounts.push_back(MountSpec{
-        .source = hostile_child_dir, .guest_path = hostile_child_dir, .read_write = false});
+        .source = hostile_child_dir, .guest_path = hostile_child_dir, .read_write = false,
+        .quota_bytes = cap::Limit::unbounded()});
 }
 
 }  // namespace agentengine::native_jail::test

@@ -6,7 +6,7 @@
 // (§14).
 //
 //   auto [a, b] = co_await rt::when_all(fetch_a(), fetch_b());              // fixed arity, tuple, emitted order
-//   std::vector<R> rs = co_await rt::when_all(std::move(tasks), {.max_concurrency = 4});   // range form
+//   std::vector<R> rs = co_await rt::when_all(std::move(tasks), {.max_concurrency = Bound<std::size_t>::at_most(4)});   // range form
 //   co_await rt::with_scope([&](rt::task_scope& s) -> task<void> {           // spawn as you go
 //       for (auto& c : calls) s.spawn(run_one(c));
 //       co_return;
@@ -31,7 +31,7 @@
 //     rethrown to the owner. A body (`with_scope`) that throws does the same. A stop requested on the owner's own
 //     scope token (or ScopeOptions::stop) is forwarded to the children.
 //   - ORDER (I5). `when_all` returns results in the order the tasks were given, whatever order they finished in.
-//   - CAP. `ScopeOptions::max_concurrency` (0 = unbounded) is a semaphore on the scope: at most that many children
+//   - CAP. `ScopeOptions::max_concurrency` (a `Bound`: `at_most(n)` or `unbounded()`) is a semaphore on the scope: at most that many children
 //     run; the rest wait, unstarted, in spawn order.
 //   - AWAIT CHAINS (§4.3, rt/await_chain.hpp). Each child is a fresh holder id forked from the owner's: an AWAITED
 //     edge for `when_all` (the owner is suspended in the join from the start), and for `with_scope` while the owner
@@ -58,6 +58,7 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/rt/await_chain.hpp"
 #include "agentengine/rt/lanes.hpp"
 #include "agentengine/rt/resume_home.hpp"
@@ -67,7 +68,10 @@ namespace agentengine::rt {
 
 // ae-naming-lint: allow ScopeOptions — ADR-237 §4.5: new runtime vocabulary, 027 §4 row added when the ADR is Judged
 struct ScopeOptions {
-    std::size_t     max_concurrency = 0;  // 0: unbounded
+    // ADR-244 slice 5: stated, not defaulted. `at_most(n)` runs at most n children at once; `unbounded()` runs them
+    // all. An omitted field does not compile, `0` is not "unbounded", and `at_most(0)` (a scope that could never
+    // run a child) is refused when the scope opens.
+    Bound<std::size_t> max_concurrency;
     std::stop_token stop{};               // an extra stop to forward to the children (besides the owner's scope)
     bool            fresh_chains = false; // children start fresh await chains (a job runner's background scope)
 };
@@ -113,8 +117,11 @@ task<void> discard(task<T> t) {
 class task_scope {
 public:
     // Must be constructed on a strand (the owner's); see the file comment. Prefer `with_scope` / `when_all`.
-    explicit task_scope(ScopeOptions opts = {})
+    explicit task_scope(ScopeOptions opts)
         : owner_(Strand::current()), owner_holder_(current_holder_id()), opts_(std::move(opts)) {
+        if (auto const ok = check_bound("ScopeOptions::max_concurrency", opts_.max_concurrency); !ok) {
+            throw std::invalid_argument(ok.error().code + ": " + ok.error().message);
+        }
         if (!owner_.valid()) {
             throw std::logic_error("rt.scope_off_strand: a task scope is opened only on a strand (ADR-237 §4.5)");
         }
@@ -237,7 +244,7 @@ private:
         {
             std::lock_guard lock(m_);
             ++live_;
-            if (opts_.max_concurrency == 0 || running_ < opts_.max_concurrency) {
+            if (opts_.max_concurrency.is_unbounded() || running_ < *opts_.max_concurrency.limit()) {
                 ++running_;
                 if (running_ > peak_running_) peak_running_ = running_;
                 start = true;
@@ -389,7 +396,7 @@ task<R> with_scope_impl(F fn, ScopeOptions opts) {
 // kept in this coroutine's frame for the whole call, so a lambda capturing by reference is safe here.
 // ae-naming-lint: allow with_scope — ADR-237 §4.5: new runtime vocabulary, 027 §4 row added when the ADR is Judged
 template <class F>
-[[nodiscard]] auto with_scope(F fn, ScopeOptions opts = {})
+[[nodiscard]] auto with_scope(F fn, ScopeOptions opts)
     -> task<typename scope_detail::task_value<std::invoke_result_t<F&, task_scope&>>::type> {
     using R = typename scope_detail::task_value<std::invoke_result_t<F&, task_scope&>>::type;
     return scope_detail::with_scope_impl<R>(std::move(fn), std::move(opts));
@@ -401,7 +408,8 @@ template <class F>
 template <class... Ts>
 [[nodiscard]] task<std::tuple<scope_detail::value_t<Ts>...>> when_all(task<Ts>... ts) {
     std::tuple<std::optional<scope_detail::value_t<Ts>>...> slots;
-    task_scope                                              scope;
+    // The fixed-arity form runs every given task at once; its count is the arity, so "unbounded" is exact here.
+    task_scope scope(ScopeOptions{.max_concurrency = Bound<std::size_t>::unbounded()});
     scope_detail::ScopeAccess::mark_always_awaited(scope);
     std::exception_ptr spawn_fault;
     try {
@@ -419,7 +427,7 @@ template <class... Ts>
 
 // The range form: `tasks` run as children (at most `opts.max_concurrency` at once); results in the order given.
 template <class T>
-[[nodiscard]] task<std::vector<scope_detail::value_t<T>>> when_all(std::vector<task<T>> tasks, ScopeOptions opts = {}) {
+[[nodiscard]] task<std::vector<scope_detail::value_t<T>>> when_all(std::vector<task<T>> tasks, ScopeOptions opts) {
     std::vector<std::optional<scope_detail::value_t<T>>> slots(tasks.size());
     task_scope                                           scope(std::move(opts));
     scope_detail::ScopeAccess::mark_always_awaited(scope);

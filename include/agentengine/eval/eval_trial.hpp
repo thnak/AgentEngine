@@ -393,7 +393,7 @@ template <class Inner, class SummarizerT>
     using ObjectStore = InMemoryWorktreeObjectStore;
     using RefStore = rt::InMemoryAppendLogStore;
     using MemProvider = MemoryProvider<detail::SummarizerRecorder<SummarizerT>, ObjectStore, RefStore>;
-    using ComposedProvider = ComposedContextProvider<HistoryProvider<Window<0>>, MemProvider, EvalStubToolProvider>;
+    using ComposedProvider = ComposedContextProvider<HistoryProvider<UnboundedWindow>, MemProvider, EvalStubToolProvider>;
 
     TrialResult trial_result;
 
@@ -503,7 +503,7 @@ template <class Inner, class SummarizerT>
         }
     }
     auto engaged = session.history_provider().engage(
-        std::tuple{HistoryProvider<Window<0>>{}, std::move(memory_provider),
+        std::tuple{HistoryProvider<UnboundedWindow>{}, std::move(memory_provider),
                    EvalStubToolProvider{std::move(stub_descriptors)}});
     if (!engaged) {
         trial_result.setup_error = engaged.error();

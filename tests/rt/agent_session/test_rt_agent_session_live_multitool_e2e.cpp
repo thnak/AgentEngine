@@ -264,7 +264,7 @@ using AllToolsTable = ToolTable;
     return ToolTable::from(GetWeatherTool{}, ConvertTempTool{}, GetTimeTool{}, StockPriceTool{});
 }
 
-// The ContextProvider fixture: same windowing behaviour as HistoryProvider<Window<0>>, plus a fixed
+// The ContextProvider fixture: same windowing behaviour as HistoryProvider<UnboundedWindow>, plus a fixed
 // four-tool declaration -- default-constructible (ADR-018's constraint on every AgentSession template
 // argument), the tool list baked in via `all_tools_table()` rather than injected state.
 class FourToolHistoryProvider {

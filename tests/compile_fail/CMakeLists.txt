@@ -406,6 +406,27 @@ agentengine_compile_fail_test(env_secret_source_no_default
   EXPECT "private|no appropriate default|no matching|deleted"
   LIBS agentengine::core)
 
+# ADR-244 slice 5: `Window<0>` ("keep everything" by a 0) is not a window; `UnboundedWindow` is the named spelling.
+agentengine_compile_fail_control(compile_fail_window_positive_control
+  SOURCE window_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(window_zero_rejected
+  SOURCE window_zero_rejected.cpp
+  CONTROL compile_fail_window_positive_control
+  EXPECT "Window<0> is not a window"
+  LIBS agentengine::core)
+
+# ADR-244 slice 5: a `cap::Clock` states its resolution; `cap::Clock{}` (a 0 meaning "exact") does not compile.
+agentengine_compile_fail_control(compile_fail_clock_positive_control
+  SOURCE clock_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(clock_default_rejected
+  SOURCE clock_default_rejected.cpp
+  CONTROL compile_fail_clock_positive_control
+  # cl: C2280 "attempting to reference a deleted function" / C2512; gcc and clang: "deleted" / "no matching".
+  EXPECT "deleted|no matching|no appropriate default|ClockResolution"
+  LIBS agentengine::core)
+
 # ---- ADR-244 §2.2/§2.3 / G-C1 compile-fail proofs: session choices -----------------------------------
 # A session's authority source, token budget and turn cap, a request authority's expiry and a bridged session's
 # options are all stated or the code does not compile. The positive control states each, in the same shapes.

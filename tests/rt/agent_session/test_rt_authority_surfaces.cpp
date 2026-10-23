@@ -193,7 +193,7 @@ int main() {
     auto const expired = ae::Expiry::at(now - std::chrono::seconds(1));
     auto const entropy = std::make_shared<ae::CapabilitySet const>(ae::CapabilitySet::grant_root({ae::cap::Entropy{}}));
     auto const clock_and_entropy = std::make_shared<ae::CapabilitySet const>(
-        ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{}}));
+        ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{ae::cap::ClockResolution::finest()}}));
 
     // ---- S1: A2A under per_request(ceiling) ------------------------------------------------------------------
     {
@@ -321,7 +321,7 @@ int main() {
               "S6: per_request(no_ceiling()) takes the agent's declared ceiling (Entropy, not Clock)");
 
         auto wider = ae::make_agent_session<EntropyAgent>(CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(
-                                  ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{}}))), nullptr, ae_test::sandboxes());
+                                  ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{ae::cap::ClockResolution::finest()}}))), nullptr, ae_test::sandboxes());
         check(code_of(wider) == "agent_session.override_widens",
               "S6: a stated ceiling wider than the declaration is refused, not clamped");
 

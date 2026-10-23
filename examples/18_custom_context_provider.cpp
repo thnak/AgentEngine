@@ -144,7 +144,7 @@ T drive(agentengine::rt::task<T> t) {
 int main() {
     // Declared order is wire order: the custom instruction reaches the model BEFORE ordinary
     // conversation history does. Swap the two template arguments to see history go first instead.
-    using ComposedProvider = ComposedContextProvider<PirateStyleProvider, HistoryProvider<Window<0>>>;
+    using ComposedProvider = ComposedContextProvider<PirateStyleProvider, HistoryProvider<UnboundedWindow>>;
     using CustomizedAgent  = AgentSession<CapturingChatClient, rt::NoSessionState, ComposedProvider>;
 
     CustomizedAgent session;
@@ -159,7 +159,7 @@ int main() {
     // earlier "auto-engage when possible" design was tried and rejected (it silently broke a real
     // caller elsewhere in this codebase). engage() populates it once, explicitly.
     auto engaged = session.history_provider().engage(
-        std::tuple{PirateStyleProvider{}, HistoryProvider<Window<0>>{}});
+        std::tuple{PirateStyleProvider{}, HistoryProvider<UnboundedWindow>{}});
     check(engaged.has_value(), "the composed provider engages with real, host-constructed instances");
     CapturingChatClient& client = session.emplace_chat_client();
 

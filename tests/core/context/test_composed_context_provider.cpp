@@ -117,7 +117,7 @@ static_assert(ae::ContextProvider<ToolContributingProvider>,
               "ToolContributingProvider must satisfy ContextProvider (005 §5)");
 
 using ThreeWayProvider =
-    ae::ComposedContextProvider<ae::HistoryProvider<ae::Window<0>>, FixedMessagesProvider,
+    ae::ComposedContextProvider<ae::HistoryProvider<ae::UnboundedWindow>, FixedMessagesProvider,
                                   ToolContributingProvider>;
 static_assert(ae::ContextProvider<ThreeWayProvider>,
               "ComposedContextProvider<...> must itself satisfy ContextProvider (005 §5)");
@@ -225,7 +225,7 @@ int main() {
         auto fixed_turn_end_calls = fixed.turn_end_calls;
 
         ThreeWayProvider provider{
-            std::tuple{ae::HistoryProvider<ae::Window<0>>{}, fixed, ToolContributingProvider{}},
+            std::tuple{ae::HistoryProvider<ae::UnboundedWindow>{}, fixed, ToolContributingProvider{}},
             std::array<ae::ContextBudget, 3>{ae::ContextBudget{0}, ae::ContextBudget{0},
                                                ae::ContextBudget{0}}};
 
@@ -257,7 +257,7 @@ int main() {
         // approx_token_count("aaaaaaaa") == (8+3)/4 == 2 tokens/message; total history == 6 tokens,
         // exceeding a declared HistoryProvider budget of 3.
         ThreeWayProvider provider{
-            std::tuple{ae::HistoryProvider<ae::Window<0>>{}, FixedMessagesProvider{{make_msg("fixed-msg", "f-1")}},
+            std::tuple{ae::HistoryProvider<ae::UnboundedWindow>{}, FixedMessagesProvider{{make_msg("fixed-msg", "f-1")}},
                        ToolContributingProvider{}},
             std::array<ae::ContextBudget, 3>{ae::ContextBudget{3}, ae::ContextBudget{0},
                                                ae::ContextBudget{0}}};
@@ -286,7 +286,7 @@ int main() {
         // -- see composed_context_provider.hpp's own comment on why that changed), so an explicit
         // engage() is required before start_run() can succeed.
         auto engaged = session.history_provider().engage(
-            std::tuple{ae::HistoryProvider<ae::Window<0>>{}, FixedMessagesProvider{{make_msg("fixed-msg-p2", "f-2")}},
+            std::tuple{ae::HistoryProvider<ae::UnboundedWindow>{}, FixedMessagesProvider{{make_msg("fixed-msg-p2", "f-2")}},
                        ToolContributingProvider{}});
         check(engaged.has_value(), "P2 setup: engage() succeeds");
         ae::CapabilitySet const held = ae::CapabilitySet::grant_root({});

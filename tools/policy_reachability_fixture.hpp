@@ -135,7 +135,7 @@ struct ClockReply {
     std::int64_t millis = 0;
 };
 AE_JSON_SCHEMA(ClockReply, millis)
-struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<0>>, Approval<approval_mode::never_require>> {
+struct ClockTool : Tool<ClockTool, Capabilities<cap::decl::Clock<cap::kFinestClockResolutionMs>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "now";
     static constexpr std::string_view description = "Read the current time.";
     using Args = ClockArgs;
@@ -228,7 +228,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
             cap::FsWrite{"scratch", "", cap::Limit::unbounded(), cap::Limit::unbounded()},
             cap::Secret{"api-key", std::chrono::seconds{0}},
             cap::NetOut{{"api.example.com"}, cap::Limit::unbounded(), {}},
-            cap::Clock{std::chrono::milliseconds{0}},
+            cap::Clock{cap::ClockResolution::finest()},
         };
         agents.push_back(trust::ReachabilityAgent{"broad-agent", ceiling, tools});
         oracle.push_back({"broad-agent", "write-scratch", capability_kind::fs_write, true});

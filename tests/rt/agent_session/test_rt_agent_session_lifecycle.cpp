@@ -246,7 +246,7 @@ int main() {
     // WIN (from test_agent_session_history_window.cpp)
     // ============================================================================================
     {
-        // Default third template parameter (Window<0>, unbounded): the ChatClientT sees the WHOLE
+        // Default third template parameter (UnboundedWindow, unbounded): the ChatClientT sees the WHOLE
         // accumulated history every turn.
         AgentSession<RecordingChatClient> session;
         session.initialize("win-default", Principal{"p-hank", ""}, ae_test::trusted_unbounded());
@@ -255,14 +255,14 @@ int main() {
         auto r1 = drive(session.start_run(StartRun{user_message("first")}));
         check(r1.has_value(), "WIN1 setup: turn 1 succeeds");
         check(client.calls_seen().size() == 1 && client.calls_seen()[0] == "first;",
-              "WIN1: default HistoryProviderT (Window<0>) sees just the new input on turn 1");
+              "WIN1: default HistoryProviderT (UnboundedWindow) sees just the new input on turn 1");
 
         auto r2 = drive(session.start_run(StartRun{user_message("second")}));
         check(r2.has_value(), "WIN1 setup: turn 2 succeeds");
         check(client.calls_seen().size() == 2,
               "WIN1: two real chat() calls happened, one per turn");
         check(client.calls_seen()[1] == "first;reply-1;second;",
-              "WIN1: default HistoryProviderT (Window<0>) sees the FULL accumulated history on turn "
+              "WIN1: default HistoryProviderT (UnboundedWindow) sees the FULL accumulated history on turn "
               "2 (first + turn-1's own reply + second) -- nothing dropped");
     }
     {

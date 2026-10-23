@@ -248,7 +248,9 @@ constexpr std::uint32_t kCapabilityHandleType = 1;
 
 struct WasmBackend::Instance {
     wasmtime_component_t*   component = nullptr;
-    PluginManifest          manifest;
+    // Placeholder until load_component() copies the real manifest in; nothing reads it while `loaded` is false.
+    PluginManifest          manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                            .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
     CapabilitySet           operator_grant;  // spec.capabilities, copied at create()
     ResourceLimits          limits;
     bool                    loaded = false;  // load_component() has succeeded

@@ -212,7 +212,7 @@ int main() {
     Expiry const live    = Expiry::at(now + std::chrono::hours(1));
     Expiry const expired = Expiry::at(now - std::chrono::seconds(1));
     auto const entropy = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({agentengine::cap::Entropy{}}));
-    auto const clock   = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({agentengine::cap::Clock{}}));
+    auto const clock   = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({agentengine::cap::Clock{agentengine::cap::ClockResolution::finest()}}));
 
     // ---- C1: never initialised -------------------------------------------------------------------------------
     {

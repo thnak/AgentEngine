@@ -329,7 +329,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `test_session_builder` B26-B33, `test_rt_spawn_authority` P4, `test_agent_yaml_limits` Y9,
      `test_agent_yaml_compiler` F-3b/F-3c.
 5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12)** (built: caps, floors, grant parser,
-   `SandboxExec` `limits`; the time-limit row and part of the substitution list remain, below):
+   `SandboxExec` `limits`, the stated defaults; the time-limit row and the YAML `capabilities:` block remain, below):
    - **Caps.** Every quantity on `cap::FsRead`, `FsWrite`, `NetOut`, `Exec` and `NativeExec` is a `cap::Limit`
      (`Bound<std::uint64_t>`; the 32-bit `file_count_cap` and `max_processes` widen to it, and the parser refuses a
      `max_processes` above 2^32-1 where a Job Object takes a 32-bit count). `std::optional` "unset is uncapped" is
@@ -352,13 +352,24 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
    - **Recorded as enforced (G-C12).** `SandboxExec::limits` is stated on every "create" event (the mediated Python
      worker, the held native shell, the live shell, the PDF extractor's worker); `lint_sandbox_exec_limits` scans the
      engine for a "create" emitter without one and carries a violating-fixture control that must fail.
+   - **Stated defaults (the "defaults someone did not choose" list).** `PluginManifest::memory_bytes_limit` and
+     `wall_ms_limit` are `cap::Limit` fields (an omitted field does not compile); `rt::ScopeOptions::max_concurrency` is a
+     `Bound<std::size_t>`, `with_scope`, `task_scope` and the range `when_all` take their options with no default, and
+     `at_most(0)` is refused when a scope opens (`test_rt_scope` S10; the fixed-arity `when_all` states `unbounded()`, which
+     is exact because its count is its arity); `MountSpec::quota_bytes` is a `cap::Limit`; an empty
+     `SandboxMount::guest_path_prefix` is refused by `authorize_spec` (`test_sandbox_capability_authorization` G15b, with `"/"`
+     as the stated "any"); `HistoryProvider<Window<0>>` is `HistoryProvider<UnboundedWindow>` and `Window<0>` is a compile
+     error (`compile_fail` `window_zero_rejected`); `cap::Clock` takes a `ClockResolution` (`finest()` or
+     `at_resolution(ms)`) and `cap::Clock{}` is a compile error (`compile_fail` `clock_default_rejected`), and
+     `cap::decl::Clock` has no default resolution. **Two of these are declared only, and §3a must not say more:** no
+     backend enforces `MountSpec::quota_bytes` (a worktree mount's quota is its `cap::FsWrite`), and no host function
+     rounds to a `ClockResolution` (the wasm `now` import returns exact milliseconds), so a stated value narrows what may be
+     granted but is not yet applied. A backend that cannot enforce a stated `at_most(n)` quota must refuse it before this
+     row can move to "engine enforces".
    - **Not done in this slice (named, not hidden).** The time-limit row of §2.2 -- `rt::HttpOptions::total_timeout{0}` and
      `EffectContext::deadline{}` -- stays: 413 `EffectContext` constructions default the deadline, and making it
      required needs the per-call deadline to be a stated choice on `SessionChoices` first (who states it for a tool
-     call a session issues). Likewise `HistoryProvider<Window<0>>`, `ScopeOptions::max_concurrency = 0`,
-     `PluginManifest::memory_bytes_limit/wall_ms_limit = 0`, `MountSpec::quota_bytes = 0` (enforced nowhere),
-     `SandboxMount::guest_path_prefix ""` and `cap::Clock{}` (resolution 0 = finest) from the planning-log list are
-     unchanged. Each is a default someone did not choose and each is listed in ADR-242 §3a as such.
+     call a session issues). The YAML `capabilities:` block (above) is the other open item.
    Tests: `compile_fail` `cap_rejects_*` (one control), `test_native_exec_capability` N13/N14,
    `test_capped_grant_admission`, `test_engine_floor`, `lint_sandbox_exec_limits*`.
 6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10)** (built: the registry, the secret prefix;

@@ -9,7 +9,7 @@
 // `ComposedContextProvider<Ms...>` already does exactly this job -- merges N `ContextProvider`
 // conformers' instructions/tools/messages through the same, already-proven `assemble_context()`
 // every other multi-provider composition in this codebase uses (e.g.
-// `ComposedContextProvider<HistoryProvider<Window<0>>, SkillsProvider<>, ToolOptimizerProvider>`,
+// `ComposedContextProvider<HistoryProvider<UnboundedWindow>, SkillsProvider<>, ToolOptimizerProvider>`,
 // tests/core/context/test_tool_optimizer_provider.cpp's own R6). Writing a second, bespoke aggregator here --
 // especially one that would need its own hand-rolled coroutine fan-out over a variadic provider
 // pack -- would duplicate real, already-tested machinery and introduce exactly the kind of new

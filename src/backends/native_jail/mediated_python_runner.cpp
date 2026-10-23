@@ -92,6 +92,7 @@ result<void> MediatedPythonRunner::initialize(CapabilitySet const& host_grant, E
             .source = narrow(host_path),
             .guest_path = "/" + mount_id,
             .read_write = true,
+            .quota_bytes = cap::Limit::unbounded(),
         });
     }
     spec.limits.wall_ms = config_.exec_wall_ms;
