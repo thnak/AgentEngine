@@ -202,14 +202,16 @@ private:
 
         // Step 4: spawn with the worktree as cwd (a starting point, not a confinement), resource-capped from the matched grant's own
         // scalar caps -- never from a caller-supplied override.
-        NativeExecRequest req;
+        NativeExecRequest req{.program_path = {},
+                              .argv = {},
+                              .cwd = {},
+                              .cpu_ms_cap = matched->cpu_ms_cap,
+                              .wall_ms_cap = matched->wall_ms_cap,
+                              .memory_bytes_cap = matched->memory_bytes_cap};
         req.program_path = it->resolved_path;
         req.argv.push_back(it->resolved_path);
         req.argv.insert(req.argv.end(), args.args.begin(), args.args.end());
         req.cwd = detail::narrow(mount_root_);
-        req.cpu_ms_cap = matched->cpu_ms_cap;
-        req.wall_ms_cap = matched->wall_ms_cap;
-        req.memory_bytes_cap = matched->memory_bytes_cap;
         return spawn_native_process(req);
     }
 
