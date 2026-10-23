@@ -31,6 +31,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 
 using namespace agentengine;
 
@@ -65,8 +66,27 @@ struct RollDie : Tool<RollDie, Approval<approval_mode::never_require>> {
     agentengine::task<result<Reply>> invoke(Args args, EffectContext&) const { co_return Reply{args.sides > 3 ? 4 : 1}; }
 };
 
+// ADR-244: this agent's tools run in-process and reach nothing outside the session, so it states a sandbox
+// backend that provides no sandbox, and says so. A host whose tools reach a shell, files or the network registers a
+// real `SandboxBackend` here instead (008 §2).
+struct InProcessOnly {
+    static constexpr ProfileTraits traits{1, platform_id::windows_x86_64 | platform_id::linux_x86_64,
+                                          cold_start_class::milliseconds};
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) {
+        co_return std::unexpected(error{failure_class::contract, "this example runs no sandboxed effect",
+                                        "example.no_sandbox"});
+    }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) {
+        co_return std::unexpected(error{failure_class::contract, "this example runs no sandboxed effect",
+                                        "example.no_sandbox"});
+    }
+    task<void> destroy(SandboxHandle&) { co_return; }
+};
+
 // ---- the agent (002 §2): policies are types; register_agent<Joker>() compiles and validates them ------
-struct Joker : Agent<Joker, ChatClientId<"demo:joker">, Tools<RollDie>, MaxTurns<4>, TokenBudget<1'000>> {
+struct Joker : Agent<Joker, ChatClientId<"demo:joker">, Tools<RollDie>, MaxTurns<at_most(4)>,
+                     TokenBudget<at_most(1'000)>, Approval<approval_mode::never_require>,
+                     Concurrency<concurrency_mode::sequential>, SandboxProfile<InProcessOnly>> {
     static constexpr std::string_view name         = "joker";
     static constexpr std::string_view instructions = "Roll a die, then tell a pirate joke that uses the number.";
 };
@@ -136,6 +156,8 @@ int main() {
     // ADR-244: the caller states the session's identity, where its authority comes from, its token budget and its
     // turn cap. The bridge refuses a budget or cap wider than the agent declares (Joker: TokenBudget<1'000>,
     // MaxTurns<4>).
+    SandboxBackendRegistry sandboxes;
+    (void)sandboxes.register_backend("in-process-only", std::make_shared<InProcessOnly>());
     auto agent = make_agent_session<Joker>(
         JokerChatClient{},
         AgentSessionOptions{.session_id = "s-joker",
@@ -146,7 +168,8 @@ int main() {
                             .grants             = {},
                             .chat_client_grants = {},
                             .approve_tools      = std::nullopt,
-                            .policy             = {}});
+                            .policy             = {}},
+        /*chat_clients=*/nullptr, sandboxes);
     check(agent.has_value(), "make_agent_session<Joker>() validates the declaration and binds a session");
     if (!agent.has_value()) {
         std::fprintf(stderr, "bind failed: %s (%s)\n", agent.error().message.c_str(), agent.error().code.c_str());

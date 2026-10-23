@@ -487,6 +487,16 @@ template <agentengine::rt::AppendLogStore StoreT>
                                                     "agent_spawn.not_available"});
     }
 
+    // ADR-244 slice 4b: a target whose metadata states no turn cap or budget is refused here, before the depth is
+    // consumed and before anything is minted or spent, never run under a guessed one (the full spawn-target
+    // validation is slice 4c).
+    if (!target->metadata.max_turns.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing("max_turns", agentengine::agent_choice_options::bound));
+    }
+    if (!target->metadata.token_budget.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing("token_budget", agentengine::agent_choice_options::bound));
+    }
+
     // -- [2] DEPTH --------------------------------------------------------------------------------
     // trust::check_and_consume_spawn_depth() (item 4/§4.4a, already landed) returns the SAME
     // "agent_spawn.not_available" code when the caller holds no AgentCall grant for this id at all,
@@ -560,14 +570,12 @@ template <agentengine::rt::AppendLogStore StoreT>
     // recomputed before every sequential call (round 2), so it already reflects every earlier sibling's charge.
     using BoundU64 = agentengine::Bound<std::uint64_t>;
     BoundU64 budget = BoundU64::at_most(target->child_token_budget);
-    if (target->metadata.token_budget.has_value()) {
-        budget = BoundU64::tighter(budget, BoundU64::at_most(*target->metadata.token_budget));
-    }
+    budget = BoundU64::tighter(budget, *target->metadata.token_budget);
     if (ctx.remaining_token_budget.has_value()) {
         budget = BoundU64::tighter(budget, BoundU64::at_most(*ctx.remaining_token_budget));
     }
     child_request.token_budget = budget;
-    child_request.max_turns    = BoundU64::at_most(target->metadata.max_turns);
+    child_request.max_turns    = *target->metadata.max_turns;
     // ADR-244 §2.3 (slice 3c): the child runs under the caller's source; under `per_request` its one run is admitted
     // against the caller's expiry. Both are engine-set on `ctx` by the caller's session (I3), never by a tool.
     child_request.authority_source     = ctx.authority_source;

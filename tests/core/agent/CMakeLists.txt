@@ -37,6 +37,10 @@ agentengine_add_test(test_agent_registry_sandbox_backend_registry LIBS agentengi
 # an equivalent 015 document is shown to run identically (I6). No network.
 agentengine_add_test(test_agent_session_bridge LIBS agentengine::core agentengine_warnings)
 
+# ADR-244 slice 4b: the five choices 002 §3 used to default are stated on both authoring surfaces or the
+# agent does not validate (G-C1/G-C2/G-C3), with the bridge and the C++ registration path both refusing.
+agentengine_add_test(test_agent_metadata_choices LIBS agentengine::core agentengine_warnings)
+
 # ---- decisions/archive/ADR-234 (issue #60, 002 §2.2): the Harness composition point -- make_harness_session<A>() /
 # bind_harness_session() (core/harness.hpp) compose the default stack (instructions, todo, plan/execute gate,
 # approval suspension, telemetry; opt-in compaction, skills, reflection) on the ADR-226 bridge. Each piece is

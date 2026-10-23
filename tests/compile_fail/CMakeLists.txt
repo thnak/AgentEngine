@@ -329,6 +329,30 @@ agentengine_compile_fail_test(tool_rejects_two_approvals
   EXPECT "exactly one approval choice"
   LIBS agentengine::core)
 
+# ADR-244 §2.1/§2.2 (slice 4b): an Agent states its turn cap and budget as `BoundValue`s and declares all five
+# choices 002 §3 used to default. A missing tag, a bare integer and `at_most(0)` do not compile.
+agentengine_compile_fail_control(compile_fail_agent_choices_positive_control
+  SOURCE agent_choices_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_rejects_missing_max_turns
+  SOURCE agent_rejects_missing_max_turns.cpp
+  CONTROL compile_fail_agent_choices_positive_control
+  EXPECT "Agent declares no MaxTurns"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_rejects_raw_integer_max_turns
+  SOURCE agent_rejects_raw_integer_max_turns.cpp
+  CONTROL compile_fail_agent_choices_positive_control
+  # A bare `8` has no conversion to the `BoundValue` parameter; every compiler names the type.
+  EXPECT "BoundValue"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_rejects_zero_turn_cap
+  SOURCE agent_rejects_zero_turn_cap.cpp
+  CONTROL compile_fail_agent_choices_positive_control
+  # `at_most(0)` throws in a consteval function: gcc and clang name it in the "not a constant expression" note,
+  # cl in the C7595/C2131 line.
+  EXPECT "at_most|constant"
+  LIBS agentengine::core)
+
 agentengine_compile_fail_control(compile_fail_bound_positive_control
   SOURCE bound_positive_control.cpp
   LIBS agentengine::core)

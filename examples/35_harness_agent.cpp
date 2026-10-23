@@ -31,6 +31,7 @@
 #include "agentengine/core/harness.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/testing/scripted_chat_client.hpp"
 
 using namespace agentengine;
@@ -76,8 +77,26 @@ struct Publish : Tool<Publish, Approval<approval_mode::never_require>> {
     }
 };
 
-struct Writer : Agent<Writer, ChatClientId<"example:scripted">, Tools<ReadBrief, Publish>, MaxTurns<8>,
-                      TokenBudget<2'000>> {
+// ADR-244: this agent's tools run in-process and reach nothing outside the session, so it states a sandbox
+// backend that provides no sandbox, and says so. A host whose tools reach a shell, files or the network registers a
+// real `SandboxBackend` here instead (008 §2).
+struct InProcessOnly {
+    static constexpr ProfileTraits traits{1, platform_id::windows_x86_64 | platform_id::linux_x86_64,
+                                          cold_start_class::milliseconds};
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) {
+        co_return std::unexpected(error{failure_class::contract, "this example runs no sandboxed effect",
+                                        "example.no_sandbox"});
+    }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) {
+        co_return std::unexpected(error{failure_class::contract, "this example runs no sandboxed effect",
+                                        "example.no_sandbox"});
+    }
+    task<void> destroy(SandboxHandle&) { co_return; }
+};
+
+struct Writer : Agent<Writer, ChatClientId<"example:scripted">, Tools<ReadBrief, Publish>, MaxTurns<at_most(8)>,
+                      TokenBudget<at_most(2'000)>, Approval<approval_mode::never_require>,
+                      Concurrency<concurrency_mode::sequential>, SandboxProfile<InProcessOnly>> {
     static constexpr std::string_view name         = "writer";
     static constexpr std::string_view instructions = "You are Writer. Read the brief, then publish a short piece.";
 };
@@ -111,6 +130,8 @@ int main() {
     };
 
     // ADR-244: the caller's identity and choices, stated; within Writer's MaxTurns<8> and TokenBudget<2'000>.
+    SandboxBackendRegistry sandboxes;
+    (void)sandboxes.register_backend("in-process-only", std::make_shared<InProcessOnly>());
     auto writer = make_harness_session<Writer>(
         model,
         AgentSessionOptions{.session_id = "s-writer",
@@ -122,7 +143,7 @@ int main() {
                             .chat_client_grants = {},
                             .approve_tools      = std::nullopt,
                             .policy             = {}},
-        std::move(harness));
+        /*chat_clients=*/nullptr, sandboxes, std::move(harness));
     if (!writer) {
         std::fprintf(stderr, "bind failed: %s\n", writer.error().message.c_str());
         return 1;

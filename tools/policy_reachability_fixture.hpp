@@ -162,9 +162,23 @@ struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"p
 // -- one fixture agent registered through the real path, for round-trip parity -------------------
 
 struct EchoAgent : Agent<EchoAgent, ChatClientId<"anthropic:claude-opus-5">, Tools<EchoTool>,
-                          Capabilities<cap::decl::Entropy>> {
+                          Capabilities<cap::decl::Entropy>, MaxTurns<at_most(8)>, TokenBudget<unbounded()>,
+                          Approval<approval_mode::policy_driven>, Concurrency<concurrency_mode::sequential>,
+                          SandboxProfile<Strict>> {
     static constexpr std::string_view name = "echo-agent";
     static constexpr std::string_view instructions = "Declares Tools<EchoTool> and a covering ceiling.";
+};
+
+// ADR-244 slice 4b: `register_agent` takes the sandbox registry as a required argument. The fixture agent resolves
+// `Strict` against one strict-eligible stub that runs nothing -- the reachability analysis never executes a sandbox.
+struct FixtureSandboxBackend {
+    static constexpr ProfileTraits traits{1, platform_id::windows_x86_64 | platform_id::linux_x86_64,
+                                          cold_start_class::milliseconds};
+    agentengine::task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{}; }
+    agentengine::task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) {
+        co_return ExecOutcome{};
+    }
+    agentengine::task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 // -- the reference set builder ---------------------------------------------------------------------
@@ -176,7 +190,9 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
     // fixture file itself regressed, not something F2 is meant to catch -- fail loudly rather than
     // silently skip the fixture.
     {
-        auto meta = register_agent<EchoAgent>();
+        SandboxBackendRegistry sandboxes;
+        (void)sandboxes.register_backend("fixture", std::make_shared<FixtureSandboxBackend>());
+        auto meta = register_agent<EchoAgent>(nullptr, sandboxes);
         if (!meta) {
             std::fprintf(stderr, "policy_reachability_fixture: EchoAgent failed to register: %s\n",
                          meta.error().message.c_str());

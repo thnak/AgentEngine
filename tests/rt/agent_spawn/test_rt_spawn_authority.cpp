@@ -234,14 +234,17 @@ struct DirectSpawn {
     std::vector<ae::RunEvent>         child_events;
     int                               child_runs = 0;
 
-    DirectSpawn(u64 child_token_budget, std::optional<u64> declared_budget, std::uint32_t declared_turns) {
+    DirectSpawn(u64 child_token_budget, std::optional<u64> declared_budget, std::uint32_t declared_turns,
+                bool state_turn_cap = true) {
         pool.initialize(10);
         pump = std::make_unique<art::SpawnPump<art::InMemoryAppendLogStore>>(pool, store);
         art::SpawnTargetDescriptor d;
         d.worktree_mode         = ae::sharing_mode::scratch;
         d.child_token_budget    = child_token_budget;
-        d.metadata.token_budget = declared_budget;
-        d.metadata.max_turns    = declared_turns;
+        d.metadata              = ae_test::stated_metadata();
+        d.metadata.token_budget = declared_budget ? ae::Bound<u64>::at_most(*declared_budget) : ae::Bound<u64>::unbounded();
+        d.metadata.max_turns    = ae::Bound<u64>::at_most(declared_turns);
+        if (!state_turn_cap) d.metadata.max_turns.reset();
         d.run_child = [this](std::string id, art::ChildSpawnRequest req) -> art::task<ae::result<art::AgentResponse>> {
             ++child_runs;
             req.event_sink = [this](ae::RunEvent const& ev) { child_events.push_back(ev); };
@@ -268,7 +271,9 @@ struct DirectSpawn {
 using ChildSession = art::AgentSession<CtxClient>;
 
 struct EntropyAgent : ae::Agent<EntropyAgent, ae::ChatClientId<"test:ctx">, ae::Capabilities<ae::cap::decl::Entropy>,
-                                ae::MaxTurns<4>> {
+                                ae::MaxTurns<ae::at_most(4)>, ae::TokenBudget<ae::unbounded()>,
+                                ae::Approval<ae::approval_mode::policy_driven>,
+                                ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "entropy-agent";
     static constexpr std::string_view instructions = "Declares cap::Entropy only.";
 };
@@ -379,6 +384,16 @@ int main() {
         auto const second = run_started_of(ds.child_events);
         check(second.has_value() && second->token_budget == BoundU::at_most(300).describe(),
               "P3: the target's declared budget when that is tightest (300 < 1000)");
+    }
+
+    // ---- P4 (ADR-244 slice 4b): a target whose metadata states no turn cap is refused, not run under a guess.
+    {
+        DirectSpawn ds(50'000, std::nullopt, 16, /*state_turn_cap=*/false);
+        u64 const before = ds.pool.remaining();
+        auto r = ds.spawn(ae::authority_mode::single_trusted_caller, std::nullopt, std::nullopt);
+        check(code_of(r) == "choice.missing.max_turns" && ds.child_runs == 0,
+              "P4: a target with no stated turn cap is refused (choice.missing.max_turns) and runs no child");
+        check(ds.pool.remaining() == before, "P4: ... and the refusal spent no cost token");
     }
 
     // ---- M1/M2/M3: multi_agent::spawn ----------------------------------------------------------------------------
@@ -541,7 +556,7 @@ int main() {
         o.chat_client_grants      = {kSecret};
         CtxClient client;
         std::shared_ptr<CtxClient::State> const state = client.state();
-        auto bundle = ae::make_agent_session<EntropyAgent>(std::move(client), o);
+        auto bundle = ae::make_agent_session<EntropyAgent>(std::move(client), o, nullptr, ae_test::sandboxes());
         check(bundle.has_value(), "B1 setup: a per_request agent session binds");
         if (bundle.has_value()) {
             auto caps = std::make_shared<ae::CapabilitySet const>(ae::CapabilitySet::grant_root({kEntropy}));

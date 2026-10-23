@@ -37,6 +37,7 @@
 
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
+#include "../../support/agent_options.hpp"
 
 namespace {
 
@@ -75,7 +76,12 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agenteng
 // headline sentence's own worked example, made real.
 struct EchoAgent
     : agentengine::Agent<EchoAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Tools<EchoTool>, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+                         agentengine::Tools<EchoTool>, agentengine::Capabilities<agentengine::cap::decl::Entropy>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "echo-agent";
     static constexpr std::string_view instructions = "Declares Tools<EchoTool> and a covering ceiling.";
 };
@@ -99,8 +105,13 @@ struct PolicyGatedTool
 
 struct PolicyGatedAgent
     : agentengine::Agent<PolicyGatedAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Tools<PolicyGatedTool>,
-                          agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+                         agentengine::Tools<PolicyGatedTool>,
+                         agentengine::Capabilities<agentengine::cap::decl::Entropy>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "policy-gated-agent";
     static constexpr std::string_view instructions = "Declares Tools<PolicyGatedTool>, policy_driven.";
 };
@@ -113,7 +124,7 @@ int main() {
     using agentengine::invoke_agent_tool;
     using agentengine::ToolCallRequest;
 
-    auto meta = register_agent<EchoAgent>();
+    auto meta = register_agent<EchoAgent>(nullptr, ae_test::sandboxes());
     check(meta.has_value(), "EchoAgent registers cleanly (Tools<...> + a covering Capabilities<...>)");
     if (!meta) {
         std::fprintf(stderr, "test_agent_tool_invocation: registration failed, aborting: %s\n",
@@ -121,7 +132,7 @@ int main() {
         return 1;
     }
 
-    auto policy_meta = register_agent<PolicyGatedAgent>();
+    auto policy_meta = register_agent<PolicyGatedAgent>(nullptr, ae_test::sandboxes());
     check(policy_meta.has_value(), "PolicyGatedAgent registers cleanly");
     if (!policy_meta) {
         std::fprintf(stderr, "test_agent_tool_invocation: PolicyGatedAgent registration failed: %s\n",

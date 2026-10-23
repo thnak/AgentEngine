@@ -46,6 +46,7 @@
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/rt/spawn_cost_budget.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
+#include "../../support/agent_options.hpp"
 
 using agentengine::AgentMetadata;
 using agentengine::Capability;

@@ -137,46 +137,64 @@ struct WakeNamedTool : ae::Tool<WakeNamedTool, ae::Approval<ae::approval_mode::n
 // ---- agents ---------------------------------------------------------------------------------------
 
 struct Worker : ae::Agent<Worker, ae::ChatClientId<"test:scripted">, ae::Tools<ActTool, LookTool, ReadDocTool>,
-                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<8>, ae::TokenBudget<1'000>> {
+                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<ae::at_most(8)>,
+                          ae::TokenBudget<ae::at_most(1'000)>, ae::Approval<ae::approval_mode::policy_driven>,
+                          ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "worker";
     static constexpr std::string_view instructions = "You are Worker.";
 };
 
 struct Gated : ae::Agent<Gated, ae::ChatClientId<"test:scripted">, ae::Tools<LookTool>,
-                         ae::Approval<ae::approval_mode::always_require>> {
+                         ae::Approval<ae::approval_mode::always_require>, ae::MaxTurns<ae::at_most(16)>,
+                         ae::TokenBudget<ae::unbounded()>, ae::Concurrency<ae::concurrency_mode::sequential>,
+                         ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "gated";
     static constexpr std::string_view instructions = "Every tool call needs approval.";
 };
 
-struct Budgeted : ae::Agent<Budgeted, ae::ChatClientId<"test:scripted">, ae::TokenBudget<50>> {
+struct Budgeted : ae::Agent<Budgeted, ae::ChatClientId<"test:scripted">, ae::TokenBudget<ae::at_most(50)>,
+                            ae::MaxTurns<ae::at_most(16)>, ae::Approval<ae::approval_mode::policy_driven>,
+                            ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "budgeted";
     static constexpr std::string_view instructions = "Answer.";
 };
 
 struct Silent : ae::Agent<Silent, ae::ChatClientId<"test:scripted">, ae::Tools<ActTool>,
-                          ae::Telemetry<ae::telemetry_capture::none>> {
+                          ae::Telemetry<ae::telemetry_capture::none>, ae::MaxTurns<ae::at_most(16)>,
+                          ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                          ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "silent";
     static constexpr std::string_view instructions = "No telemetry.";
 };
 
 struct Loud : ae::Agent<Loud, ae::ChatClientId<"test:scripted">, ae::Tools<LookTool>,
-                        ae::Telemetry<ae::telemetry_capture::full>> {
+                        ae::Telemetry<ae::telemetry_capture::full>, ae::MaxTurns<ae::at_most(16)>,
+                        ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                        ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "loud";
     static constexpr std::string_view instructions = "Full telemetry.";
 };
 
 struct Scheduler : ae::Agent<Scheduler, ae::ChatClientId<"test:scripted">,
-                             ae::Capabilities<ae::cap::decl::Schedule<60, 1>>> {
+                             ae::Capabilities<ae::cap::decl::Schedule<60, 1>>, ae::MaxTurns<ae::at_most(16)>,
+                             ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                             ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "scheduler";
     static constexpr std::string_view instructions = "You may schedule wakeups.";
 };
 
-struct Shadowing : ae::Agent<Shadowing, ae::ChatClientId<"test:scripted">, ae::Tools<TodoNamedTool>> {
+struct Shadowing : ae::Agent<Shadowing, ae::ChatClientId<"test:scripted">, ae::Tools<TodoNamedTool>,
+                             ae::MaxTurns<ae::at_most(16)>, ae::TokenBudget<ae::unbounded()>,
+                             ae::Approval<ae::approval_mode::policy_driven>,
+                             ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "shadowing";
     static constexpr std::string_view instructions = "Declares todos_add itself.";
 };
 
-struct WakeShadowing : ae::Agent<WakeShadowing, ae::ChatClientId<"test:scripted">, ae::Tools<WakeNamedTool>> {
+struct WakeShadowing : ae::Agent<WakeShadowing, ae::ChatClientId<"test:scripted">, ae::Tools<WakeNamedTool>,
+                                 ae::MaxTurns<ae::at_most(16)>, ae::TokenBudget<ae::unbounded()>,
+                                 ae::Approval<ae::approval_mode::policy_driven>,
+                                 ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "wake-shadowing";
     static constexpr std::string_view instructions = "Declares schedule_wakeup itself.";
 };
@@ -311,7 +329,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push(text_turn("hello"));
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>());
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         check(h.has_value(), "H1 setup: make_harness_session<Worker>() binds with default options");
         if (h.has_value()) {
             check(h->pieces() == std::vector<std::string>{"instructions", "history", "todo", "plan_execute", "approval",
@@ -340,7 +358,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("hello"));
-        auto off = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), all_off());
+        auto off = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), all_off());
         check(off.has_value() && off->pieces() == std::vector<std::string>{"history"},
               "H1 control: every disable flag removes its piece (only history remains)");
         if (off.has_value()) {
@@ -363,17 +381,17 @@ int main() {
             mutate(o);
             return o;
         };
-        auto no_instr = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), only([](ae::HarnessOptions& o) { o.disable_harness_instructions = true; }));
+        auto no_instr = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), only([](ae::HarnessOptions& o) { o.disable_harness_instructions = true; }));
         check(no_instr.has_value() && !no_instr->has_piece("instructions") && no_instr->has_piece("todo"),
               "H1: disable_harness_instructions removes only that piece");
-        auto no_plan = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), only([](ae::HarnessOptions& o) { o.disable_plan_execute = true; }));
+        auto no_plan = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), only([](ae::HarnessOptions& o) { o.disable_plan_execute = true; }));
         check(no_plan.has_value() && !no_plan->has_piece("plan_execute") && no_plan->has_piece("todo") &&
                   no_plan->plan_gated_tools().empty(),
               "H1: disable_plan_execute removes only that piece (and gates nothing)");
-        auto no_appr = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), only([](ae::HarnessOptions& o) { o.disable_approval_suspension = true; }));
+        auto no_appr = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), only([](ae::HarnessOptions& o) { o.disable_approval_suspension = true; }));
         check(no_appr.has_value() && !no_appr->has_piece("approval") && no_appr->has_piece("telemetry"),
               "H1: disable_approval_suspension removes only that piece");
-        auto no_tel = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), only([](ae::HarnessOptions& o) { o.disable_telemetry = true; }));
+        auto no_tel = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), only([](ae::HarnessOptions& o) { o.disable_telemetry = true; }));
         check(no_tel.has_value() && !no_tel->has_piece("telemetry") && no_tel->telemetry() == nullptr &&
                   no_tel->has_piece("approval"),
               "H1: disable_telemetry removes only that piece");
@@ -386,7 +404,7 @@ int main() {
         (void)handle.push({call("todos_add", "t1", R"({"title":"write the report"})"), text_turn("noted")});
         ae::HarnessOptions o;
         o.disable_plan_execute = true;
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), o);
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), o);
         if (h.has_value()) {
             auto r = h->run("plan it");
             check(r.has_value(), "H2 setup: the run converges");
@@ -408,7 +426,7 @@ int main() {
         ae::HarnessOptions off;
         off.disable_todo         = true;
         off.disable_plan_execute = true;
-        auto b = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), off);
+        auto b = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), off);
         if (b.has_value()) {
             (void)b->run("plan it");
             ToolOutcome add = tool_outcome(b->session(), "t1");
@@ -427,7 +445,7 @@ int main() {
         int const act_before = g_act_calls, look_before = g_look_calls;
         ae::AgentSessionOptions with_docs = ae_test::declared_options<Worker>();
         with_docs.grants = {docs_read()};
-        auto h = ae::make_harness_session<Worker>(client, with_docs);
+        auto h = ae::make_harness_session<Worker>(client, with_docs, nullptr, ae_test::sandboxes());
         if (h.has_value()) {
             check(h->plan_gated_tools() == std::vector<std::string>{"act", "read_doc"},
                   "H3 (R1): the gate covers the declared never_require, non-planning-safe tools");
@@ -464,7 +482,7 @@ int main() {
         int const before = g_act_calls;
         ae::HarnessOptions o;
         o.disable_plan_execute = true;
-        auto b = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), o);
+        auto b = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), o);
         if (b.has_value()) {
             (void)b->run("do it");
             ToolOutcome a1 = tool_outcome(b->session(), "a1");
@@ -477,7 +495,7 @@ int main() {
         (void)h3.push({call("act", "a1"), text_turn("done")});
         ae::HarnessOptions w;
         w.is_planning_safe = [](ae::ToolDescriptor const& d) { return d.name == "act"; };
-        auto wb = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), std::move(w));
+        auto wb = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(w));
         if (wb.has_value()) {
             check(std::find(wb->plan_gated_tools().begin(), wb->plan_gated_tools().end(), "act") ==
                       wb->plan_gated_tools().end(),
@@ -494,7 +512,7 @@ int main() {
         ScriptedChatClient handle = client;
         (void)handle.push({call("look", "l1"), text_turn("looked")});
         int const before = g_look_calls;
-        auto h = ae::make_harness_session<Gated>(client, ae_test::declared_options<Gated>());
+        auto h = ae::make_harness_session<Gated>(client, ae_test::declared_options<Gated>(), nullptr, ae_test::sandboxes());
         if (h.has_value()) {
             auto r = h->run("look");
             check(!r.has_value() && r.error().code == "run.suspended_for_approval",
@@ -520,7 +538,7 @@ int main() {
         int const b2 = g_look_calls;
         ae::HarnessOptions o;
         o.disable_approval_suspension = true;
-        auto off = ae::make_harness_session<Gated>(c2, ae_test::declared_options<Gated>(), o);
+        auto off = ae::make_harness_session<Gated>(c2, ae_test::declared_options<Gated>(), nullptr, ae_test::sandboxes(), o);
         if (off.has_value()) {
             auto r = off->run("look");
             ToolOutcome l1 = tool_outcome(off->session(), "l1");
@@ -537,7 +555,7 @@ int main() {
         auto seen     = std::make_shared<std::vector<ae::RunEvent>>();
         ae::HarnessOptions o;
         o.telemetry_sink = [seen](ae::RunEvent const& e) { seen->push_back(e); };
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), std::move(o));  // Worker: MetadataOnly (default)
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(o));  // Worker: MetadataOnly (default)
         if (h.has_value()) {
             (void)h->run("go");
             auto const& t = *h->telemetry();
@@ -556,7 +574,7 @@ int main() {
         auto full_seen = std::make_shared<std::vector<ae::RunEvent>>();
         ae::HarnessOptions fo;
         fo.telemetry_sink = [full_seen](ae::RunEvent const& e) { full_seen->push_back(e); };
-        auto loud = ae::make_harness_session<Loud>(c2, ae_test::declared_options<Loud>(), std::move(fo));
+        auto loud = ae::make_harness_session<Loud>(c2, ae_test::declared_options<Loud>(), nullptr, ae_test::sandboxes(), std::move(fo));
         if (loud.has_value()) {
             (void)loud->run("go");
             bool any_payload = false;
@@ -565,7 +583,7 @@ int main() {
             }
             check(any_payload, "H5 control: a Full agent's sink sees the payloads");
         }
-        auto silent = ae::make_harness_session<Silent>(ScriptedChatClient{}, ae_test::declared_options<Silent>());
+        auto silent = ae::make_harness_session<Silent>(ScriptedChatClient{}, ae_test::declared_options<Silent>(), nullptr, ae_test::sandboxes());
         check(silent.has_value() && !silent->has_piece("telemetry") && silent->telemetry() == nullptr,
               "H5: Telemetry<none> on the agent turns the harness piece off");
         // R6: a throwing sink is contained.
@@ -574,7 +592,7 @@ int main() {
         (void)h3.push(text_turn("fine"));
         ae::HarnessOptions bad;
         bad.telemetry_sink = [](ae::RunEvent const&) { throw std::runtime_error("sink down"); };
-        auto thrower = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), std::move(bad));
+        auto thrower = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(bad));
         if (thrower.has_value()) {
             auto r = thrower->run("go");
             check(r.has_value() && ae::text_of(r->message) == "fine",
@@ -588,7 +606,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push({text_turn("a1"), text_turn("a2")});
-        auto win = ae::make_harness_session<Worker, ae::HistoryProvider<ae::Window<1>>>(client, ae_test::declared_options<Worker>());
+        auto win = ae::make_harness_session<Worker, ae::HistoryProvider<ae::Window<1>>>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (win.has_value()) {
             (void)win->run("first question");
             (void)win->run("second question");
@@ -600,7 +618,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push({text_turn("a1"), text_turn("a2")});
-        auto all = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>());
+        auto all = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (all.has_value()) {
             (void)all->run("first question");
             (void)all->run("second question");
@@ -618,7 +636,7 @@ int main() {
         auto calls = std::make_shared<int>(0);
         ae::HarnessOptions o;
         o.reflection_evaluator = satisfied_on(2, calls);
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), std::move(o));
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(o));
         if (h.has_value()) {
             check(h->has_piece("reflection"), "H7: an evaluator turns the reflection piece on");
             auto r = h->run_reflective("write it");
@@ -635,7 +653,7 @@ int main() {
                        text_turn("three", ae::Usage{15, 15, 0, 0, 0.0})});
         ae::HarnessOptions never;
         never.reflection_evaluator = satisfied_on(0, std::make_shared<int>(0));
-        auto bud = ae::make_harness_session<Budgeted>(c2, ae_test::declared_options<Budgeted>(), std::move(never));
+        auto bud = ae::make_harness_session<Budgeted>(c2, ae_test::declared_options<Budgeted>(), nullptr, ae_test::sandboxes(), std::move(never));
         if (bud.has_value()) {
             auto r = bud->run("go");
             check(!r.has_value() && r.error().code == "bounded_reflection.token_budget_exceeded" && h2.call_count() == 2,
@@ -648,7 +666,7 @@ int main() {
         ae::HarnessOptions wide;
         wide.reflection_evaluator        = satisfied_on(0, std::make_shared<int>(0));
         wide.reflection_max_total_tokens = 1'000;
-        auto wb = ae::make_harness_session<Budgeted>(c3, ae_test::declared_options<Budgeted>(), std::move(wide));
+        auto wb = ae::make_harness_session<Budgeted>(c3, ae_test::declared_options<Budgeted>(), nullptr, ae_test::sandboxes(), std::move(wide));
         if (wb.has_value()) {
             auto r = wb->run_reflective("go");
             check(r.has_value() && !r->satisfied && r->iterations_used == 3 && h3.call_count() == 3,
@@ -657,7 +675,7 @@ int main() {
         ScriptedChatClient c4;
         ScriptedChatClient h4 = c4;
         (void)h4.push({text_turn("only")});
-        auto plain = ae::make_harness_session<Worker>(c4, ae_test::declared_options<Worker>());
+        auto plain = ae::make_harness_session<Worker>(c4, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (plain.has_value()) {
             auto refused = plain->run_reflective("x");
             check(!refused.has_value() && refused.error().code == "harness.reflection_disabled" && h4.call_count() == 0,
@@ -674,7 +692,7 @@ int main() {
         (void)handle.push({call("todos_add", "t1", R"({"title":"read"})"), call("plan_ready", "p1", "{}"),
                            call("read_doc", "r1"), text_turn("done")});
         int const before = g_read_calls;
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>());
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (h.has_value()) {
             check(h->capabilities().size() == 0, "H8: a no-grant caller's harness session holds no capability");
             (void)h->run("read");
@@ -686,8 +704,8 @@ int main() {
         }
         ae::AgentSessionOptions granted = ae_test::declared_options<Worker>();
         granted.grants = {docs_read(), ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt}};
-        auto hb = ae::make_harness_session<Worker>(ScriptedChatClient{}, granted);
-        auto bb = ae::make_agent_session<Worker>(ScriptedChatClient{}, granted);
+        auto hb = ae::make_harness_session<Worker>(ScriptedChatClient{}, granted, nullptr, ae_test::sandboxes());
+        auto bb = ae::make_agent_session<Worker>(ScriptedChatClient{}, granted, nullptr, ae_test::sandboxes());
         check(hb.has_value() && bb.has_value() && hb->capabilities().size() == bb->capabilities().size() &&
                   hb->capabilities().size() == 1 && hb->capabilities().contains(docs_read()) &&
                   !hb->capabilities().contains(ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt}),
@@ -696,7 +714,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("ok"));
-        auto ungranted = ae::make_harness_session<Scheduler>(c2, ae_test::declared_options<Scheduler>());
+        auto ungranted = ae::make_harness_session<Scheduler>(c2, ae_test::declared_options<Scheduler>(), nullptr, ae_test::sandboxes());
         if (ungranted.has_value()) {
             (void)ungranted->run("hi");
             auto reqs = h2.requests();
@@ -708,7 +726,7 @@ int main() {
         (void)h3.push(text_turn("ok"));
         ae::AgentSessionOptions sched = ae_test::declared_options<Scheduler>();
         sched.grants = {ae::cap::Schedule{std::chrono::seconds{60}, 1}};
-        auto withs = ae::make_harness_session<Scheduler>(c3, sched);
+        auto withs = ae::make_harness_session<Scheduler>(c3, sched, nullptr, ae_test::sandboxes());
         if (withs.has_value()) {
             (void)withs->run("hi");
             auto reqs = h3.requests();
@@ -722,7 +740,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push(text_turn("should never be asked"));
-        auto h = ae::make_harness_session<Worker, FailingHistory>(client, ae_test::declared_options<Worker>());
+        auto h = ae::make_harness_session<Worker, FailingHistory>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (h.has_value()) {
             auto r = h->run("hi");
             check(!r.has_value() && r.error().code == "harness_context.piece_failed" &&
@@ -745,32 +763,32 @@ int main() {
     {
         ae::HarnessOptions o;
         o.disable_todo = true;
-        auto r = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), std::move(o));
+        auto r = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(o));
         check(!r.has_value() && r.error().code == "harness.plan_execute_requires_todo",
               "H10: plan_execute without todo is refused");
-        auto shadow = ae::make_harness_session<Shadowing>(ScriptedChatClient{}, ae_test::declared_options<Shadowing>());
+        auto shadow = ae::make_harness_session<Shadowing>(ScriptedChatClient{}, ae_test::declared_options<Shadowing>(), nullptr, ae_test::sandboxes());
         check(!shadow.has_value() && shadow.error().code == "harness.tool_name_collision",
               "H10: a declared tool shadowing a harness tool is refused at bind");
         ae::HarnessOptions both_off;
         both_off.disable_todo         = true;
         both_off.disable_plan_execute = true;
-        auto shadow_ok = ae::make_harness_session<Shadowing>(ScriptedChatClient{}, ae_test::declared_options<Shadowing>(), std::move(both_off));
+        auto shadow_ok = ae::make_harness_session<Shadowing>(ScriptedChatClient{}, ae_test::declared_options<Shadowing>(), nullptr, ae_test::sandboxes(), std::move(both_off));
         check(shadow_ok.has_value(), "H10 control: with those pieces off the name is free again");
-        auto wake = ae::make_harness_session<WakeShadowing>(ScriptedChatClient{}, ae_test::declared_options<WakeShadowing>());
+        auto wake = ae::make_harness_session<WakeShadowing>(ScriptedChatClient{}, ae_test::declared_options<WakeShadowing>(), nullptr, ae_test::sandboxes());
         check(!wake.has_value() && wake.error().code == "harness.tool_name_collision",
               "H10 (R4): a declared schedule_wakeup is refused while the plan gate is on");
         ae::HarnessOptions z;
         z.reflection_evaluator      = satisfied_on(1, std::make_shared<int>(0));
         z.reflection_max_iterations = 0;
-        auto zero = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), std::move(z));
+        auto zero = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(z));
         check(!zero.has_value() && zero.error().code == "harness.reflection_zero_iterations",
               "H10: zero reflection iterations are refused");
-        auto no_hist = ae::make_harness_session<Worker, NotHistory>(ScriptedChatClient{}, ae_test::declared_options<Worker>());
+        auto no_hist = ae::make_harness_session<Worker, NotHistory>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         check(!no_hist.has_value() && no_hist.error().code == "harness_context.no_history",
               "H10: a HistoryT that is not a history provider is refused (the model would see no conversation)");
         ae::HarnessOptions s;
         s.telemetry_sink = [](ae::RunEvent const&) {};
-        auto sink_none = ae::make_harness_session<Silent>(ScriptedChatClient{}, ae_test::declared_options<Silent>(), std::move(s));
+        auto sink_none = ae::make_harness_session<Silent>(ScriptedChatClient{}, ae_test::declared_options<Silent>(), nullptr, ae_test::sandboxes(), std::move(s));
         check(!sink_none.has_value() && sink_none.error().code == "harness.telemetry_sink_unused",
               "H10: a sink for a Telemetry<none> agent is refused, not silently ignored");
     }
@@ -785,7 +803,7 @@ int main() {
         sources.push_back(ae::make_skill_source_descriptor(ae::InlineSkillSource("host", {make_skill("brew-tea")})));
         ae::HarnessOptions o;
         o.skills = ae::make_context_provider_descriptor(ae::SkillsProvider<>(std::move(sources)), {});
-        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), std::move(o));
+        auto h = ae::make_harness_session<Worker>(client, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(o));
         if (h.has_value()) {
             check(h->pieces()[1] == "skills", "H11: a host-supplied SkillsProvider becomes the skills piece");
             (void)h->run("hi");
@@ -801,7 +819,7 @@ int main() {
 #endif
         ae::HarnessOptions wrong;
         wrong.skills = ae::make_context_provider_descriptor(ae::TodoProvider{}, {});
-        auto refused = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), std::move(wrong));
+        auto refused = ae::make_harness_session<Worker>(ScriptedChatClient{}, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(wrong));
         check(!refused.has_value() && refused.error().code == "harness.skills_not_a_skills_provider",
               "H11: the skills slot only takes a skills provider (no extra tool-bearing provider rides in)");
         ScriptedChatClient c3;
@@ -809,7 +827,7 @@ int main() {
         (void)h3.push(text_turn("never"));
         ae::HarnessOptions toly;
         toly.skills = ae::make_context_provider_descriptor(ToolySkills{}, {});
-        auto smuggler = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), std::move(toly));
+        auto smuggler = ae::make_harness_session<Worker>(c3, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes(), std::move(toly));
         if (smuggler.has_value()) {
             auto r = smuggler->run("hi");
             check(!r.has_value() && contains(r.error().message, "harness.skills_contributed_tools") &&
@@ -819,7 +837,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("ok"));
-        auto none = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>());
+        auto none = ae::make_harness_session<Worker>(c2, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
         if (none.has_value()) {
             (void)none->run("hi");
             auto reqs = h2.requests();
@@ -843,11 +861,11 @@ int main() {
         ScriptedChatClient b;
         ScriptedChatClient bh = b;
         (void)bh.push({call("act", "a1"), text_turn("done")});
-        auto native = ae::make_harness_session<Worker>(a, ae_test::declared_options<Worker>());
-        auto meta   = ae::register_agent<Worker>();
+        auto native = ae::make_harness_session<Worker>(a, ae_test::declared_options<Worker>(), nullptr, ae_test::sandboxes());
+        auto meta   = ae::register_agent<Worker>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "H12 setup: Worker registers");
         if (native.has_value() && meta.has_value()) {
-            auto bound = ae::bind_harness_session(*meta, b, ae_test::declared_options(*meta));
+            auto bound = ae::bind_harness_session(*meta, b, ae_test::declared_options(*meta), nullptr, ae_test::sandboxes());
             check(bound.has_value(), "H12 setup: bind_harness_session() binds the same metadata");
             if (bound.has_value()) {
                 (void)native->run("go");

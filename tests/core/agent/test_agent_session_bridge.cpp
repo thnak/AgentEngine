@@ -125,21 +125,27 @@ struct HiddenTool : ae::Tool<HiddenTool, ae::Approval<ae::approval_mode::never_r
 // ---- agents ---------------------------------------------------------------------------------------
 
 struct Helper : ae::Agent<Helper, ae::ChatClientId<"test:scripted">, ae::Tools<EchoTool, ReadDocTool, ParTool>,
-                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<3>, ae::TokenBudget<50>,
-                          ae::Telemetry<ae::telemetry_capture::none>> {
+                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<ae::at_most(3)>,
+                          ae::TokenBudget<ae::at_most(50)>, ae::Telemetry<ae::telemetry_capture::none>,
+                          ae::Approval<ae::approval_mode::policy_driven>,
+                          ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "helper";
     static constexpr std::string_view instructions = "You are Helper. Use your tools.";
     static constexpr std::string_view version      = "2.0.0";
 };
 
 struct GatedHelper : ae::Agent<GatedHelper, ae::ChatClientId<"test:scripted">, ae::Tools<EchoTool>,
-                               ae::Approval<ae::approval_mode::always_require>> {
+                               ae::Approval<ae::approval_mode::always_require>, ae::MaxTurns<ae::at_most(16)>,
+                               ae::TokenBudget<ae::unbounded()>, ae::Concurrency<ae::concurrency_mode::sequential>,
+                               ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "gated-helper";
     static constexpr std::string_view instructions = "Every tool call needs approval.";
 };
 
 struct ParallelHelper : ae::Agent<ParallelHelper, ae::ChatClientId<"test:scripted">, ae::Tools<ParTool>,
-                                  ae::Concurrency<ae::concurrency_mode::parallel>> {
+                                  ae::Concurrency<ae::concurrency_mode::parallel>, ae::MaxTurns<ae::at_most(16)>,
+                                  ae::TokenBudget<ae::unbounded()>,
+                                  ae::Approval<ae::approval_mode::policy_driven>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "parallel-helper";
     static constexpr std::string_view instructions = "Parallel batches allowed.";
 };
@@ -151,19 +157,26 @@ struct Answer {
 AE_JSON_SCHEMA(Answer, verdict, score)
 
 struct SchemaAgent
-    : ae::Agent<SchemaAgent, ae::ChatClientId<"test:scripted">, ae::OutputSchema<Answer>> {
+    : ae::Agent<SchemaAgent, ae::ChatClientId<"test:scripted">, ae::OutputSchema<Answer>,
+                ae::MaxTurns<ae::at_most(16)>, ae::TokenBudget<ae::unbounded()>,
+                ae::Approval<ae::approval_mode::policy_driven>, ae::Concurrency<ae::concurrency_mode::sequential>,
+                ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "schema-agent";
     static constexpr std::string_view instructions = "Answer as JSON.";
 };
 
-struct NoClientAgent : ae::Agent<NoClientAgent, ae::Tools<EchoTool>> {
+struct NoClientAgent : ae::Agent<NoClientAgent, ae::Tools<EchoTool>, ae::MaxTurns<ae::at_most(16)>,
+                                 ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                                 ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "no-client";
     static constexpr std::string_view instructions = "Missing ChatClientId.";
 };
 
 // P14: the C++ form of the YAML document below.
-struct EquivAgent : ae::Agent<EquivAgent, ae::ChatClientId<"test:scripted">, ae::Tools<EchoTool>, ae::MaxTurns<2>,
-                              ae::TokenBudget<100>, ae::Approval<ae::approval_mode::always_require>> {
+struct EquivAgent : ae::Agent<EquivAgent, ae::ChatClientId<"test:scripted">, ae::Tools<EchoTool>,
+                              ae::MaxTurns<ae::at_most(2)>, ae::TokenBudget<ae::at_most(100)>,
+                              ae::Approval<ae::approval_mode::always_require>,
+                              ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "equiv";
     static constexpr std::string_view instructions = "Answer briefly.";
 };
@@ -182,6 +195,9 @@ spec:
     max_turns: 2
     token_budget: 100
   approval: always_require
+  concurrency: sequential
+  sandbox:
+    profile: strict
 )YAML";
 
 // ---- helpers ------------------------------------------------------------------------------------------
@@ -283,7 +299,7 @@ int main() {
                            call_turn("read_doc", "c-read"), text_turn("done")});
         int const echo_before = g_echo_calls, hidden_before = g_hidden_calls, read_before = g_read_calls;
 
-        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({docs_read()}));
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({docs_read()}), nullptr, ae_test::sandboxes());
         check(bundle.has_value(), "P1 setup: make_agent_session<Helper>() binds");
         if (bundle.has_value()) {
             auto r = bundle->run("please help");
@@ -324,7 +340,7 @@ int main() {
         // The caller grants nothing the tool needs: FsWrite(docs) and FsRead(private) are both outside the
         // ceiling (which declares only FsRead(docs)), so neither may reach the session.
         auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt},
-                               ae::cap::FsRead{"private", "", std::nullopt}}));
+                               ae::cap::FsRead{"private", "", std::nullopt}}), nullptr, ae_test::sandboxes());
         check(bundle.has_value(), "P4 setup: binds");
         if (bundle.has_value()) {
             check(bundle->capabilities().size() == 0,
@@ -339,7 +355,7 @@ int main() {
             check(g_read_calls == read_before, "P4: ReadDocTool::invoke never ran");
         }
         // A broad grant (the whole mount) narrowed to what the agent declared.
-        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>({ae::cap::FsRead{"docs", "", std::uint64_t{4096}}}));
+        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>({ae::cap::FsRead{"docs", "", std::uint64_t{4096}}}), nullptr, ae_test::sandboxes());
         check(broad.has_value() && broad->capabilities().size() == 1 &&
                   broad->capabilities().contains(ae::cap::FsRead{"docs", "", std::uint64_t{4096}}),
               "P4: a grant the ceiling covers is kept with its own (tighter) size cap");
@@ -355,7 +371,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push(looping());
-        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>());
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (bundle.has_value()) {
             auto r = bundle->run("loop");
             check(!r.has_value() && r.error().code == "run.max_turns_exceeded",
@@ -369,14 +385,14 @@ int main() {
         (void)h2.push(looping());
         ae::AgentSessionOptions lower = ae_test::declared_options<Helper>();
         lower.choices.max_turns = ae::Bound<std::uint64_t>::at_most(1);
-        auto narrowed = ae::make_agent_session<Helper>(c2, lower);
+        auto narrowed = ae::make_agent_session<Helper>(c2, lower, nullptr, ae_test::sandboxes());
         if (narrowed.has_value()) {
             (void)narrowed->run("loop");
             check(h2.call_count() == 1, "P5 control: a lower per-run override (1) takes effect");
         }
         ae::AgentSessionOptions higher = ae_test::declared_options<Helper>();
         higher.choices.max_turns = ae::Bound<std::uint64_t>::at_most(10);
-        auto widened = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher);
+        auto widened = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher, nullptr, ae_test::sandboxes());
         check(!widened.has_value() && widened.error().code == "agent_session.override_widens",
               "P5: an override above the declared MaxTurns is refused, not clamped");
     }
@@ -386,7 +402,7 @@ int main() {
         ScriptedChatClient over;
         ScriptedChatClient over_h = over;
         (void)over_h.push(text_turn("expensive", ae::Usage{40, 20, 0, 0, 0.0}));
-        auto b1 = ae::make_agent_session<Helper>(over, ae_test::declared_options<Helper>());
+        auto b1 = ae::make_agent_session<Helper>(over, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (b1.has_value()) {
             auto r = b1->run("go");
             check(!r.has_value() && r.error().code == "run.token_budget_exceeded",
@@ -395,7 +411,7 @@ int main() {
         ScriptedChatClient under;
         ScriptedChatClient under_h = under;
         (void)under_h.push(text_turn("cheap", ae::Usage{10, 10, 0, 0, 0.0}));
-        auto b2 = ae::make_agent_session<Helper>(under, ae_test::declared_options<Helper>());
+        auto b2 = ae::make_agent_session<Helper>(under, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (b2.has_value()) {
             auto r = b2->run("go");
             check(r.has_value(), "P6 control: a run spending 20 tokens converges");
@@ -405,7 +421,7 @@ int main() {
         (void)tight_h.push(text_turn("cheap", ae::Usage{10, 10, 0, 0, 0.0}));
         ae::AgentSessionOptions lower = ae_test::declared_options<Helper>();
         lower.choices.token_budget = ae::Bound<std::uint64_t>::at_most(15);
-        auto b3 = ae::make_agent_session<Helper>(tight, lower);
+        auto b3 = ae::make_agent_session<Helper>(tight, lower, nullptr, ae_test::sandboxes());
         if (b3.has_value()) {
             auto r = b3->run("go");
             check(!r.has_value() && r.error().code == "run.token_budget_exceeded",
@@ -413,7 +429,7 @@ int main() {
         }
         ae::AgentSessionOptions higher = ae_test::declared_options<Helper>();
         higher.choices.token_budget = ae::Bound<std::uint64_t>::at_most(1000);
-        auto b4 = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher);
+        auto b4 = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher, nullptr, ae_test::sandboxes());
         check(!b4.has_value() && b4.error().code == "agent_session.override_widens",
               "P6: an override above the declared TokenBudget is refused");
     }
@@ -424,7 +440,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push({call_turn("echo", "c-g"), text_turn("done")});
-        auto gated = ae::make_agent_session<GatedHelper>(client, ae_test::declared_options<GatedHelper>());
+        auto gated = ae::make_agent_session<GatedHelper>(client, ae_test::declared_options<GatedHelper>(), nullptr, ae_test::sandboxes());
         if (gated.has_value()) {
             auto r = gated->run("go");
             check(r.has_value(), "P7 setup: the run converges after the denial");
@@ -442,7 +458,7 @@ int main() {
         (void)h2.push({call_turn("echo", "c-a"), text_turn("done")});
         ae::AgentSessionOptions approve = ae_test::declared_options<GatedHelper>();
         approve.approve_tools = std::vector<std::string>{"echo"};
-        auto approved = ae::make_agent_session<GatedHelper>(c2, approve);
+        auto approved = ae::make_agent_session<GatedHelper>(c2, approve, nullptr, ae_test::sandboxes());
         if (approved.has_value()) {
             (void)approved->run("go");
             ToolOutcome o = tool_outcome(approved->session(), "c-a");
@@ -451,7 +467,7 @@ int main() {
         ScriptedChatClient c3;
         ScriptedChatClient h3 = c3;
         (void)h3.push({call_turn("echo", "c-d"), text_turn("done")});
-        auto plain = ae::make_agent_session<Helper>(c3, ae_test::declared_options<Helper>());
+        auto plain = ae::make_agent_session<Helper>(c3, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (plain.has_value()) {
             (void)plain->run("go");
             ToolOutcome o = tool_outcome(plain->session(), "c-d");
@@ -465,7 +481,7 @@ int main() {
         ScriptedChatClient c1;
         ScriptedChatClient h1 = c1;
         (void)h1.push(text_turn("ok"));
-        auto seq = ae::make_agent_session<Helper>(c1, ae_test::declared_options<Helper>());
+        auto seq = ae::make_agent_session<Helper>(c1, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (seq.has_value()) (void)seq->run("go");
         auto r1 = h1.requests();
         check(!r1.empty() && find_tool(r1[0], "par") && !find_tool(r1[0], "par")->parallelizable,
@@ -473,7 +489,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("ok"));
-        auto par = ae::make_agent_session<ParallelHelper>(c2, ae_test::declared_options<ParallelHelper>());
+        auto par = ae::make_agent_session<ParallelHelper>(c2, ae_test::declared_options<ParallelHelper>(), nullptr, ae_test::sandboxes());
         if (par.has_value()) (void)par->run("go");
         auto r2 = h2.requests();
         check(!r2.empty() && find_tool(r2[0], "par") && find_tool(r2[0], "par")->parallelizable,
@@ -485,7 +501,7 @@ int main() {
         ScriptedChatClient c1;
         ScriptedChatClient h1 = c1;
         (void)h1.push(text_turn(R"({"verdict":"yes","score":3})"));
-        auto good = ae::make_agent_session<SchemaAgent>(c1, ae_test::declared_options<SchemaAgent>());
+        auto good = ae::make_agent_session<SchemaAgent>(c1, ae_test::declared_options<SchemaAgent>(), nullptr, ae_test::sandboxes());
         if (good.has_value()) {
             auto r = good->run("judge");
             check(r.has_value() && r->structured_output_json.has_value(),
@@ -494,16 +510,16 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("not json at all"));
-        auto bad = ae::make_agent_session<SchemaAgent>(c2, ae_test::declared_options<SchemaAgent>());
+        auto bad = ae::make_agent_session<SchemaAgent>(c2, ae_test::declared_options<SchemaAgent>(), nullptr, ae_test::sandboxes());
         if (bad.has_value()) {
             auto r = bad->run("judge");
             check(!r.has_value() && r.error().code == "run.output_schema_validation_failed",
                   "P9: a reply that does not match OutputSchema<Answer> fails the run");
         }
-        auto meta = ae::register_agent<SchemaAgent>();
+        auto meta = ae::register_agent<SchemaAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "P9 setup: SchemaAgent registers");
         if (meta.has_value()) {
-            auto bound = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta));
+            auto bound = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta), nullptr, ae_test::sandboxes());
             check(!bound.has_value() && bound.error().code == "agent_session.output_schema_unvalidated",
                   "P9: binding the schema agent's bare metadata refuses rather than running unvalidated");
         }
@@ -534,18 +550,18 @@ int main() {
 
     // ---- P10: validation at bind time ---------------------------------------------------------------------------
     {
-        auto none = ae::make_agent_session<NoClientAgent>(ScriptedChatClient{}, ae_test::declared_options<NoClientAgent>());
+        auto none = ae::make_agent_session<NoClientAgent>(ScriptedChatClient{}, ae_test::declared_options<NoClientAgent>(), nullptr, ae_test::sandboxes());
         check(!none.has_value() && none.error().code == "agent.chat_client_id_missing",
               "P10: an agent without ChatClientId<...> is refused");
-        auto meta = ae::register_agent<Helper>();
+        auto meta = ae::register_agent<Helper>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "P10 setup: Helper registers");
         if (meta.has_value()) {
             ae::AgentMetadata edited = *meta;
             edited.capability_ceiling.clear();  // read_doc now needs a capability the ceiling lacks
-            auto b = ae::bind_agent_session(edited, ScriptedChatClient{}, ae_test::declared_options(edited));
+            auto b = ae::bind_agent_session(edited, ScriptedChatClient{}, ae_test::declared_options(edited), nullptr, ae_test::sandboxes());
             check(!b.has_value() && b.error().code == "agent.capability_ceiling_exceeded",
                   "P10: bind re-validates metadata -- a ceiling no longer covering a declared tool is refused");
-            auto ok = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta));
+            auto ok = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta), nullptr, ae_test::sandboxes());
             check(ok.has_value(), "P10 control: the unedited metadata binds");
         }
     }
@@ -554,12 +570,12 @@ int main() {
     {
         ae::AgentSessionOptions o = ae_test::declared_options<Helper>();
         o.chat_client_grants = {ae::cap::Schedule{std::chrono::seconds{60}, 1}};
-        auto refused = ae::make_agent_session<Helper>(ScriptedChatClient{}, o);
+        auto refused = ae::make_agent_session<Helper>(ScriptedChatClient{}, o, nullptr, ae_test::sandboxes());
         check(!refused.has_value() && refused.error().code == "agent_session.chat_client_grant_not_secret",
               "P11: a non-secret capability cannot ride in through chat_client_grants");
         ae::AgentSessionOptions s = ae_test::declared_options<Helper>();
         s.chat_client_grants = {ae::cap::Secret{"api-key", std::chrono::seconds{0}}};
-        auto ok = ae::make_agent_session<Helper>(ScriptedChatClient{}, s);
+        auto ok = ae::make_agent_session<Helper>(ScriptedChatClient{}, s, nullptr, ae_test::sandboxes());
         // ADR-244 §2.3 (slice 3c): held for the model call only -- never in the run's authority, which tools read.
         check(ok.has_value() && ok->session().chat_client_secrets() != nullptr &&
                   ok->session().chat_client_secrets()->contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
@@ -570,7 +586,7 @@ int main() {
 
     // ---- P12: recorded fields -------------------------------------------------------------------------------------
     {
-        auto b = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>());
+        auto b = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (b.has_value()) {
             auto const& md = b->session().metadata();
             check(md.at("agent.name") == "helper" && md.at("agent.version") == "2.0.0" &&
@@ -584,7 +600,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push({text_turn("one"), text_turn("two")});
-        auto b = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>());
+        auto b = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>(), nullptr, ae_test::sandboxes());
         if (b.has_value()) {
             check(b->run("first").has_value(), "P13 control: the bound session runs");
             b->session().clear_in_process_state();
@@ -644,13 +660,13 @@ int main() {
         ScriptedChatClient doc_h = doc_client;
         (void)doc_h.push(script());
 
-        auto native = ae::make_agent_session<EquivAgent>(native_client, ae_test::declared_options<EquivAgent>());
+        auto native = ae::make_agent_session<EquivAgent>(native_client, ae_test::declared_options<EquivAgent>(), nullptr, ae_test::sandboxes());
         if (!doc_meta.has_value()) {
             check(false, "P14 setup: cannot continue without the compiled document");
             std::fprintf(stderr, "test_agent_session_bridge: FAIL\n");
             return 1;
         }
-        auto declarative = ae::bind_agent_session(*doc_meta, doc_client, ae_test::declared_options(*doc_meta));
+        auto declarative = ae::bind_agent_session(*doc_meta, doc_client, ae_test::declared_options(*doc_meta), nullptr, ae_test::sandboxes());
         check(native.has_value() && declarative.has_value(), "P14 setup: both forms bind");
         if (native.has_value() && declarative.has_value()) {
             auto rn = native->run("compare");

@@ -99,7 +99,9 @@ struct DemoRetryPolicy {};    // stands in for 004 §4's eventual real retry-sha
 struct DemoMiddleware {};     // stands in for §5's before_model/after_model hook type
 struct DemoOutputSchema {};   // stands in for 003 §4's eventual real schema type
 
-struct DemoAgent : ae::Agent<DemoAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<12>,
+struct DemoAgent : ae::Agent<DemoAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<ae::at_most(12)>,
+                              ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                              ae::SandboxProfile<ae::Strict>,
                               ae::Concurrency<ae::concurrency_mode::sequential>, ae::Retry<DemoRetryPolicy>,
                               ae::Memory<DummyContextProvider>, ae::Middleware<DemoMiddleware>,
                               ae::Stateless<4>, ae::OutputSchema<DemoOutputSchema>> {

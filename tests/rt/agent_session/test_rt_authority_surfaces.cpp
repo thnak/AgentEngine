@@ -142,25 +142,37 @@ wf::Workflow one_node(char const* id, wf::Executor node) {
 
 // ---- agents for S6/S7 ----------------------------------------------------------------------------------------
 struct EntropyAgent : ae::Agent<EntropyAgent, ae::ChatClientId<"test:scripted">,
-                                ae::Capabilities<ae::cap::decl::Entropy>, ae::MaxTurns<4>> {
+                                ae::Capabilities<ae::cap::decl::Entropy>, ae::MaxTurns<ae::at_most(4)>,
+                                ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                                ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "entropy-agent";
     static constexpr std::string_view instructions = "Declares cap::Entropy only.";
 };
-struct BareAgent : ae::Agent<BareAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<4>> {
+struct BareAgent : ae::Agent<BareAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<ae::at_most(4)>,
+                             ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                             ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "bare-agent";
     static constexpr std::string_view instructions = "Declares no capabilities.";
 };
-struct ZeroTurnsAgent : ae::Agent<ZeroTurnsAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<0>> {
+struct ZeroTurnsAgent : ae::Agent<ZeroTurnsAgent, ae::ChatClientId<"test:scripted">,
+                                  ae::MaxTurns<ae::BoundValue<std::uint64_t>{0, false}>,
+                                  ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                                  ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "zero-turns";
     static constexpr std::string_view instructions = "Declares a zero turn cap.";
 };
 struct ZeroBudgetAgent
-    : ae::Agent<ZeroBudgetAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<4>, ae::TokenBudget<0>> {
+    : ae::Agent<ZeroBudgetAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<ae::at_most(4)>,
+                ae::TokenBudget<ae::BoundValue<std::uint64_t>{0, false}>,
+                ae::Approval<ae::approval_mode::policy_driven>, ae::Concurrency<ae::concurrency_mode::sequential>,
+                ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "zero-budget";
     static constexpr std::string_view instructions = "Declares a zero token budget.";
 };
 struct OneTurnAgent
-    : ae::Agent<OneTurnAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<1>, ae::TokenBudget<1>> {
+    : ae::Agent<OneTurnAgent, ae::ChatClientId<"test:scripted">, ae::MaxTurns<ae::at_most(1)>,
+                ae::TokenBudget<ae::at_most(1)>, ae::Approval<ae::approval_mode::policy_driven>,
+                ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "one-turn";
     static constexpr std::string_view instructions = "Declares the smallest bounds.";
 };
@@ -300,8 +312,7 @@ int main() {
 
     // ---- S6: the bridge bounds per_request by the agent's declared ceiling ---------------------------------------
     {
-        auto taken = ae::make_agent_session<EntropyAgent>(
-            CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::no_ceiling())));
+        auto taken = ae::make_agent_session<EntropyAgent>(CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::no_ceiling())), nullptr, ae_test::sandboxes());
         check(taken.has_value() && taken->session().choices().has_value() &&
                   taken->session().choices()->authority.ceiling() != nullptr &&
                   !taken->session().choices()->authority.ceiling()->is_none() &&
@@ -309,23 +320,18 @@ int main() {
                   !taken->session().choices()->authority.ceiling()->admits(*clock_and_entropy),
               "S6: per_request(no_ceiling()) takes the agent's declared ceiling (Entropy, not Clock)");
 
-        auto wider = ae::make_agent_session<EntropyAgent>(
-            CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(
-                                  ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{}}))));
+        auto wider = ae::make_agent_session<EntropyAgent>(CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(
+                                  ae::CapabilitySet::grant_root({ae::cap::Entropy{}, ae::cap::Clock{}}))), nullptr, ae_test::sandboxes());
         check(code_of(wider) == "agent_session.override_widens",
               "S6: a stated ceiling wider than the declaration is refused, not clamped");
 
-        auto covered = ae::make_agent_session<EntropyAgent>(
-            CountingClient{},
-            options_with<EntropyAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::grant_root({ae::cap::Entropy{}}))));
+        auto covered = ae::make_agent_session<EntropyAgent>(CountingClient{}, options_with<EntropyAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::grant_root({ae::cap::Entropy{}}))), nullptr, ae_test::sandboxes());
         check(covered.has_value(), "S6 control: a stated ceiling the declaration covers binds");
 
-        auto bare = ae::make_agent_session<BareAgent>(
-            CountingClient{}, options_with<BareAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::no_ceiling())));
+        auto bare = ae::make_agent_session<BareAgent>(CountingClient{}, options_with<BareAgent>(ae::AuthoritySource::per_request(ae::CapabilitySet::no_ceiling())), nullptr, ae_test::sandboxes());
         check(code_of(bare) == "choice.missing.capability_ceiling",
               "S6: an agent declaring no capabilities cannot be per_request (choice.missing.capability_ceiling)");
-        auto bare_trusted = ae::make_agent_session<BareAgent>(
-            CountingClient{}, options_with<BareAgent>(ae::AuthoritySource::single_trusted_caller()));
+        auto bare_trusted = ae::make_agent_session<BareAgent>(CountingClient{}, options_with<BareAgent>(ae::AuthoritySource::single_trusted_caller()), nullptr, ae_test::sandboxes());
         check(bare_trusted.has_value(), "S6 control: the same agent binds as single_trusted_caller");
     }
 
@@ -333,13 +339,12 @@ int main() {
     {
         ae::AgentSessionOptions zero_opts = ae_test::declared_options<ZeroTurnsAgent>();
         zero_opts.choices.max_turns       = ae::Bound<u64>::at_most(1);  // the choice is fine; the declaration is not
-        check(code_of(ae::make_agent_session<ZeroTurnsAgent>(CountingClient{}, zero_opts)) == "choice.zero_bound",
+        check(code_of(ae::make_agent_session<ZeroTurnsAgent>(CountingClient{}, zero_opts, nullptr, ae_test::sandboxes())) == "choice.zero_bound",
               "S7: MaxTurns<0> is refused at bind (choice.zero_bound)");
-        check(code_of(ae::make_agent_session<ZeroBudgetAgent>(CountingClient{},
-                                                                ae_test::declared_options<ZeroBudgetAgent>())) ==
+        check(code_of(ae::make_agent_session<ZeroBudgetAgent>(CountingClient{}, ae_test::declared_options<ZeroBudgetAgent>(), nullptr, ae_test::sandboxes())) ==
                   "choice.zero_bound",
               "S7: TokenBudget<0> is refused at bind (choice.zero_bound)");
-        check(ae::make_agent_session<OneTurnAgent>(CountingClient{}, ae_test::declared_options<OneTurnAgent>())
+        check(ae::make_agent_session<OneTurnAgent>(CountingClient{}, ae_test::declared_options<OneTurnAgent>(), nullptr, ae_test::sandboxes())
                   .has_value(),
               "S7 control: MaxTurns<1>, TokenBudget<1> bind");
     }

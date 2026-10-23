@@ -601,8 +601,9 @@ struct FixtureLoad {
     for (ToolDescriptor const& d : meta->tools.descriptors()) f.tools.push_back(d.name);
     f.instructions = meta->agent_instructions;
     if (spec != nullptr && spec->find("limits") != nullptr) {
-        if (spec->find("limits")->find("max_turns") != nullptr) f.max_turns = meta->max_turns;
-        f.token_budget = meta->token_budget;
+        auto const limit_of = [](auto const& b) { return b.and_then([](auto v) { return v.limit(); }); };
+        if (spec->find("limits")->find("max_turns") != nullptr) f.max_turns = limit_of(meta->max_turns);
+        f.token_budget = limit_of(meta->token_budget);
     }
     if (Value const* ext = doc->find("x-test-driver"); ext != nullptr) {
         if (!ext->is_object()) return fail("test.bad_fixture", name + ".yaml: x-test-driver must be a mapping");

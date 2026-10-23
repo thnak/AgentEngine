@@ -165,7 +165,7 @@ namespace agent_yaml_compiler_detail {
             if (auto z = check_bound("limits.max_turns", Bound<std::uint64_t>::at_most(*bounded)); !z) {
                 return std::unexpected(z.error());
             }
-            meta.max_turns = static_cast<std::uint32_t>(*bounded);
+            meta.max_turns = Bound<std::uint64_t>::at_most(*bounded);
         }
         if (json::Value const* tb = limits->find("token_budget")) {
             auto bounded = json::as_bounded_integer(*tb);
@@ -178,7 +178,7 @@ namespace agent_yaml_compiler_detail {
             if (auto z = check_bound("limits.token_budget", Bound<std::uint64_t>::at_most(*bounded)); !z) {
                 return std::unexpected(z.error());
             }
-            meta.token_budget = *bounded;
+            meta.token_budget = Bound<std::uint64_t>::at_most(*bounded);
         }
     }
 
@@ -207,7 +207,8 @@ namespace agent_yaml_compiler_detail {
             // 015 §2's own example uses "strict" -- any other declared profile name maps to
             // is_strict=false, with `traits` left at its own default (015 §2's own example never
             // exercises a non-strict profile's traits; mapping those is real, separate follow-up).
-            meta.sandbox_profile.is_strict = (profile->as_string() == "strict");
+            meta.sandbox_profile = SandboxProfileDescriptor{};
+            meta.sandbox_profile->is_strict = (profile->as_string() == "strict");
         }
         // sandbox.fallback: no home in SandboxProfileDescriptor (is_strict + traits only) -- the
         // fallback CHAIN concept has no compiled-metadata slot yet, read here for nothing, honestly.
