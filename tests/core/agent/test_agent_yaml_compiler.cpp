@@ -44,7 +44,37 @@ struct ResearcherAgent
 }  // namespace
 
 int main() {
-    std::string const agent_doc = R"YAML(apiVersion: agentengine.dev/v1\nkind: Agent\nmetadata:\n  id: researcher\n  version: 1.4.0\n  description: Researches a question and cites sources.\nspec:\n  provider:\n    model: anthropic:claude-opus-5\n    options: { temperature: 0.2 }\n  instructions: |\n    Research the question. Cite sources.\n  tools:\n    - web_search\n    - code_interpreter\n    - handoff: writer\n  capabilities:\n    net_out: ["api.search.example"]\n  sandbox:\n    profile: strict\n  limits:\n    max_turns: 12\n    token_budget: 200000\n  approval: policy_driven\n  memory:\n    - kind: semantic\n      store: project-docs\n  middleware: [redact_pii]\n  telemetry: { capture: metadata_only }\n  output_schema: { $ref: "./schemas/research-result.json" }\n)YAML";
+    std::string const agent_doc = R"YAML(apiVersion: agentengine.dev/v1
+kind: Agent
+metadata:
+  id: researcher
+  version: 1.4.0
+  description: Researches a question and cites sources.
+spec:
+  provider:
+    model: anthropic:claude-opus-5
+    options: { temperature: 0.2 }
+  instructions: |
+    Research the question. Cite sources.
+  tools:
+    - web_search
+    - code_interpreter
+    - handoff: writer
+  capabilities:
+    net_out: ["api.search.example"]
+  sandbox:
+    profile: strict
+  limits:
+    max_turns: 12
+    token_budget: 200000
+  approval: policy_driven
+  memory:
+    - kind: semantic
+      store: project-docs
+  middleware: [redact_pii]
+  telemetry: { capture: metadata_only }
+  output_schema: { $ref: "./schemas/research-result.json" }
+)YAML";
 
     // --- F-1: 015 §2's own example compiles, every covered field is real and correct ----------------
     ae::AgentMetadata compiled_meta;
