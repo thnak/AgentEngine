@@ -199,6 +199,9 @@ result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, Effe
     // asked for something this backend cannot honor fails fast, the same low cost Slice 2's original
     // convenience-flag-path check had, rather than paying for a full `ctr images mount` first only to
     // reject the request afterward.
+    // Does the spec ask for any network at all? Used below to decide whether to resolve the allowlist and build the
+    // network namespace. (Slice 2a deleted this definition with the backstop that followed it; two uses remained.)
+    bool const wants_network = !spec.net.deny_all || !spec.net.allowlist.empty();
     // ADR-244 §2.4: this backend used to carry its own zero-grant backstop here
     // (`kata_backend.net_capability_required`, ADR-093 §5), because `authorize_spec()` skipped its
     // `cap::SandboxNetOut` check when the caller held no grant of that kind. That check is now

@@ -85,14 +85,17 @@ else warn "${disk_gb:-?} GiB free under /var/lib; images, snapshots and loop-mou
 
 # ---- virtualization --------------------------------------------------------------------------------------------
 section "virtualization"
-virt="$(systemd-detect-virt 2>/dev/null || echo none)"
+# On bare metal systemd-detect-virt prints "none" AND exits non-zero, so `|| echo none` would append a second "none".
+virt="$(systemd-detect-virt 2>/dev/null || true)"; virt="${virt:-none}"
 if [ "$virt" = none ]; then ok "bare metal"
 else warn "running inside a '$virt' VM: Kata needs nested virtualization (checked below via the CPU flag and /dev/kvm)"; fi
 if grep -q -m1 -E '\b(vmx|svm)\b' /proc/cpuinfo; then ok "CPU exposes hardware virtualization (vmx/svm)"
 else fail "no vmx/svm CPU flag: KVM is unavailable (enable VT-x/AMD-V, or nested virt on the hypervisor)"; fi
 if [ -c /dev/kvm ]; then
     if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then ok "/dev/kvm present and usable by $(id -un)"
-    else warn "/dev/kvm present but not read/writable by $(id -un) (fine if the tests run as root)"; fi
+    elif as_root sh -c 'test -r /dev/kvm && test -w /dev/kvm' 2>/dev/null; then
+        ok "/dev/kvm present and usable by root (the Kata tests run as root; $(id -un) is not in the kvm group)"
+    else warn "/dev/kvm present but not read/writable by $(id -un), and not checkable as root (fine if the tests run as root)"; fi
 else fail "/dev/kvm missing"; hint "load kvm_intel/kvm_amd; inside a VM enable nested virtualization on the hypervisor"; fi
 for m in kvm_intel kvm_amd; do
     [ -r "/sys/module/$m/parameters/nested" ] && printf '       %s nested=%s\n' "$m" "$(cat /sys/module/$m/parameters/nested)"
@@ -119,7 +122,12 @@ else fail "containerd-shim-kata-clh-v2 not on PATH: runtime io.containerd.kata-c
 if [ -d /opt/kata ]; then
     kv="$(cat /opt/kata/VERSION 2>/dev/null || /opt/kata/bin/containerd-shim-kata-v2 --version 2>/dev/null | head -1)"
     ok "/opt/kata present${kv:+ ($kv)}"
-    if [ -x /opt/kata/bin/cloud-hypervisor ]; then ok "cloud-hypervisor present ($(/opt/kata/bin/cloud-hypervisor --version 2>/dev/null | head -1))"
+    # The Kata tarball installs cloud-hypervisor mode 744 (root only), so test and run it as root: `-x` as an
+    # unprivileged user would report an installed binary as missing.
+    if as_root test -x /opt/kata/bin/cloud-hypervisor; then
+        ok "cloud-hypervisor present ($(as_root /opt/kata/bin/cloud-hypervisor --version 2>/dev/null | head -1))"
+    elif [ -e /opt/kata/bin/cloud-hypervisor ]; then
+        warn "/opt/kata/bin/cloud-hypervisor exists but cannot be checked without root or passwordless sudo"
     else fail "/opt/kata/bin/cloud-hypervisor missing (the backend pins kata-clh)"; fi
 else fail "/opt/kata missing (Kata Containers not installed)"; fi
 if [ -f /etc/kata-containers/runtime-rs/configuration.toml ]; then ok "/etc/kata-containers/runtime-rs/configuration.toml present"
