@@ -39,8 +39,9 @@ spec:
     - web_search
     - code_interpreter
     - handoff: writer
-  capabilities:
-    net_out: ["api.search.example"]
+  capabilities:               # the agent's ceiling (ADR-244 §5): every limit stated, nothing defaulted
+    net_out:
+      - { hosts: ["api.search.example:443:https"], byte_cap: 1048576, methods: [GET] }
   sandbox:
     profile: strict
     # sandbox.fallback is refused until a resolver consumes it (ADR-244 §2.2; ADR-242 R2: no fallback is silent).

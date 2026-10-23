@@ -12,6 +12,7 @@ agentengine_add_test(test_capability_declaration_tags LIBS agentengine::core age
 # ---- cap::NativeExec (decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md) ------
 # Header-only (trust/capability.hpp), core-tier -- links only agentengine::core.
 agentengine_add_test(test_native_exec_capability LIBS agentengine::core agentengine_warnings)
+agentengine_add_test(test_capability_yaml LIBS agentengine::core agentengine_warnings)
 
 # ---- CodeAct discoverability manifest (resolves OQ-16, OpenQuestions.md) -----------------------
 # Header-only (trust/agent_library_manifest.hpp), core-tier -- links only agentengine::core.

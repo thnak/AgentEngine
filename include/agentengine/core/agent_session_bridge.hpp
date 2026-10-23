@@ -340,9 +340,9 @@ template <class ChatClientT, class Inner = HistoryProvider<UnboundedWindow>>
 
     // ADR-244 §2.3 (red-team D14): a per_request session's ceiling is bounded by the agent's declaration, the
     // same narrowing direction as the turn cap. `no_ceiling()` takes the declared ceiling; a stated ceiling the
-    // declaration does not cover is refused, not clamped. An agent that declares no capabilities (every YAML
-    // agent today) would refuse every authority that holds anything, so it cannot be per_request at all
-    // rather than being pushed to `no_ceiling()`.
+    // declaration does not cover is refused, not clamped. An agent that declares no capabilities (a YAML agent
+    // with no `capabilities:` block, a C++ agent with no `Capabilities<...>`) would refuse every authority that holds
+    // anything, so it cannot be per_request at all rather than being pushed to `no_ceiling()`.
     SessionChoices choices = opts.choices;
     if (CapabilityCeiling const* asked = opts.choices.authority.ceiling(); asked != nullptr) {
         if (meta.capability_ceiling.empty()) {
