@@ -427,6 +427,26 @@ void install_deciders(SessionT& session, std::optional<std::vector<std::string>>
     }
 }
 
+// ADR-244 §2.2 (slice 4c): the session's id and principal are the host's statement, never `"s-quickstart"` /
+// `"p-quickstart"`. Checked at the top of every builder's `build()`, before anything is consumed.
+inline constexpr std::array<std::string_view, 1> kSessionIdOptions = {
+    ".session_id(\"...\"): a non-empty id the host assigns to this session"};
+inline constexpr std::array<std::string_view, 1> kPrincipalOptions = {
+    ".principal(Principal{id, tenant_id}) with a non-empty id"};
+inline constexpr std::array<std::string_view, 1> kSecretSourceOptions = {
+    ".store(args...): the secret store the host chose (an InMemorySecretStore holds secrets in plaintext, in memory)"};
+
+[[nodiscard]] inline agentengine::result<void> check_identity(std::optional<std::string> const& session_id,
+                                                              std::optional<agentengine::Principal> const& principal) {
+    if (!session_id.has_value() || session_id->empty()) {
+        return std::unexpected(agentengine::choice_missing("session_id", kSessionIdOptions));
+    }
+    if (!principal.has_value() || principal->id.empty()) {
+        return std::unexpected(agentengine::choice_missing("principal", kPrincipalOptions));
+    }
+    return {};
+}
+
 }  // namespace detail
 
 // Move-only. Owns every long-lived object the constructed session's `ChatClientT` and
@@ -813,6 +833,7 @@ public:
         if (!choices_.has_value()) {
             return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
         }
+        if (auto id = detail::check_identity(session_id_, principal_); !id) return std::unexpected(id.error());
         if (built_) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -820,16 +841,10 @@ public:
                 "supplied ChatClientT and Store are both moved out on the first call)",
                 "raw_quickstart_builder.already_built"});
         }
+        // ADR-244 §2.2 (slice 4c): the secret source is the host's choice, not a default-constructed `Store` (which
+        // for `InMemorySecretStore` meant plaintext secrets in memory, chosen by omission).
         if (!store_) {
-            if constexpr (std::default_initializable<Store>) {
-                store_ = std::make_unique<Store>();
-            } else {
-                return std::unexpected(agentengine::error{
-                    agentengine::failure_class::contract,
-                    "no Store supplied and Store is not default-constructible -- call .store(args...) "
-                    "before build()",
-                    "raw_quickstart_builder.no_store"});
-            }
+            return std::unexpected(agentengine::choice_missing("secret_source", detail::kSecretSourceOptions));
         }
 
         // grant_root() takes std::vector<Capability> BY VALUE -- moved, not copied, since grants_ is
@@ -839,7 +854,7 @@ public:
             agentengine::CapabilitySet::grant_root(std::move(grants_)));
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, *choices_);
+        session->initialize(*session_id_, *principal_, *choices_);
         built_ = true;  // see this method's own doc comment for exactly why HERE, not earlier
         session->emplace_chat_client(std::move(client_));
         session->set_capabilities(capabilities.get());
@@ -852,8 +867,8 @@ public:
 
 private:
     ChatClientT client_;
-    std::string session_id_ = "s-quickstart";
-    agentengine::Principal principal_{"p-quickstart", ""};
+    std::optional<std::string> session_id_;
+    std::optional<agentengine::Principal> principal_;
     std::unique_ptr<Store> store_;
     std::vector<agentengine::Capability> grants_;
     std::optional<std::vector<std::string>> approved_tool_names_;
@@ -1092,6 +1107,7 @@ public:
         if (!choices_.has_value()) {
             return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
         }
+        if (auto id = detail::check_identity(session_id_, principal_); !id) return std::unexpected(id.error());
         if (!api_key_ref_.has_value()) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -1119,7 +1135,7 @@ public:
                                                          path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, *choices_);
+        session->initialize(*session_id_, *principal_, *choices_);
         // Constructs ModelCallGateway<Primary> IN PLACE from (Primary&&, std::tuple<>&&) -- §2a's "one
         // rung above bare" default (retry+circuit-breaker, empty fallback chain, default RetryPolicy/
         // BreakerConfig) -- never a move of an already-built ChatClientT.
@@ -1143,8 +1159,8 @@ public:
 private:
     std::string model_;
     agentengine::rt::Runtime* runtime_ = nullptr;  // .runtime(): borrowed; null = the client's own
-    std::string session_id_ = "s-quickstart";
-    agentengine::Principal principal_{"p-quickstart", ""};
+    std::optional<std::string> session_id_;
+    std::optional<agentengine::Principal> principal_;
     agentengine::ChatClientCapabilities caps_{};
     std::optional<agentengine::SecretRef> api_key_ref_;
     std::optional<agentengine::Capability> primary_secret_grant_;
@@ -1285,6 +1301,7 @@ public:
         if (!choices_.has_value()) {
             return std::unexpected(agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions));
         }
+        if (auto id = detail::check_identity(session_id_, principal_); !id) return std::unexpected(id.error());
         if (!api_key_ref_.has_value()) {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -1317,7 +1334,7 @@ public:
                                                          path_prefix_, runtime_);
 
         auto session = std::make_unique<typename BundleT::SessionT>();
-        session->initialize(session_id_, principal_, *choices_);
+        session->initialize(*session_id_, *principal_, *choices_);
         session->emplace_chat_client(std::move(primary), std::tuple<>{});
         session->set_capabilities(capabilities.get());
         if (auto set = session->set_chat_client_secrets({*primary_secret_grant_}); !set) {
@@ -1343,8 +1360,8 @@ public:
 private:
     std::string model_;
     agentengine::rt::Runtime* runtime_ = nullptr;  // .runtime(): borrowed; null = the client's own
-    std::string session_id_ = "s-quickstart";
-    agentengine::Principal principal_{"p-quickstart", ""};
+    std::optional<std::string> session_id_;
+    std::optional<agentengine::Principal> principal_;
     agentengine::ChatClientCapabilities caps_{};
     std::optional<agentengine::SecretRef> api_key_ref_;
     std::optional<agentengine::Capability> primary_secret_grant_;

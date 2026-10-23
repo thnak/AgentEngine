@@ -80,6 +80,9 @@ int main() {
     // from an environment variable (never compiled in -- 018 §4), declare what the backend can do,
     // and build. No AgentSession, ChatClientT, or HistoryProvider vocabulary appears anywhere here.
     auto built = OpenAiSessionBuilder(model)
+                     // ADR-244: the host states the session's identity too -- no "s-quickstart" / "p-quickstart".
+                     .session_id("s-example-30")
+                     .principal(Principal{"p-demo", ""})
                      // ADR-244: stated, never defaulted -- the session holds its own grants; one question to a
                      // live model, capped at 25 turns and 20'000 tokens.
                      .choices(SessionChoices{AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::at_most(20'000),

@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c), 4a and 4b built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c) and 4 (4a, 4b, 4c) built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -315,9 +315,20 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `validate_agent_metadata` and `invoke_agent_tool` moved to `src/core/agent_registry.cpp`, the option tables to
      `core/agent_choice_options.hpp`, and the test stubs to `tests/support/stub_sandboxes.hpp`. Slice 5 should put
      every `cap::*` limit field in one PR: `capability.hpp` reaches ~490 translation units whatever the split.
-   - **4c (to do):** builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
-     (`as_bounded_integer`, option tables read from `agent_choice_options`, `fallback`, `capabilities` for
-     `per_request`, an explicit `unbounded` value); 002 §9 Q3 amended.
+   - **4c, builders, spawn targets, declarative parsers (built):** the three quickstart builders have no default
+     identity or store: `.session_id()`, `.principal()` (non-empty id) and, for the raw builder, `.store()` are
+     required, `choice.missing.session_id` / `.principal` / `.secret_source` (the provider and composed builders
+     already required a store, `quickstart_builder.no_store`, unchanged); `SpawnTargetRegistry::register_target`
+     refuses a target whose metadata states no turn cap or budget, or a zero one (the spawn path keeps its own
+     refusal); the YAML compiler reads approval and concurrency from `agent_choice_options` (an unlisted value is
+     refused with every option named), accepts the named value `unbounded` for either limit, refuses any sandbox
+     profile but `strict` (it used to become `is_strict = false` with all-zero traits), and records
+     `sandbox.fallback` in `AgentMetadata::sandbox_fallback`, each name checked against the host's registry by
+     `validate_agent_metadata`. A recorded chain is a statement, not a behaviour: nothing consults its order yet.
+     002 §9 Q3 amended. `capabilities` for a `per_request` YAML agent waits for slice 5's declarative grant
+     parser (the bridge already refuses such an agent without one, `choice.missing.capability_ceiling`). Tests:
+     `test_session_builder` B26-B33, `test_rt_spawn_authority` P4, `test_agent_yaml_limits` Y9,
+     `test_agent_yaml_compiler` F-3b/F-3c, `test_agent_metadata_choices` M5b.
 5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12):** `Bound` fields, backends read
    `limit()`, every substitution site in the planning log removed or named as an engine floor, the
    declarative grant parser, `SandboxExec` `limits`.

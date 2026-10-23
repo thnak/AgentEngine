@@ -161,6 +161,68 @@ spec:
               "F-3: an unrecognized approval mode is rejected, never silently coerced to a default");
     }
 
+    // --- F-3b (ADR-244 slice 4c, G-C3 round trip): every option the shared table lists parses, and an unlisted one is
+    //     refused with the list -- the parser and `choice_missing` read ONE table.
+    {
+        for (std::size_t i = 0; i < ae::agent_choice_options::approval.size(); ++i) {
+            auto r = ae::compile_agent_document(*yaml::parse(
+                "spec:
+  approval: " + std::string(ae::agent_choice_options::approval[i]) + "
+"));
+            check(r.has_value() && r->approval == static_cast<ae::approval_mode>(i),
+                  "F-3b: approval option '" + std::string(ae::agent_choice_options::approval[i]) + "' parses to its enumerator");
+        }
+        for (std::size_t i = 0; i < ae::agent_choice_options::concurrency.size(); ++i) {
+            auto r = ae::compile_agent_document(*yaml::parse(
+                "spec:
+  concurrency: " + std::string(ae::agent_choice_options::concurrency[i]) + "
+"));
+            check(r.has_value() && r->concurrency == static_cast<ae::concurrency_mode>(i),
+                  "F-3b: concurrency option '" + std::string(ae::agent_choice_options::concurrency[i]) + "' parses");
+        }
+        auto bad = ae::compile_agent_document(*yaml::parse("spec:
+  approval: sometimes
+"));
+        bool lists_all = !bad.has_value();
+        if (!bad.has_value()) {
+            for (std::string_view o : ae::agent_choice_options::approval) {
+                lists_all = lists_all && bad.error().message.find(o) != std::string::npos;
+            }
+        }
+        check(lists_all, "F-3b: an unlisted approval is refused with every option named in the message");
+    }
+
+    // --- F-3c (ADR-244 slice 4c): the sandbox block -- only `strict` is spelled in a document; a fallback is recorded.
+    {
+        auto named = ae::compile_agent_document(*yaml::parse("spec:
+  sandbox:
+    profile: native-jail
+"));
+        check(!named.has_value() && named.error().code == "agent_yaml_compiler.unknown_sandbox_profile",
+              "F-3c: a profile other than strict is refused (it used to become is_strict=false with all-zero traits)");
+        auto strict = ae::compile_agent_document(*yaml::parse("spec:
+  sandbox:
+    profile: strict
+"));
+        check(strict.has_value() && strict->sandbox_profile.has_value() && strict->sandbox_profile->is_strict &&
+                  strict->sandbox_fallback.empty(),
+              "F-3c: strict compiles, with no fallback recorded");
+        auto chain = ae::compile_agent_document(
+            *yaml::parse("spec:
+  sandbox:
+    profile: strict
+    fallback: [native-jail, remote]
+"));
+        check(chain.has_value() && chain->sandbox_fallback == std::vector<std::string>{"native-jail", "remote"},
+              "F-3c: sandbox.fallback is recorded in order, no longer read for nothing");
+        auto not_list = ae::compile_agent_document(*yaml::parse("spec:
+  sandbox:
+    fallback: native-jail
+"));
+        check(!not_list.has_value() && not_list.error().code == "agent_yaml_compiler.invalid_fallback",
+              "F-3c: a non-list fallback is refused");
+    }
+
     // --- F-4: absent fields leave AgentMetadata's own real defaults untouched -----------------------
     {
         auto minimal = ae::compile_agent_document(*yaml::parse("spec: {}\n"));

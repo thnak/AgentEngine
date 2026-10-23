@@ -243,6 +243,23 @@ public:
                 "a spawn target is already registered under this agent_id",
                 "agent_spawn.target_already_registered"});
         }
+        // ADR-244 §2.3 (slice 4c): a target states the turn cap and token budget its children run under, and neither
+        // is zero -- refused here, at registration, so a misdeclared target never reaches a spawn (the spawn path
+        // keeps its own refusal for a descriptor edited after registration).
+        if (!descriptor.metadata.max_turns.has_value()) {
+            return std::unexpected(
+                agentengine::choice_missing("max_turns", agentengine::agent_choice_options::bound));
+        }
+        if (!descriptor.metadata.token_budget.has_value()) {
+            return std::unexpected(
+                agentengine::choice_missing("token_budget", agentengine::agent_choice_options::bound));
+        }
+        if (auto z = agentengine::check_bound("max_turns", *descriptor.metadata.max_turns); !z) {
+            return std::unexpected(z.error());
+        }
+        if (auto z = agentengine::check_bound("token_budget", *descriptor.metadata.token_budget); !z) {
+            return std::unexpected(z.error());
+        }
         // ADR-193: refused here, not after a spawn has already spent quota, cost and a worktree (red team round 1).
         auto const unnamed = [](std::optional<std::string> const& id) {
             return id.has_value() && !agentengine::is_attributable_id(*id);

@@ -119,7 +119,7 @@ int main() {
                          .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_API_KEY")
                          .declare_capabilities(caps)
-                         .choices(ae_test::trusted(std::nullopt, 25)).build();
+                         .session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "QS-1 setup: the Bundle builds (credential resolved, session wired)");
         if (built.has_value()) {
             auto reply = built->ask("Reply with exactly one word: pong");
@@ -144,7 +144,7 @@ int main() {
                          .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_API_KEY")
                          .declare_capabilities(caps)
-                         .choices(ae_test::trusted(std::nullopt, 25)).build();
+                         .session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "QS-2 setup: a second, independent Bundle builds");
         if (built.has_value()) {
             auto streamed = built->ask_stream("Count from one to five, one number per word, no punctuation.");
@@ -198,7 +198,7 @@ int main() {
                          .endpoint(host, kHttpsPort, path_prefix())
                          .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_BAD_KEY")
                          .declare_capabilities(caps)
-                         .choices(ae_test::trusted(std::nullopt, 25)).build();
+                         .session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "QS-3 setup: the Bundle builds -- the wrong key is syntactically fine, "
                                   "build() has no way to know it's wrong without a real network call");
         if (built.has_value()) {
