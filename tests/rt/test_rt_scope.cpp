@@ -607,6 +607,30 @@ void s9_stop_callbacks(Runtime& rt) {
 
 }  // namespace
 
+// ---- S10 (ADR-244 slice 5) ------------------------------------------------------------------------------------
+// `at_most(0)` is a scope that could never run a child; it is refused when the scope opens (`choice.zero_bound`),
+// never treated as "unbounded". Off a strand the constructor still reaches the bound check first, so no Runtime is
+// needed; the positive control is a real limit, which gets past the check and fails only on the missing strand.
+void s10_zero_concurrency_refused() {
+    std::string zero_code;
+    try {
+        task_scope s(ScopeOptions{.max_concurrency = Bound<std::size_t>::at_most(0)});
+    } catch (std::invalid_argument const& e) {
+        zero_code = e.what();
+    } catch (...) {
+    }
+    check(zero_code.rfind("choice.zero_bound", 0) == 0, "S10 max_concurrency at_most(0) is refused (choice.zero_bound)");
+
+    bool refused_as_zero = false;
+    try {
+        task_scope s(ScopeOptions{.max_concurrency = Bound<std::size_t>::at_most(1)});
+    } catch (std::invalid_argument const&) {
+        refused_as_zero = true;
+    } catch (...) {
+    }
+    check(!refused_as_zero, "S10 positive control: at_most(1) passes the bound check");
+}
+
 int main(int argc, char** argv) {
     agentengine::test_support::fail_fast_on_windows();
     if (argc > 1 && std::string(argv[1]) == "--s6-violation") return s6_violation_child();
@@ -621,6 +645,7 @@ int main(int argc, char** argv) {
         s9_stop_callbacks(rt);
     }
     s8_off_strand();
+    s10_zero_concurrency_refused();
     s6_no_child_outlives(argv[0]);
     check(chain_detail::Registry::instance().size() == 0, "every await-chain entry was removed (no leak)");
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

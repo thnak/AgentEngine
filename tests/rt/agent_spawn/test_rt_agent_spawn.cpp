@@ -84,6 +84,7 @@ using agentengine::Text;
 using agentengine::ToolCall;
 using agentengine::Usage;
 using agentengine::Window;
+using agentengine::UnboundedWindow;
 using agentengine::call_provenance;
 using agentengine::content_origin;
 using agentengine::error;

@@ -33,9 +33,7 @@ namespace agentengine {
 // ADR-244 slice 5: `N` is a real window. `Window<0>` used to mean "keep everything", a `0` standing for "no limit";
 // it does not compile, and "keep everything" is the named `UnboundedWindow` below.
 template <std::size_t N>
-struct Window {  // ae-naming-lint: allow Window — 005 §4 names this concept normatively; 027 has not been updated to list it
-    static_assert(N > 0, "Window<0> is not a window: 0 is not 'no limit'. Say UnboundedWindow to keep the whole history, or Window<N> with N > 0");
-};
+struct Window {};  // ae-naming-lint: allow Window — 005 §4 names this concept normatively; 027 has not been updated to list it
 
 // "Keep every message": the explicit spelling of what `Window<0>` meant. History grows with the session, so the
 // context the model sees is bounded only by the session's own turn and token budgets (I8), not by this provider.
@@ -61,6 +59,9 @@ class HistoryProvider;
 
 template <std::size_t N>
 class HistoryProvider<Window<N>> {
+    // Here, not in `Window`: a tag is only named, never instantiated, so a check in its body would never fire.
+    static_assert(N > 0, "Window<0> is not a window: 0 is not 'no limit'. Say UnboundedWindow to keep the whole history, or Window<N> with N > 0");
+
 public:
     // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: both `HistoryProvider`
     // specializations share the name "history" -- same logical contributor kind (replaying
