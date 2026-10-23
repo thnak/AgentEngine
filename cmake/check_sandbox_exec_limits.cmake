@@ -8,6 +8,8 @@
 # fail on the first and pass on the second (the positive control that proves it can fail).
 #
 # Run as: cmake -DSCAN_ROOTS="<dir>;<dir>" -P cmake/check_sandbox_exec_limits.cmake
+# Script mode sets no policies: without this CMP0012 is OLD and `while(TRUE)` never runs.
+cmake_policy(VERSION 3.20)
 if(NOT SCAN_ROOTS)
   message(FATAL_ERROR "SCAN_ROOTS is required")
 endif()
@@ -30,7 +32,6 @@ foreach(f IN LISTS candidates)
   endif()
   set(pos 0)
   while(TRUE)
-    string(FIND "${text}" "\"create\"" at REVERSE)  # placeholder to keep the variable defined
     string(SUBSTRING "${text}" ${pos} -1 rest)
     string(FIND "${rest}" "\"create\"" rel)
     if(rel EQUAL -1)
