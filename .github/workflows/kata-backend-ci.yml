@@ -50,7 +50,7 @@ jobs:
     # image pull time on a fresh host, wider than the ordinary unit-test jobs in ci.yml need.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
 

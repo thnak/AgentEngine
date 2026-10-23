@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `bash`, not the bare path: the script was committed from Windows without the exec bit, and every
       # scheduled run until 2026-10-20 died with exit 126 (Permission denied) before checking anything.
       - run: bash tools/ci_cache_watch.sh
