@@ -46,11 +46,11 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
-#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync host edge
-#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
+
+class SandboxBackendRegistry;  // ae-naming-lint: allow SandboxBackendRegistry — forward declaration of the sandbox/sandbox_backend_registry.hpp class; only referenced here
 
 // The compiled, read-only agent metadata table (002 §1). Built once by `register_agent<A>()`;
 // nothing here is a runtime configuration object read on a hot path (CONVENTIONS.md).
@@ -320,86 +320,24 @@ template <class... Policies>
 // -- ADR-244 §2.1 option tables (slice 4b) -----------------------------------------------------------------
 // One table per enumerated choice; `choice_missing` lists it, and a parser reads the same table so an option
 // added to one is in the other.
-namespace agent_choice_options {
-inline constexpr std::array<std::string_view, 2> bound   = {"at_most(<n>)", "unbounded()"};
-inline constexpr std::array<std::string_view, 3> approval = {"never_require", "always_require", "policy_driven"};
-inline constexpr std::array<std::string_view, 2> concurrency = {"sequential", "parallel"};
-inline constexpr std::array<std::string_view, 2> sandbox_profile = {"strict", "a named SandboxBackend"};
-inline constexpr std::array<std::string_view, 1> sandbox_backend = {
-    "register a backend with SandboxBackendRegistry::register_backend(name, instance)"};
-}  // namespace agent_choice_options
 
 // The five choices 002 §3 used to default. Each fails `choice.missing.<field>` listing its options.
-[[nodiscard]] inline result<void> check_required_choices(AgentMetadata const& meta) {
-    namespace opt = agent_choice_options;
-    if (!meta.max_turns.has_value()) return std::unexpected(choice_missing("max_turns", opt::bound));
-    if (!meta.token_budget.has_value()) return std::unexpected(choice_missing("token_budget", opt::bound));
-    if (!meta.approval.has_value()) return std::unexpected(choice_missing("approval", opt::approval));
-    if (!meta.concurrency.has_value()) return std::unexpected(choice_missing("concurrency", opt::concurrency));
-    if (!meta.sandbox_profile.has_value()) {
-        return std::unexpected(choice_missing("sandbox_profile", opt::sandbox_profile));
-    }
-    return {};
-}
+[[nodiscard]] result<void> check_required_choices(AgentMetadata const& meta);
 
 // -- 002 §6 validation checks ---------------------------------------------------------------------
 
-[[nodiscard]] inline result<void> check_chat_client_id(std::string_view id) {
-    if (id.empty()) {
-        return std::unexpected(error{failure_class::contract,
-                                      "agent declares no ChatClientId<\"vendor:model\"> binding "
-                                      "(002 §3: required, no default)",
-                                      "agent.chat_client_id_missing"});
-    }
-    return {};
-}
+[[nodiscard]] result<void> check_chat_client_id(std::string_view id);
 
 // Milestone 5 Phase B6: real when `registry` is supplied (an entry must exist for `id`); the pre-M5
 // always-pass stub when it isn't (no registry to check against yet — an honest "not evaluated," see
 // file-top comment).
-[[nodiscard]] inline result<void> check_chat_client_credentials(std::string_view id,
-                                                                  ChatClientRegistry const* registry) {
-    if (registry == nullptr) return {};
-    if (!registry->find(id).has_value()) {
-        return std::unexpected(error{failure_class::contract,
-                                      "ChatClientId '" + std::string(id) +
-                                          "' has no bound backend in the supplied ChatClientRegistry",
-                                      "agent.chat_client_id_unregistered"});
-    }
-    return {};
-}
+[[nodiscard]] result<void> check_chat_client_credentials(std::string_view id,
+                                                                  ChatClientRegistry const* registry);
 
-[[nodiscard]] inline result<void> check_tool_name_collision(std::vector<ToolDescriptor> const& tools) {
-    for (std::size_t i = 0; i < tools.size(); ++i) {
-        for (std::size_t j = i + 1; j < tools.size(); ++j) {
-            if (tools[i].name == tools[j].name) {
-                return std::unexpected(
-                    error{failure_class::contract,
-                          "two declared tools share the name '" + tools[i].name + "'",
-                          "agent.tool_name_collision"});
-            }
-        }
-    }
-    return {};
-}
+[[nodiscard]] result<void> check_tool_name_collision(std::vector<ToolDescriptor> const& tools);
 
-[[nodiscard]] inline result<void> check_capability_ceiling(CapabilitySet const& ceiling,
-                                                             std::vector<ToolDescriptor> const& tools) {
-    for (ToolDescriptor const& tool : tools) {
-        for (Capability const& requirement : tool.capability_ceiling) {
-            // ADR-217: the pipeline's own admission rule. At run time `invoke_agent_tool` binds the
-            // tool under `attenuate(ceiling)`, so a grant-enforcing tool admitted here is bound to
-            // (and enforces) the ceiling's caps; every other tool keeps the exact `contains()` rule.
-            if (!ceiling_entry_admitted(ceiling, tool, requirement)) {
-                return std::unexpected(error{
-                    failure_class::policy,
-                    "tool '" + tool.name + "' declares a capability the agent's ceiling does not cover",
-                    "agent.capability_ceiling_exceeded"});
-            }
-        }
-    }
-    return {};
-}
+[[nodiscard]] result<void> check_capability_ceiling(CapabilitySet const& ceiling,
+                                                             std::vector<ToolDescriptor> const& tools);
 
 // ADR-012, real per docs/planning/sandbox-backend-registry-design-draft.md (Revision 2); ADR-244 slice 4b made the
 // registry a required argument. When `P` named a concrete backend type directly, `SandboxProfileArg<P>` already
@@ -408,23 +346,14 @@ inline constexpr std::array<std::string_view, 1> sandbox_backend = {
 // registered candidates (`SandboxBackendRegistry::resolve_strict()`, sandbox/sandbox_backend_registry.hpp) --
 // `nullopt`/error there is 008 §3's "no fallback -> startup fails" case, for real. An empty registry is refused
 // first (`choice.missing.sandbox_backend`): the host registers each backend it chose, and none was.
-[[nodiscard]] inline result<void> check_sandbox_profile_availability(
-        SandboxProfileDescriptor const& desc, SandboxBackendRegistry const& registry) {
-    // ADR-244 §2.2 (slice 4b): a registry nothing was registered in is a choice nobody made -- the host registers
-    // each backend it chose, and there is no default registry to fall back on. Refused for a concrete-backend
-    // profile as well (the registry is where the host states which backends exist).
-    if (registry.empty()) {
-        return std::unexpected(choice_missing("sandbox_backend", agent_choice_options::sandbox_backend));
-    }
-    if (!desc.is_strict) return {};
-    return registry.resolve_strict(current_platform()).transform([](auto*) { return; });
-}
+[[nodiscard]] result<void> check_sandbox_profile_availability(
+        SandboxProfileDescriptor const& desc, SandboxBackendRegistry const& registry);
 
 // Stubbed: needs a per-tool backend-declaration policy tag that does not exist yet
 // (`Tool<Derived, Policies...>` has no analog of `SandboxProfile<P>`) -- ADR-012 resolved the
 // template-parameter-*kind* conflict this check was originally blocked on, but deliberately did not
 // invent a second, larger policy-tag surface as a drive-by (see file top).
-[[nodiscard]] inline result<void> check_tool_sandbox_profile_compatibility() { return {}; }
+[[nodiscard]] result<void> check_tool_sandbox_profile_compatibility();
 
 // Milestone 5 Phase B5/B6: real when both an OutputSchema<T> is declared AND a registry is
 // supplied; a no-op (correctly, not by omission) whenever either is absent -- no schema declared
@@ -434,23 +363,12 @@ inline constexpr std::array<std::string_view, 1> sandbox_backend = {
 // repair is the universal last resort) -- that function's own comment names why 004 §2's "if no
 // fallback exists, fail at startup" clause is therefore currently unreachable from here rather than
 // faked with an artificial rejection.
-[[nodiscard]] inline result<void> check_output_schema_enforceable(
+[[nodiscard]] result<void> check_output_schema_enforceable(
     std::optional<std::string> const& output_schema_json, ChatClientRegistry const* registry,
-    std::string_view chat_client_id) {
-    if (!output_schema_json.has_value() || registry == nullptr) return {};
-    if (!registry->find(chat_client_id).has_value()) {
-        // Already caught by check_chat_client_credentials, which the compiler runs first --
-        // defensive redundancy in case call order ever changes, not a second, divergent code path.
-        return std::unexpected(error{failure_class::contract,
-                                      "ChatClientId '" + std::string(chat_client_id) +
-                                          "' has no bound backend to check OutputSchema enforceability against",
-                                      "agent.chat_client_id_unregistered"});
-    }
-    return {};
-}
+    std::string_view chat_client_id);
 
 // Stubbed: needs 014's handoff/workflow graph (explicitly out of scope for M2).
-[[nodiscard]] inline result<void> check_handoff_cycle() { return {}; }
+[[nodiscard]] result<void> check_handoff_cycle();
 
 template <class Derived>
 [[nodiscard]] result<void> check_stateless_session_state(std::optional<std::uint32_t> stateless_pool_size) {
@@ -603,10 +521,6 @@ struct agent_output_schema<Agent<A, Policies...>> {
 
 }  // namespace agent_detail
 
-// ADR-244 slice 4b: the option tables (`agent_detail::agent_choice_options`) are read by the spawn path and by the
-// declarative parsers as well, so they are named at namespace scope.
-namespace agent_choice_options = agent_detail::agent_choice_options;
-
 // decisions/archive/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
 template <class A>
 // ae-naming-lint: allow agent_output_schema_t — ADR-226; 027 not yet updated
@@ -624,30 +538,9 @@ using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_d
 // The one check NOT here: `Stateless<N>`-with-session-state, which needs the agent's C++ type
 // (`std::is_empty_v<A>`) and so can only run in `register_agent<A>()`; a declarative document has no
 // `Stateless` field to get wrong.
-[[nodiscard]] inline result<void> validate_agent_metadata(AgentMetadata const& meta,
+[[nodiscard]] result<void> validate_agent_metadata(AgentMetadata const& meta,
                                                           ChatClientRegistry const* registry,
-                                                          SandboxBackendRegistry const& sandbox_registry) {
-    using namespace agent_detail;
-    // ADR-244 §2.2 (slice 4b): a choice nobody made is a named error before anything about its value.
-    if (auto r = check_required_choices(meta); !r) return r;
-    // ADR-244 §2.1: zero is refused at every check site -- a turn cap or budget of 0 is not "none allowed" (that
-    // has its own mechanism) and not "unset". Both surfaces arrive here (I6), so `at_most(0)` and YAML
-    // `max_turns: 0` are refused alike (the CRTP path also refuses it at compile time, `at_most` is consteval).
-    if (auto r = check_bound("max_turns", *meta.max_turns); !r) return r;
-    if (auto r = check_bound("token_budget", *meta.token_budget); !r) return r;
-    if (auto r = check_chat_client_id(meta.chat_client_id); !r) return r;
-    if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) return r;
-    if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return r;
-    CapabilitySet const ceiling = CapabilitySet::grant_root(meta.capability_ceiling);
-    if (auto r = check_capability_ceiling(ceiling, meta.tools.descriptors()); !r) return r;
-    if (auto r = check_sandbox_profile_availability(*meta.sandbox_profile, sandbox_registry); !r) return r;
-    if (auto r = check_tool_sandbox_profile_compatibility(); !r) return r;
-    if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id); !r) {
-        return r;
-    }
-    if (auto r = check_handoff_cycle(); !r) return r;
-    return {};
-}
+                                                          SandboxBackendRegistry const& sandbox_registry);
 
 // 002 §6's entry point: "at register_agent<A>() the engine compiles metadata and validates, failing
 // fast" -- `A` must derive from `Agent<A, Policies...>` for some Policies pack (any other type fails
@@ -686,36 +579,12 @@ template <class A>
 // is exactly the target's ceiling, not the caller's possibly-larger held set, ADR-009 C2). A caller
 // with no held capabilities at all (`ctx.capabilities == nullptr`) fails closed rather than being
 // silently read as "everything" -- there is nothing to attenuate from.
-[[nodiscard]] inline ToolResult invoke_agent_tool(AgentMetadata const& meta, ToolCallRequest const& request,
+[[nodiscard]] ToolResult invoke_agent_tool(AgentMetadata const& meta, ToolCallRequest const& request,
                                                    EffectContext& ctx, ApprovalDecider const& approve = {},
                                                    ToolInvocationAudit* audit_out = nullptr,
                                                    // ADR-070: appended last, default `{}`, threaded
                                                    // straight through to `invoke_tool()` below --
                                                    // same seam, same fail-closed-when-unset contract.
-                                                   PolicyDecider const& policy = {}) {
-    auto fail_closed = [&](error const& e) -> ToolResult {
-        if (audit_out) {
-            audit_out->call_id = request.call_id;
-            audit_out->tool_name = request.tool_name;
-            audit_out->ok = false;
-            audit_out->error_code = e.code;
-            audit_out->result_bytes = 0;
-            audit_out->duration = std::chrono::steady_clock::duration{};
-        }
-        return tool_pipeline_detail::make_error_result(request.call_id, e);
-    };
-
-    if (!ctx.capabilities) {
-        return fail_closed(error{failure_class::policy,
-                                  "invoke_agent_tool: caller has no capabilities to attenuate from",
-                                  "agent_call.no_caller_capabilities"});
-    }
-    result<CapabilitySet> attenuated = ctx.capabilities->attenuate(meta.capability_ceiling);
-    if (!attenuated) {
-        return fail_closed(attenuated.error());
-    }
-    // ADR-237 §5.2: `invoke_tool` is async; this host helper is a genuinely-sync edge, so block on it.
-    return rt::block_on(invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy));
-}
+                                                   PolicyDecider const& policy = {});
 
 }  // namespace agentengine

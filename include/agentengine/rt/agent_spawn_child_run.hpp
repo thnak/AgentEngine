@@ -53,6 +53,7 @@
 
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/history_provider.hpp"

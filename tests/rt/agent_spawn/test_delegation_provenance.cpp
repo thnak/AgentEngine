@@ -64,7 +64,7 @@
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;

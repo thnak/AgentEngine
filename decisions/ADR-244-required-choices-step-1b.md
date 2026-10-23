@@ -309,6 +309,12 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `agent_rejects_missing_max_turns`, `agent_rejects_raw_integer_max_turns`, `agent_rejects_zero_turn_cap`
      (control `agent_choices_positive_control`), with planted mutants; the tests and examples that had none state
      the old defaults (`ae_test::stated_metadata()`).
+   - **Header split (2026-10-23, no behaviour change):** PR #217's edits to `core/bound.hpp` recompiled ~356 translation
+     units (sccache hit rate 39%, a 30-minute Windows leg). `choice_missing` moved to `core/choice_error.hpp`,
+     `BoundValue` to `core/bound_value.hpp`, and `bound.hpp` is frozen (all three are layer V); the validators,
+     `validate_agent_metadata` and `invoke_agent_tool` moved to `src/core/agent_registry.cpp`, the option tables to
+     `core/agent_choice_options.hpp`, and the test stubs to `tests/support/stub_sandboxes.hpp`. Slice 5 should put
+     every `cap::*` limit field in one PR: `capability.hpp` reaches ~490 translation units whatever the split.
    - **4c (to do):** builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
      (`as_bounded_integer`, option tables read from `agent_choice_options`, `fallback`, `capabilities` for
      `per_request`, an explicit `unbounded` value); 002 §9 Q3 amended.

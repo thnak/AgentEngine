@@ -37,7 +37,7 @@
 
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 namespace {
 

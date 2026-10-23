@@ -32,7 +32,7 @@
 #include <utility>
 #include <vector>
 
-#include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"

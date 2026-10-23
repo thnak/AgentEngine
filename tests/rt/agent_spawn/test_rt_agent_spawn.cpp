@@ -66,7 +66,7 @@
 #include "agentengine/rt/agent_spawn.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 using agentengine::AgentMetadata;
 using agentengine::CapabilitySet;

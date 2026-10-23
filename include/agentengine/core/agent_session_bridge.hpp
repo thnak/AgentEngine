@@ -69,6 +69,7 @@
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/core/choice_error.hpp"
 
 namespace agentengine {
 

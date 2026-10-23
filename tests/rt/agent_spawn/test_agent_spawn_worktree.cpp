@@ -59,7 +59,7 @@
 #include "agentengine/rt/agent_spawn_child_run.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
 #include "agentengine/rt/block_on.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;

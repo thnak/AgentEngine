@@ -868,6 +868,7 @@ private:
 #ifdef AGENTENGINE_WITH_HTTPS
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/core/choice_error.hpp"
 
 namespace agentengine::quickstart {
 

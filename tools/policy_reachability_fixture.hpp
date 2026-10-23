@@ -40,6 +40,7 @@
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/trust/native_exec_grant.hpp"
 #include "agentengine/trust/policy_reachability.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 
 namespace agentengine::policy_reachability_fixture {
 

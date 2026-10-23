@@ -156,6 +156,18 @@ target_compile_features(agentengine_tool_pipeline PRIVATE cxx_std_23)
 target_link_libraries(agentengine_tool_pipeline PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_tool_pipeline)
 
+# ---- Agent metadata compiler (src/core/) -- ADR-244 header-split plan -------------------------------
+# core/agent_registry.hpp's non-template half (the 002 §6 checks, validate_agent_metadata, invoke_agent_tool),
+# compiled once here instead of in each includer. Linked through agentengine::core like the libraries around it.
+add_library(agentengine_agent_registry STATIC src/core/agent_registry.cpp)
+target_include_directories(agentengine_agent_registry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_agent_registry PRIVATE cxx_std_23)
+target_link_libraries(agentengine_agent_registry PRIVATE agentengine_warnings)
+# invoke_agent_tool calls the tool pipeline (invoke_tool), compiled in its own library: named here so a single-pass
+# linker sees it after this library.
+target_link_libraries(agentengine_agent_registry PUBLIC agentengine_tool_pipeline)
+target_link_libraries(agentengine_core INTERFACE agentengine_agent_registry)
+
 # ---- rt::AgentSessionCore (src/rt/) -- ADR-199, issue #115 E3 ------------------------------------
 # AgentSession's non-template half (include/agentengine/rt/agent_session_core.hpp): the turn loop and
 # everything else that does not depend on the session's template parameters, compiled once here instead

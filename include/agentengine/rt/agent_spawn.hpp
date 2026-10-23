@@ -64,7 +64,9 @@
 #include <utility>
 
 #include "agentengine/core/agent_registry.hpp"        // AgentMetadata
+#include "agentengine/core/agent_choice_options.hpp"
 #include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/agent_spawn_worktree.hpp"  // allocate_spawn_seq, derive_spawn_child_id,
                                                        // check_child_id, mint_spawn_worktree
 #include "agentengine/core/content.hpp"               // Message, ContentItem, Text, role, content_origin

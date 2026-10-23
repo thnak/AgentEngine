@@ -8,7 +8,7 @@
 #include <string>
 
 #include "agentengine/protocol/a2a/agent_card.hpp"
-#include "../../support/agent_options.hpp"
+#include "../../support/stub_sandboxes.hpp"
 
 namespace {
 

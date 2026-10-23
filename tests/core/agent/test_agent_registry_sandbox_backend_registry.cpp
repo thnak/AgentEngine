@@ -12,6 +12,7 @@
 #include <string>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "agentengine/sandbox/sandbox_backend_registry.hpp"
 
 namespace {
 

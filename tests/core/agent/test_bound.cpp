@@ -11,6 +11,7 @@
 // That an omitted Bound does not compile is tests/compile_fail/bound_*.cpp, not this file.
 
 #include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 
 #include <array>
 #include <cstdint>
