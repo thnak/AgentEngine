@@ -64,7 +64,6 @@ spec:
     net_out: ["api.search.example"]
   sandbox:
     profile: strict
-    fallback: [native-jail, remote]
   limits:
     max_turns: 12
     token_budget: 200000
@@ -192,35 +191,31 @@ spec:
         check(lists_all, "F-3b: an unlisted approval is refused with every option named in the message");
     }
 
-    // --- F-3c (ADR-244 slice 4c): the sandbox block -- only `strict` is spelled in a document; a fallback is recorded.
+    // --- F-3c (ADR-244 slice 4c): the sandbox block -- only `strict` is spelled in a document; a fallback is refused.
     {
         auto named = ae::compile_agent_document(*yaml::parse("spec:
   sandbox:
     profile: native-jail
 "));
-        check(!named.has_value() && named.error().code == "agent_yaml_compiler.unknown_sandbox_profile",
-              "F-3c: a profile other than strict is refused (it used to become is_strict=false with all-zero traits)");
+        check(!named.has_value() && named.error().code == "choice.unknown_option" &&
+                  named.error().message.find("strict") != std::string::npos,
+              "F-3c: a profile other than strict is choice.unknown_option, naming the table (it used to become "
+              "is_strict=false with all-zero traits)");
         auto strict = ae::compile_agent_document(*yaml::parse("spec:
   sandbox:
     profile: strict
 "));
-        check(strict.has_value() && strict->sandbox_profile.has_value() && strict->sandbox_profile->is_strict &&
-                  strict->sandbox_fallback.empty(),
-              "F-3c: strict compiles, with no fallback recorded");
+        check(strict.has_value() && strict->sandbox_profile.has_value() && strict->sandbox_profile->is_strict,
+              "F-3c: strict compiles");
         auto chain = ae::compile_agent_document(
             *yaml::parse("spec:
   sandbox:
     profile: strict
     fallback: [native-jail, remote]
 "));
-        check(chain.has_value() && chain->sandbox_fallback == std::vector<std::string>{"native-jail", "remote"},
-              "F-3c: sandbox.fallback is recorded in order, no longer read for nothing");
-        auto not_list = ae::compile_agent_document(*yaml::parse("spec:
-  sandbox:
-    fallback: native-jail
-"));
-        check(!not_list.has_value() && not_list.error().code == "agent_yaml_compiler.invalid_fallback",
-              "F-3c: a non-list fallback is refused");
+        check(!chain.has_value() && chain.error().code == "agent_yaml_compiler.sandbox_fallback_unsupported",
+              "F-3c: sandbox.fallback is refused until a resolver consumes it (no fallback is silent), not read for "
+              "nothing");
     }
 
     // --- F-4: absent fields leave AgentMetadata's own real defaults untouched -----------------------

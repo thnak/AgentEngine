@@ -132,10 +132,6 @@ result<void> validate_agent_metadata(AgentMetadata const& meta,
     if (auto r = check_capability_ceiling(ceiling, meta.tools.descriptors()); !r) return r;
     if (auto r = check_sandbox_profile_availability(*meta.sandbox_profile, sandbox_registry); !r) return r;
     if (auto r = check_tool_sandbox_profile_compatibility(); !r) return r;
-    // ADR-244 slice 4c: a declared fallback names backends the host registered, or the declaration is refused.
-    for (std::string const& name : meta.sandbox_fallback) {
-        if (auto r = sandbox_registry.resolve_named(HostSandboxSelection{name}); !r) return std::unexpected(r.error());
-    }
     if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id); !r) {
         return r;
     }

@@ -227,32 +227,24 @@ template <class Enum, std::size_t N>
             // ADR-244 §2.1 (slice 4c): only `strict` is spelled in a document. Any other name used to become
             // `is_strict = false` with default (all-zero) traits -- a guess about a backend the document never
             // described. A named backend is selected by the host's registry (HostSandboxSelection), not by a name a
-            // document carries, so an unlisted profile is refused with the options.
+            // document carries, so an unlisted profile is `choice.unknown_option`, naming the table.
             if (profile->as_string() != "strict") {
                 return std::unexpected(error{
                     failure_class::contract,
                     "unrecognized sandbox profile: " + profile->as_string() + "; choose one of: strict (a named "
                     "backend is chosen by the host's SandboxBackendRegistry, not by a document)",
-                    "agent_yaml_compiler.unknown_sandbox_profile"});
+                    "choice.unknown_option"});
             }
             meta.sandbox_profile = SandboxProfileDescriptor{};
         }
-        // sandbox.fallback (015 §2): recorded, so it stops being read for nothing. `validate_agent_metadata` refuses
-        // a name the host's registry does not hold; nothing falls back at run time (ADR-242 R2: no fallback is
-        // silent), so a recorded chain is a statement, not a behaviour, until a resolver consumes it.
-        if (json::Value const* fallback = sandbox->find("fallback"); fallback != nullptr) {
-            if (!fallback->is_array()) {
-                return std::unexpected(error{failure_class::contract, "sandbox.fallback must be a list of backend names",
-                                             "agent_yaml_compiler.invalid_fallback"});
-            }
-            for (json::Value const& entry : fallback->as_array()) {
-                if (!entry.is_string() || entry.as_string().empty()) {
-                    return std::unexpected(error{failure_class::contract,
-                                                 "sandbox.fallback entries must be non-empty backend names",
-                                                 "agent_yaml_compiler.invalid_fallback"});
-                }
-                meta.sandbox_fallback.push_back(entry.as_string());
-            }
+        // sandbox.fallback (015 §2): refused until a resolver consumes it (ADR-244 §2.2; ADR-242 R2: no fallback is
+        // silent). A chain read for nothing would claim a behaviour the engine does not have.
+        if (sandbox->find("fallback") != nullptr) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "sandbox.fallback is not supported: the engine does not fall back from one backend to another "
+                "(ADR-242 R2: no fallback is silent) -- register the backends you choose and name one",
+                "agent_yaml_compiler.sandbox_fallback_unsupported"});
         }
     }
 

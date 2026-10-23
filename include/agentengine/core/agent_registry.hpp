@@ -80,9 +80,6 @@ struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing 
     telemetry_capture telemetry = telemetry_capture::metadata_only; // 002 §3 table default
     std::optional<std::uint32_t> stateless_pool_size;  // nullopt = off (002 §3 table default)
     std::optional<SandboxProfileDescriptor> sandbox_profile;
-    // ADR-244 slice 4c: the declarative `sandbox.fallback` chain (015 §2), recorded by the YAML compiler. Every name must
-    // be registered in the host's `SandboxBackendRegistry` (`validate_agent_metadata`); nothing consults the order yet.
-    std::vector<std::string> sandbox_fallback;
     // Milestone 5 Phase B5: 003 §4's OutputSchema<T> contract, compiled to JSON Schema text; nullopt
     // when the agent declared no OutputSchema<T>. `output_schema_strategy` is nullopt whenever
     // `output_schema_json` is nullopt (nothing to enforce) OR no `ChatClientRegistry` was supplied

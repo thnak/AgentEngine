@@ -192,16 +192,6 @@ int main() {
             *yaml::parse(doc("  limits:\n    max_turns: 4\n    token_budget: 100\n  approval: policy_driven\n")));
         check(partial.has_value() && code_of(ae::validate_agent_metadata(*partial, nullptr, ae_test::sandboxes())) == "choice.missing.concurrency",
               "M5: a document missing only concurrency fails choice.missing.concurrency");
-        // ADR-244 slice 4c: a declared fallback names backends the host registered.
-        ae::AgentMetadata registered = stated();
-        registered.sandbox_fallback  = {"test-stub"};
-        check(ae::validate_agent_metadata(registered, nullptr, ae_test::sandboxes()).has_value(),
-              "M5b control: a fallback naming a registered backend validates");
-        ae::AgentMetadata unregistered = stated();
-        unregistered.sandbox_fallback  = {"test-stub", "no-such-backend"};
-        check(code_of(ae::validate_agent_metadata(unregistered, nullptr, ae_test::sandboxes())) ==
-                  "sandbox_backend_registry.name_not_found",
-              "M5b: a fallback naming an unregistered backend is refused with the registry's own error");
     }
 
     // ---- M6: the bridge refuses before building a session.

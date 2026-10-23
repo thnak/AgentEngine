@@ -322,13 +322,12 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      refuses a target whose metadata states no turn cap or budget, or a zero one (the spawn path keeps its own
      refusal); the YAML compiler reads approval and concurrency from `agent_choice_options` (an unlisted value is
      refused with every option named), accepts the named value `unbounded` for either limit, refuses any sandbox
-     profile but `strict` (it used to become `is_strict = false` with all-zero traits), and records
-     `sandbox.fallback` in `AgentMetadata::sandbox_fallback`, each name checked against the host's registry by
-     `validate_agent_metadata`. A recorded chain is a statement, not a behaviour: nothing consults its order yet.
-     002 §9 Q3 amended. `capabilities` for a `per_request` YAML agent waits for slice 5's declarative grant
+     profile but `strict` (`choice.unknown_option`; it used to become `is_strict = false` with all-zero traits) and
+     refuses `sandbox.fallback` (`agent_yaml_compiler.sandbox_fallback_unsupported`) until a resolver consumes it;
+     015 §2's example no longer shows one. 002 §9 Q3 amended. `capabilities` for a `per_request` YAML agent waits for slice 5's declarative grant
      parser (the bridge already refuses such an agent without one, `choice.missing.capability_ceiling`). Tests:
      `test_session_builder` B26-B33, `test_rt_spawn_authority` P4, `test_agent_yaml_limits` Y9,
-     `test_agent_yaml_compiler` F-3b/F-3c, `test_agent_metadata_choices` M5b.
+     `test_agent_yaml_compiler` F-3b/F-3c.
 5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12):** `Bound` fields, backends read
    `limit()`, every substitution site in the planning log removed or named as an engine floor, the
    declarative grant parser, `SandboxExec` `limits`.
