@@ -135,8 +135,8 @@ int main() {
         InMemoryWorktreeObjectStore objects;
         auto empty = agentengine::rt::block_on(objects.put_tree(Tree{}));
         Mount const mount{"/work", "session:lane", ""};
-        cap::FsWrite const w{"/work", "", std::nullopt, std::nullopt};
-        cap::FsRead const r{"/work", "", std::nullopt};
+        cap::FsWrite const w{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
+        cap::FsRead const r{"/work", "", cap::Limit::unbounded()};
         std::string const text = "lane";
         auto body = [&]() -> task<result<std::vector<std::byte>>> {
             auto committed = co_await commit_ref(log, "session:lane", *empty);

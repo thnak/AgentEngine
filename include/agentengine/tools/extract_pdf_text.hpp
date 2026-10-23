@@ -339,7 +339,7 @@ template <class Backend>
 [[nodiscard]] task<result<SandboxHandle>> bracketed_create(Backend& backend, SandboxSpec const& spec,
                                                            EffectContext& ctx, std::string const& exec_id,
                                                            std::string backend_name) {
-    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "create");
+    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "create", describe_limits(spec.limits));
     auto h = co_await backend.create(spec, ctx);
     if (!h) {
         scope.failed(h.error().code);

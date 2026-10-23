@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/error.hpp"
 
 namespace agentengine::native_process {
@@ -46,11 +47,12 @@ struct NativeExecRequest {
     // Real, already-materialized host directory the child's cwd is set to (worktree confinement).
     // Required -- empty is a contract violation, not "use the current process's cwd".
     std::string cwd;
-    std::optional<std::uint64_t> cpu_ms_cap;
-    std::optional<std::uint64_t> wall_ms_cap;      // unset -> a fixed internal safety ceiling is
-                                                    // still applied (never literally unbounded).
-    std::optional<std::uint64_t> memory_bytes_cap;
-    std::uint64_t output_cap_bytes = 1024ull * 1024;  // raw host-safety cap (0 -> internal default)
+    // ADR-244 slice 5: stated, not defaulted (copied from the matched cap::NativeExec). `unbounded()` still meets the
+    // engine floors named in core/engine_floor.hpp (`kProcessWall`, `kOutputDrain`), which `describe()` discloses.
+    Bound<std::uint64_t> cpu_ms_cap;
+    Bound<std::uint64_t> wall_ms_cap;
+    Bound<std::uint64_t> memory_bytes_cap;
+    std::uint64_t output_cap_bytes = 1024ull * 1024;  // raw host-safety cap (0 -> the engine floor kOutputDrain)
 };
 
 enum class native_exec_outcome_class { ok, nonzero_exit, timeout, oom, spawn_failed };

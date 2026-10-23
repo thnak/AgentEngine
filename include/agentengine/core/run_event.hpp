@@ -180,6 +180,10 @@ struct SandboxExec {
     std::string stage{};       // "create" | "exec" -- provisioning vs the run itself
     bool        ok = true;     // finished only
     std::string error_code{};  // finished only; empty when ok
+    // ADR-244 slice 5 (G-C12): the limits the sandbox was started under, as stated -- a `stage == "create"` event always
+    // carries them ("wall_ms=15000 memory_bytes=268435456 ..." / "unbounded (engine floor 16777216 bytes)"), so a
+    // recorded choice is what was enforced. Empty on "exec"/"release" events, which start no new environment.
+    std::string limits{};
 };
 
 // 013 §1: "a run's set of active StandingEffects is exposed as part of [StateChanged]" (006 §6b) --

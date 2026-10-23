@@ -39,8 +39,8 @@ void check(bool cond, char const* what) {
 // What tools/cli_chat.cpp's mediated tier holds for "work": exactly these two, uncapped.
 ae::CapabilitySet cli_chat_work_grants() {
     return ae::CapabilitySet::grant_root({
-        ae::Capability{ae::cap::FsRead{"work", "", std::nullopt}},
-        ae::Capability{ae::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        ae::Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::unbounded()}},
+        ae::Capability{ae::cap::FsWrite{"work", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()}},
     });
 }
 
@@ -203,8 +203,8 @@ int main() {
               "G5: statements before the refusal ran, nothing after it did");
         // Positive control: the grant, not the syntax, is what decides.
         ae::CapabilitySet const with_env = ae::CapabilitySet::grant_root({
-            ae::Capability{ae::cap::FsRead{"work", "", std::nullopt}},
-            ae::Capability{ae::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+            ae::Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::unbounded()}},
+            ae::Capability{ae::cap::FsWrite{"work", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()}},
             ae::Capability{ae::cap::EnvWrite{"X"}},
         });
         Run const ok = sh.run("export X=1", with_env);

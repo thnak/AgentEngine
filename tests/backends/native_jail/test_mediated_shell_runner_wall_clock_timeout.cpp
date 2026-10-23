@@ -44,8 +44,8 @@ int g_failures = 0;
 
 CapabilitySet full_caps() {
     return CapabilitySet::grant_root({
-        Capability{cap::FsRead{"work", "", std::nullopt}},
-        Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+        Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
     });
 }
 

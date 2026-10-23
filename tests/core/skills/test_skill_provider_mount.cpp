@@ -99,7 +99,7 @@ int main() {
             }
             check(pdf_mount != nullptr, "R1: pdf-tools' own Mount record is retrievable");
             if (pdf_mount) {
-                cap::FsRead granted{"pdf-tools", "", std::nullopt};
+                cap::FsRead granted{"pdf-tools", "", cap::Limit::unbounded()};
                 auto bytes = agentengine::rt::block_on(mount_read(provider.object_store(), provider.ref_store(), *pdf_mount,
                                          granted, "SKILL.md"));
                 check(bytes.has_value(), "R1: mount_read succeeds through a real granted capability");

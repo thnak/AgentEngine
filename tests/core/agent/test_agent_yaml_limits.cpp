@@ -33,6 +33,8 @@
 //   Y8 -- `max_turns: 0` and `token_budget: 0` are REFUSED (choice.zero_bound). ADR-244 §2.1 flipped this
 //         case: zero is neither "unset" nor a usable "deny everything" (that has its own mechanism), so it
 //         is refused at every check site, YAML included. Positive control: 1 compiles as written.
+//   Y9 -- (ADR-244 slice 4c) "no limit" is the NAMED value `unbounded`, accepted for both limits and recorded as
+//         `Bound::unbounded()`; every other spelling of "none" (`-1`, `0`, `null`, `Unbounded`) is still refused.
 //
 // Needs no daemon, no network and no credentials.
 
@@ -166,6 +168,22 @@ int main() {
         check(one.has_value() && one->max_turns == ae::Bound<std::uint64_t>::at_most(1) &&
                       one->token_budget == ae::Bound<std::uint64_t>::at_most(1),
               "Y8 control: max_turns: 1 and token_budget: 1 compile as written");
+    }
+
+    // ---- Y9 (ADR-244 slice 4c): "no limit" is the named value `unbounded`.
+    {
+        using B = ae::Bound<std::uint64_t>;
+        auto both = compile(doc_with_limits("  limits:\n    max_turns: unbounded\n    token_budget: unbounded\n"));
+        check(both.has_value() && both->max_turns == B::unbounded() && both->token_budget == B::unbounded(),
+              "Y9: max_turns: unbounded and token_budget: unbounded compile to Bound::unbounded()");
+        auto mixed = compile(doc_with_limits("  limits:\n    max_turns: 5\n    token_budget: unbounded\n"));
+        check(mixed.has_value() && mixed->max_turns == B::at_most(5) && mixed->token_budget == B::unbounded(),
+              "Y9: a number and unbounded mix (each limit is its own statement)");
+        for (char const* bad : {"  limits:\n    max_turns: Unbounded\n", "  limits:\n    max_turns: none\n",
+                                "  limits:\n    token_budget: null\n", "  limits:\n    token_budget: -1\n"}) {
+            auto r = compile(doc_with_limits(bad));
+            check(!r.has_value(), std::string("Y9: refused: ") + bad);
+        }
     }
 
     std::printf("\n%d checks, %d failed\n", g_checks, g_failed);

@@ -103,8 +103,8 @@ int main() {
     MediatedShellRunner shell(*adapter, registry, "work");
 
     CapabilitySet caps = CapabilitySet::grant_root(
-        {Capability{cap::RunnerCall{"python"}}, Capability{cap::FsRead{"work", "", std::nullopt}},
-         Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
+        {Capability{cap::RunnerCall{"python"}}, Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+         Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}}});
 
     // === 1. Shell writes a real file; Python (invoked THROUGH shell, same ctx) reads it back =======
     {
@@ -233,7 +233,7 @@ int main() {
         ctx.principal = ae_test::kTestPrincipal;
         CapabilitySet read_only_caps =
             CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}},
-                                        Capability{cap::FsRead{"work", "", std::nullopt}}});
+                                        Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}}});
         ctx.capabilities = agentengine::borrow_capabilities(read_only_caps);
         auto denied = agentengine::rt::block_on(shell.run(
             ExecRequest{"shell",

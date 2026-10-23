@@ -19,6 +19,9 @@ agentengine_add_test(test_agent_registry_chat_client_registry LIBS agentengine::
 # agent<A>()'s own C++-form output for the same agent (I6 in action) --------------------------
 agentengine_add_test(test_agent_yaml_limits LIBS agentengine::core agentengine_warnings)
 
+# ADR-244 slice 5 (G-C12): the engine floors kept under an unbounded() choice are one disclosed table.
+agentengine_add_test(test_engine_floor LIBS agentengine::core agentengine_warnings)
+
 agentengine_add_test(test_agent_yaml_compiler LIBS agentengine::core agentengine_warnings)
 
 # ---- Agent metadata compiler: register_agent<A>() (M2 Phase E task E2, 002 §6) -----------------

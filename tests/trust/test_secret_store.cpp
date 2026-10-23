@@ -136,7 +136,7 @@ int main() {
 #else
         setenv("QUARK_SECRET_test-env-secret", "env-value-123", 1);
 #endif
-        AgentEngineSecretStore store(std::make_unique<EnvSecretSource>());
+        AgentEngineSecretStore store(std::move(*EnvSecretSource::create(kLegacyEnvSecretPrefix)));
         CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"test-env-secret", std::chrono::seconds{0}}});
         auto ctx = make_ctx();
         ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -150,6 +150,23 @@ int main() {
         ctx.capabilities = agentengine::borrow_capabilities(missing_held);
         auto missing = rt::block_on(store.resolve(SecretRef{"never-set-anywhere"}, ctx));
         AE_CHECK(!missing.has_value(), "A3: EnvSecretSource fails closed (not empty-string) when unset");
+    }
+
+    // ---- A3b (ADR-244 slice 6): the prefix is stated and an empty one is refused -------------------
+    {
+        auto empty = EnvSecretSource::create("");
+        AE_CHECK(!empty.has_value() && empty.error().code == "secret.empty_prefix",
+                  "A3b: an empty prefix is secret.empty_prefix -- with none, any secret name would read the "
+                  "environment variable of that exact name (PATH, a cloud credential): ambient authority");
+        auto stated = EnvSecretSource::create("AE_TEST_OTHER_PREFIX_");
+        AE_CHECK(stated.has_value(), "A3b (positive control): a stated, non-empty prefix is accepted");
+#if defined(_WIN32)
+        _putenv_s("QUARK_SECRET_a3b-only", "must-not-be-read");
+#else
+        setenv("QUARK_SECRET_a3b-only", "must-not-be-read", 1);
+#endif
+        AE_CHECK(stated.has_value() && !(*stated)->get("a3b-only").has_value(),
+                  "A3b: a source under another prefix does not read the legacy-prefixed variable");
     }
 
     // ---- A3: AgentEngineSecretStore over FileSecretSource resolves a real file --------------------

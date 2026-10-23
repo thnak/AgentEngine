@@ -1272,8 +1272,10 @@ int main() {
     {
         SpawnTargetRegistry reg;
         SpawnTargetDescriptor bad;
+        bad.metadata = ae_test::stated_metadata();
         bad.unattended_operator = std::string{};
-        check(!reg.register_target("X", std::move(bad)).has_value(),
+        auto const refused = reg.register_target("X", std::move(bad));
+        check(!refused.has_value() && refused.error().code == "agent_spawn.target_operator_missing",
               "R1: a target naming an empty operator is refused at registration, before any spawn spends anything");
     }
 

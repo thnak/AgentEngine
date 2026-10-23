@@ -177,7 +177,7 @@ void configure(TestEgressProxy& p) {
 }
 
 cap::NetOut grant(std::uint16_t port) {
-    cap::NetOut g;
+    cap::NetOut g{{}, cap::Limit::unbounded(), {}};
     g.host_allowlist = {"bulk.example:" + std::to_string(port) + ":http"};
     return g;
 }

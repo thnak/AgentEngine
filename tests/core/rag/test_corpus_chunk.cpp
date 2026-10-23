@@ -42,8 +42,8 @@ int main() {
         AE_CHECK(committed.has_value(), "setup: corpus worktree bootstraps");
     }
 
-    ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
-    ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+    ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+    ae::cap::FsRead const read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
 
     ae::CorpusChunkRecord record{};
     record.id = "deadbeef";

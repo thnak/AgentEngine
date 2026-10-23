@@ -125,7 +125,7 @@ void test_real_adapter_reads_a_real_file() {
     if (!adapter) return;
 
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::FsRead{std::string(agentengine::tools::kSandboxWorkMount), "", std::nullopt}});
+        {agentengine::cap::FsRead{std::string(agentengine::tools::kSandboxWorkMount), "", agentengine::cap::Limit::unbounded()}});
     auto ctx = make_ctx(held);
     ctx.sandbox_fs = &*adapter;
 
@@ -166,7 +166,7 @@ void test_size_cap_is_enforced() {
     auto const mount = std::string(agentengine::tools::kSandboxWorkMount);
     {
         agentengine::CapabilitySet const capped =
-            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", std::uint64_t{1000}}});
+            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", agentengine::cap::Limit::at_most(std::uint64_t{1000})}});
         auto ctx = make_ctx(capped);
         ctx.sandbox_fs = &*adapter;
 
@@ -186,7 +186,7 @@ void test_size_cap_is_enforced() {
     }
     {
         agentengine::CapabilitySet const uncapped =
-            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", std::nullopt}});
+            agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", agentengine::cap::Limit::unbounded()}});
         auto ctx = make_ctx(uncapped);
         ctx.sandbox_fs = &*adapter;
         auto big = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
@@ -199,8 +199,8 @@ void test_size_cap_is_enforced() {
         // "small" FIRST. find_fs_read returns the first grant that covers the path; the point is that a
         // cap on a grant that does not cover the path is not applied to it.
         agentengine::CapabilitySet const two = agentengine::CapabilitySet::grant_root(
-            {agentengine::cap::FsRead{mount, "small", std::nullopt},
-             agentengine::cap::FsRead{mount, "elsewhere", std::uint64_t{10}}});
+            {agentengine::cap::FsRead{mount, "small", agentengine::cap::Limit::unbounded()},
+             agentengine::cap::FsRead{mount, "elsewhere", agentengine::cap::Limit::at_most(std::uint64_t{10})}});
         auto ctx = make_ctx(two);
         ctx.sandbox_fs = &*adapter;
         auto under = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(

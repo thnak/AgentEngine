@@ -76,7 +76,7 @@ template <WorktreeObjectStore ObjectStoreT>
         auto adapter = mediated_shell::MediatedFileSystemAdapter::create(skill_dir_w);
         if (!adapter) co_return std::unexpected(adapter.error());
 
-        cap::FsRead const granted{mount.mount_id, "", std::nullopt};
+        cap::FsRead const granted{mount.mount_id, "", cap::Limit::unbounded()};
         auto materialized =
             co_await materialize_mount(provider.object_store(), provider.ref_store(), mount, granted, *adapter);
         if (!materialized) co_return std::unexpected(materialized.error());

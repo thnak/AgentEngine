@@ -8,15 +8,16 @@
 //   native_exec:
 //     program: "pwsh"            # required; a trailing '*' is a prefix grant (ADR-071)
 //     worktree_mount: "workdir"  # required
-//     cpu_ms_cap: 30000          # optional, each of these
+//     cpu_ms_cap: 30000          # required: a positive integer or `unbounded` (ADR-244 slice 5)
 //     wall_ms_cap: 30000
 //     memory_bytes_cap: 536870912
 //     live_session: true         # optional, default false (ADR-209 §9: the held-shell opt-in)
-//     session_wall_ms_cap: 3600000
-//     max_processes: 64
+//     session_wall_ms_cap: 3600000   # required when live_session is true
+//     max_processes: 64              # required when live_session is true
 //
 // Fails closed: an unknown key, a wrong type, a negative/fractional/out-of-range number or a missing required
-// key is refused with `native_exec_grant.invalid` -- never ignored, so a misspelt `live_sesion: false` cannot
+// key is refused with `native_exec_grant.invalid` (an absent cap is `choice.missing.grant.<field>`, a `0` is
+// `choice.zero_bound`; trust/grant_limit.hpp) -- never ignored, so a misspelt `live_sesion: false` cannot
 // silently mean something else. Host-authored configuration only (I3): nothing model-derived reaches this.
 
 #include <cstdint>
@@ -27,6 +28,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/trust/grant_limit.hpp"
 
 namespace agentengine::trust {
 
@@ -46,7 +48,6 @@ namespace agentengine::trust {
         for (auto k : kKeys) known = known || key == k;
         if (!known) return bad("unknown key '" + key + "'");
     }
-    cap::NativeExec g;
     auto const* program = v.find("program");
     auto const* mount = v.find("worktree_mount");
     if (program == nullptr || !program->is_string() || program->as_string().empty()) {
@@ -55,27 +56,35 @@ namespace agentengine::trust {
     if (mount == nullptr || !mount->is_string() || mount->as_string().empty()) {
         return bad("'worktree_mount' is required and must be a non-empty string");
     }
-    g.program_pattern = program->as_string();
-    g.worktree_mount_id = mount->as_string();
-    auto const u64 = [&](std::string_view key, std::optional<std::uint64_t>& out) -> bool {
-        auto const* f = v.find(key);
-        if (f == nullptr) return true;
-        auto n = json::as_bounded_integer(*f);
-        if (!n.has_value()) return false;
-        out = *n;
-        return true;
-    };
-    if (!u64("cpu_ms_cap", g.cpu_ms_cap)) return bad("'cpu_ms_cap' must be a non-negative integer");
-    if (!u64("wall_ms_cap", g.wall_ms_cap)) return bad("'wall_ms_cap' must be a non-negative integer");
-    if (!u64("memory_bytes_cap", g.memory_bytes_cap)) return bad("'memory_bytes_cap' must be a non-negative integer");
-    if (!u64("session_wall_ms_cap", g.session_wall_ms_cap)) {
-        return bad("'session_wall_ms_cap' must be a non-negative integer");
+    auto const live = [&]() -> bool {
+        auto const* f = v.find("live_session");
+        return f != nullptr && f->is_bool() && f->as_bool();
+    }();
+    auto const lim = [&](std::string_view key) { return parse_grant_limit(v, key); };
+    auto cpu = lim("cpu_ms_cap");
+    if (!cpu) return std::unexpected(cpu.error());
+    auto wall = lim("wall_ms_cap");
+    if (!wall) return std::unexpected(wall.error());
+    auto mem = lim("memory_bytes_cap");
+    if (!mem) return std::unexpected(mem.error());
+    // The two held-shell caps are required only when the grant opts into a held shell (`live_session`); otherwise they
+    // are inert, and stating one is still validated.
+    auto session_wall = cap::Limit::unbounded();
+    auto max_processes = cap::Limit::unbounded();
+    if (live || v.find("session_wall_ms_cap") != nullptr) {
+        auto r = lim("session_wall_ms_cap");
+        if (!r) return std::unexpected(r.error());
+        session_wall = *r;
     }
-    if (auto const* f = v.find("max_processes"); f != nullptr) {
-        auto n = json::as_bounded_integer(*f, UINT32_MAX);
-        if (!n.has_value()) return bad("'max_processes' must be an integer in [0, 2^32)");
-        g.max_processes = static_cast<std::uint32_t>(*n);
+    if (live || v.find("max_processes") != nullptr) {
+        auto r = lim("max_processes");
+        if (!r) return std::unexpected(r.error());
+        if (auto const n = r->limit(); n.has_value() && *n > UINT32_MAX) {
+            return bad("'max_processes' must be at most 2^32-1 (the Job Object's active-process limit is a 32-bit count)");
+        }
+        max_processes = *r;
     }
+    cap::NativeExec g{program->as_string(), mount->as_string(), *cpu, *wall, *mem, false, session_wall, max_processes};
     if (auto const* f = v.find("live_session"); f != nullptr) {
         if (!f->is_bool()) return bad("'live_session' must be true or false");
         g.live_session = f->as_bool();
@@ -90,8 +99,10 @@ namespace agentengine::trust {
 // "bound" that large bounds nothing.
 inline constexpr std::uint64_t kMaxLiveSessionWallMs = std::uint64_t{1} << 62;
 [[nodiscard]] inline bool live_session_grant_usable(cap::NativeExec const& g) noexcept {
-    return g.live_session && g.session_wall_ms_cap.has_value() && *g.session_wall_ms_cap > 0 &&
-           *g.session_wall_ms_cap <= kMaxLiveSessionWallMs && g.max_processes.has_value() && *g.max_processes > 0;
+    auto const wall = g.session_wall_ms_cap.limit();
+    auto const procs = g.max_processes.limit();
+    return g.live_session && wall.has_value() && *wall > 0 && *wall <= kMaxLiveSessionWallMs && procs.has_value() &&
+           *procs > 0;
 }
 
 }  // namespace agentengine::trust

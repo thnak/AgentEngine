@@ -74,8 +74,8 @@ int main() {
         check(bootstrapped.has_value(), "setup: memory worktree bootstraps");
 
         ae::Mount const mount = ae::memory_mount(principal);
-        ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
-        ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
+        ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+        ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
 
         // A hostile ModelInferred item, crafted to READ as an authoritative user directive.
         ae::MemoryItem hostile{};

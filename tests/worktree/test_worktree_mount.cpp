@@ -99,13 +99,13 @@ int main() {
         Mount mount{"/work", "session:mount-1", ""};
 
         // Happy path.
-        cap::FsRead unrestricted{"/work", "", std::nullopt};
+        cap::FsRead unrestricted{"/work", "", cap::Limit::unbounded()};
         auto read = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, unrestricted, "small.txt"));
         AE_CHECK(read.has_value() && string_of(*read) == "small file content",
                  "C1-C2: an unrestricted FsRead reads the exact file content");
 
         // Capability/mount mismatch.
-        cap::FsRead wrong_mount{"/other", "", std::nullopt};
+        cap::FsRead wrong_mount{"/other", "", cap::Limit::unbounded()};
         auto mismatched = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, wrong_mount, "small.txt"));
         AE_CHECK(!mismatched.has_value() && mismatched.error().code == "worktree.mount_capability_mismatch",
                  "C1-C2: a capability for a DIFFERENT mount_id is rejected");
@@ -119,7 +119,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:mount-1", root_with_scope)).has_value(),
                  "C1-C2: setup: add a scoped subdirectory, keeping big.txt for the size-cap checks below");
 
-        cap::FsRead scoped{"/work", "allowed", std::nullopt};
+        cap::FsRead scoped{"/work", "allowed", cap::Limit::unbounded()};
         auto out_of_scope = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, scoped, "small.txt"));
         AE_CHECK(!out_of_scope.has_value() && out_of_scope.error().code == "worktree.mount_path_outside_capability",
                  "C1-C2: a capability scoped to 'allowed/' cannot read a file outside that prefix");
@@ -129,11 +129,11 @@ int main() {
 
         // size_cap_bytes: a cap too small for the file is rejected, the same cap on a smaller file
         // succeeds.
-        cap::FsRead tiny_cap{"/work", "", std::uint64_t{10}};
+        cap::FsRead tiny_cap{"/work", "", cap::Limit::at_most(std::uint64_t{10})};
         auto too_big = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, tiny_cap, "big.txt"));
         AE_CHECK(!too_big.has_value() && too_big.error().code == "worktree.mount_read_exceeds_size_cap",
                  "C1-C2: a file exceeding size_cap_bytes is rejected");
-        cap::FsRead roomy_cap{"/work", "", std::uint64_t{1000}};
+        cap::FsRead roomy_cap{"/work", "", cap::Limit::at_most(std::uint64_t{1000})};
         auto under_roomy_cap = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, roomy_cap, "big.txt"));
         AE_CHECK(under_roomy_cap.has_value(),
                  "C1-C2 (positive control): the same file reads fine under a large-enough size cap");
@@ -158,29 +158,29 @@ int main() {
                  "C1-C3: setup empty-root commit succeeds");
 
         Mount mount{"/work", "session:mount-2", ""};
-        cap::FsWrite unrestricted{"/work", "", std::nullopt, std::nullopt};
+        cap::FsWrite unrestricted{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
 
         auto write1 = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, unrestricted, "notes.txt", bytes_of("hello")));
         AE_CHECK(write1.has_value(), "C1-C3: writing a new top-level file succeeds");
-        auto read1 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", std::nullopt}, "notes.txt"));
+        auto read1 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", cap::Limit::unbounded()}, "notes.txt"));
         AE_CHECK(read1.has_value() && string_of(*read1) == "hello",
                  "C1-C3: the written file reads back with the exact content");
 
         auto write2 =
             agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, unrestricted, "a/b/deep.txt", bytes_of("deep content")));
         AE_CHECK(write2.has_value(), "C1-C3: writing through missing intermediate directories succeeds");
-        auto read2 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", std::nullopt}, "a/b/deep.txt"));
+        auto read2 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", cap::Limit::unbounded()}, "a/b/deep.txt"));
         AE_CHECK(read2.has_value() && string_of(*read2) == "deep content",
                  "C1-C3: the deeply-nested file reads back correctly, intermediate dirs were created");
 
         auto overwrite =
             agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, unrestricted, "notes.txt", bytes_of("updated")));
         AE_CHECK(overwrite.has_value(), "C1-C3: overwriting an existing file succeeds");
-        auto read3 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", std::nullopt}, "notes.txt"));
+        auto read3 = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", cap::Limit::unbounded()}, "notes.txt"));
         AE_CHECK(read3.has_value() && string_of(*read3) == "updated",
                  "C1-C3: the overwritten file reflects the NEW content, not the old");
         auto still_there =
-            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", std::nullopt}, "a/b/deep.txt"));
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", cap::Limit::unbounded()}, "a/b/deep.txt"));
         AE_CHECK(still_there.has_value() && string_of(*still_there) == "deep content",
                  "C1-C3: overwriting notes.txt did not disturb the unrelated a/b/deep.txt");
     }
@@ -197,12 +197,12 @@ int main() {
 
         Mount mount{"/work", "session:mount-3", ""};
 
-        cap::FsWrite wrong_mount{"/other", "", std::nullopt, std::nullopt};
+        cap::FsWrite wrong_mount{"/other", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         auto mismatched = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, wrong_mount, "x.txt", bytes_of("x")));
         AE_CHECK(!mismatched.has_value() && mismatched.error().code == "worktree.mount_capability_mismatch",
                  "C1-C4: a capability for a DIFFERENT mount_id cannot write here");
 
-        cap::FsWrite scoped{"/work", "allowed", std::nullopt, std::nullopt};
+        cap::FsWrite scoped{"/work", "allowed", cap::Limit::unbounded(), cap::Limit::unbounded()};
         auto out_of_scope = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, scoped, "elsewhere.txt", bytes_of("x")));
         AE_CHECK(!out_of_scope.has_value() && out_of_scope.error().code == "worktree.mount_path_outside_capability",
                  "C1-C4: a capability scoped to 'allowed/' cannot write outside that prefix");
@@ -210,7 +210,7 @@ int main() {
         AE_CHECK(in_scope.has_value(),
                  "C1-C4 (positive control): the SAME capability writes fine inside its own scope");
 
-        cap::FsWrite unrestricted{"/work", "", std::nullopt, std::nullopt};
+        cap::FsWrite unrestricted{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         auto through_file =
             agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, unrestricted, "notafile/child.txt", bytes_of("x")));
         AE_CHECK(!through_file.has_value() && through_file.error().code == "worktree.mount_write_type_conflict",
@@ -239,13 +239,13 @@ int main() {
                  "C1-C5: setup: a session root with input/skills/work siblings");
 
         Mount work_mount{"/work", "session:mount-4", "work"};
-        cap::FsWrite unrestricted_w{"/work", "", std::nullopt, std::nullopt};
+        cap::FsWrite unrestricted_w{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         auto write_result =
             agentengine::rt::block_on(mount_write(obj_store, ref_store, work_mount, unrestricted_w, "output.txt", bytes_of("result")));
         AE_CHECK(write_result.has_value(), "C1-C5: writing through the 'work'-rooted mount succeeds");
 
         // The write must be visible through the /work mount...
-        cap::FsRead unrestricted_r{"/work", "", std::nullopt};
+        cap::FsRead unrestricted_r{"/work", "", cap::Limit::unbounded()};
         auto read_back = agentengine::rt::block_on(mount_read(obj_store, ref_store, work_mount, unrestricted_r, "output.txt"));
         AE_CHECK(read_back.has_value() && string_of(*read_back) == "result",
                  "C1-C5: the write is visible through the SAME mount afterward");
@@ -253,13 +253,13 @@ int main() {
         // ...and input/skills, sibling to "work" at the actual ref root, must be untouched.
         Mount input_mount{"/input", "session:mount-4", "input"};
         auto input_read = agentengine::rt::block_on(mount_read(obj_store, ref_store, input_mount,
-                                      cap::FsRead{"/input", "", std::nullopt}, "data.csv"));
+                                      cap::FsRead{"/input", "", cap::Limit::unbounded()}, "data.csv"));
         AE_CHECK(input_read.has_value() && string_of(*input_read) == "input data",
                  "C1-C5: writing through /work did not disturb the SIBLING /input mount's content");
 
         Mount skills_mount{"/skills", "session:mount-4", "skills"};
         auto skills_read = agentengine::rt::block_on(mount_read(obj_store, ref_store, skills_mount,
-                                       cap::FsRead{"/skills", "", std::nullopt}, "tool.py"));
+                                       cap::FsRead{"/skills", "", cap::Limit::unbounded()}, "tool.py"));
         AE_CHECK(skills_read.has_value() && string_of(*skills_read) == "skill code",
                  "C1-C5: writing through /work did not disturb the SIBLING /skills mount's content either");
     }
@@ -270,11 +270,11 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         Mount ghost_mount{"/ghost", "session:never-committed", ""};
-        auto read = agentengine::rt::block_on(mount_read(obj_store, ref_store, ghost_mount, cap::FsRead{"/ghost", "", std::nullopt}, "x.txt"));
+        auto read = agentengine::rt::block_on(mount_read(obj_store, ref_store, ghost_mount, cap::FsRead{"/ghost", "", cap::Limit::unbounded()}, "x.txt"));
         AE_CHECK(!read.has_value() && read.error().code == "worktree.mount_ref_missing",
                  "C1-C6: reading through a mount over an uncommitted ref fails closed");
         auto write =
-            agentengine::rt::block_on(mount_write(obj_store, ref_store, ghost_mount, cap::FsWrite{"/ghost", "", std::nullopt, std::nullopt},
+            agentengine::rt::block_on(mount_write(obj_store, ref_store, ghost_mount, cap::FsWrite{"/ghost", "", cap::Limit::unbounded(), cap::Limit::unbounded()},
                         "x.txt", bytes_of("x")));
         AE_CHECK(!write.has_value() && write.error().code == "worktree.mount_ref_missing",
                  "C1-C6: writing through a mount over an uncommitted ref fails closed too");

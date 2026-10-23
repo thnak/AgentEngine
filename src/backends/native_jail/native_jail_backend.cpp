@@ -14,6 +14,7 @@
 #include <random>
 #include <unordered_set>
 #include <vector>
+#include "agentengine/core/engine_floor.hpp"
 
 #include "backends/native_jail/agent_tools_codegen.hpp"
 #include "backends/native_jail/app_container_profile.hpp"
@@ -323,8 +324,7 @@ result<void> GrantLedger::refuse(std::string const& key) { return refuse_deploym
 // (SandboxSpec did not set output_bytes) still uses a fixed internal safety ceiling, never
 // literally unbounded.
 std::string drain_pipe_bounded(HANDLE read_handle, std::uint64_t cap_bytes) {
-    constexpr std::uint64_t kDefaultSafetyCapBytes = 16ull * 1024 * 1024;  // 16 MiB, host-safety floor
-    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : kDefaultSafetyCapBytes;
+    std::uint64_t const cap = cap_bytes > 0 ? cap_bytes : engine_floor::kOutputDrain.value;  // the named engine floor
 
     std::string out;
     char buf[4096];

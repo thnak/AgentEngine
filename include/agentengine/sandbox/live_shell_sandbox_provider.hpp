@@ -310,7 +310,10 @@ private:
             ++opens_;
             timers_.opened(now);
             release_pending_ = false;
-            report(ctx, agentengine::run_event_kind::sandbox_exec_finished, "create", true, {});
+            report(ctx, agentengine::run_event_kind::sandbox_exec_finished, "create", true, {},
+                   "max_idle_ms=" + std::to_string(limits_.max_idle.count()) +
+                       " max_alive_ms=" + std::to_string(limits_.max_alive.count()) +
+                       " max_runs=" + std::to_string(limits_.max_runs));
         }
         open_attempted_ = false;
         if (!outcome.has_value()) co_return std::unexpected(outcome.error());
@@ -419,13 +422,14 @@ private:
     }
 
     void report(agentengine::EffectContext& ctx, agentengine::run_event_kind kind, std::string stage, bool ok,
-                std::string error_code) {
+                std::string error_code, std::string limits = {}) {
         agentengine::run_event_payload::SandboxExec p;
         p.exec_id = "live-shell-" + std::to_string(++event_seq_);
         p.backend = "live-shell";
         p.stage = std::move(stage);
         p.ok = ok;
         p.error_code = std::move(error_code);
+        p.limits = std::move(limits);
         ctx.sandbox_exec_sink(kind, std::move(p));
     }
 

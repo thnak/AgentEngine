@@ -287,7 +287,7 @@ int main() {
         // steps neither conflicts_mount() nor anything else in this codebase performs automatically
         // (mirroring memory_mount()'s own precedent: a primitive a host calls, never self-attaching).
         Mount const mount = conflicts_mount("session:s-32");
-        cap::FsRead const granted{mount.mount_id, "", std::nullopt};
+        cap::FsRead const granted{mount.mount_id, "", cap::Limit::unbounded()};
 
         auto ours_bytes = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "a.txt.planner"));
         AE_CHECK(ours_bytes.has_value() && string_of(*ours_bytes) == "ours-content",
@@ -304,7 +304,7 @@ int main() {
 
         // A capability minted for a DIFFERENT mount_id is correctly refused -- the mount is not
         // accidentally wide open to any FsRead grant that happens to pass by.
-        cap::FsRead const wrong_grant{"/some/other/mount", "", std::nullopt};
+        cap::FsRead const wrong_grant{"/some/other/mount", "", cap::Limit::unbounded()};
         auto denied = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, wrong_grant, "a.txt.planner"));
         AE_CHECK(!denied.has_value() && denied.error().code == "worktree.mount_capability_mismatch",
                  "M8: a capability minted for a different mount_id is rejected, not silently honored");
@@ -328,7 +328,7 @@ int main() {
         AE_CHECK(materialized.has_value(), "M9 setup: a nested-path conflict is materialized");
 
         Mount const mount = conflicts_mount("session:s-33");
-        cap::FsRead const granted{mount.mount_id, "", std::nullopt};
+        cap::FsRead const granted{mount.mount_id, "", cap::Limit::unbounded()};
         auto bytes = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "dir/sub/file.txt.planner"));
         AE_CHECK(bytes.has_value() && string_of(*bytes) == "nested-ours",
                  "M9: a nested conflict path is reachable via the SAME directory structure the "

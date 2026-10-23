@@ -43,7 +43,7 @@ spec:
     net_out: ["api.search.example"]
   sandbox:
     profile: strict
-    fallback: [native-jail, remote]
+    # sandbox.fallback is refused until a resolver consumes it (ADR-244 §2.2; ADR-242 R2: no fallback is silent).
   limits:
     max_turns: 12
     token_budget: 200000

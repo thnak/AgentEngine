@@ -223,7 +223,7 @@ int main() {
         wf.id = "t4";
         Executor a = agent_desc("a");
         a.capability_ceiling = {
-            cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = std::nullopt}};
+            cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}};
         wf.executors = {a};
         wf.start = "a";
         wf.output_selection.push_back("a");

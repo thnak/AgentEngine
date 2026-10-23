@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "agentengine/core/session_choices.hpp"
+#include "agentengine/trust/principal.hpp"
 
 namespace ae_test {
 
@@ -36,5 +37,8 @@ namespace ae_test {
     return {agentengine::AuthoritySource::per_request(agentengine::CapabilitySet::no_ceiling()),
             bound_or_unbounded(token_budget), bound_or_unbounded(max_turns)};
 }
+
+// The principal a builder test states (ADR-244 slice 4c: the builders have no default identity).
+[[nodiscard]] inline agentengine::Principal principal() { return agentengine::Principal{"p-test", ""}; }
 
 }  // namespace ae_test

@@ -139,8 +139,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex dense;
         ae::BM25Index              sparse;
@@ -264,8 +264,8 @@ int main() {
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex dense;
         ae::BM25Index              sparse;
@@ -332,10 +332,10 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount_b).has_value(),
                  "R4 setup: tenant-b's corpus worktree bootstraps independently");
 
-        ae::cap::FsRead const  read_a{mount_a.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_a{mount_a.mount_id, "", std::nullopt, std::nullopt};
-        ae::cap::FsRead const  read_b{mount_b.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_b{mount_b.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_a{mount_a.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_a{mount_a.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+        ae::cap::FsRead const  read_b{mount_b.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_b{mount_b.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         // SEPARATE dense AND sparse indices per tenant -- both legs must isolate, not just one.
         ae::BruteForceCosineIndex dense_a, dense_b;

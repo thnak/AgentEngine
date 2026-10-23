@@ -401,3 +401,6 @@ so a behavioural change is attributable to a version rather than to a mystery. A
   threat model doesn't touch hosting shape), so the safer route to the same performance win is a
   **lint**, not a default: `register_agent()` validation (§6) can suggest `Stateless<N>` when it can
   statically prove no session-state usage, leaving the conservative off-by-default unchanged.
+  **Amended (ADR-244 slice 4c, 2026-10-23):** the answer stands, and sits beside a stricter rule: `Stateless<N>` stays
+  optional (nothing enforces it beyond the §6 lint), while `MaxTurns`, `TokenBudget`, `Approval`, `Concurrency` and
+  `SandboxProfile` are required (§3, §6) -- "off by absence" is allowed only where nothing is unenforced or unbounded.

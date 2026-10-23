@@ -127,8 +127,8 @@ int main() {
     AE_CHECK(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
-    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
-    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
     ae::MemoryItem tea{};
     tea.kind = ae::memory_kind::episodic;

@@ -177,13 +177,13 @@ NativeJailBackend::QueryFields NativeJailBackend::dispatch_open(PythonWorkerStat
     }
 
     if (granted_write &&
-        (granted_write->quota_bytes.has_value() || granted_write->file_count_cap.has_value())) {
+        (!granted_write->quota_bytes.is_unbounded() || !granted_write->file_count_cap.is_unbounded())) {
         auto usage = mount_root_usage(mount_it->second);
         if (!usage) return deny("python.open_os_error", usage.error().message, usage.error().native_code);
         bool const over_quota =
-            granted_write->quota_bytes.has_value() && usage->total_bytes > *granted_write->quota_bytes;
-        bool const over_count = granted_write->file_count_cap.has_value() &&
-                                 usage->file_count > *granted_write->file_count_cap;
+            !granted_write->quota_bytes.is_unbounded() && usage->total_bytes > *granted_write->quota_bytes.limit();
+        bool const over_count = !granted_write->file_count_cap.is_unbounded() &&
+                                 usage->file_count > *granted_write->file_count_cap.limit();
         if (over_quota || over_count) {
             return deny(wp::kErrorPythonOpenOsError, "No space left on device");
         }
@@ -193,13 +193,13 @@ NativeJailBackend::QueryFields NativeJailBackend::dispatch_open(PythonWorkerStat
         open_within_mount_root(mount_it->second, mount_relative, mode->desired_access, mode->creation_disposition);
     if (!handle) return deny(wp::kErrorPythonOpenOsError, handle.error().message, handle.error().native_code);
 
-    if (granted_read && granted_read->size_cap_bytes.has_value()) {
+    if (granted_read && !granted_read->size_cap_bytes.is_unbounded()) {
         LARGE_INTEGER size{};
         if (!GetFileSizeEx(handle->get(), &size)) {
             return deny(wp::kErrorPythonOpenOsError, "GetFileSizeEx failed",
                          static_cast<int>(GetLastError()));
         }
-        if (static_cast<std::uint64_t>(size.QuadPart) > *granted_read->size_cap_bytes) {
+        if (static_cast<std::uint64_t>(size.QuadPart) > *granted_read->size_cap_bytes.limit()) {
             return deny("tool.capability_not_held",
                          "open: the requested file exceeds this capability's size cap");
         }
@@ -350,7 +350,7 @@ NativeJailBackend::QueryFields NativeJailBackend::dispatch_connect_authorize(Pyt
     auto const port = static_cast<std::uint16_t>(port_raw);
     std::string const entry = host + ":" + std::to_string(port) + ":tcp";
 
-    if (!ctx.capabilities || !ctx.capabilities->contains(Capability{cap::NetOut{{entry}, std::nullopt, {}}})) {
+    if (!ctx.capabilities || !ctx.capabilities->contains(Capability{cap::NetOut{{entry}, cap::Limit::unbounded(), {}}})) {
         return deny(wp::kErrorNetAddressBlocked, "no capability grants network access to '" + entry + "'");
     }
     if (ws.live_sockets.size() >= NativeJailBackend::PythonWorkerState::kMaxLiveSockets) {

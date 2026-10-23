@@ -115,7 +115,7 @@ static_assert(agentengine::sandbox::NetEgressBackend<SuspendingEgress>);
 void egress_section(Parker& parker) {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     agentengine::EffectContext ctx{};
     ctx.principal = agentengine::Principal{"p-lane", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -196,8 +196,8 @@ void runner_section(Parker& parker) {
     if (!sandbox.has_value()) return;
     auto const table = agentengine::ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({
-        agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-        agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+        agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
     });
     agentengine::EffectContext shell_ctx{};
     shell_ctx.principal = agentengine::Principal{"p-lane", ""};

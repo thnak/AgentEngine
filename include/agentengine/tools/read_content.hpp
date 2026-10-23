@@ -193,7 +193,7 @@ namespace read_content_detail {
 }  // namespace read_content_detail
 
 // 009 §7's `read_content` candidate. Declares an EMPTY static capability ceiling deliberately --
-// `Capabilities<NetOut<"...">>`/`Capabilities<FsRead<"...">>`'s compile-time forms each fix ONE
+// `Capabilities<NetOut<"...", agentengine::unbounded()>>`/`Capabilities<FsRead<"...", agentengine::unbounded()>>`'s compile-time forms each fix ONE
 // target per tool TYPE, but this tool must work against whatever host or path the model's `url`/
 // `path` argument names and whatever grants the run actually holds, which is a per-CALL question
 // `Tool`'s static declaration surface (006 §1) cannot express for either source. Enforcement instead

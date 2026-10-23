@@ -211,8 +211,8 @@ int main() {
 
     // ADR-119: run_command now carries a real Capabilities<cap::decl::RunCommand> ceiling.
     CapabilitySet const held = CapabilitySet::grant_root({
-        Capability{cap::FsRead{"work", "", std::nullopt}},
-        Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+        Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
         Capability{cap::RunCommand{}},
     });
     live.set_capabilities(&held);

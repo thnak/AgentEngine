@@ -130,7 +130,7 @@ AE_JSON_SCHEMA(WriteReply, unused)
     static bool invoked = false;
     return invoked;
 }
-struct WriteTool : agentengine::Tool<WriteTool, agentengine::Capabilities<agentengine::cap::decl::FsWrite<"work">>,
+struct WriteTool : agentengine::Tool<WriteTool, agentengine::Capabilities<agentengine::cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>,
                                       agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "write_tool";
     static constexpr std::string_view description = "Writes to the work mount.";
@@ -298,7 +298,7 @@ int main() {
         // Grant the capability WriteTool needs -- the denial under test must come from step 5
         // (approval), not from step 4 (missing capability), or this wouldn't isolate must-fix #1.
         CapabilitySet const held = CapabilitySet::grant_root(
-            {Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
+            {Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}}});
         session.set_capabilities(&held);
 
         auto r = drive(session.start_run(StartRun{user_message("go")}));

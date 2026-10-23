@@ -43,8 +43,8 @@ constexpr std::uint64_t kQuota    = 16u << 20;
 constexpr std::uint32_t kFileCap  = 1024;
 
 CapabilitySet capped_grant(std::string const& mount = "work", std::string const& prefix = "") {
-    return CapabilitySet::grant_root({Capability{ae::cap::FsRead{mount, prefix, kReadCap}},
-                                      Capability{ae::cap::FsWrite{mount, prefix, kQuota, kFileCap}}});
+    return CapabilitySet::grant_root({Capability{ae::cap::FsRead{mount, prefix, ae::cap::Limit::at_most(kReadCap)}},
+                                      Capability{ae::cap::FsWrite{mount, prefix, ae::cap::Limit::at_most(kQuota), ae::cap::Limit::at_most(kFileCap)}}});
 }
 
 struct ProbeArgs {
@@ -74,7 +74,7 @@ ae::result<ProbeReply> record_bound(ae::EffectContext& ctx) {
 
 struct GrantEnforcingProbe
     : ae::Tool<GrantEnforcingProbe,
-               ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>,
+               ae::Capabilities<ae::cap::decl::FsRead<"work", agentengine::unbounded()>, ae::cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>,
                ae::EnforcesGrantedCaps, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "grant_enforcing_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
@@ -84,7 +84,7 @@ struct GrantEnforcingProbe
 };
 
 struct PlainProbe
-    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>, ae::Approval<ae::approval_mode::never_require>> {
+    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work", agentengine::unbounded()>, ae::cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "plain_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
@@ -131,19 +131,19 @@ json::Value shell(std::string const& source) {
 }  // namespace
 
 int main() {
-    Capability const uncapped_read{ae::cap::FsRead{"work", "", std::nullopt}};
-    Capability const uncapped_write{ae::cap::FsWrite{"work", "", std::nullopt, std::nullopt}};
+    Capability const uncapped_read{ae::cap::FsRead{"work", "", ae::cap::Limit::unbounded()}};
+    Capability const uncapped_write{ae::cap::FsWrite{"work", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()}};
 
     // ---- U: the primitive ----------------------------------------------------------------------
     {
         CapabilitySet const held = capped_grant();
         auto r = held.clamped_binding(uncapped_read);
         auto const* fr = r ? std::get_if<ae::cap::FsRead>(&*r) : nullptr;
-        check(fr && fr->mount_id == "work" && fr->path_prefix.empty() && fr->size_cap_bytes == kReadCap,
+        check(fr && fr->mount_id == "work" && fr->path_prefix.empty() && fr->size_cap_bytes.limit() == kReadCap,
               "U1: an uncapped FsRead requirement binds under a capped grant WITH the grant's size cap");
         auto w = held.clamped_binding(uncapped_write);
         auto const* fw = w ? std::get_if<ae::cap::FsWrite>(&*w) : nullptr;
-        check(fw && fw->quota_bytes == kQuota && fw->file_count_cap == kFileCap,
+        check(fw && fw->quota_bytes.limit() == kQuota && fw->file_count_cap.limit() == kFileCap,
               "U2: an uncapped FsWrite requirement binds with the grant's quota and file-count cap");
 
         check(!held.contains(uncapped_read) && !held.bind(uncapped_read).has_value(),
@@ -151,44 +151,44 @@ int main() {
         check(!held.attenuate({uncapped_read}).has_value(),
               "U4: attenuate() is unchanged -- a capped grant can never be attenuated into an uncapped one");
 
-        check(!held.clamped_binding(Capability{ae::cap::FsRead{"other", "", std::nullopt}}).has_value(),
+        check(!held.clamped_binding(Capability{ae::cap::FsRead{"other", "", ae::cap::Limit::unbounded()}}).has_value(),
               "U5: a requirement on a different mount is still refused");
         CapabilitySet const prefixed = capped_grant("work", "notes");
         check(!prefixed.clamped_binding(uncapped_read).has_value(),
               "U5: a requirement for the mount root under a grant scoped to a sub-prefix is still refused");
-        check(prefixed.clamped_binding(Capability{ae::cap::FsRead{"work", "notes/a", std::nullopt}}).has_value(),
+        check(prefixed.clamped_binding(Capability{ae::cap::FsRead{"work", "notes/a", ae::cap::Limit::unbounded()}}).has_value(),
               "U5 (control): a requirement inside the granted prefix is admitted");
 
-        auto tight = held.clamped_binding(Capability{ae::cap::FsRead{"work", "", 10u}});
-        check(tight && std::get<ae::cap::FsRead>(*tight).size_cap_bytes == 10u,
+        auto tight = held.clamped_binding(Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::at_most(10u)}});
+        check(tight && std::get<ae::cap::FsRead>(*tight).size_cap_bytes.limit() == 10u,
               "U6: a requirement tighter than the grant keeps its own (tighter) cap");
-        auto loose = held.clamped_binding(Capability{ae::cap::FsRead{"work", "", kReadCap * 4}});
-        check(loose && std::get<ae::cap::FsRead>(*loose).size_cap_bytes == kReadCap,
+        auto loose = held.clamped_binding(Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::at_most(kReadCap * 4)}});
+        check(loose && std::get<ae::cap::FsRead>(*loose).size_cap_bytes.limit() == kReadCap,
               "U6: a requirement looser than the grant is lowered to the grant's cap");
 
         CapabilitySet const open = CapabilitySet::grant_root({uncapped_read});
         auto same = open.clamped_binding(uncapped_read);
-        check(same && std::get<ae::cap::FsRead>(*same).size_cap_bytes == std::nullopt,
+        check(same && std::get<ae::cap::FsRead>(*same).size_cap_bytes.limit() == std::nullopt,
               "U7: under an uncapped grant the binding is the requirement itself (old behaviour)");
 
         // Scope axes of other kinds stay strict.
         CapabilitySet const net = CapabilitySet::grant_root(
-            {Capability{ae::cap::NetOut{{"api.example.com:443:https"}, 4096u, {"GET"}}}});
-        auto n = net.clamped_binding(Capability{ae::cap::NetOut{{"api.example.com:443:https"}, std::nullopt, {"GET"}}});
-        check(n && std::get<ae::cap::NetOut>(*n).byte_cap == 4096u,
+            {Capability{ae::cap::NetOut{{"api.example.com:443:https"}, ae::cap::Limit::at_most(4096u), {"GET"}}}});
+        auto n = net.clamped_binding(Capability{ae::cap::NetOut{{"api.example.com:443:https"}, ae::cap::Limit::unbounded(), {"GET"}}});
+        check(n && std::get<ae::cap::NetOut>(*n).byte_cap.limit() == 4096u,
               "U8: NetOut byte_cap is a quantity axis -- clamped to the grant's");
-        check(!net.clamped_binding(Capability{ae::cap::NetOut{{"evil.example.com:443:https"}, std::nullopt, {"GET"}}})
+        check(!net.clamped_binding(Capability{ae::cap::NetOut{{"evil.example.com:443:https"}, ae::cap::Limit::unbounded(), {"GET"}}})
                    .has_value(),
               "U8: a host the grant does not list is still refused");
-        check(!net.clamped_binding(Capability{ae::cap::NetOut{{"api.example.com:443:https"}, std::nullopt, {}}})
+        check(!net.clamped_binding(Capability{ae::cap::NetOut{{"api.example.com:443:https"}, ae::cap::Limit::unbounded(), {}}})
                    .has_value(),
               "U8: an unrestricted method list under a GET-only grant is still refused (scope, not quantity)");
 
         // Several grants: a capped grant whose scope does not cover is skipped, the covering one is used.
-        CapabilitySet const two = CapabilitySet::grant_root({Capability{ae::cap::FsRead{"work", "notes", 5u}},
-                                                             Capability{ae::cap::FsRead{"work", "", 7u}}});
+        CapabilitySet const two = CapabilitySet::grant_root({Capability{ae::cap::FsRead{"work", "notes", ae::cap::Limit::at_most(5u)}},
+                                                             Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::at_most(7u)}}});
         auto pick = two.clamped_binding(uncapped_read);
-        check(pick && std::get<ae::cap::FsRead>(*pick).size_cap_bytes == 7u &&
+        check(pick && std::get<ae::cap::FsRead>(*pick).size_cap_bytes.limit() == 7u &&
                   std::get<ae::cap::FsRead>(*pick).path_prefix.empty(),
               "U9: the binding comes from the grant whose scope covers the requirement");
     }
@@ -206,8 +206,8 @@ int main() {
         if (carries_grant_caps) {
             auto const* fr = std::get_if<ae::cap::FsRead>(&g_seen[0]);
             auto const* fw = std::get_if<ae::cap::FsWrite>(&g_seen[1]);
-            carries_grant_caps = fr && fw && fr->size_cap_bytes == kReadCap && fw->quota_bytes == kQuota &&
-                                 fw->file_count_cap == kFileCap;
+            carries_grant_caps = fr && fw && fr->size_cap_bytes.limit() == kReadCap && fw->quota_bytes.limit() == kQuota &&
+                                 fw->file_count_cap.limit() == kFileCap;
         }
         check(carries_grant_caps,
               "P1: the bound handles the tool receives carry the GRANT's caps, not its uncapped declaration");
@@ -232,7 +232,7 @@ int main() {
         auto r5 = call(table, open, "plain_probe", probe_args());
         bool uncapped_bound = g_seen.size() == 2 &&
                               std::get_if<ae::cap::FsRead>(&g_seen[0]) &&
-                              !std::get<ae::cap::FsRead>(g_seen[0]).size_cap_bytes.has_value();
+                              std::get<ae::cap::FsRead>(g_seen[0]).size_cap_bytes.is_unbounded();
         check(!r5.is_error && g_invocations == 1 && uncapped_bound,
               "P5: an uncapped grant admits the plain tool exactly as before, bound uncapped");
     }
@@ -254,8 +254,8 @@ int main() {
         constexpr std::uint64_t kSmallRead  = 16;
         constexpr std::uint64_t kSmallQuota = 64;
         CapabilitySet const held = CapabilitySet::grant_root(
-            {Capability{ae::cap::FsRead{"work", "", kSmallRead}},
-             Capability{ae::cap::FsWrite{"work", "", kSmallQuota, 100u}}});
+            {Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::at_most(kSmallRead)}},
+             Capability{ae::cap::FsWrite{"work", "", ae::cap::Limit::at_most(kSmallQuota), ae::cap::Limit::at_most(100u)}}});
         ae::FileSystemAdapter* fs = (*sandbox)->filesystem_adapter();
 
         auto r1 = call(table, held, "run_shell", shell("echo hi > small.txt"), fs);
@@ -292,8 +292,8 @@ int main() {
 
     // ---- Q: policy reachability mirrors the runtime ---------------------------------------------
     {
-        std::vector<Capability> const ceiling{Capability{ae::cap::FsRead{"work", "", kReadCap}},
-                                              Capability{ae::cap::FsWrite{"work", "", kQuota, kFileCap}}};
+        std::vector<Capability> const ceiling{Capability{ae::cap::FsRead{"work", "", ae::cap::Limit::at_most(kReadCap)}},
+                                              Capability{ae::cap::FsWrite{"work", "", ae::cap::Limit::at_most(kQuota), ae::cap::Limit::at_most(kFileCap)}}};
         ae::trust::ReachabilityAgent const agent{
             "agent", ceiling,
             {ae::make_tool_descriptor(GrantEnforcingProbe{}), ae::make_tool_descriptor(PlainProbe{})}};

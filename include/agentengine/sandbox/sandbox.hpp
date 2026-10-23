@@ -133,6 +133,18 @@ struct MountSpec {  // ae-naming-lint: allow MountSpec — 008 §2 names this ty
     std::uint64_t quota_bytes = 0;
 };
 
+// The statement a "create" SandboxExec event carries (ADR-244 slice 5, G-C12): every nonzero limit the spec starts the
+// environment under, in a fixed order. A zero is "no limit stated at this layer" (the backend's own engine floor,
+// core/engine_floor.hpp, then applies) and is written as such so a recorded spec is not read as a bound.
+[[nodiscard]] inline std::string describe_limits(ResourceLimits const& l) {
+    auto one = [](char const* name, std::uint64_t v) {
+        return std::string(name) + "=" + (v == 0 ? std::string("unstated") : std::to_string(v));
+    };
+    return one("cpu_ms", l.cpu_ms) + " " + one("wall_ms", l.wall_ms) + " " + one("memory_bytes", l.memory_bytes) + " " +
+           one("pids", l.pids) + " " + one("fds", l.fds) + " " + one("disk_bytes", l.disk_bytes) + " " +
+           one("net_bytes", l.net_bytes) + " " + one("output_bytes", l.output_bytes);
+}
+
 struct NetPolicy {  // ae-naming-lint: allow NetPolicy — pre-existing M0 scaffolding, reconcile at owning milestone
     bool deny_all = true;
     std::vector<std::string> allowlist;  // host:port:scheme entries

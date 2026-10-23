@@ -46,12 +46,14 @@
 // (§4) -- `capability_ceiling` stays empty even with a registry supplied; only tool NAME resolution is
 // closed here.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/agent_choice_options.hpp"
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
@@ -61,20 +63,31 @@ namespace agentengine {
 
 namespace agent_yaml_compiler_detail {
 
+// ADR-244 §2.1 (slice 4c): an enumerated choice is parsed from the SAME table `choice_missing` lists
+// (`agent_choice_options`), so an option added there is parseable and named in the error, and an unlisted one is
+// refused with the list (G-C3's round trip). The tables are in enum order.
+template <class Enum, std::size_t N>
+[[nodiscard]] inline result<Enum> parse_option(std::string_view s, std::array<std::string_view, N> const& table,
+                                               std::string_view what, char const* code) {
+    for (std::size_t i = 0; i < N; ++i) {
+        if (s == table[i]) return static_cast<Enum>(i);
+    }
+    std::string message = "unrecognized " + std::string(what) + ": " + std::string(s) + "; choose one of: ";
+    for (std::size_t i = 0; i < N; ++i) {
+        if (i != 0) message += ", ";
+        message += table[i];
+    }
+    return std::unexpected(error{failure_class::contract, std::move(message), code});
+}
+
 [[nodiscard]] inline result<approval_mode> parse_approval_mode(std::string_view s) {
-    if (s == "never_require") return approval_mode::never_require;
-    if (s == "always_require") return approval_mode::always_require;
-    if (s == "policy_driven") return approval_mode::policy_driven;
-    return std::unexpected(error{failure_class::contract, "unrecognized approval mode: " + std::string(s),
-                                  "agent_yaml_compiler.unknown_approval_mode"});
+    return parse_option<approval_mode>(s, agent_choice_options::approval, "approval mode",
+                                       "agent_yaml_compiler.unknown_approval_mode");
 }
 
 [[nodiscard]] inline result<concurrency_mode> parse_concurrency_mode(std::string_view s) {
-    if (s == "sequential") return concurrency_mode::sequential;
-    if (s == "parallel") return concurrency_mode::parallel;
-    return std::unexpected(error{failure_class::contract,
-                                  "unrecognized concurrency mode: " + std::string(s),
-                                  "agent_yaml_compiler.unknown_concurrency_mode"});
+    return parse_option<concurrency_mode>(s, agent_choice_options::concurrency, "concurrency mode",
+                                          "agent_yaml_compiler.unknown_concurrency_mode");
 }
 
 [[nodiscard]] inline result<telemetry_capture> parse_telemetry_capture(std::string_view s) {
@@ -153,12 +166,17 @@ namespace agent_yaml_compiler_detail {
     // `limits:` block someone actually wrote and that quietly does nothing is the same failure in a
     // quieter register.
     if (json::Value const* limits = spec->find("limits")) {
-        if (json::Value const* mt = limits->find("max_turns")) {
+        // ADR-244 §2.1 (slice 4c): "no limit" is the NAMED value `unbounded`, the declarative spelling of
+        // `Bound::unbounded()`; a number is `at_most(n)`; `-1`, `0` and every other spelling stay refused.
+        auto const is_unbounded = [](json::Value const& v) { return v.is_string() && v.as_string() == "unbounded"; };
+        if (json::Value const* mt = limits->find("max_turns"); mt != nullptr && is_unbounded(*mt)) {
+            meta.max_turns = Bound<std::uint64_t>::unbounded();
+        } else if (mt != nullptr) {
             auto bounded = json::as_bounded_integer(*mt, 0xFFFFFFFFull);
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.max_turns must be a whole number between 1 and 4294967295",
+                    "limits.max_turns must be a whole number between 1 and 4294967295, or the word unbounded",
                     "agent_yaml_compiler.invalid_limit"});
             }
             // ADR-244 §2.1 (flips test_agent_yaml_limits Y8): 0 is refused, as at every check site.
@@ -167,12 +185,14 @@ namespace agent_yaml_compiler_detail {
             }
             meta.max_turns = Bound<std::uint64_t>::at_most(*bounded);
         }
-        if (json::Value const* tb = limits->find("token_budget")) {
+        if (json::Value const* tb = limits->find("token_budget"); tb != nullptr && is_unbounded(*tb)) {
+            meta.token_budget = Bound<std::uint64_t>::unbounded();
+        } else if (tb != nullptr) {
             auto bounded = json::as_bounded_integer(*tb);
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.token_budget must be a whole, positive number",
+                    "limits.token_budget must be a whole, positive number, or the word unbounded",
                     "agent_yaml_compiler.invalid_limit"});
             }
             if (auto z = check_bound("limits.token_budget", Bound<std::uint64_t>::at_most(*bounded)); !z) {
@@ -204,14 +224,28 @@ namespace agent_yaml_compiler_detail {
 
     if (json::Value const* sandbox = spec->find("sandbox")) {
         if (json::Value const* profile = sandbox->find("profile"); profile && profile->is_string()) {
-            // 015 §2's own example uses "strict" -- any other declared profile name maps to
-            // is_strict=false, with `traits` left at its own default (015 §2's own example never
-            // exercises a non-strict profile's traits; mapping those is real, separate follow-up).
+            // ADR-244 §2.1 (slice 4c): only `strict` is spelled in a document. Any other name used to become
+            // `is_strict = false` with default (all-zero) traits -- a guess about a backend the document never
+            // described. A named backend is selected by the host's registry (HostSandboxSelection), not by a name a
+            // document carries, so an unlisted profile is `choice.unknown_option`, naming the table.
+            if (profile->as_string() != "strict") {
+                return std::unexpected(error{
+                    failure_class::contract,
+                    "unrecognized sandbox profile: " + profile->as_string() + "; choose one of: strict (a named "
+                    "backend is chosen by the host's SandboxBackendRegistry, not by a document)",
+                    "choice.unknown_option"});
+            }
             meta.sandbox_profile = SandboxProfileDescriptor{};
-            meta.sandbox_profile->is_strict = (profile->as_string() == "strict");
         }
-        // sandbox.fallback: no home in SandboxProfileDescriptor (is_strict + traits only) -- the
-        // fallback CHAIN concept has no compiled-metadata slot yet, read here for nothing, honestly.
+        // sandbox.fallback (015 §2): refused until a resolver consumes it (ADR-244 §2.2; ADR-242 R2: no fallback is
+        // silent). A chain read for nothing would claim a behaviour the engine does not have.
+        if (sandbox->find("fallback") != nullptr) {
+            return std::unexpected(error{
+                failure_class::contract,
+                "sandbox.fallback is not supported: the engine does not fall back from one backend to another "
+                "(ADR-242 R2: no fallback is silent) -- register the backends you choose and name one",
+                "agent_yaml_compiler.sandbox_fallback_unsupported"});
+        }
     }
 
     // tools: honestly empty (unchanged) when no registry is supplied, matching every pre-existing

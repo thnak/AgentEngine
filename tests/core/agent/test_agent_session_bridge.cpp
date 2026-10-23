@@ -91,7 +91,7 @@ struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_requi
     }
 };
 
-struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::Approval<ae::approval_mode::never_require>> {
+struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs", agentengine::unbounded()>>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_doc";
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = EchoArgs;
@@ -125,7 +125,7 @@ struct HiddenTool : ae::Tool<HiddenTool, ae::Approval<ae::approval_mode::never_r
 // ---- agents ---------------------------------------------------------------------------------------
 
 struct Helper : ae::Agent<Helper, ae::ChatClientId<"test:scripted">, ae::Tools<EchoTool, ReadDocTool, ParTool>,
-                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<ae::at_most(3)>,
+                          ae::Capabilities<ae::cap::decl::FsRead<"docs", agentengine::unbounded()>>, ae::MaxTurns<ae::at_most(3)>,
                           ae::TokenBudget<ae::at_most(50)>, ae::Telemetry<ae::telemetry_capture::none>,
                           ae::Approval<ae::approval_mode::policy_driven>,
                           ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
@@ -254,7 +254,7 @@ ae::testing::ScriptedTurn call_turn(std::string tool, std::string call_id, ae::U
     return tool_calls_turn({ScriptedToolCall{std::move(call_id), std::move(tool), R"({"message":"hi"})"}}, usage);
 }
 
-ae::Capability docs_read() { return ae::cap::FsRead{"docs", "", std::nullopt}; }
+ae::Capability docs_read() { return ae::cap::FsRead{"docs", "", ae::cap::Limit::unbounded()}; }
 
 // A compact, comparable rendering of one model request: every message's role and text, then every
 // offered tool's name/approval/parallelizable/capability count. P14 compares these byte for byte.
@@ -339,8 +339,8 @@ int main() {
         int const read_before = g_read_calls;
         // The caller grants nothing the tool needs: FsWrite(docs) and FsRead(private) are both outside the
         // ceiling (which declares only FsRead(docs)), so neither may reach the session.
-        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt},
-                               ae::cap::FsRead{"private", "", std::nullopt}}), nullptr, ae_test::sandboxes());
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({ae::cap::FsWrite{"docs", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()},
+                               ae::cap::FsRead{"private", "", ae::cap::Limit::unbounded()}}), nullptr, ae_test::sandboxes());
         check(bundle.has_value(), "P4 setup: binds");
         if (bundle.has_value()) {
             check(bundle->capabilities().size() == 0,
@@ -355,9 +355,9 @@ int main() {
             check(g_read_calls == read_before, "P4: ReadDocTool::invoke never ran");
         }
         // A broad grant (the whole mount) narrowed to what the agent declared.
-        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>({ae::cap::FsRead{"docs", "", std::uint64_t{4096}}}), nullptr, ae_test::sandboxes());
+        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>({ae::cap::FsRead{"docs", "", ae::cap::Limit::at_most(std::uint64_t{4096})}}), nullptr, ae_test::sandboxes());
         check(broad.has_value() && broad->capabilities().size() == 1 &&
-                  broad->capabilities().contains(ae::cap::FsRead{"docs", "", std::uint64_t{4096}}),
+                  broad->capabilities().contains(ae::cap::FsRead{"docs", "", ae::cap::Limit::at_most(std::uint64_t{4096})}),
               "P4: a grant the ceiling covers is kept with its own (tighter) size cap");
     }
 

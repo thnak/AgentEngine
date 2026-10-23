@@ -114,7 +114,7 @@ void configure(TestEgressProxy& p) {
 }
 
 NetOut grant_to(std::uint16_t port) {
-    NetOut n;
+    NetOut n{{}, agentengine::cap::Limit::unbounded(), {}};
     n.host_allowlist = {"test.invalid:" + std::to_string(port) + ":http"};
     return n;
 }
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
             check(!r.has_value() && r.error().code == "net.invalid_request", "G13b a gate-rejected call is refused");
         }
         for (int i = 0; i < 20; ++i) {
-            auto r = p.fetch_blocking(NetEgressRequest{"GET", "/", {}, ""}, NetOut{}, EgressCallControl{});
+            auto r = p.fetch_blocking(NetEgressRequest{"GET", "/", {}, ""}, NetOut{{}, agentengine::cap::Limit::unbounded(), {}}, EgressCallControl{});
             check(!r.has_value() && r.error().code == "net.ambiguous_grant", "G13b a gate-rejected call (grant) is refused");
         }
         check(egress::egress_context_constructions() == 0, "G13b 40 gate-rejected calls constructed NO I/O context");

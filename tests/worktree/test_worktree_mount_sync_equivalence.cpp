@@ -104,7 +104,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 
     auto bytes = agentengine::rt::block_on(object_store.get_blob(entry->digest));
     if (!bytes) return std::unexpected(bytes.error());
-    if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
+    if (!granted.size_cap_bytes.is_unbounded() && bytes->size() > *granted.size_cap_bytes.limit()) {
         return std::unexpected(error{failure_class::policy,
                                       "the requested file exceeds this capability's size cap",
                                       "worktree.mount_read_exceeds_size_cap"});
@@ -333,11 +333,11 @@ int main() {
         CountingLogStore refs;
         (void)agentengine::rt::block_on(commit_ref(refs, "session:flat", *agentengine::rt::block_on(store.put_tree(Tree{}))));
         Mount const mount{"/work", "session:flat", ""};
-        cap::FsWrite const w{"/work", "", std::nullopt, std::nullopt};
+        cap::FsWrite const w{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         for (int i = 0; i < 200; ++i) {
             (void)agentengine::rt::block_on(mount_write(store, refs, mount, w, "f" + std::to_string(i) + ".txt", bytes_of("content " + std::to_string(i))));
         }
-        cap::FsRead const r{"/work", "", std::nullopt};
+        cap::FsRead const r{"/work", "", cap::Limit::unbounded()};
 
         RecordingFs old_fs;
         refs.reads = 0;
@@ -379,7 +379,7 @@ int main() {
             std::optional<std::uint64_t> size_cap;
             if (int const c = std::uniform_int_distribution<int>(0, 3)(rng); c > 0) size_cap = std::uint64_t(c * 5 - 5);
             cap::FsRead const granted{std::uniform_int_distribution<int>(0, 9)(rng) == 0 ? "/other" : "/work",
-                                      prefixes[std::uniform_int_distribution<std::size_t>(0, 5)(rng)], size_cap};
+                                      prefixes[std::uniform_int_distribution<std::size_t>(0, 5)(rng)], size_cap ? cap::Limit::at_most(*size_cap) : cap::Limit::unbounded()};
 
             RecordingFs old_fs;
             RecordingFs new_fs;
@@ -454,7 +454,8 @@ int main() {
             if (std::uniform_int_distribution<int>(0, 2)(rng) == 0) quota = std::uint64_t(std::uniform_int_distribution<int>(0, 80)(rng));
             std::optional<std::uint32_t> count;
             if (std::uniform_int_distribution<int>(0, 2)(rng) == 0) count = std::uint32_t(std::uniform_int_distribution<int>(0, 4)(rng));
-            cap::FsWrite const granted{"/out", prefixes[std::uniform_int_distribution<std::size_t>(0, 4)(rng)], quota, count};
+            cap::FsWrite const granted{"/out", prefixes[std::uniform_int_distribution<std::size_t>(0, 4)(rng)], quota ? cap::Limit::at_most(*quota) : cap::Limit::unbounded(),
+                                       count ? cap::Limit::at_most(*count) : cap::Limit::unbounded()};
             Mount const mount{"/out", "session:m4", std::uniform_int_distribution<int>(0, 1)(rng) == 0 ? "" : "art"};
 
             auto run = [&](bool use_old, std::vector<ContentItem>& items, Digest& final_tree) -> std::string {

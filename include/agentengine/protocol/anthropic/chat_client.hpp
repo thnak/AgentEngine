@@ -105,6 +105,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/stream.hpp"
@@ -195,7 +196,7 @@ struct SplitMessages {
 // falls back to the bound backend's own declared `ChatClientCapabilities::max_output_tokens` when
 // nonzero, else a conservative fixed default -- a real, named translation-layer decision, not an
 // unstated guess.
-inline constexpr std::uint64_t kDefaultMaxTokens = 4096;
+inline constexpr std::uint64_t kDefaultMaxTokens = engine_floor::kProviderMaxTokens.value;  // the named engine floor
 
 // (7): the hard invariant Finding 5 confirms via a real reported API bug -- Anthropic rejects a request
 // with `HTTP 400: A maximum of 4 blocks with cache_control may be provided`, counted across system +

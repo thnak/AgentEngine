@@ -285,7 +285,7 @@ template <WorktreeObjectStore OS>
                                                                        Digest blob_digest) {
     auto bytes = co_await object_store.get_blob(blob_digest);
     if (!bytes) co_return std::unexpected(bytes.error());
-    if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
+    if (!granted.size_cap_bytes.is_unbounded() && bytes->size() > *granted.size_cap_bytes.limit()) {
         co_return std::unexpected(error{failure_class::policy,
                                       "the requested file exceeds this capability's size cap",
                                       "worktree.mount_read_exceeds_size_cap"});
@@ -388,16 +388,16 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
                                                *blob_digest, /*leaf_is_tree=*/false);
     if (!new_root) co_return std::unexpected(new_root.error());
 
-    if (granted.quota_bytes.has_value() || granted.file_count_cap.has_value()) {
+    if (!granted.quota_bytes.is_unbounded() || !granted.file_count_cap.is_unbounded()) {
         auto subtree_digest = co_await detail::resolve_subtree_digest(object_store, *new_root, mount.subtree_path);
         if (!subtree_digest) co_return std::unexpected(subtree_digest.error());
         auto usage = co_await detail::subtree_usage(object_store, *subtree_digest);
         if (!usage) co_return std::unexpected(usage.error());
-        if (granted.quota_bytes.has_value() && usage->first > *granted.quota_bytes) {
+        if (!granted.quota_bytes.is_unbounded() && usage->first > *granted.quota_bytes.limit()) {
             co_return std::unexpected(
                 error{failure_class::resource, "No space left on device", "worktree.mount_write_quota_exceeded"});
         }
-        if (granted.file_count_cap.has_value() && usage->second > *granted.file_count_cap) {
+        if (!granted.file_count_cap.is_unbounded() && usage->second > *granted.file_count_cap.limit()) {
             co_return std::unexpected(error{failure_class::resource, "No space left on device",
                                           "worktree.mount_write_file_count_exceeded"});
         }

@@ -201,7 +201,7 @@ void test_real_end_to_end_extraction() {
     using agentengine::tools::ExtractPdfText;
 
     // ADR-244 §2.4: the worker's read-only mounts are checked against the session's grants too.
-    std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", std::nullopt}};
+    std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}};
     for (auto const& m : agentengine::tools::required_grants()) grants.push_back(m);
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(std::move(grants));
     agentengine::EffectContext ctx;
@@ -236,7 +236,7 @@ void test_real_end_to_end_extraction() {
 void test_worker_mounts_need_the_sessions_grants() {
     using agentengine::tools::ExtractPdfText;
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::FsRead{"work", "", std::nullopt}});
+        {agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}});
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);

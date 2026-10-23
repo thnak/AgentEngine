@@ -201,7 +201,7 @@ int main() {
     {
         CapabilitySet const caller_held = CapabilitySet::grant_root(
             {Entropy{}, AgentCall{"helper", agentengine::trust::SpawnBudget::mint_root(5)},
-             NetOut{{"unrelated.example:443:https"}, std::nullopt, {}}});  // extra, unrelated grant --
+             NetOut{{"unrelated.example:443:https"}, agentengine::cap::Limit::unbounded(), {}}});  // extra, unrelated grant --
                                                                             // must not leak through
 
         AgentMetadata target;
@@ -210,8 +210,8 @@ int main() {
         SpawnWorktreeGrant const worktree_grant{
             SubWorktree{"child-1", "spawn-ref", agentengine::sharing_mode::branch, {}, {}},
             Mount{"spawn-mount", "spawn-ref", ""},
-            FsRead{"spawn-mount", "/workspace", std::nullopt},
-            FsWrite{"spawn-mount", "/workspace", std::nullopt, std::nullopt}};
+            FsRead{"spawn-mount", "/workspace", agentengine::cap::Limit::unbounded()},
+            FsWrite{"spawn-mount", "/workspace", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}};
 
         // child_depth_budget simulates check_and_consume_spawn_depth()'s own output for THIS spawn --
         // live chain depth 2, tighter than the target's own declared depth (3).
@@ -253,7 +253,7 @@ int main() {
         CapabilitySet const bare_caller = CapabilitySet::grant_root({Entropy{}});
         AgentMetadata target_needs_more;
         target_needs_more.capability_ceiling = {Entropy{},
-                                                  NetOut{{"api.example:443:https"}, std::nullopt, {}}};
+                                                  NetOut{{"api.example:443:https"}, agentengine::cap::Limit::unbounded(), {}}};
         auto rejected = mint_child_spawn_capabilities(bare_caller, target_needs_more,
                                                         empty_worktree_grant,
                                                         agentengine::trust::SpawnBudget::mint_root(1));
@@ -271,9 +271,9 @@ int main() {
         // -- ADR-059 §4 R3's own named residual). This is the "never wider than the parent's held set
         // even when the request asks for more" property, exercised directly and NOT worked around.
         CapabilitySet const capped_caller =
-            CapabilitySet::grant_root({FsWrite{"work", "", std::uint64_t{100}, std::nullopt}});
+            CapabilitySet::grant_root({FsWrite{"work", "", agentengine::cap::Limit::at_most(std::uint64_t{100}), agentengine::cap::Limit::unbounded()}});
         AgentMetadata target_wants_uncapped;
-        target_wants_uncapped.capability_ceiling = {FsWrite{"work", "", std::nullopt, std::nullopt}};
+        target_wants_uncapped.capability_ceiling = {FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}};
         auto rejected2 = mint_child_spawn_capabilities(capped_caller, target_wants_uncapped,
                                                          empty_worktree_grant,
                                                          agentengine::trust::SpawnBudget::mint_root(1));

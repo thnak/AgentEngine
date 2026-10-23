@@ -9,8 +9,8 @@
 
 namespace agentengine {
 
-// `Cs...` are `trust::cap::decl::*` compile-time declaration tags (`FsRead<"mount">`,
-// `NetOut<"host">`, ...; decisions/archive/ADR-009-capability-set-enforcement-mechanism.md).
+// `Cs...` are `trust::cap::decl::*` compile-time declaration tags (`FsRead<"mount", agentengine::unbounded()>`,
+// `NetOut<"host", agentengine::unbounded()>`, ...; decisions/archive/ADR-009-capability-set-enforcement-mechanism.md).
 template <class... Cs>
 struct Capabilities {};  // ae-naming-lint: allow Capabilities — pre-existing M0 scaffolding, reconcile at owning milestone
 

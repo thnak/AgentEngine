@@ -11,7 +11,7 @@
 //   - echo-agent-registered: built through the REAL register_agent<EchoAgent>() path (Phase E's own
 //     compiler) -- proves this enumerator's decisions agree with what registration itself already
 //     decided for at least one real, full round trip, not only synthetic ReachabilityAgent structs.
-//   - reader-agent-covering / reader-agent-too-narrow: the same tool (ReaderTool, FsRead<"data">)
+//   - reader-agent-covering / reader-agent-too-narrow: the same tool (ReaderTool, FsRead<"data", agentengine::unbounded()>)
 //     against two different hand-built ceilings -- one that covers it (GRANTED) and one that
 //     doesn't (DENIED, still zero findings since the oracle correctly predicts DENIED) -- proving
 //     the enumerator reaches both outcomes, not just the happy path.
@@ -70,7 +70,7 @@ struct ReaderReply {
     std::string contents;
 };
 AE_JSON_SCHEMA(ReaderReply, contents)
-struct ReaderTool : Tool<ReaderTool, Capabilities<cap::decl::FsRead<"data">>, Approval<approval_mode::never_require>> {
+struct ReaderTool : Tool<ReaderTool, Capabilities<cap::decl::FsRead<"data", agentengine::unbounded()>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "read-data";
     static constexpr std::string_view description = "Read a file under the data mount.";
     using Args = ReaderArgs;
@@ -87,7 +87,7 @@ struct WriterReply {
     bool ok = false;
 };
 AE_JSON_SCHEMA(WriterReply, ok)
-struct WriterTool : Tool<WriterTool, Capabilities<cap::decl::FsWrite<"scratch">>, Approval<approval_mode::never_require>> {
+struct WriterTool : Tool<WriterTool, Capabilities<cap::decl::FsWrite<"scratch", agentengine::unbounded(), agentengine::unbounded()>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "write-scratch";
     static constexpr std::string_view description = "Write a file under the scratch mount.";
     using Args = WriterArgs;
@@ -119,7 +119,7 @@ struct FetcherReply {
     std::int64_t status = 0;
 };
 AE_JSON_SCHEMA(FetcherReply, status)
-struct FetcherTool : Tool<FetcherTool, Capabilities<cap::decl::NetOut<"api.example.com">>, Approval<approval_mode::never_require>> {
+struct FetcherTool : Tool<FetcherTool, Capabilities<cap::decl::NetOut<"api.example.com", agentengine::unbounded()>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fetch-example";
     static constexpr std::string_view description = "Fetch from api.example.com.";
     using Args = FetcherArgs;
@@ -152,7 +152,7 @@ struct LiveShellReply {
     int exit_code = 0;
 };
 AE_JSON_SCHEMA(LiveShellReply, exit_code)
-struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>>, Approval<approval_mode::never_require>> {
+struct LiveShellTool : Tool<LiveShellTool, Capabilities<cap::decl::NativeExec<"pwsh", "workdir", agentengine::unbounded(), agentengine::unbounded(), agentengine::unbounded(), true, agentengine::at_most(3600000), agentengine::at_most(64)>>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "native-live-shell";
     static constexpr std::string_view description = "Run a command in a held native shell.";
     using Args = LiveShellArgs;
@@ -207,7 +207,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
     // reader-agent-covering: hand-built ceiling that covers ReaderTool's own real requirement.
     {
         std::vector<ToolDescriptor> tools{make_tool_descriptor(ReaderTool{})};
-        std::vector<Capability> ceiling{cap::FsRead{"data", "", std::nullopt}};
+        std::vector<Capability> ceiling{cap::FsRead{"data", "", cap::Limit::unbounded()}};
         agents.push_back(trust::ReachabilityAgent{"reader-agent-covering", ceiling, tools});
         oracle.push_back({"reader-agent-covering", "read-data", capability_kind::fs_read, true});
     }
@@ -225,9 +225,9 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
         std::vector<ToolDescriptor> tools{make_tool_descriptor(WriterTool{}), make_tool_descriptor(SecretTool{}),
                                            make_tool_descriptor(FetcherTool{}), make_tool_descriptor(ClockTool{})};
         std::vector<Capability> ceiling{
-            cap::FsWrite{"scratch", "", std::nullopt, std::nullopt},
+            cap::FsWrite{"scratch", "", cap::Limit::unbounded(), cap::Limit::unbounded()},
             cap::Secret{"api-key", std::chrono::seconds{0}},
-            cap::NetOut{{"api.example.com"}, std::nullopt, {}},
+            cap::NetOut{{"api.example.com"}, cap::Limit::unbounded(), {}},
             cap::Clock{std::chrono::milliseconds{0}},
         };
         agents.push_back(trust::ReachabilityAgent{"broad-agent", ceiling, tools});
@@ -243,7 +243,8 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
     // the opt-in is monotone, so a grant without it never yields a held shell.
     {
         auto doc = yaml::parse(
-            "program: pwsh\nworktree_mount: workdir\nlive_session: true\nsession_wall_ms_cap: 3600000\n"
+            "program: pwsh\nworktree_mount: workdir\ncpu_ms_cap: unbounded\nwall_ms_cap: unbounded\n"
+            "memory_bytes_cap: unbounded\nlive_session: true\nsession_wall_ms_cap: 3600000\n"
             "max_processes: 64\n");
         auto grant = doc ? trust::parse_native_exec_grant(*doc)
                          : agentengine::result<cap::NativeExec>(std::unexpected(doc.error()));
@@ -259,13 +260,13 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
     {
         std::vector<ToolDescriptor> tools{make_tool_descriptor(LiveShellTool{})};
         std::vector<Capability> ceiling{
-            to_capability(cap::decl::NativeExec<"pwsh", "workdir", true, 3600000, 64>{})};
+            to_capability(cap::decl::NativeExec<"pwsh", "workdir", agentengine::unbounded(), agentengine::unbounded(), agentengine::unbounded(), true, agentengine::at_most(3600000), agentengine::at_most(64)>{})};
         agents.push_back(trust::ReachabilityAgent{"native-live-crtp", ceiling, tools});
         oracle.push_back({"native-live-crtp", "native-live-shell", capability_kind::native_exec, true});
     }
     {
         std::vector<ToolDescriptor> tools{make_tool_descriptor(LiveShellTool{})};
-        std::vector<Capability> ceiling{to_capability(cap::decl::NativeExec<"pwsh", "workdir">{})};
+        std::vector<Capability> ceiling{to_capability(cap::decl::NativeExec<"pwsh", "workdir", agentengine::unbounded(), agentengine::unbounded(), agentengine::unbounded()>{})};
         agents.push_back(trust::ReachabilityAgent{"native-oneshot-only", ceiling, tools});
         oracle.push_back({"native-oneshot-only", "native-live-shell", capability_kind::native_exec, false});
     }
@@ -281,7 +282,7 @@ inline void build_reference_fixture(std::vector<trust::ReachabilityAgent>& agent
 inline void add_over_broad_positive_control(std::vector<trust::ReachabilityAgent>& agents,
                                              std::vector<trust::ReachabilityOracleEntry>& oracle) {
     std::vector<ToolDescriptor> tools{make_tool_descriptor(EchoTool{})};
-    std::vector<Capability> ceiling{cap::Entropy{}, cap::NetOut{{"unused.example.com"}, std::nullopt, {}}};
+    std::vector<Capability> ceiling{cap::Entropy{}, cap::NetOut{{"unused.example.com"}, cap::Limit::unbounded(), {}}};
     agents.push_back(trust::ReachabilityAgent{"over-broad-agent", ceiling, tools});
     oracle.push_back({"over-broad-agent", "echo", capability_kind::entropy, true});
 }

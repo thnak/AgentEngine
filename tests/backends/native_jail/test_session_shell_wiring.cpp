@@ -62,8 +62,8 @@ int main() {
     // -- Positive case: granted capabilities, a real script that writes a file --------------------
     {
         CapabilitySet const held = CapabilitySet::grant_root({
-            agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-            agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+            agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+            agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
         });
         auto ctx = make_ctx(held);
         // Phase 0 <-> Phase 1 connection: the same mediated adapter run_shell uses also reaches the
@@ -120,8 +120,8 @@ int main() {
     // -- State persistence across calls within one session (cd/export survive) ---------------------
     {
         CapabilitySet const held = CapabilitySet::grant_root({
-            agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-            agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+            agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+            agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
         });
         auto ctx1 = make_ctx(held);
         ToolCallRequest const mkdir_req{

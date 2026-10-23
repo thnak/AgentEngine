@@ -127,8 +127,8 @@ int main() {
 
         ae::Principal const principal{"p-corpus-test", "tenant-corpus"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "test-corpus");
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
-        ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+        ae::cap::FsRead const read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
 
         ae::DiskCorpusSource source{root};
         ae::EffectContext ctx{};
@@ -358,7 +358,7 @@ int main() {
         ae::Principal const principal{"p-hybrid-mount", "tenant-hybrid"};
         ae::Mount const mount =
             ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "hybrid-corpus");
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::DiskCorpusSource source{root};
         ae::EffectContext ctx{};
@@ -463,7 +463,7 @@ int main() {
         MockEmbedder embedder;
         ae::Principal const principal{"p-r3", "tenant-r3"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "r3-corpus");
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore ref_store;
         ae::DiskCorpusSource source{root};

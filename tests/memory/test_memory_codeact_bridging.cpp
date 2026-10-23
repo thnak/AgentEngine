@@ -72,8 +72,8 @@ int main() {
     check(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     Mount const mount = memory_mount(principal);
-    cap::FsRead const read_cap{memory_mount_id(principal), "", std::nullopt};
-    cap::FsWrite const write_cap{memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    cap::FsRead const read_cap{memory_mount_id(principal), "", cap::Limit::unbounded()};
+    cap::FsWrite const write_cap{memory_mount_id(principal), "", cap::Limit::unbounded(), cap::Limit::unbounded()};
 
     MemoryItem note{};
     note.kind = memory_kind::semantic;

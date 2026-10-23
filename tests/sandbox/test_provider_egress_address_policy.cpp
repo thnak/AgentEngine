@@ -321,7 +321,7 @@ int main() {
     // so a passing result here could not be dismissed as a mis-specified capability.
     {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
-        cap::NetOut granted;
+        cap::NetOut granted{{}, cap::Limit::unbounded(), {}};
         granted.host_allowlist.push_back(host + ":" + std::to_string(server.port()) + ":http");
         auto resp = agentengine::rt::block_on(proxy.fetch(simple_get(), granted, sandbox::EgressCallControl{}));
         check(!resp.has_value(),

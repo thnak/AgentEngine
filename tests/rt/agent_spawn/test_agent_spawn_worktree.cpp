@@ -111,8 +111,8 @@ int main() {
         AE_CHECK(parent.has_value(), "T1: setup parent commit succeeds");
 
         CapabilitySet const caller_held =
-            CapabilitySet::grant_root({cap::FsRead{"/caller", "", std::nullopt},
-                                        cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
+            CapabilitySet::grant_root({cap::FsRead{"/caller", "", cap::Limit::unbounded()},
+                                        cap::FsWrite{"/caller", "", cap::Limit::unbounded(), cap::Limit::unbounded()}});
 
         for (sharing_mode mode :
              {sharing_mode::branch, sharing_mode::shared, sharing_mode::scratch, sharing_mode::readonly}) {
@@ -143,8 +143,8 @@ int main() {
         AE_CHECK(parent.has_value(), "T2: setup parent commit succeeds");
 
         CapabilitySet const caller_held =
-            CapabilitySet::grant_root({cap::FsRead{"/caller", "", std::nullopt},
-                                        cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
+            CapabilitySet::grant_root({cap::FsRead{"/caller", "", cap::Limit::unbounded()},
+                                        cap::FsWrite{"/caller", "", cap::Limit::unbounded(), cap::Limit::unbounded()}});
 
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
@@ -182,8 +182,8 @@ int main() {
 
         // The caller holds a grant scoped to "/workspace" ONLY -- nothing broader.
         CapabilitySet const caller_held =
-            CapabilitySet::grant_root({cap::FsRead{"/caller", "workspace", std::nullopt},
-                                        cap::FsWrite{"/caller", "workspace", std::nullopt, std::nullopt}});
+            CapabilitySet::grant_root({cap::FsRead{"/caller", "workspace", cap::Limit::unbounded()},
+                                        cap::FsWrite{"/caller", "workspace", cap::Limit::unbounded(), cap::Limit::unbounded()}});
 
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
@@ -238,8 +238,8 @@ int main() {
         AE_CHECK(parent.has_value(), "T5 setup: parent commit succeeds");
 
         CapabilitySet const two_reads =
-            CapabilitySet::grant_root({cap::FsRead{"/caller", "a", std::nullopt},
-                                        cap::FsRead{"/caller", "b", std::nullopt}});
+            CapabilitySet::grant_root({cap::FsRead{"/caller", "a", cap::Limit::unbounded()},
+                                        cap::FsRead{"/caller", "b", cap::Limit::unbounded()}});
         auto seq1 = allocate_spawn_seq();
         auto id1 = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq1);
         auto grant1 =
@@ -249,8 +249,8 @@ int main() {
                  "closed rather than silently dropping one");
 
         CapabilitySet const two_writes =
-            CapabilitySet::grant_root({cap::FsWrite{"/caller", "a", std::nullopt, std::nullopt},
-                                        cap::FsWrite{"/caller", "b", std::nullopt, std::nullopt}});
+            CapabilitySet::grant_root({cap::FsWrite{"/caller", "a", cap::Limit::unbounded(), cap::Limit::unbounded()},
+                                        cap::FsWrite{"/caller", "b", cap::Limit::unbounded(), cap::Limit::unbounded()}});
         auto seq2 = allocate_spawn_seq();
         auto id2 = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq2);
         auto grant2 =
@@ -345,7 +345,7 @@ int main() {
         AE_CHECK(parent.has_value(), "T9 setup: parent commit succeeds");
 
         CapabilitySet const caller_held =
-            CapabilitySet::grant_root({cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
+            CapabilitySet::grant_root({cap::FsWrite{"/caller", "", cap::Limit::unbounded(), cap::Limit::unbounded()}});
         std::string const child_id = "0000000000000009";
 
         auto first = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, child_id, sharing_mode::branch, caller_held,
@@ -371,7 +371,7 @@ int main() {
         AE_CHECK(parent.has_value(), "T10 setup: parent commit succeeds");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root(
-            {cap::FsRead{"/caller", "", std::nullopt}, cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
+            {cap::FsRead{"/caller", "", cap::Limit::unbounded()}, cap::FsWrite{"/caller", "", cap::Limit::unbounded(), cap::Limit::unbounded()}});
 
         constexpr int kThreads = 16;
         std::mutex results_mutex;
@@ -427,7 +427,7 @@ int main() {
         AE_CHECK(parent.has_value(), "T11 setup: parent commit succeeds");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root(
-            {cap::FsRead{"/caller", "", std::nullopt}, cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
+            {cap::FsRead{"/caller", "", cap::Limit::unbounded()}, cap::FsWrite{"/caller", "", cap::Limit::unbounded(), cap::Limit::unbounded()}});
 
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);

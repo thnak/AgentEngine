@@ -251,8 +251,8 @@ template <rt::AppendLogStore StoreT>
         // The mount starts at a fresh, empty tree (`create_sub_worktree`'s own `scratch` case) --
         // nothing inherited to over-expose, so an uncapped grant over the new mount's own root is
         // genuinely safe, matching `grant_for()`'s identical choice for its own scratch executors.
-        grant.read  = cap::FsRead{name, "", std::nullopt};
-        grant.write = cap::FsWrite{name, "", std::nullopt, std::nullopt};
+        grant.read  = cap::FsRead{name, "", cap::Limit::unbounded()};
+        grant.write = cap::FsWrite{name, "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         co_return grant;
     }
 

@@ -41,7 +41,7 @@ template <SandboxProfileArg P>
 struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — 008 §2a/002 §3 name this normatively; 027 not yet updated
 
 // `Capabilities<Cs...>` (matching the host/mount-parameterized form 002 §2 and 006 §1's own
-// examples show, `Capabilities<NetOut<"api.search.example">>`) now lives in core/policy_tags.hpp,
+// examples show, `Capabilities<NetOut<"api.search.example", agentengine::unbounded()>>`) now lives in core/policy_tags.hpp,
 // shared with Tool's declaration site (006 §1) — not redefined here.
 
 // ADR-244 §2.1 (slice 4b): a turn cap and a token budget are stated as a `BoundValue` -- `MaxTurns<at_most(16)>`,

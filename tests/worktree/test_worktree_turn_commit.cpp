@@ -194,7 +194,7 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         std::string const name = "session:rewind-mount";
         Mount mount{"/work", name, ""};
-        cap::FsRead granted{"/work", "", std::nullopt};
+        cap::FsRead granted{"/work", "", cap::Limit::unbounded()};
 
         AE_CHECK(agentengine::rt::block_on(commit_turn(ref_store, name, empty_tree(obj_store))).has_value(),
                  "D2-C5: setup -- turn 1, empty root");

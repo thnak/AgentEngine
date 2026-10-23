@@ -268,8 +268,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
         auto dark_mode_id = write_chunk(object_store, ref_store, mount, write_cap, index,
@@ -460,10 +460,10 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount_b).has_value(),
                  "setup: tenant-b's corpus worktree bootstraps independently");
 
-        ae::cap::FsRead const  read_a{mount_a.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_a{mount_a.mount_id, "", std::nullopt, std::nullopt};
-        ae::cap::FsRead const  read_b{mount_b.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_b{mount_b.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_a{mount_a.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_a{mount_a.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+        ae::cap::FsRead const  read_b{mount_b.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_b{mount_b.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         // SEPARATE indices, one per tenant's corpus -- population of an index is the caller's own
         // responsibility (this provider only ever reads it, per its own constructor comment), so
@@ -556,8 +556,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
 
@@ -625,8 +625,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
         // chunk_a's vector is an EXACT match for AlternatingEmbedder::vector_a, chunk_b's for
@@ -696,8 +696,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R12 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
         auto chunk_id = write_chunk(object_store, ref_store, mount, write_cap, index,
@@ -758,7 +758,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R13 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::BruteForceCosineIndex empty_index;  // never populated -- no add_batch() call at all
 
         MockEmbedder embedder;
@@ -808,8 +808,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R14 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
         auto real_id = write_chunk(object_store, ref_store, mount, write_cap, index,
@@ -877,8 +877,8 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R15 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
-        ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const  read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::BruteForceCosineIndex index;
         StatelessEmbedder embedder;
@@ -955,7 +955,7 @@ int main() {
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(),
                  "R16 setup: the corpus worktree bootstraps");
 
-        ae::cap::FsRead const read_cap{mount.mount_id, "", std::nullopt};
+        ae::cap::FsRead const read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
         ae::BruteForceCosineIndex index;
         NonLeafEmbedder embedder;
 

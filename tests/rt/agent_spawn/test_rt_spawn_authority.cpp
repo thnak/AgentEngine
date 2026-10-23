@@ -234,8 +234,7 @@ struct DirectSpawn {
     std::vector<ae::RunEvent>         child_events;
     int                               child_runs = 0;
 
-    DirectSpawn(u64 child_token_budget, std::optional<u64> declared_budget, std::uint32_t declared_turns,
-                bool state_turn_cap = true) {
+    DirectSpawn(u64 child_token_budget, std::optional<u64> declared_budget, std::uint32_t declared_turns) {
         pool.initialize(10);
         pump = std::make_unique<art::SpawnPump<art::InMemoryAppendLogStore>>(pool, store);
         art::SpawnTargetDescriptor d;
@@ -244,7 +243,6 @@ struct DirectSpawn {
         d.metadata              = ae_test::stated_metadata();
         d.metadata.token_budget = declared_budget ? ae::Bound<u64>::at_most(*declared_budget) : ae::Bound<u64>::unbounded();
         d.metadata.max_turns    = ae::Bound<u64>::at_most(declared_turns);
-        if (!state_turn_cap) d.metadata.max_turns.reset();
         d.run_child = [this](std::string id, art::ChildSpawnRequest req) -> art::task<ae::result<art::AgentResponse>> {
             ++child_runs;
             req.event_sink = [this](ae::RunEvent const& ev) { child_events.push_back(ev); };
@@ -386,14 +384,32 @@ int main() {
               "P3: the target's declared budget when that is tightest (300 < 1000)");
     }
 
-    // ---- P4 (ADR-244 slice 4b): a target whose metadata states no turn cap is refused, not run under a guess.
+    // ---- P4 (ADR-244 slices 4b/4c): a target states its turn cap and budget, and neither is zero -- refused at
+    //      registration, before any spawn exists to spend anything.
     {
-        DirectSpawn ds(50'000, std::nullopt, 16, /*state_turn_cap=*/false);
-        u64 const before = ds.pool.remaining();
-        auto r = ds.spawn(ae::authority_mode::single_trusted_caller, std::nullopt, std::nullopt);
-        check(code_of(r) == "choice.missing.max_turns" && ds.child_runs == 0,
-              "P4: a target with no stated turn cap is refused (choice.missing.max_turns) and runs no child");
-        check(ds.pool.remaining() == before, "P4: ... and the refusal spent no cost token");
+        auto const make = [] {
+            art::SpawnTargetDescriptor d;
+            d.worktree_mode = ae::sharing_mode::scratch;
+            d.metadata      = ae_test::stated_metadata();
+            return d;
+        };
+        art::SpawnTargetRegistry reg;
+        auto no_turns = make();
+        no_turns.metadata.max_turns.reset();
+        check(code_of(reg.register_target("A", std::move(no_turns))) == "choice.missing.max_turns",
+              "P4: a target with no stated turn cap is refused at registration (choice.missing.max_turns)");
+        auto no_budget = make();
+        no_budget.metadata.token_budget.reset();
+        check(code_of(reg.register_target("B", std::move(no_budget))) == "choice.missing.token_budget",
+              "P4: ... and one with no stated budget (choice.missing.token_budget)");
+        auto zero = make();
+        zero.metadata.max_turns = BoundU::at_most(0);
+        check(code_of(reg.register_target("C", std::move(zero))) == "choice.zero_bound",
+              "P4: ... and a zero turn cap (choice.zero_bound)");
+        check(reg.find("A") == nullptr && reg.find("B") == nullptr && reg.find("C") == nullptr,
+              "P4: none of the refused targets is registered");
+        check(reg.register_target("D", make()).has_value() && reg.find("D") != nullptr,
+              "P4 control: a target stating both registers");
     }
 
     // ---- M1/M2/M3: multi_agent::spawn ----------------------------------------------------------------------------

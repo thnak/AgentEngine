@@ -49,8 +49,8 @@ int main() {
     auto bootstrapped = agentengine::rt::block_on(ensure_memory_worktree(object_store, ref_store, principal));
     check(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
-    cap::FsWrite const inbox_cap{memory_notes_inbox_mount_id(principal), "", std::nullopt, std::nullopt};
-    cap::FsWrite const structural_cap{memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    cap::FsWrite const inbox_cap{memory_notes_inbox_mount_id(principal), "", cap::Limit::unbounded(), cap::Limit::unbounded()};
+    cap::FsWrite const structural_cap{memory_mount_id(principal), "", cap::Limit::unbounded(), cap::Limit::unbounded()};
 
     std::filesystem::path const scratch =
         std::filesystem::temp_directory_path() / "ae_memory_notes_write_back_test";
@@ -102,7 +102,7 @@ int main() {
                 // ---- R2: the items are DURABLE -- discoverable through the same read path recall/
                 // rank_memory_items already use, proving write_memory_item() really committed them
                 // to the structural area, not just returned in-memory objects. ------------------------
-                cap::FsRead const read_cap{memory_mount_id(principal), "", std::nullopt};
+                cap::FsRead const read_cap{memory_mount_id(principal), "", cap::Limit::unbounded()};
                 Mount const structural_mount = memory_mount(principal);
                 auto ranked = agentengine::rt::block_on(rank_memory_items(object_store, ref_store, structural_mount, read_cap,
                                                   "milk", 10));

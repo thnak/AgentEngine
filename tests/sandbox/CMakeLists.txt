@@ -67,17 +67,34 @@ agentengine_add_test(test_sandbox_capability_authorization LIBS agentengine::cor
 # test_agent_registry_sandbox_backend_registry.cpp proves its wiring into register_agent<A>().
 agentengine_add_test(test_sandbox_backend_registry LIBS agentengine::core agentengine_warnings)
 
-# ---- build_default_sandbox_registry() (docs/planning/default-sandbox-registry-wiring-design-draft.md) --
-# Proves the real, compiled-in SandboxBackend conformers register with the right names/eligibility --
-# unlike the two tests above, which prove the registry MECHANISM against fake conformers, this one
-# exercises the real NativeJailBackend/LinuxNativeJailBackend, and WasmBackend/KataBackend whenever
-# this build was actually configured with AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_KATA_BACKEND.
-agentengine_add_test(test_default_sandbox_registry
-  LIBS agentengine::default_sandbox_registry agentengine_warnings)
+# ---- The host registers each backend it chose (ADR-244 §2.2, G-C8) ------------------------------
+# Proves the real, compiled-in SandboxBackend conformers register with the right names/eligibility when a host wires
+# them itself -- unlike the registry tests above, which use fake conformers, this one exercises NativeJailBackend/
+# LinuxNativeJailBackend, and WasmBackend/KataBackend whenever this build was configured with them.
+set(ae_real_backend_libs agentengine::core agentengine_warnings)
+if(WIN32)
+  list(APPEND ae_real_backend_libs agentengine::native_jail_backend)
+elseif(UNIX)
+  list(APPEND ae_real_backend_libs agentengine::linux_native_jail_backend)
+endif()
+if(AGENTENGINE_WITH_WASM)
+  list(APPEND ae_real_backend_libs agentengine::wasm_backend)
+endif()
+if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  list(APPEND ae_real_backend_libs agentengine::kata_backend)
+endif()
+agentengine_add_test(test_real_backend_registration LIBS ${ae_real_backend_libs})
+target_include_directories(test_real_backend_registration PRIVATE "${PROJECT_SOURCE_DIR}/src")
+if(AGENTENGINE_WITH_WASM)
+  target_compile_definitions(test_real_backend_registration PRIVATE AGENTENGINE_HAVE_WASM_BACKEND)
+endif()
+if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
+  target_compile_definitions(test_real_backend_registration PRIVATE AGENTENGINE_HAVE_KATA_BACKEND)
+endif()
 if(AGENTENGINE_WITH_WASM AND WIN32)
   # Windows has no rpath; wasmtime.dll must be reachable via PATH at run time -- same wiring
   # test_wasmtime_smoke already needs (tests/CMakeLists.txt's own AGENTENGINE_WITH_WASM block).
-  set_tests_properties(test_default_sandbox_registry PROPERTIES
+  set_tests_properties(test_real_backend_registration PROPERTIES
     ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
 endif()
 

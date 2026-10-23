@@ -95,7 +95,7 @@ using MaterializedMemoryMount = std::pair<std::string, std::wstring>;
 // literally named "memory" would otherwise silently shadow this one, or vice versa).
 //
 // `granted` must be a HOST-authored `cap::FsRead` scoped to this exact mount (never model-derived,
-// I3) -- ordinarily `cap::FsRead{memory_mount_id(principal), "", std::nullopt}`, the identical shape
+// I3) -- ordinarily `cap::FsRead{memory_mount_id(principal), "", cap::Limit::unbounded()}`, the identical shape
 // `test_memory_provider.cpp` already uses to read this same mount today; `materialize_mount()` itself
 // still checks this against `memory_mount(principal)`'s own REAL `mount_id`, so the authority
 // derivation is unaffected by `mount_name` being a separate, cosmetic identifier.

@@ -60,7 +60,7 @@ AE_JSON_SCHEMA(WriteReply, written)
 // capability check IS the gate for this tool, not a human approval step (see 05_human_approval.cpp
 // for a tool that needs the latter instead of, or in addition to, a capability).
 struct WriteNoteTool
-    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
+    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "write_note";
     static constexpr std::string_view description = "Writes a note into the work mount.";
     using Args = WriteArgs;
@@ -192,7 +192,7 @@ int main() {
                                                        agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root(
-            {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
+            {Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}}});
         session.set_capabilities(&held);
 
         auto r = drive(session.start_run(StartRun{user_message("Write a note for me.")}));

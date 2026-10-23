@@ -100,11 +100,11 @@ constexpr std::string_view kShell = "powershell";
 
 [[nodiscard]] cap::NativeExec grant(bool live, std::optional<std::uint64_t> session_ms, std::optional<std::uint32_t> procs,
                                     std::optional<std::uint64_t> cpu_ms = std::nullopt) {
-    cap::NativeExec g{std::string(kShell), "workdir", std::nullopt, std::nullopt, 512ull << 20, false, std::nullopt, std::nullopt};
+    cap::NativeExec g{std::string(kShell), "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::at_most(512ull << 20), false, cap::Limit::unbounded(), cap::Limit::unbounded()};
     g.live_session = live;
-    g.session_wall_ms_cap = session_ms;
-    g.max_processes = procs;
-    g.cpu_ms_cap = cpu_ms;
+    if (session_ms) g.session_wall_ms_cap = cap::Limit::at_most(*session_ms);
+    if (procs) g.max_processes = cap::Limit::at_most(*procs);
+    if (cpu_ms) g.cpu_ms_cap = cap::Limit::at_most(*cpu_ms);
     return g;
 }
 

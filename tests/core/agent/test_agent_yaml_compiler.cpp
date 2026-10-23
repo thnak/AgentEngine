@@ -64,7 +64,6 @@ spec:
     net_out: ["api.search.example"]
   sandbox:
     profile: strict
-    fallback: [native-jail, remote]
   limits:
     max_turns: 12
     token_budget: 200000
@@ -161,14 +160,55 @@ spec:
               "F-3: an unrecognized approval mode is rejected, never silently coerced to a default");
     }
 
+    // --- F-3b (ADR-244 slice 4c, G-C3 round trip): every option the shared table lists parses, and an unlisted one is
+    //     refused with the list -- the parser and `choice_missing` read ONE table.
+    {
+        for (std::size_t i = 0; i < ae::agent_choice_options::approval.size(); ++i) {
+            auto r = ae::compile_agent_document(*yaml::parse(
+                "spec:\n  approval: " + std::string(ae::agent_choice_options::approval[i]) + "\n"));
+            check(r.has_value() && r->approval == static_cast<ae::approval_mode>(i),
+                  ("F-3b: approval option '" + std::string(ae::agent_choice_options::approval[i]) + "' parses to its enumerator").c_str());
+        }
+        for (std::size_t i = 0; i < ae::agent_choice_options::concurrency.size(); ++i) {
+            auto r = ae::compile_agent_document(*yaml::parse(
+                "spec:\n  concurrency: " + std::string(ae::agent_choice_options::concurrency[i]) + "\n"));
+            check(r.has_value() && r->concurrency == static_cast<ae::concurrency_mode>(i),
+                  ("F-3b: concurrency option '" + std::string(ae::agent_choice_options::concurrency[i]) + "' parses").c_str());
+        }
+        auto bad = ae::compile_agent_document(*yaml::parse("spec:\n  approval: sometimes\n"));
+        bool lists_all = !bad.has_value();
+        if (!bad.has_value()) {
+            for (std::string_view o : ae::agent_choice_options::approval) {
+                lists_all = lists_all && bad.error().message.find(o) != std::string::npos;
+            }
+        }
+        check(lists_all, "F-3b: an unlisted approval is refused with every option named in the message");
+    }
+
+    // --- F-3c (ADR-244 slice 4c): the sandbox block -- only `strict` is spelled in a document; a fallback is refused.
+    {
+        auto named = ae::compile_agent_document(*yaml::parse("spec:\n  sandbox:\n    profile: native-jail\n"));
+        check(!named.has_value() && named.error().code == "choice.unknown_option" &&
+                  named.error().message.find("strict") != std::string::npos,
+              "F-3c: a profile other than strict is choice.unknown_option, naming the table (it used to become "
+              "is_strict=false with all-zero traits)");
+        auto strict = ae::compile_agent_document(*yaml::parse("spec:\n  sandbox:\n    profile: strict\n"));
+        check(strict.has_value() && strict->sandbox_profile.has_value() && strict->sandbox_profile->is_strict,
+              "F-3c: strict compiles");
+        auto chain = ae::compile_agent_document(
+            *yaml::parse("spec:\n  sandbox:\n    profile: strict\n    fallback: [native-jail, remote]\n"));
+        check(!chain.has_value() && chain.error().code == "agent_yaml_compiler.sandbox_fallback_unsupported",
+              "F-3c: sandbox.fallback is refused until a resolver consumes it (no fallback is silent), not read for "
+              "nothing");
+    }
+
     // --- F-4: absent fields leave AgentMetadata's own real defaults untouched -----------------------
     {
         auto minimal = ae::compile_agent_document(*yaml::parse("spec: {}\n"));
         check(minimal.has_value(), "F-4: a minimal document with an empty spec still compiles");
         if (minimal.has_value()) {
             ae::AgentMetadata const defaults;  // the struct's own real defaults, not asserted values
-            // ADR-244 slice 4b: the five choices have no default (they are `nullopt`), so "unset carries the
-            // struct's own default" means exactly that -- unstated, for `validate_agent_metadata` to refuse.
+            // ADR-244 slice 4b: the five choices have no default (they are `nullopt`), so "unset carries the\n            // struct's own default" means exactly that -- unstated, for `validate_agent_metadata` to refuse.
             check(!minimal->max_turns.has_value() && !minimal->token_budget.has_value() &&
                       !minimal->sandbox_profile.has_value() && minimal->approval == defaults.approval &&
                       minimal->concurrency == defaults.concurrency &&

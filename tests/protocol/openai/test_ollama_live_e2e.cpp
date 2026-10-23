@@ -402,7 +402,7 @@ int main() {
     // ---- OL-8: the GUEST path is still refused at this very same live server -------------------------
     {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
-        cap::NetOut granted;
+        cap::NetOut granted{{}, cap::Limit::unbounded(), {}};
         granted.host_allowlist.push_back(host + ":" + std::to_string(port_value) + ":http");
         sandbox::NetEgressRequest req;
         req.method = "GET";
