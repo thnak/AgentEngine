@@ -119,11 +119,11 @@ int main() {
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
-            Capability{cap::FsRead{"input", "", std::nullopt}},
-            Capability{cap::FsRead{"work", "", std::nullopt}},
-            Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
-            Capability{cap::FsRead{"out", "", std::nullopt}},
-            Capability{cap::FsWrite{"out", "", std::nullopt, std::nullopt}},
+            Capability{cap::FsRead{"input", "", cap::Limit::unbounded()}},
+            Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+            Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
+            Capability{cap::FsRead{"out", "", cap::Limit::unbounded()}},
+            Capability{cap::FsWrite{"out", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
         });
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -305,7 +305,7 @@ int main() {
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
-        auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
+        auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", cap::Limit::unbounded()}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         ExecRequest req{"python",

@@ -286,7 +286,7 @@ struct EffectContext {
     // "real, path/host-scoped check against `EffectContext::capabilities`, not a static `Tool<>`
     // ceiling" pattern `mediated_shell_dispatch.hpp` and `tools/read_content.hpp` already establish
     // for exactly this reason: which mount/path a call needs is a per-call question, never knowable
-    // at a tool's compile-time `Capabilities<...>` declaration the way a fixed-mount `FsRead<"...">`
+    // at a tool's compile-time `Capabilities<...>` declaration the way a fixed-mount `FsRead<"...", agentengine::unbounded()>`
     // would require. See `tools/read_content.hpp`'s own file-top comment for why that gap existed in
     // the first place -- this field is what closes it.
     FileSystemAdapter* sandbox_fs = nullptr;

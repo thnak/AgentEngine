@@ -45,8 +45,8 @@ int main() {
     MediatedShellRunner shell(*adapter, registry, "work");
 
     CapabilitySet caps = CapabilitySet::grant_root({
-        Capability{cap::FsRead{"work", "", std::nullopt}},
-        Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+        Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
     });
     EffectContext ctx{};
     ctx.capabilities = agentengine::borrow_capabilities(caps);

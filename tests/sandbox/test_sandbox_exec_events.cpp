@@ -524,9 +524,9 @@ int main() {
             // is genuinely capability-gated (I2), so an empty set makes this a policy refusal that
             // never reaches the producer at all, which would prove nothing about the events.
             CapabilitySet const held = CapabilitySet::grant_root({
-                agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
+                agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
                 agentengine::Capability{
-                    agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+                    agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
             });
 
             Recorder rec;

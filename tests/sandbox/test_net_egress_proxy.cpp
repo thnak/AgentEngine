@@ -197,9 +197,9 @@ void handle_redirect(agentengine::pal::fd_t fd, std::uint16_t target_port) {
 
 NetOut make_grant(std::string host_port_scheme, std::optional<std::uint64_t> byte_cap = std::nullopt,
                    std::vector<std::string> methods = {}) {
-    NetOut n;
+    NetOut n{{}, agentengine::cap::Limit::unbounded(), {}};
     n.host_allowlist = {std::move(host_port_scheme)};
-    n.byte_cap = byte_cap;
+    n.byte_cap = byte_cap.has_value() ? agentengine::cap::Limit::at_most(*byte_cap) : agentengine::cap::Limit::unbounded();
     n.method_restrictions = std::move(methods);
     return n;
 }
@@ -389,7 +389,7 @@ void gate_g1() {
         auto const gate_before = [&] { return p.gate_calls(); };
         // C1: zero and two entries are ambiguous, and the codes are the gate's.
         int g0 = gate_before();
-        auto zero = go(p, get_root(), NetOut{}, EgressCallControl{});
+        auto zero = go(p, get_root(), NetOut{{}, agentengine::cap::Limit::unbounded(), {}}, EgressCallControl{});
         expect_error(entry, "G1 zero-entry grant", zero, failure_class::policy, "net.ambiguous_grant");
         check_s(p.gate_calls() == g0 + 1 && dns.calls.load() == 0, std::string(entry) + ": G1 zero-entry: one gate call, zero resolver calls");
 
@@ -1245,13 +1245,13 @@ int main() {
         CountingResolver cr;
         TestEgressProxy proxy;
         proxy.host_resolver = std::ref(cr);
-        NetOut zero_entries;  // host_allowlist starts empty
+        NetOut zero_entries{{}, agentengine::cap::Limit::unbounded(), {}};  // host_allowlist starts empty
         auto r0 = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, zero_entries, EgressCallControl{}));
         check(!r0.has_value(), "a NetOut grant with zero allowlist entries is rejected");
         if (!r0) check(r0.error().code == "net.ambiguous_grant", "specific diagnostic code (zero entries)");
         check(cr.calls.load() == 0, "resolver was never called for a zero-entry grant");
 
-        NetOut two_entries;
+        NetOut two_entries{{}, agentengine::cap::Limit::unbounded(), {}};
         two_entries.host_allowlist = {"a.example:80:http", "b.example:80:http"};
         auto r2 = agentengine::rt::block_on(proxy.fetch(NetEgressRequest{"GET", "/", {}, ""}, two_entries, EgressCallControl{}));
         check(!r2.has_value(), "a NetOut grant with two allowlist entries is rejected");
@@ -1484,29 +1484,29 @@ int main() {
         auto const with_grant_cap = make_grant("test.invalid:1:http", std::uint64_t{4096});
         {
             auto narrowed = narrow_by_resource_limit(with_grant_cap, std::nullopt);
-            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+            check(narrowed.byte_cap.limit() == with_grant_cap.byte_cap.limit(),
                   "no ResourceLimits::net_bytes declared -- the grant's own byte_cap is unchanged");
         }
         {
             auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{100});
-            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == 100,
+            check(narrowed.byte_cap == agentengine::cap::Limit::at_most(100),
                   "ResourceLimits::net_bytes tighter than the grant's byte_cap -- the tighter one wins");
         }
         {
             auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{1'000'000});
-            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+            check(narrowed.byte_cap.limit() == with_grant_cap.byte_cap.limit(),
                   "ResourceLimits::net_bytes looser than the grant's byte_cap -- the grant's own cap still wins");
         }
         {
             NetOut no_grant_cap = with_grant_cap;
-            no_grant_cap.byte_cap = std::nullopt;
+            no_grant_cap.byte_cap = agentengine::cap::Limit::unbounded();
             auto narrowed = narrow_by_resource_limit(no_grant_cap, std::uint64_t{100});
-            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == 100,
+            check(narrowed.byte_cap == agentengine::cap::Limit::at_most(100),
                   "grant declares no byte_cap at all -- ResourceLimits::net_bytes alone becomes the cap");
         }
         {
             auto narrowed = narrow_by_resource_limit(with_grant_cap, std::uint64_t{0});
-            check(narrowed.byte_cap.has_value() && *narrowed.byte_cap == *with_grant_cap.byte_cap,
+            check(narrowed.byte_cap.limit() == with_grant_cap.byte_cap.limit(),
                   "ResourceLimits::net_bytes == 0 means \"no SandboxSpec-level limit\", not \"zero bytes allowed\"");
         }
     }

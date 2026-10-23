@@ -159,7 +159,7 @@ void test_url_parsing() {
 void test_happy_path_under_threshold() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
@@ -189,7 +189,7 @@ void test_happy_path_under_threshold() {
 void test_over_threshold_with_blob_sink() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
     ctx.tool_result_byte_threshold = 5;
 
@@ -224,7 +224,7 @@ void test_over_threshold_with_blob_sink() {
 void test_over_threshold_without_blob_sink() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
     ctx.tool_result_byte_threshold = 5;  // no blob_sink wired at all
 
@@ -255,7 +255,7 @@ void test_capability_not_held_never_calls_backend() {
 void test_grant_for_different_host_is_not_used() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::NetOut{{"other.example.com:80:http"}, std::nullopt, {}}});
+        {agentengine::cap::NetOut{{"other.example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
@@ -267,7 +267,7 @@ void test_grant_for_different_host_is_not_used() {
 void test_http_error_status_is_mapped() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
@@ -281,7 +281,7 @@ void test_http_error_status_is_mapped() {
 void test_malformed_url_never_calls_backend() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
 
     FakeEgressBackend backend;
@@ -348,7 +348,7 @@ void test_path_source_capability_denied_never_touches_adapter() {
 void test_path_source_grant_for_different_prefix_is_not_used() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "other-dir", std::nullopt}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "other-dir", agentengine::cap::Limit::unbounded()}});
     auto ctx = make_ctx(held);
     FakeFileSystemAdapter adapter;
     ctx.sandbox_fs = &adapter;
@@ -363,7 +363,7 @@ void test_path_source_grant_for_different_prefix_is_not_used() {
 void test_path_source_happy_path_under_threshold() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "", std::nullopt}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}});
     auto ctx = make_ctx(held);
     FakeFileSystemAdapter adapter;
     adapter.response = to_bytes("hello from the sandbox mount");
@@ -385,7 +385,7 @@ void test_path_source_happy_path_under_threshold() {
 void test_path_source_over_threshold_with_blob_sink() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "", std::nullopt}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}});
     auto ctx = make_ctx(held);
     ctx.tool_result_byte_threshold = 5;
     FakeFileSystemAdapter adapter;
@@ -420,7 +420,7 @@ void test_path_source_over_threshold_with_blob_sink() {
 void test_control_value_reaches_the_seam() {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
-        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, std::nullopt, {}}});
+        agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
     auto ctx = make_ctx(held);
     std::stop_source stop;
     ctx.cancellation                = stop.get_token();

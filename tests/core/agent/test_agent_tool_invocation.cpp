@@ -205,7 +205,7 @@ int main() {
     //    the derived grant is bounded to the target's own ceiling, not the caller's larger held set --
     {
         agentengine::CapabilitySet const generous_caps = agentengine::CapabilitySet::grant_root(
-            {agentengine::cap::Entropy{}, agentengine::cap::NetOut{{"unrelated.example:443:https"}, std::nullopt, {}}});
+            {agentengine::cap::Entropy{}, agentengine::cap::NetOut{{"unrelated.example:443:https"}, agentengine::cap::Limit::unbounded(), {}}});
         agentengine::EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(generous_caps);
         ToolCallRequest req{"call-4", "echo", *json::parse(R"({"message":"hi"})"), false};

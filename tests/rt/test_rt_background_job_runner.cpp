@@ -205,7 +205,7 @@ int main() {
         check(!r && r.error().code == "tool.background_capacity_exceeded", "R1: no Background grant is refused");
 
         s = spec(tool("t", [](auto const&, auto&) { return ok_value(); }));
-        s.tool.capability_ceiling = {ae::cap::FsRead{"docs", "", std::nullopt}};
+        s.tool.capability_ceiling = {ae::cap::FsRead{"docs", "", ae::cap::Limit::unbounded()}};
         r = runner.submit(s);
         check(!r && r.error().code == "tool.capability_not_held", "R1: a capability the tool needs but the job lacks is refused");
 
@@ -458,9 +458,9 @@ int main() {
             if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) seen->stashed = ctx.bound_capabilities->front();
             return ok_value();
         });
-        t.capability_ceiling = {ae::cap::FsRead{"docs", "", std::nullopt}};
+        t.capability_ceiling = {ae::cap::FsRead{"docs", "", ae::cap::Limit::unbounded()}};
         auto s = spec(t);
-        s.capabilities = ae::CapabilitySet::grant_root({ae::cap::Background{2}, ae::cap::FsRead{"docs", "", std::nullopt}});
+        s.capabilities = ae::CapabilitySet::grant_root({ae::cap::Background{2}, ae::cap::FsRead{"docs", "", ae::cap::Limit::unbounded()}});
         s.owner.root_run_id = "root-9";  // ADR-241 §8.4: the owner's root run reaches the job's context
         auto id = runner.submit(s);
         check(id && reaches(runner, *id, background_job_state::succeeded), "R9 setup: the inspecting job succeeds");

@@ -578,7 +578,7 @@ print(r.count)
 // poison `invoke()` sentinel is gone.
 template <class ProviderT>
 struct ExecuteCodeTool : Tool<ExecuteCodeTool<ProviderT>,
-                              Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
+                              Capabilities<cap::decl::FsRead<"work", agentengine::unbounded()>, cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>,
                               EffectClass<effect_class::at_most_once>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
@@ -1736,12 +1736,12 @@ constexpr char const* kSessionId = "cli-chat-session";
     cli_chat::ToolPlan const& plan) {
     std::vector<Capability> grants = {
         Capability{cap::Secret{secret_name, std::chrono::seconds{0}}},
-        Capability{cap::FsRead{kWorkMount, "", std::nullopt}},
-        Capability{cap::FsWrite{kWorkMount, "", std::nullopt, std::nullopt}}};
+        Capability{cap::FsRead{kWorkMount, "", cap::Limit::unbounded()}},
+        Capability{cap::FsWrite{kWorkMount, "", cap::Limit::unbounded(), cap::Limit::unbounded()}}};
     if (plan.mint_run_command_capability) grants.push_back(Capability{cap::RunCommand{}});
     for (auto const& [mount_id, host_dir] : materialized) {
         (void)host_dir;
-        grants.push_back(Capability{cap::FsRead{mount_id, "", std::nullopt}});
+        grants.push_back(Capability{cap::FsRead{mount_id, "", cap::Limit::unbounded()}});
     }
     return CapabilitySet::grant_root(std::move(grants));
 }

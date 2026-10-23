@@ -85,7 +85,7 @@ struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval
         // no size probe, so the size is only known once the bytes are in memory. What the cap guards -- an
         // oversized file reaching a tool result, and from there the model's context -- is closed; the read
         // itself is not pre-empted, so peak memory for one call is the file's size, as it is for `cat`.
-        if (granted->size_cap_bytes.has_value() && bytes->size() > *granted->size_cap_bytes) {
+        if (!granted->size_cap_bytes.is_unbounded() && bytes->size() > *granted->size_cap_bytes.limit()) {
             co_return std::unexpected(error{failure_class::policy,
                                           "the requested file exceeds this capability's size cap",
                                           "read_sandbox_file.exceeds_size_cap"});

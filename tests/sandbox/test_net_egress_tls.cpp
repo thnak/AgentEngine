@@ -61,7 +61,7 @@ result<NetEgressResponse> via_blocking(TestEgressProxy const& p, NetEgressReques
 constexpr std::array<std::pair<char const*, Entry>, 2> kEntries{{{"fetch", via_fetch}, {"fetch_blocking", via_blocking}}};
 
 NetOut grant(std::string const& entry) {
-    NetOut n;
+    NetOut n{{}, cap::Limit::unbounded(), {}};
     n.host_allowlist = {entry};
     return n;
 }

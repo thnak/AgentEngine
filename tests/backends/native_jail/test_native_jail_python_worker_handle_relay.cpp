@@ -178,7 +178,7 @@ int main() {
 
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root(
-            {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, std::nullopt, {}}}});
+            {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, cap::Limit::unbounded(), {}}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
@@ -280,7 +280,7 @@ int main() {
 
         ExecState state{};
         CapabilitySet caps =
-            CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::nullopt}}});
+            CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;

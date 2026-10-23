@@ -55,8 +55,8 @@ int main() {
 
     // --- G2: a MemoryItem round-trips through write/read, with a real content-derived id -------
     ae::Mount const alice_memory = ae::memory_mount(alice);
-    ae::cap::FsWrite const write_all{ae::memory_mount_id(alice), "", std::nullopt, std::nullopt};
-    ae::cap::FsRead const read_all{ae::memory_mount_id(alice), "", std::nullopt};
+    ae::cap::FsWrite const write_all{ae::memory_mount_id(alice), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
+    ae::cap::FsRead const read_all{ae::memory_mount_id(alice), "", ae::cap::Limit::unbounded()};
 
     ae::MemoryItem item{};
     item.kind = ae::memory_kind::episodic;
@@ -109,7 +109,7 @@ int main() {
     auto bob_ref = agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, bob));
     AE_CHECK(bob_ref.has_value(), "setup: Bob's own memory worktree bootstraps independently");
     ae::Mount const bob_memory = ae::memory_mount(bob);
-    ae::cap::FsRead const bob_read_all{ae::memory_mount_id(bob), "", std::nullopt};
+    ae::cap::FsRead const bob_read_all{ae::memory_mount_id(bob), "", ae::cap::Limit::unbounded()};
 
     AE_CHECK(ae::memory_mount_id(alice) != ae::memory_mount_id(bob),
              "G2-R7: two principals' memory mount_ids are guaranteed distinct by construction");

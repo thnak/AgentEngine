@@ -114,8 +114,8 @@ int main() {
     {
         auto const table = agentengine::ToolTable::from_descriptors({first_descriptor});
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({
-            agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-            agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+            agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+            agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
         });
         auto ctx = make_ctx(held);
         agentengine::ToolCallRequest const req{
@@ -154,8 +154,8 @@ int main() {
                                                             ? out->tools[0]
                                                             : agentengine::ToolDescriptor{}});
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({
-            agentengine::Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-            agentengine::Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+            agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+            agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
         });
         auto call_ctx = make_ctx(held);
         agentengine::ToolCallRequest const req{

@@ -268,7 +268,7 @@ int main() {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .session_id("s-proto")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
+                         .grant(Capability{cap::FsRead{"scratch", "", cap::Limit::unbounded()}})
                          .principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "credential named and set: build() succeeds");
         if (built.has_value()) {
@@ -276,7 +276,7 @@ int main() {
                   "the built session has a ChatClientT emplaced (ModelCallGateway<OpenAIChatClient>)");
             // ADR-244 §2.3 (slice 3c): the key's cap::Secret is the chat client's, held for the model call only.
             check(built->capabilities().size() == 1 &&
-                      built->capabilities().contains(Capability{cap::FsRead{"scratch", "", std::nullopt}}),
+                      built->capabilities().contains(Capability{cap::FsRead{"scratch", "", cap::Limit::unbounded()}}),
                   "capabilities() holds exactly the explicit .grant() -- the run's authority, which tools read");
             check(!built->capabilities().contains(
                       Capability{cap::Secret{"openai-api-key", std::chrono::seconds{0}}}),
@@ -1081,7 +1081,7 @@ int main() {
         auto built = RawQuickstartSessionBuilder(ScriptedChatClient{})
                          .store()
                          .session_id("s-b26")
-                         .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
+                         .grant(Capability{cap::FsRead{"scratch", "", cap::Limit::unbounded()}})
                          .principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B26: build() succeeds with a scripted ChatClientT and a stated .store()");
         if (built.has_value()) {
@@ -1092,7 +1092,7 @@ int main() {
                   "B26: capabilities() holds ONLY the explicit .grant() -- no implicit cap::Secret, "
                   "since this builder has no credential slot to auto-grant one for");
             check(built->capabilities().contains(
-                      Capability{cap::FsRead{"scratch", "", std::nullopt}}),
+                      Capability{cap::FsRead{"scratch", "", cap::Limit::unbounded()}}),
                   "B26: the explicit .grant() is really present");
 
             // ---- B27 (THE GAP THIS CLOSES): drive a REAL, live start_run() via .ask() -- no network,

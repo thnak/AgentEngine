@@ -47,8 +47,8 @@ public:
             co_return std::unexpected(bootstrapped.error());
         }
         store.mount_ = memory_mount(store.principal_);
-        store.read_cap_  = cap::FsRead{memory_mount_id(store.principal_), "", std::nullopt};
-        store.write_cap_ = cap::FsWrite{memory_mount_id(store.principal_), "", std::nullopt, std::nullopt};
+        store.read_cap_  = cap::FsRead{memory_mount_id(store.principal_), "", cap::Limit::unbounded()};
+        store.write_cap_ = cap::FsWrite{memory_mount_id(store.principal_), "", cap::Limit::unbounded(), cap::Limit::unbounded()};
         co_return store;
     }
 
@@ -69,7 +69,9 @@ private:
     // `unique_ptr` -- an `EvalStore` itself stays cheaply movable (a handle, not the storage).
     EvalStore()
         : object_store_(std::make_unique<InMemoryWorktreeObjectStore>()),
-          ref_store_(std::make_unique<rt::InMemoryAppendLogStore>()) {}
+          ref_store_(std::make_unique<rt::InMemoryAppendLogStore>()),
+          read_cap_{"", "", cap::Limit::unbounded()},  // placeholders: make() assigns the real mount caps
+          write_cap_{"", "", cap::Limit::unbounded(), cap::Limit::unbounded()} {}
 
     std::unique_ptr<InMemoryWorktreeObjectStore> object_store_;
     std::unique_ptr<rt::InMemoryAppendLogStore> ref_store_;

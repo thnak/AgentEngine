@@ -131,8 +131,8 @@ int main() {
              "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
-    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
-    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
     ae::MemoryItem procedural{};
     procedural.kind    = ae::memory_kind::procedural;
@@ -195,8 +195,8 @@ int main() {
             ae::Principal const p{"p-rank", ""};
             static_cast<void>(agentengine::rt::block_on(ae::ensure_memory_worktree(os, rs, p)));
             ae::Mount const m = ae::memory_mount(p);
-            ae::cap::FsRead const rd{ae::memory_mount_id(p), "", std::nullopt};
-            ae::cap::FsWrite const wr{ae::memory_mount_id(p), "", std::nullopt, std::nullopt};
+            ae::cap::FsRead const rd{ae::memory_mount_id(p), "", ae::cap::Limit::unbounded()};
+            ae::cap::FsWrite const wr{ae::memory_mount_id(p), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
             for (auto k : {first_kind, second_kind}) {
                 ae::MemoryItem it{};
                 it.kind     = k;

@@ -208,8 +208,8 @@ int main() {
 
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root(
-            {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
-             Capability{cap::FsRead{"work", "", std::nullopt}}});
+            {Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
+             Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}}});
         EffectContext ctx{};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
@@ -256,7 +256,7 @@ int main() {
         {
             ExecState capped_state{};
             CapabilitySet capped_caps =
-                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{5}}}});
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{5})}}});
             EffectContext capped_ctx{};
             capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.principal = ae_test::kTestPrincipal;
@@ -273,7 +273,7 @@ int main() {
         {
             ExecState capped_state{};
             CapabilitySet capped_caps =
-                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{1000}}}});
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{1000})}}});
             EffectContext capped_ctx{};
             capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.principal = ae_test::kTestPrincipal;

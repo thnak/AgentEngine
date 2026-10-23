@@ -68,7 +68,7 @@ result<void> require_capability(EffectContext const& ctx, Capability requested, 
 // Gap-12 fix (2026-08-10 audit #12, fixed 2026-08-14): `require_capability` above is right for
 // `cap::EnvWrite`/`cap::RunnerCall` (no quota field, so a synthetic uncapped `requested` never hits
 // `cap_covers`'s widening rejection), but was WRONG for `cap::FsRead`/`cap::FsWrite` -- every call
-// site below used to build `cap::FsWrite{mount_id, target, std::nullopt, std::nullopt}` and check it
+// site below used to build `cap::FsWrite{mount_id, target, cap::Limit::unbounded(), cap::Limit::unbounded()}` and check it
 // via `contains()`, which `cap_covers` (capability.hpp) rejects against ANY quota-capped grant (a
 // capped parent, an uncapped "requested" reads as widening). That's a false denial, not a security
 // hole, but it made a quota-capped `FsWrite`/`FsRead` grant unusable from the shell exactly the way
@@ -112,7 +112,7 @@ result<void> require_fs_write(EffectContext const& ctx, FileSystemAdapter& fs, s
     if (!granted) {
         return std::unexpected(error{failure_class::policy, denial_message, "shell.capability_denied"});
     }
-    if (!enforce_quota || (!granted->quota_bytes.has_value() && !granted->file_count_cap.has_value())) {
+    if (!enforce_quota || (!!granted->quota_bytes.is_unbounded() && !!granted->file_count_cap.is_unbounded())) {
         return {};
     }
     auto usage = fs.usage();
@@ -125,13 +125,13 @@ result<void> require_fs_write(EffectContext const& ctx, FileSystemAdapter& fs, s
                                       "quota enforcement required but usage could not be determined",
                                       "shell.fs_quota_unavailable"});
     }
-    if (granted->quota_bytes.has_value() && (*usage)->total_bytes > *granted->quota_bytes) {
+    if (!granted->quota_bytes.is_unbounded() && (*usage)->total_bytes > *granted->quota_bytes.limit()) {
         // Same message/code shape as `core/worktree.hpp`'s `mount_write` (the one other place this
         // project enforces a live FsWrite quota) -- not re-authored here.
         return std::unexpected(
             error{failure_class::resource, "No space left on device", "worktree.mount_write_quota_exceeded"});
     }
-    if (granted->file_count_cap.has_value() && (*usage)->file_count > *granted->file_count_cap) {
+    if (!granted->file_count_cap.is_unbounded() && (*usage)->file_count > *granted->file_count_cap.limit()) {
         return std::unexpected(error{failure_class::resource, "No space left on device",
                                       "worktree.mount_write_file_count_exceeded"});
     }
@@ -191,7 +191,7 @@ result<ExecOutcome> run_builtin(std::string const& name, std::vector<std::string
         // known once the bytes are already in memory. Still closes the real gap this guards against
         // -- an oversized file reaching `stdout_text`, and from there a tool result and the model's
         // context -- even though the read itself isn't pre-empted.
-        if (req->size_cap_bytes.has_value() && data->size() > *req->size_cap_bytes) {
+        if (!req->size_cap_bytes.is_unbounded() && data->size() > *req->size_cap_bytes.limit()) {
             return std::unexpected(error{failure_class::policy,
                                           "cat: the requested file exceeds this capability's size cap",
                                           "shell.cat_exceeds_size_cap"});

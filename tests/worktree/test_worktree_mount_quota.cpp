@@ -64,7 +64,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-1", empty_tree(obj_store))).has_value(), "C3-C1: setup empty root");
 
         Mount mount{"/work", "session:quota-1", ""};
-        cap::FsWrite capped{"/work", "", std::uint64_t{1000}, std::uint32_t{10}};
+        cap::FsWrite capped{"/work", "", cap::Limit::at_most(std::uint64_t{1000}), cap::Limit::at_most(std::uint32_t{10})};
 
         auto ok = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, capped, "small.txt", bytes_of("hello")));
         AE_CHECK(ok.has_value(), "C3-C1: a write well under both caps succeeds");
@@ -78,7 +78,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-2", empty_tree(obj_store))).has_value(), "C3-C2: setup empty root");
 
         Mount mount{"/work", "session:quota-2", ""};
-        cap::FsWrite tiny{"/work", "", std::uint64_t{5}, std::nullopt};
+        cap::FsWrite tiny{"/work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()};
 
         auto before = current_tree_digest(ref_store, "session:quota-2");
         auto rejected = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, tiny, "toobig.txt", bytes_of("this is way over 5")));
@@ -100,7 +100,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-3", empty_tree(obj_store))).has_value(), "C3-C3: setup empty root");
 
         Mount mount{"/work", "session:quota-3", ""};
-        cap::FsWrite two_files{"/work", "", std::nullopt, std::uint32_t{2}};
+        cap::FsWrite two_files{"/work", "", cap::Limit::unbounded(), cap::Limit::at_most(std::uint32_t{2})};
 
         AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, two_files, "a.txt", bytes_of("a"))).has_value(),
                  "C3-C3: first file, under the count cap, succeeds");
@@ -124,7 +124,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-4", empty_tree(obj_store))).has_value(), "C3-C4: setup empty root");
 
         Mount mount{"/work", "session:quota-4", ""};
-        cap::FsWrite cumulative{"/work", "", std::uint64_t{15}, std::nullopt};
+        cap::FsWrite cumulative{"/work", "", cap::Limit::at_most(std::uint64_t{15}), cap::Limit::unbounded()};
 
         auto first = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, cumulative, "a.txt", bytes_of("0123456789")));  // 10 bytes
         AE_CHECK(first.has_value(), "C3-C4: first 10-byte write, under the 15-byte cap, succeeds");
@@ -134,7 +134,7 @@ int main() {
                  "C3-C4: a second write whose COMBINED usage exceeds the cap is rejected");
 
         auto still_there =
-            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", std::nullopt}, "a.txt"));
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, cap::FsRead{"/work", "", cap::Limit::unbounded()}, "a.txt"));
         AE_CHECK(still_there.has_value() && string_of(*still_there) == "0123456789",
                  "C3-C4: the first write's content survives the second write's rejection");
     }
@@ -147,7 +147,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-5", empty_tree(obj_store))).has_value(), "C3-C5: setup empty root");
 
         Mount mount{"/work", "session:quota-5", ""};
-        cap::FsWrite uncapped{"/work", "", std::nullopt, std::nullopt};
+        cap::FsWrite uncapped{"/work", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
 
         auto ok = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, uncapped, "toobig.txt",
                                bytes_of("this is way over any small cap")));
@@ -164,8 +164,8 @@ int main() {
 
         Mount work_mount{"/work", "session:quota-6", "work"};
         Mount out_mount{"/out", "session:quota-6", "out"};
-        cap::FsWrite work_cap{"/work", "", std::uint64_t{1000}, std::nullopt};
-        cap::FsWrite out_cap{"/out", "", std::uint64_t{5}, std::nullopt};
+        cap::FsWrite work_cap{"/work", "", cap::Limit::at_most(std::uint64_t{1000}), cap::Limit::unbounded()};
+        cap::FsWrite out_cap{"/out", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()};
 
         auto filled_work =
             agentengine::rt::block_on(mount_write(obj_store, ref_store, work_mount, work_cap, "big.txt", bytes_of(std::string(200, 'x'))));
@@ -186,7 +186,7 @@ int main() {
         AE_CHECK(agentengine::rt::block_on(commit_ref(ref_store, "session:quota-7", empty_tree(obj_store))).has_value(), "C3-C7: setup empty root");
 
         Mount mount{"/work", "session:quota-7", ""};
-        cap::FsWrite cap12{"/work", "", std::uint64_t{12}, std::nullopt};
+        cap::FsWrite cap12{"/work", "", cap::Limit::at_most(std::uint64_t{12}), cap::Limit::unbounded()};
 
         auto big = agentengine::rt::block_on(mount_write(obj_store, ref_store, mount, cap12, "a.txt", bytes_of("0123456789")));  // 10 bytes
         AE_CHECK(big.has_value(), "C3-C7: initial 10-byte write fits the 12-byte cap");

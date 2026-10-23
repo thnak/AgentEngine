@@ -321,8 +321,7 @@ static_assert(NetEgressBackend<HostEgressProxy>);
 [[nodiscard]] inline cap::NetOut narrow_by_resource_limit(cap::NetOut grant,
                                                            std::optional<std::uint64_t> resource_net_bytes) {
     if (resource_net_bytes.has_value() && *resource_net_bytes > 0) {
-        grant.byte_cap = grant.byte_cap.has_value() ? std::min(*grant.byte_cap, *resource_net_bytes)
-                                                      : *resource_net_bytes;
+        grant.byte_cap = cap::Limit::tighter(grant.byte_cap, cap::Limit::at_most(*resource_net_bytes));
     }
     return grant;
 }

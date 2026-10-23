@@ -309,7 +309,7 @@ task<result<NetEgressResponse>> egress_fetch_gated(NetEgressRequest req, GatedEg
     // 5. The request, bounded (D4): the byte cap is the BODY's wire bytes; heads share min(64 KiB, cap) so a head larger
     //    than a tiny cap fails while it is being read; the request-level total derives from both (ADR-241 S1).
     std::uint64_t const cap =
-        std::min<std::uint64_t>(granted.byte_cap.value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
+        std::min<std::uint64_t>(granted.byte_cap.limit().value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
     rt::HttpContext ctx;
     ctx.reactor  = &io->runtime.reactor();
     ctx.dns_pool = &io->runtime.dns_pool();

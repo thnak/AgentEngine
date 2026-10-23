@@ -253,11 +253,11 @@ inline constexpr approval_mode kRunShellApproval = approval_mode::never_require;
 
 [[nodiscard]] inline CapabilitySet real_tool_grant() {
     return CapabilitySet::grant_root(
-        {Capability{cap::FsRead{std::string(kShellWorkMount), "", kRealToolReadCapBytes}},
-         Capability{cap::FsWrite{std::string(kShellWorkMount), "", kRealToolQuotaBytes, kRealToolFileCap}}});
+        {Capability{cap::FsRead{std::string(kShellWorkMount), "", cap::Limit::at_most(kRealToolReadCapBytes)}},
+         Capability{cap::FsWrite{std::string(kShellWorkMount), "", cap::Limit::at_most(kRealToolQuotaBytes), cap::Limit::at_most(kRealToolFileCap)}}});
 }
 
-// run_shell declares uncapped `FsRead<"work">`/`FsWrite<"work">` and `EnforcesGrantedCaps`, so admission binds
+// run_shell declares uncapped `FsRead<"work", agentengine::unbounded()>`/`FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>` and `EnforcesGrantedCaps`, so admission binds
 // it under the capped grant above with `bind_clamped()` and the shell enforces the quota and size cap from the
 // held grant (its gap-12 lookups). ADR-217 replaced ADR-208 §7's `with_granted_ceiling` driver workaround.
 

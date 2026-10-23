@@ -459,7 +459,7 @@ int main() {
     // guest path refusing everything -- which is what would make the first branch vacuous.
     {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
-        cap::NetOut granted;
+        cap::NetOut granted{{}, cap::Limit::unbounded(), {}};
         granted.host_allowlist.push_back(host + ":" + std::to_string(port_value) + ":http");
         sandbox::NetEgressRequest req;
         req.method = "GET";

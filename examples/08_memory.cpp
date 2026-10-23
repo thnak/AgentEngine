@@ -102,8 +102,8 @@ int main() {
           "the memory worktree bootstraps");
 
     Mount const mount = memory_mount(principal);
-    cap::FsRead const read_cap{memory_mount_id(principal), "", std::nullopt};
-    cap::FsWrite const write_cap{memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    cap::FsRead const read_cap{memory_mount_id(principal), "", cap::Limit::unbounded()};
+    cap::FsWrite const write_cap{memory_mount_id(principal), "", cap::Limit::unbounded(), cap::Limit::unbounded()};
 
     // A memory item from an earlier conversation, written before this run even starts.
     MemoryItem preference{};

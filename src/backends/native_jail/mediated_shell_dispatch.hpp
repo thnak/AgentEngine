@@ -7,7 +7,7 @@
 // as a design, not copied code -- shell_dispatch.{hpp,cpp} stay untouched.
 //
 // Real, path-scoped capability checks (`CapabilitySet::contains()` with a real `cap::FsRead`/
-// `cap::FsWrite{mount_id, path_prefix, ...}`), not the kind-only `contains_kind` shortcut ADR-001's
+// `cap::FsWrite{mount_id, path_prefix, cap::Limit::at_most(...)}`), not the kind-only `contains_kind` shortcut ADR-001's
 // own §2.5.4 downgrade used -- `trust/capability.hpp`'s scope-field extension (mount_id/path_prefix
 // on FsRead/FsWrite) postdates that ADR, so this pass does real enforcement where the spike could
 // not, matching the same upgrade `MediatedPythonRunner` (E2) already made for its own open()

@@ -219,7 +219,7 @@ std::string fetch_via_loopback_grant(std::vector<std::uint8_t> const& bytes, std
                                      std::string const& label, std::chrono::milliseconds* elapsed) {
     WasmBackend backend;
     SandboxSpec spec;
-    cap::NetOut net;
+    cap::NetOut net{{}, cap::Limit::unbounded(), {}};
     net.host_allowlist = {"127.0.0.1:" + std::to_string(port) + ":http"};
     std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
     spec.capabilities = CapabilitySet::grant_root(order);
@@ -309,7 +309,7 @@ std::string fetch_with_through(std::vector<std::uint8_t> const& bytes, std::shar
                                std::string* call_error = nullptr) {
     WasmBackend backend(erase_egress_backend(std::shared_ptr<sandbox::TestEgressProxy const>(proxy)));
     SandboxSpec spec;
-    cap::NetOut net;
+    cap::NetOut net{{}, cap::Limit::unbounded(), {}};
     net.host_allowlist = {"127.0.0.1:" + std::to_string(port) + ":http"};
     std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
     spec.capabilities = CapabilitySet::grant_root(order);

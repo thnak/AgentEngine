@@ -145,7 +145,7 @@ struct LoopbackDns {
 };
 
 NetOut grant_to(std::uint16_t port) {
-    NetOut n;
+    NetOut n{{}, agentengine::cap::Limit::unbounded(), {}};
     n.host_allowlist = {"test.invalid:" + std::to_string(port) + ":http"};
     return n;
 }

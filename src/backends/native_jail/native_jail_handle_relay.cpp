@@ -350,7 +350,7 @@ NativeJailBackend::QueryFields NativeJailBackend::dispatch_connect_authorize(Pyt
     auto const port = static_cast<std::uint16_t>(port_raw);
     std::string const entry = host + ":" + std::to_string(port) + ":tcp";
 
-    if (!ctx.capabilities || !ctx.capabilities->contains(Capability{cap::NetOut{{entry}, std::nullopt, {}}})) {
+    if (!ctx.capabilities || !ctx.capabilities->contains(Capability{cap::NetOut{{entry}, cap::Limit::unbounded(), {}}})) {
         return deny(wp::kErrorNetAddressBlocked, "no capability grants network access to '" + entry + "'");
     }
     if (ws.live_sockets.size() >= NativeJailBackend::PythonWorkerState::kMaxLiveSockets) {

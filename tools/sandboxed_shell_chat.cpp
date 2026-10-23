@@ -176,8 +176,8 @@ int main(int argc, char** argv) {
                      .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                           agentengine::Bound<std::uint64_t>::unbounded(),
                                                           agentengine::Bound<std::uint64_t>::at_most(25)})
-                     .grant(Capability{cap::FsRead{"work", "", std::nullopt}})
-                     .grant(Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}})
+                     .grant(Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}})
+                     .grant(Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}})
                      .grant(Capability{cap::RunCommand{}})
                      .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
                      .providers(std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)))

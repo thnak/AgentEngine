@@ -93,7 +93,7 @@ AE_JSON_SCHEMA(RunShellReply, ok, stdout_text, stderr_text)
 // ae-naming-lint: allow SessionShellSandbox — forward declaration of the type defined below (027 §3)
 class SessionShellSandbox;
 
-struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
+struct RunShellTool : Tool<RunShellTool, Capabilities<cap::decl::FsRead<"work", agentengine::unbounded()>, cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>,
                             EffectClass<effect_class::at_most_once>, EnforcesGrantedCaps,
                             CapturesSessionState, ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_shell";

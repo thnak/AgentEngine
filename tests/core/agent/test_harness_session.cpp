@@ -107,7 +107,7 @@ struct LookTool : ae::Tool<LookTool, ae::EffectClass<ae::effect_class::pure>, ae
     }
 };
 
-struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::Approval<ae::approval_mode::never_require>> {
+struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs", agentengine::unbounded()>>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_doc";
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = NoteArgs;
@@ -137,7 +137,7 @@ struct WakeNamedTool : ae::Tool<WakeNamedTool, ae::Approval<ae::approval_mode::n
 // ---- agents ---------------------------------------------------------------------------------------
 
 struct Worker : ae::Agent<Worker, ae::ChatClientId<"test:scripted">, ae::Tools<ActTool, LookTool, ReadDocTool>,
-                          ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::MaxTurns<ae::at_most(8)>,
+                          ae::Capabilities<ae::cap::decl::FsRead<"docs", agentengine::unbounded()>>, ae::MaxTurns<ae::at_most(8)>,
                           ae::TokenBudget<ae::at_most(1'000)>, ae::Approval<ae::approval_mode::policy_driven>,
                           ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "worker";
@@ -319,7 +319,7 @@ ae::SkillSourceResult make_skill(std::string name) {
     return r;
 }
 
-ae::Capability docs_read() { return ae::cap::FsRead{"docs", "", std::nullopt}; }
+ae::Capability docs_read() { return ae::cap::FsRead{"docs", "", ae::cap::Limit::unbounded()}; }
 
 }  // namespace
 
@@ -703,12 +703,12 @@ int main() {
                   "H8: an ungranted declared tool is still denied after the gate opens -- the harness adds no authority");
         }
         ae::AgentSessionOptions granted = ae_test::declared_options<Worker>();
-        granted.grants = {docs_read(), ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt}};
+        granted.grants = {docs_read(), ae::cap::FsWrite{"docs", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()}};
         auto hb = ae::make_harness_session<Worker>(ScriptedChatClient{}, granted, nullptr, ae_test::sandboxes());
         auto bb = ae::make_agent_session<Worker>(ScriptedChatClient{}, granted, nullptr, ae_test::sandboxes());
         check(hb.has_value() && bb.has_value() && hb->capabilities().size() == bb->capabilities().size() &&
                   hb->capabilities().size() == 1 && hb->capabilities().contains(docs_read()) &&
-                  !hb->capabilities().contains(ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt}),
+                  !hb->capabilities().contains(ae::cap::FsWrite{"docs", "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()}),
               "H8: the harness session's authority equals the bridge's narrowed set for the same grants");
         // Background: schedule_wakeup only with the caller's cap::Schedule grant.
         ScriptedChatClient c2;

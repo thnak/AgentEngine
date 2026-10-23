@@ -57,8 +57,8 @@ bool lesson_survives(float lesson_salience, int later, std::string const& query,
     ae::Principal const principal{"p-recall", ""};
     if (!agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal))) return false;
     ae::Mount const mount = ae::memory_mount(principal);
-    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
-    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+    ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+    ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
     ae::MemoryItem lesson{};
     lesson.kind     = ae::memory_kind::procedural;
@@ -140,8 +140,8 @@ int main() {
             ae::Principal const principal{"p-recall-r5", ""};
             (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
             ae::Mount const mount = ae::memory_mount(principal);
-            ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
-            ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+            ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+            ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
             ae::MemoryItem lesson{};
             lesson.kind = ae::memory_kind::procedural; lesson.content = kLesson; lesson.salience = lesson_sal;
             lesson.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-l", "0", principal};
@@ -175,8 +175,8 @@ int main() {
         ae::Principal const principal{"p-recall-r7", ""};
         (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
         ae::Mount const mount = ae::memory_mount(principal);
-        ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
-        ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
         for (int i = 0; i < 5; ++i) {
             ae::MemoryItem l{};
             l.kind = ae::memory_kind::procedural; l.content = "Lesson number " + std::to_string(i);

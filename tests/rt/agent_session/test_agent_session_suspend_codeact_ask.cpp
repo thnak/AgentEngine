@@ -133,8 +133,8 @@ class CodeActHistoryProvider;
 
 struct ExecuteCodeTool
     : agentengine::Tool<ExecuteCodeTool,
-                          agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
-                                                     agentengine::cap::decl::FsWrite<"work">>,
+                          agentengine::Capabilities<agentengine::cap::decl::FsRead<"work", agentengine::unbounded()>,
+                                                     agentengine::cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>>,
                           agentengine::EffectClass<agentengine::effect_class::at_most_once>,
                           agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
@@ -332,8 +332,8 @@ using Session = AgentSession<ScriptedChatClient, NoSessionState, CodeActHistoryP
 
 [[nodiscard]] CapabilitySet make_held_caps() {
     return CapabilitySet::grant_root({
-        Capability{agentengine::cap::FsRead{"work", "", std::nullopt}},
-        Capability{agentengine::cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
+        Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
     });
 }
 

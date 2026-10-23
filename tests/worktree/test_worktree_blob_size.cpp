@@ -121,7 +121,7 @@ constexpr std::size_t kFileBytes = 1000;
 template <class S>
 void fill(S& store, RefStore& refs, Mount const& mount) {
     (void)agentengine::rt::block_on(commit_ref(refs, mount.ref_name, *agentengine::rt::block_on(store.put_tree(Tree{}))));
-    cap::FsWrite const uncapped{mount.mount_id, "", std::nullopt, std::nullopt};
+    cap::FsWrite const uncapped{mount.mount_id, "", cap::Limit::unbounded(), cap::Limit::unbounded()};
     for (int i = 0; i < kFiles; ++i) {
         std::string content(kFileBytes, 'x');
         content += std::to_string(i);  // distinct blobs, so nothing dedups the count away
@@ -151,7 +151,7 @@ int main() {
     }
 
     Mount const mount{"/work", "session:blob-size", ""};
-    cap::FsWrite const capped{"/work", "", std::uint64_t{10'000'000}, std::uint32_t{10'000}};
+    cap::FsWrite const capped{"/work", "", cap::Limit::at_most(std::uint64_t{10'000'000}), cap::Limit::at_most(std::uint32_t{10'000})};
 
     // ---- Z2: positive control, the old path.
     {
@@ -189,7 +189,7 @@ int main() {
         RefStore new_refs;
         (void)agentengine::rt::block_on(commit_ref(old_refs, mount.ref_name, *agentengine::rt::block_on(old_store.put_tree(Tree{}))));
         (void)agentengine::rt::block_on(commit_ref(new_refs, mount.ref_name, *agentengine::rt::block_on(new_store.put_tree(Tree{}))));
-        cap::FsWrite const tight{"/work", "", std::uint64_t{25}, std::uint32_t{3}};
+        cap::FsWrite const tight{"/work", "", cap::Limit::at_most(std::uint64_t{25}), cap::Limit::at_most(std::uint32_t{3})};
         struct Step {
             char const* path;
             std::string content;

@@ -22,6 +22,8 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
+#include "agentengine/core/bound_value.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/fixed_string.hpp"
 #include "agentengine/trust/spawn_budget.hpp"
@@ -107,24 +109,27 @@ enum class capability_kind {
 // to match how pervasively `ae::Capability`/`ae::CapabilitySet` are already used.
 namespace cap {
 
-// `std::nullopt` on a cap/quota field means "no explicit limit carried by this capability instance"
-// (valid on a *granted* capability — uncapped); `subsumes()` below treats a capped parent and an
-// uncapped request as a widening attempt, never as an implicitly-fine omission.
+// ADR-244 slice 5 (ADR-242 §2 rule 5): every cap/quota field is a `Limit` -- "at most n" or the NAMED value
+// `unbounded()` -- with no default and no conversion from an integer, so a grant that leaves one out does not
+// compile and `0` cannot stand for "no limit" (an aggregate that omits a `Bound` member is a compile error,
+// tests/compile_fail/cap_rejects_*). `Limit::unbounded()` on a *granted* capability is the developer's stated
+// "no explicit limit"; `subsumes()` below treats a capped parent and an unbounded request as a widening attempt.
+using Limit = ::agentengine::Bound<std::uint64_t>;
 
 struct FsRead {
     std::string mount_id;
     std::string path_prefix;                      // "" = the mount's own root
-    std::optional<std::uint64_t> size_cap_bytes;
+    Limit size_cap_bytes;
 };
 struct FsWrite {
     std::string mount_id;
     std::string path_prefix;
-    std::optional<std::uint64_t> quota_bytes;
-    std::optional<std::uint32_t> file_count_cap;
+    Limit quota_bytes;
+    Limit file_count_cap;
 };
 struct NetOut {
     std::vector<std::string> host_allowlist;       // "host:port:scheme" entries
-    std::optional<std::uint64_t> byte_cap;
+    Limit byte_cap;
     std::vector<std::string> method_restrictions;  // empty = unrestricted
 };
 struct NetListen {
@@ -147,9 +152,9 @@ struct Exec {
     // convention until Phase C reconciles the two when SandboxBackend needs to consume this
     // directly.
     std::string profile_name;
-    std::optional<std::uint64_t> cpu_ms_cap;
-    std::optional<std::uint64_t> wall_ms_cap;
-    std::optional<std::uint64_t> memory_bytes_cap;
+    Limit cpu_ms_cap;
+    Limit wall_ms_cap;
+    Limit memory_bytes_cap;
 };
 struct Clock {
     std::chrono::milliseconds resolution{0};       // finer (smaller) resolution = more authority
@@ -191,19 +196,19 @@ struct NativeExec {
     // (decisions/archive/ADR-071-...md — worktree confinement stays mandatory even though the OS sandbox
     // jail is optional for these providers).
     std::string worktree_mount_id;
-    std::optional<std::uint64_t> cpu_ms_cap;
-    std::optional<std::uint64_t> wall_ms_cap;
-    std::optional<std::uint64_t> memory_bytes_cap;
+    Limit cpu_ms_cap;
+    Limit wall_ms_cap;
+    Limit memory_bytes_cap;
     // ADR-209 §9 -- a HELD native shell (`NativeShellSessionProvider`) is a widening of this grant: longer life,
     // background processes across commands, no per-call cwd/argv check. The opt-in is this monotone flag, NOT
-    // "the caps below are set": `cap_covers` treats an unset parent cap as uncapped, so any attenuated grant
+    // "the caps below are set": `cap_covers` treats an unbounded parent cap as uncapped, so any attenuated grant
     // could set them to UINT64_MAX. A child may set `live_session` only if its parent has it
     // (`subsumes_payload` below). A live grant missing either cap is refused WHERE IT IS USED (the provider
     // contributes no tool and the per-command re-check refuses) -- an aggregate cannot reject it at
     // construction.
     bool live_session = false;
-    std::optional<std::uint64_t> session_wall_ms_cap;  // the held shell's whole life, wall clock
-    std::optional<std::uint32_t> max_processes;        // the Job Object's active-process limit
+    Limit session_wall_ms_cap;  // the held shell's whole life, wall clock
+    Limit max_processes;        // the Job Object's active-process limit
 };
 // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §3 — deliberately its own kind
 // rather than reusing FsRead/FsWrite (those are mount_id-keyed, resolved through a Worktree/
@@ -292,14 +297,14 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
 // constructed directly, which Phase B's tool pipeline does.
 [[nodiscard]] inline Capability capability_from_kind(capability_kind kind) {
     switch (kind) {
-        case capability_kind::fs_read:     return cap::FsRead{};
-        case capability_kind::fs_write:    return cap::FsWrite{};
-        case capability_kind::net_out:     return cap::NetOut{};
+        case capability_kind::fs_read:     return cap::FsRead{"", "", cap::Limit::unbounded()};
+        case capability_kind::fs_write:    return cap::FsWrite{"", "", cap::Limit::unbounded(), cap::Limit::unbounded()};
+        case capability_kind::net_out:     return cap::NetOut{{}, cap::Limit::unbounded(), {}};
         case capability_kind::net_listen:  return cap::NetListen{};
         case capability_kind::secret:      return cap::Secret{};
         case capability_kind::tool_call:   return cap::ToolCall{};
         case capability_kind::runner_call: return cap::RunnerCall{};
-        case capability_kind::exec:        return cap::Exec{};
+        case capability_kind::exec:        return cap::Exec{"", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded()};
         case capability_kind::clock:       return cap::Clock{};
         case capability_kind::entropy:     return cap::Entropy{};
         case capability_kind::env_read:    return cap::EnvRead{};
@@ -308,7 +313,9 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::schedule:    return cap::Schedule{};
         case capability_kind::background:  return cap::Background{};
         case capability_kind::elicit:      return cap::Elicit{};
-        case capability_kind::native_exec: return cap::NativeExec{};
+        case capability_kind::native_exec:
+            return cap::NativeExec{"", "", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(),
+                                   false, cap::Limit::unbounded(), cap::Limit::unbounded()};
         case capability_kind::sandbox_mount:   return cap::SandboxMount{};
         case capability_kind::sandbox_net_out: return cap::SandboxNetOut{};
         case capability_kind::task_branch:        return cap::TaskBranch{};
@@ -379,11 +386,11 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
 }
 
 // Compile-time capability *declaration* tags (rfcs/002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
-// Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example">>`) — distinct
+// Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example", agentengine::unbounded()>>`) — distinct
 // from the runtime `cap::*` instances above, and necessarily so: `cap::NetOut` carries a
 // `std::vector<std::string>` and is therefore not a structural type, so it cannot itself be used as
 // a non-type template parameter (a class-type NTTP must be structural — literal members only, no
-// containers). `cap::decl::NetOut<"host">` is the structural, single-host compile-time stand-in
+// containers). `cap::decl::NetOut<"host", agentengine::unbounded()>` is the structural, single-host compile-time stand-in
 // `Capabilities<...>`/`Tool<...>`'s policy-tag position actually needs; `to_capability()` turns one
 // into the real runtime `Capability` a `CapabilitySet` grant is checked against, once something
 // (Phase E's `register_agent<A>()`) needs to compute an agent's actual capability ceiling from its
@@ -394,17 +401,25 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
 // (core/content.hpp's unrelated message-content-item type) if declared unqualified.
 namespace cap::decl {
 
-template <agentengine::fixed_string Mount>
+// ADR-244 slice 5: each quantity is a required `BoundValue` template argument (`FsRead<"work", unbounded()>`,
+// `FsWrite<"work", at_most(1 << 20), unbounded()>`); a tag that omits one does not compile and `at_most(0)` is a
+// compile error, the same compile-time spelling `MaxTurns<>` uses.
+template <agentengine::fixed_string Mount, agentengine::BoundValue<std::uint64_t> SizeCapBytes>
 struct FsRead {
     static constexpr std::string_view mount = std::string_view{Mount};
+    static constexpr agentengine::BoundValue<std::uint64_t> size_cap_bytes = SizeCapBytes;
 };
-template <agentengine::fixed_string Mount>
+template <agentengine::fixed_string Mount, agentengine::BoundValue<std::uint64_t> QuotaBytes,
+          agentengine::BoundValue<std::uint64_t> FileCountCap>
 struct FsWrite {
     static constexpr std::string_view mount = std::string_view{Mount};
+    static constexpr agentengine::BoundValue<std::uint64_t> quota_bytes = QuotaBytes;
+    static constexpr agentengine::BoundValue<std::uint64_t> file_count_cap = FileCountCap;
 };
-template <agentengine::fixed_string Host>
+template <agentengine::fixed_string Host, agentengine::BoundValue<std::uint64_t> ByteCap>
 struct NetOut {
     static constexpr std::string_view host = std::string_view{Host};
+    static constexpr agentengine::BoundValue<std::uint64_t> byte_cap = ByteCap;
 };
 struct NetListen {};
 template <agentengine::fixed_string Name>
@@ -419,9 +434,13 @@ template <agentengine::fixed_string Name>
 struct RunnerCall {
     static constexpr std::string_view runner_name = std::string_view{Name};
 };
-template <agentengine::fixed_string Profile>
+template <agentengine::fixed_string Profile, agentengine::BoundValue<std::uint64_t> CpuMsCap,
+          agentengine::BoundValue<std::uint64_t> WallMsCap, agentengine::BoundValue<std::uint64_t> MemoryBytesCap>
 struct Exec {
     static constexpr std::string_view profile_name = std::string_view{Profile};
+    static constexpr agentengine::BoundValue<std::uint64_t> cpu_ms_cap = CpuMsCap;
+    static constexpr agentengine::BoundValue<std::uint64_t> wall_ms_cap = WallMsCap;
+    static constexpr agentengine::BoundValue<std::uint64_t> memory_bytes_cap = MemoryBytesCap;
 };
 template <std::uint64_t ResolutionMs = 0>
 struct Clock {};
@@ -452,17 +471,24 @@ struct TaskBranch {};
 struct TaskBranchCommit {};
 // ADR-119 — fieldless, matching TaskBranch/TaskBranchCommit's own shape immediately above.
 struct RunCommand {};
-// ADR-209 §9: `LiveSession` and its two caps (0 = unset) carry the held-shell opt-in into a declared ceiling, so
-// a CRTP grant and a declarative one (`parse_native_exec_grant`, trust/native_exec_grant.hpp) can express the
-// same thing (I6). Defaulted, so every existing two-argument declaration is unchanged.
-template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount, bool LiveSession = false,
-          std::uint64_t SessionWallMsCap = 0, std::uint32_t MaxProcesses = 0>
+// ADR-209 §9: `LiveSession` and its two caps carry the held-shell opt-in into a declared ceiling, so a CRTP grant and
+// a declarative one (`parse_native_exec_grant`, trust/native_exec_grant.hpp) can express the same thing (I6).
+// ADR-244 slice 5: the three per-command caps are required; the two held-shell caps default to `unbounded()` because
+// they are inert unless `LiveSession` is true, and a live grant that leaves either unbounded is refused where it is used.
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount,
+          agentengine::BoundValue<std::uint64_t> CpuMsCap, agentengine::BoundValue<std::uint64_t> WallMsCap,
+          agentengine::BoundValue<std::uint64_t> MemoryBytesCap, bool LiveSession = false,
+          agentengine::BoundValue<std::uint64_t> SessionWallMsCap = agentengine::unbounded(),
+          agentengine::BoundValue<std::uint64_t> MaxProcesses = agentengine::unbounded()>
 struct NativeExec {
     static constexpr std::string_view program_pattern = std::string_view{ProgramPattern};
     static constexpr std::string_view worktree_mount = std::string_view{WorktreeMount};
+    static constexpr agentengine::BoundValue<std::uint64_t> cpu_ms_cap = CpuMsCap;
+    static constexpr agentengine::BoundValue<std::uint64_t> wall_ms_cap = WallMsCap;
+    static constexpr agentengine::BoundValue<std::uint64_t> memory_bytes_cap = MemoryBytesCap;
     static constexpr bool live_session = LiveSession;
-    static constexpr std::uint64_t session_wall_ms_cap = SessionWallMsCap;
-    static constexpr std::uint32_t max_processes = MaxProcesses;
+    static constexpr agentengine::BoundValue<std::uint64_t> session_wall_ms_cap = SessionWallMsCap;
+    static constexpr agentengine::BoundValue<std::uint64_t> max_processes = MaxProcesses;
 };
 
 }  // namespace cap::decl
@@ -471,17 +497,18 @@ struct NativeExec {
 // parameters actually specify (an unqualified mount/host, no cap/quota — 002 §6's metadata
 // compiler is what would later narrow this against operator-supplied limits; this conversion's job
 // is only "turn the declared identity into a real Capability", not policy).
-template <agentengine::fixed_string Mount>
-[[nodiscard]] inline Capability to_capability(cap::decl::FsRead<Mount> const&) {
-    return cap::FsRead{std::string(std::string_view{Mount}), "", std::nullopt};
+template <agentengine::fixed_string Mount, agentengine::BoundValue<std::uint64_t> SizeCapBytes>
+[[nodiscard]] inline Capability to_capability(cap::decl::FsRead<Mount, SizeCapBytes> const&) {
+    return cap::FsRead{std::string(std::string_view{Mount}), "", SizeCapBytes.to_bound()};
 }
-template <agentengine::fixed_string Mount>
-[[nodiscard]] inline Capability to_capability(cap::decl::FsWrite<Mount> const&) {
-    return cap::FsWrite{std::string(std::string_view{Mount}), "", std::nullopt, std::nullopt};
+template <agentengine::fixed_string Mount, agentengine::BoundValue<std::uint64_t> QuotaBytes,
+          agentengine::BoundValue<std::uint64_t> FileCountCap>
+[[nodiscard]] inline Capability to_capability(cap::decl::FsWrite<Mount, QuotaBytes, FileCountCap> const&) {
+    return cap::FsWrite{std::string(std::string_view{Mount}), "", QuotaBytes.to_bound(), FileCountCap.to_bound()};
 }
-template <agentengine::fixed_string Host>
-[[nodiscard]] inline Capability to_capability(cap::decl::NetOut<Host> const&) {
-    return cap::NetOut{{std::string(std::string_view{Host})}, std::nullopt, {}};
+template <agentengine::fixed_string Host, agentengine::BoundValue<std::uint64_t> ByteCap>
+[[nodiscard]] inline Capability to_capability(cap::decl::NetOut<Host, ByteCap> const&) {
+    return cap::NetOut{{std::string(std::string_view{Host})}, ByteCap.to_bound(), {}};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::NetListen const&) {
     return cap::NetListen{};
@@ -498,9 +525,11 @@ template <agentengine::fixed_string Name>
 [[nodiscard]] inline Capability to_capability(cap::decl::RunnerCall<Name> const&) {
     return cap::RunnerCall{std::string(std::string_view{Name})};
 }
-template <agentengine::fixed_string Profile>
-[[nodiscard]] inline Capability to_capability(cap::decl::Exec<Profile> const&) {
-    return cap::Exec{std::string(std::string_view{Profile}), std::nullopt, std::nullopt, std::nullopt};
+template <agentengine::fixed_string Profile, agentengine::BoundValue<std::uint64_t> CpuMsCap,
+          agentengine::BoundValue<std::uint64_t> WallMsCap, agentengine::BoundValue<std::uint64_t> MemoryBytesCap>
+[[nodiscard]] inline Capability to_capability(cap::decl::Exec<Profile, CpuMsCap, WallMsCap, MemoryBytesCap> const&) {
+    return cap::Exec{std::string(std::string_view{Profile}), CpuMsCap.to_bound(), WallMsCap.to_bound(),
+                     MemoryBytesCap.to_bound()};
 }
 template <std::uint64_t ResolutionMs>
 [[nodiscard]] inline Capability to_capability(cap::decl::Clock<ResolutionMs> const&) {
@@ -533,18 +562,21 @@ template <std::uint32_t MaxConcurrent>
     return cap::TaskBranchCommit{};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::RunCommand const&) { return cap::RunCommand{}; }
-template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount, bool LiveSession,
-          std::uint64_t SessionWallMsCap, std::uint32_t MaxProcesses>
+template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount,
+          agentengine::BoundValue<std::uint64_t> CpuMsCap, agentengine::BoundValue<std::uint64_t> WallMsCap,
+          agentengine::BoundValue<std::uint64_t> MemoryBytesCap, bool LiveSession,
+          agentengine::BoundValue<std::uint64_t> SessionWallMsCap, agentengine::BoundValue<std::uint64_t> MaxProcesses>
 [[nodiscard]] inline Capability to_capability(
-    cap::decl::NativeExec<ProgramPattern, WorktreeMount, LiveSession, SessionWallMsCap, MaxProcesses> const&) {
+    cap::decl::NativeExec<ProgramPattern, WorktreeMount, CpuMsCap, WallMsCap, MemoryBytesCap, LiveSession,
+                          SessionWallMsCap, MaxProcesses> const&) {
     return cap::NativeExec{std::string(std::string_view{ProgramPattern}),
                             std::string(std::string_view{WorktreeMount}),
-                            std::nullopt,
-                            std::nullopt,
-                            std::nullopt,
+                            CpuMsCap.to_bound(),
+                            WallMsCap.to_bound(),
+                            MemoryBytesCap.to_bound(),
                             LiveSession,
-                            SessionWallMsCap == 0 ? std::nullopt : std::optional<std::uint64_t>{SessionWallMsCap},
-                            MaxProcesses == 0 ? std::nullopt : std::optional<std::uint32_t>{MaxProcesses}};
+                            SessionWallMsCap.to_bound(),
+                            MaxProcesses.to_bound()};
 }
 
 // Named `capability_detail`, not the more obvious `detail` -- `agentengine::trust::detail` already
@@ -563,12 +595,10 @@ namespace capability_detail {
            requested_prefix[parent_prefix.size()] == '/';
 }
 
-template <class T>
-[[nodiscard]] bool cap_covers(std::optional<T> const& parent_cap,
-                               std::optional<T> const& requested_cap) {
-    if (!parent_cap.has_value()) return true;    // parent uncapped -- covers any request
-    if (!requested_cap.has_value()) return false; // parent capped, request claims uncapped -- widening
-    return *requested_cap <= *parent_cap;
+// ADR-244 slice 5: `Bound::covers` is exactly the old optional rule -- an unbounded parent covers any request, a
+// capped parent rejects an unbounded request (widening) and any larger value.
+[[nodiscard]] inline bool cap_covers(cap::Limit parent_cap, cap::Limit requested_cap) {
+    return parent_cap.covers(requested_cap);
 }
 
 [[nodiscard]] inline bool subsumes_payload(cap::FsRead const& parent, cap::FsRead const& requested) {
@@ -724,19 +754,14 @@ template <class T>
 }
 
 // decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md -- the quantity axes of a kind are
-// its `std::optional` caps (the `cap_covers` fields above, where `nullopt` = no limit). `cap_meet`
+// its `Limit` caps (the `cap_covers` fields above, where `unbounded()` = no limit). `cap_meet`
 // is the tighter of two such caps; `clamp_quantities` lowers every quantity cap of `requested` to the
 // parent's wherever the parent's is tighter, and leaves every SCOPE axis (mount, path prefix, host
 // list, method list, program pattern, profile...) exactly as requested. The result is never wider than
 // `requested` on any axis, so `subsumes_payload(parent, clamped)` then decides the scope axes with the
 // unchanged rules above and can only pass the quantity axes. Kinds without an optional quantity cap
 // use the identity overload, so for them a clamped bind is exactly `contains()`.
-template <class T>
-[[nodiscard]] std::optional<T> cap_meet(std::optional<T> const& a, std::optional<T> const& b) {
-    if (!a.has_value()) return b;
-    if (!b.has_value()) return a;
-    return (std::min)(*a, *b);  // parenthesized: windows.h min macro
-}
+[[nodiscard]] inline cap::Limit cap_meet(cap::Limit a, cap::Limit b) { return cap::Limit::tighter(a, b); }
 template <class T>
 [[nodiscard]] T clamp_quantities(T const&, T requested) {
     return requested;

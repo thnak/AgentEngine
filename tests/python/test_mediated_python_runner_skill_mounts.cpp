@@ -95,7 +95,7 @@ int main() {
     ctx.session_nonce = ae_test::kTestSessionNonce;
     ctx.principal = ae_test::kTestPrincipal;
     auto granted = CapabilitySet::grant_root(
-        {Capability{cap::FsRead{"real-mounted-skill", "", std::nullopt}}});
+        {Capability{cap::FsRead{"real-mounted-skill", "", cap::Limit::unbounded()}}});
     ctx.capabilities = agentengine::borrow_capabilities(granted);
 
     // ---- the actual proof: real Python code, real open(), real mounted skill content ---------------

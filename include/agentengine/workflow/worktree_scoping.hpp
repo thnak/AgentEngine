@@ -86,8 +86,8 @@ namespace detail {
     if (sub.mode != sharing_mode::readonly) {
         std::string const mount_id = "/agents/" + executor_id;
         grant.mount = Mount{mount_id, sub.backing_ref_name, ""};
-        grant.read  = cap::FsRead{mount_id, "", std::nullopt};
-        grant.write = cap::FsWrite{mount_id, "", std::nullopt, std::nullopt};
+        grant.read  = cap::FsRead{mount_id, "", cap::Limit::unbounded()};
+        grant.write = cap::FsWrite{mount_id, "", cap::Limit::unbounded(), cap::Limit::unbounded()};
     }
     return grant;
 }

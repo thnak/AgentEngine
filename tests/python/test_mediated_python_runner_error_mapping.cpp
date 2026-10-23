@@ -104,7 +104,7 @@ int main() {
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
-            Capability{cap::FsRead{"work", "", std::nullopt}},
+            Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
         });
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -150,7 +150,7 @@ int main() {
             ctx.session_nonce = ae_test::kTestSessionNonce;
             ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
-                Capability{cap::FsWrite{"quota", "", std::uint64_t{10}, std::nullopt}},
+                Capability{cap::FsWrite{"quota", "", cap::Limit::at_most(std::uint64_t{10}), cap::Limit::unbounded()}},
             });
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -189,7 +189,7 @@ int main() {
             ctx.session_nonce = ae_test::kTestSessionNonce;
             ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
-                Capability{cap::FsWrite{"count", "", std::nullopt, std::uint32_t{1}}},
+                Capability{cap::FsWrite{"count", "", cap::Limit::unbounded(), cap::Limit::at_most(std::uint32_t{1})}},
             });
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 

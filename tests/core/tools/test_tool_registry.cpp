@@ -92,9 +92,9 @@ int main() {
     // --- T3: non-native, capability_ceiling covered by outer_grant -- registers -----------------------
     {
         ToolRegistry registry;
-        std::vector<Capability> const ceiling = {agentengine::cap::NetOut{{"api.search.example"}, {}, {}}};
+        std::vector<Capability> const ceiling = {agentengine::cap::NetOut{{"api.search.example"}, agentengine::cap::Limit::at_most({}), {}}};
         std::vector<Capability> const outer_grant = {
-            agentengine::cap::NetOut{{"api.search.example"}, {}, {}}};
+            agentengine::cap::NetOut{{"api.search.example"}, agentengine::cap::Limit::at_most({}), {}}};
         auto reg = registry.register_tool("plugin_search", make_descriptor("plugin_search", ceiling),
                                            tool_provenance::wasm_plugin, outer_grant);
         check(reg.has_value(),
@@ -107,9 +107,9 @@ int main() {
     {
         ToolRegistry registry;
         std::vector<Capability> const ceiling = {
-            agentengine::cap::NetOut{{"api.search.example"}, {}, {}}};
+            agentengine::cap::NetOut{{"api.search.example"}, agentengine::cap::Limit::at_most({}), {}}};
         std::vector<Capability> const narrow_outer_grant = {
-            agentengine::cap::NetOut{{"api.other.example"}, {}, {}}};  // a DIFFERENT host -- no cover
+            agentengine::cap::NetOut{{"api.other.example"}, agentengine::cap::Limit::at_most({}), {}}};  // a DIFFERENT host -- no cover
         auto reg = registry.register_tool("plugin_bad", make_descriptor("plugin_bad", ceiling),
                                            tool_provenance::wasm_plugin, narrow_outer_grant);
         check(!reg.has_value(),
@@ -126,7 +126,7 @@ int main() {
         // A SIBLING tool from the same plugin, with a covered ceiling, still registers -- this is a
         // per-tool rejection, not a whole-plugin failure (design draft's own MUST-NAME 1 framing).
         std::vector<Capability> const ok_ceiling = {
-            agentengine::cap::NetOut{{"api.other.example"}, {}, {}}};
+            agentengine::cap::NetOut{{"api.other.example"}, agentengine::cap::Limit::at_most({}), {}}};
         auto sibling = registry.register_tool("plugin_good", make_descriptor("plugin_good", ok_ceiling),
                                                tool_provenance::wasm_plugin, narrow_outer_grant);
         check(sibling.has_value(),
@@ -146,8 +146,8 @@ int main() {
     // --- T6: mcp_server / a2a_agent get the identical capability-trust treatment ----------------------
     {
         ToolRegistry registry;
-        std::vector<Capability> const ceiling = {agentengine::cap::FsRead{"m-1", "", {}}};
-        std::vector<Capability> const outer_grant = {agentengine::cap::FsRead{"m-1", "", {}}};
+        std::vector<Capability> const ceiling = {agentengine::cap::FsRead{"m-1", "", agentengine::cap::Limit::at_most({})}};
+        std::vector<Capability> const outer_grant = {agentengine::cap::FsRead{"m-1", "", agentengine::cap::Limit::at_most({})}};
         auto mcp = registry.register_tool("mcp_tool", make_descriptor("mcp_tool", ceiling),
                                            tool_provenance::mcp_server, outer_grant);
         check(mcp.has_value(), "T6: an mcp_server tool covered by its outer_grant registers");

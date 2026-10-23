@@ -112,7 +112,7 @@ AE_JSON_SCHEMA(DangerousReply, sent)
 // `is_inert_for_text_derived_declassification` (trust/capability.hpp) classifies as dangerous.
 struct DangerousNeverRequireTool
     : agentengine::Tool<DangerousNeverRequireTool,
-                          agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
+                          agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com", agentengine::unbounded()>>,
                           agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "send_email";
     static constexpr std::string_view description = "Sends an email (real egress capability).";
@@ -172,7 +172,7 @@ struct PurePolicyTool
 // ADR-184 red-team: an inert-but-real ceiling (FsRead is read-only, so still declassifiable) on a
 // pure tool whose author asked for approval on every call.
 struct PureReadAlwaysTool
-    : agentengine::Tool<PureReadAlwaysTool, agentengine::Capabilities<agentengine::cap::decl::FsRead<"workspace">>,
+    : agentengine::Tool<PureReadAlwaysTool, agentengine::Capabilities<agentengine::cap::decl::FsRead<"workspace", agentengine::unbounded()>>,
                           agentengine::EffectClass<agentengine::effect_class::pure>,
                           agentengine::Approval<agentengine::approval_mode::always_require>> {
     static constexpr std::string_view name = "pure_read_always";
@@ -186,7 +186,7 @@ struct PureReadAlwaysTool
 // ADR-184 red-team: a Backgroundable never_require tool with a real (non-inert) ceiling, for
 // background_task()'s own step 5, which used to read `tool->approval` alone.
 struct BackgroundNetTool
-    : agentengine::Tool<BackgroundNetTool, agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
+    : agentengine::Tool<BackgroundNetTool, agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com", agentengine::unbounded()>>,
                           agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "background_net";
     static constexpr std::string_view description = "Backgroundable, real egress, never_require.";
@@ -356,12 +356,12 @@ int main() {
     // holds NetOut for.
     {
         using agentengine::call_provenance;
-        // Matches EXACTLY what DangerousNeverRequireTool's declared NetOut<"api.example.com">
+        // Matches EXACTLY what DangerousNeverRequireTool's declared NetOut<"api.example.com", agentengine::unbounded()>
         // converts to (trust/capability.hpp's to_capability(cap::decl::NetOut<Host>)) -- the agent
         // genuinely holds this capability, so the call reaches step 5, not a step-4 capability
         // denial (an empty host_allowlist would deny-all and fail for the wrong reason).
         CapabilitySet held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         auto ctx = make_ctx();
         ToolCallRequest req{.call_id = "call-9",
                               .tool_name = "send_email",
@@ -419,7 +419,7 @@ int main() {
         // own behavior changed.
         using agentengine::call_provenance;
         CapabilitySet held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         auto ctx = make_ctx();
         ToolCallRequest vendor_req{.call_id = "call-11",
                                      .tool_name = "send_email",
@@ -702,7 +702,7 @@ int main() {
         // refused synchronously, before any thread starts.
         {
             CapabilitySet bg_held = CapabilitySet::grant_root(
-                {agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}, agentengine::cap::Background{1}});
+                {agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}, agentengine::cap::Background{1}});
             bool completed = false;
             auto r = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
                 table, bg_held, req_for("background_net", call_provenance::text_derived), make_ctx(), nullptr, 0,

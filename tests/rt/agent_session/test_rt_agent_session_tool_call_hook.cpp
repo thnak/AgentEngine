@@ -142,7 +142,7 @@ AE_JSON_SCHEMA(DangerousReply, sent)
 
 struct DangerousNeverRequireTool
     : agentengine::Tool<DangerousNeverRequireTool,
-                          agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com">>,
+                          agentengine::Capabilities<agentengine::cap::decl::NetOut<"api.example.com", agentengine::unbounded()>>,
                           agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "send_email";
     static constexpr std::string_view description = "Sends an email (real egress capability).";
@@ -392,7 +392,7 @@ int main() {
             {text_response("after-refusal"), Usage{1, 1, 0, 0, 0.0}},
         });
         CapabilitySet const held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         session.set_capabilities(&held);
         // Deliberately no set_approval_decider() and no set_suspend_for_approval(true) -- exactly
         // ADR-023 P2-T2's own "no decider supplied" shape, proving invoke_tool()'s own step 5 (not a
@@ -430,7 +430,7 @@ int main() {
             {text_response("after-deny"), Usage{1, 1, 0, 0, 0.0}},
         });
         CapabilitySet const held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         session.set_capabilities(&held);
 
         std::string seen_args;
@@ -470,7 +470,7 @@ int main() {
             {text_response("after-approve"), Usage{1, 1, 0, 0, 0.0}},
         });
         CapabilitySet const held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         session.set_capabilities(&held);
         session.set_approval_decider(
             [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> { co_return true; });
@@ -513,7 +513,7 @@ int main() {
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
         });
         CapabilitySet const held =
-            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
+            CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, agentengine::cap::Limit::unbounded(), {}}});
         session.set_capabilities(&held);
         // No set_tool_call_hook() call at all -- session.tool_call_hook() stays default-constructed.
 

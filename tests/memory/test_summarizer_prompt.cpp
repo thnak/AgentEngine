@@ -370,8 +370,8 @@ int main() {
         ae::Principal const principal{"p-summary", ""};
         (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
         ae::Mount const mount = ae::memory_mount(principal);
-        ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
-        ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
+        ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded()};
+        ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
         using Provider = ae::MemoryProvider<CapturingSummarizer, ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
         auto count = [&] {
             auto items = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));

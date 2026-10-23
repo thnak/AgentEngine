@@ -50,8 +50,8 @@ int g_failures = 0;
 
 CapabilitySet full_caps() {
     return CapabilitySet::grant_root({
-        Capability{cap::FsRead{"work", "", std::nullopt}},
-        Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
+        Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+        Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
         Capability{cap::EnvWrite{"MY_VAR"}},
         Capability{cap::RunnerCall{"fake"}},
     });
@@ -324,7 +324,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
-                {Capability{cap::FsWrite{"work", "", std::uint64_t{1'000'000}, std::nullopt}}});
+                {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{1'000'000}), cap::Limit::unbounded()}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir under_quota"}, state, ctx));
@@ -343,7 +343,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
-                {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});  // 5 < the 10 already used
+                {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});  // 5 < the 10 already used
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir over_quota"}, state, ctx));
@@ -359,7 +359,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
-                {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});
+                {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "rm seed.txt"}, state, ctx));
@@ -380,8 +380,8 @@ int main() {
 
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
-                {Capability{cap::FsRead{"work", "", std::nullopt}},
-                 Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});  // exhausted, same as E3-Q2
+                {Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
+                 Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});  // exhausted, same as E3-Q2
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -411,7 +411,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps =
-                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{100}}}});
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{100})}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));
@@ -428,7 +428,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps =
-                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{2}}}});
+                CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{2})}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));

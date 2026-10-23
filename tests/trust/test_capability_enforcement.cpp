@@ -43,7 +43,7 @@ int main() {
     {
         CapabilitySet empty;
         AE_CHECK(empty.size() == 0, "C1: default-constructed CapabilitySet is empty");
-        AE_CHECK(!empty.contains(cap::FsRead{"workspace", "", std::nullopt}),
+        AE_CHECK(!empty.contains(cap::FsRead{"workspace", "", cap::Limit::unbounded()}),
                   "C1: an empty set contains nothing");
         AE_CHECK(!empty.contains_kind(capability_kind::clock),
                   "C1: an empty set's kind-only check also finds nothing");
@@ -52,14 +52,14 @@ int main() {
     // ---- C2: attenuation -- narrowing succeeds -------------------------------------------------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::FsRead{"workspace", "", std::nullopt}},
+            Capability{cap::FsRead{"workspace", "", cap::Limit::unbounded()}},
         });
-        auto narrower = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", 1024}}});
+        auto narrower = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", cap::Limit::at_most(1024)}}});
         AE_CHECK(narrower.has_value(), "C2: narrowing to a subtree+cap under the parent succeeds");
         if (narrower.has_value()) {
-            AE_CHECK(narrower->contains(cap::FsRead{"workspace", "/reports", 512}),
+            AE_CHECK(narrower->contains(cap::FsRead{"workspace", "/reports", cap::Limit::at_most(512)}),
                       "C2: the derived set actually reflects the narrower request");
-            AE_CHECK(!narrower->contains(cap::FsRead{"workspace", "", std::nullopt}),
+            AE_CHECK(!narrower->contains(cap::FsRead{"workspace", "", cap::Limit::unbounded()}),
                       "C2: the derived set does NOT still carry the parent's wider grant");
         }
     }
@@ -67,15 +67,15 @@ int main() {
     // ---- C3 / R-C3: attenuation -- every widening axis is rejected, not just one ---------------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::FsRead{"workspace", "/reports", 1000}},
+            Capability{cap::FsRead{"workspace", "/reports", cap::Limit::at_most(1000)}},
         });
 
-        auto wider_mount   = root.attenuate({Capability{cap::FsRead{"secrets", "/reports", 1000}}});
-        auto wider_prefix   = root.attenuate({Capability{cap::FsRead{"workspace", "", 1000}}});
-        auto wider_segment  = root.attenuate({Capability{cap::FsRead{"workspace", "/repo", 1000}}}); // "/repo" is NOT a prefix-boundary subset of "/reports"
-        auto wider_cap      = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", 2000}}});
-        auto uncapped       = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", std::nullopt}}});
-        auto kind_swap      = root.attenuate({Capability{cap::FsWrite{"workspace", "/reports", std::nullopt, std::nullopt}}});
+        auto wider_mount   = root.attenuate({Capability{cap::FsRead{"secrets", "/reports", cap::Limit::at_most(1000)}}});
+        auto wider_prefix   = root.attenuate({Capability{cap::FsRead{"workspace", "", cap::Limit::at_most(1000)}}});
+        auto wider_segment  = root.attenuate({Capability{cap::FsRead{"workspace", "/repo", cap::Limit::at_most(1000)}}}); // "/repo" is NOT a prefix-boundary subset of "/reports"
+        auto wider_cap      = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", cap::Limit::at_most(2000)}}});
+        auto uncapped       = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", cap::Limit::unbounded()}}});
+        auto kind_swap      = root.attenuate({Capability{cap::FsWrite{"workspace", "/reports", cap::Limit::unbounded(), cap::Limit::unbounded()}}});
 
         AE_CHECK(!wider_mount.has_value(),  "R-C3: attenuation to a different mount is rejected");
         AE_CHECK(!wider_prefix.has_value(), "R-C3: attenuation to a broader path prefix is rejected");
@@ -86,28 +86,28 @@ int main() {
 
         // Positive control: a request identical to the parent still succeeds -- proves the six
         // rejections above are the subsumption check actually firing, not "attenuate always fails".
-        auto identical = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", 1000}}});
+        auto identical = root.attenuate({Capability{cap::FsRead{"workspace", "/reports", cap::Limit::at_most(1000)}}});
         AE_CHECK(identical.has_value(), "R-C3 (positive control): an exact-match request is accepted");
     }
 
     // ---- C4: parameterized subsumption is real, not kind-only ----------------------------------
     {
         auto root = CapabilitySet::grant_root({
-            Capability{cap::FsRead{"workspace", "", std::nullopt}},
+            Capability{cap::FsRead{"workspace", "", cap::Limit::unbounded()}},
         });
         AE_CHECK(root.contains_kind(capability_kind::fs_read),
                   "C4: kind-only check sees the fs_read grant (both are fs_read)");
-        AE_CHECK(!root.contains(cap::FsRead{"secrets", "", std::nullopt}),
+        AE_CHECK(!root.contains(cap::FsRead{"secrets", "", cap::Limit::unbounded()}),
                   "C4: real check correctly denies a same-kind request against a different mount "
                   "('secrets' vs 'workspace') -- kind alone is not enough");
 
         // NetOut host-allowlist subsumption: same kind, different (non-subset) parameter -> denied.
         auto net_root = CapabilitySet::grant_root({
-            Capability{cap::NetOut{{"api.search.example:443:https"}, std::nullopt, {}}},
+            Capability{cap::NetOut{{"api.search.example:443:https"}, cap::Limit::unbounded(), {}}},
         });
-        AE_CHECK(net_root.contains(cap::NetOut{{"api.search.example:443:https"}, std::nullopt, {}}),
+        AE_CHECK(net_root.contains(cap::NetOut{{"api.search.example:443:https"}, cap::Limit::unbounded(), {}}),
                   "C4: NetOut request for exactly the granted host is allowed");
-        AE_CHECK(!net_root.contains(cap::NetOut{{"evil.example:443:https"}, std::nullopt, {}}),
+        AE_CHECK(!net_root.contains(cap::NetOut{{"evil.example:443:https"}, cap::Limit::unbounded(), {}}),
                   "C4: NetOut request for a host NOT in the allowlist is denied");
 
         // Code-review fix (2026-08-07): an EMPTY (unrestricted) request must NOT be trivially
@@ -115,16 +115,16 @@ int main() {
         // bug (subsumes_payload's loop was a no-op on an empty requested.host_allowlist, so it fell
         // through to `return true`). Positive control below proves attenuate() to a real, narrower
         // NetOut still works (the fix didn't just make everything fail closed).
-        AE_CHECK(!net_root.contains(cap::NetOut{{}, std::nullopt, {}}),
+        AE_CHECK(!net_root.contains(cap::NetOut{{}, cap::Limit::unbounded(), {}}),
                   "R-C4a: an unrestricted (empty-allowlist) NetOut request is DENIED against a "
                   "single-host parent -- attenuate() must not be able to derive unrestricted "
                   "network access from a narrowly-scoped grant");
-        auto net_attenuated = net_root.attenuate({Capability{cap::NetOut{{}, std::nullopt, {}}}});
+        auto net_attenuated = net_root.attenuate({Capability{cap::NetOut{{}, cap::Limit::unbounded(), {}}}});
         AE_CHECK(!net_attenuated.has_value(),
                   "R-C4a: attenuate() to an unrestricted NetOut is rejected outright, not silently "
                   "narrowed");
         auto net_attenuated_ok =
-            net_root.attenuate({Capability{cap::NetOut{{"api.search.example:443:https"}, std::nullopt, {}}}});
+            net_root.attenuate({Capability{cap::NetOut{{"api.search.example:443:https"}, cap::Limit::unbounded(), {}}}});
         AE_CHECK(net_attenuated_ok.has_value(),
                   "R-C4a positive control: attenuate() to the SAME single host still succeeds -- "
                   "the fix denies unrestricted requests, not all requests");

@@ -240,7 +240,7 @@ AE_JSON_SCHEMA(TaskBranchDiscardReply, ok)
 //      capability" error (names neither what's missing nor what IS held) -- fail-closed, matching
 //      007 §6's empty-by-default rule, the identical contract the real, shipped `RunShellTool`
 //      (`src/backends/native_jail/session_shell_wiring.hpp`, ADR-096) already lives under for
-//      `cap::decl::FsRead<"work">`/`cap::decl::FsWrite<"work">`.
+//      `cap::decl::FsRead<"work", agentengine::unbounded()>`/`cap::decl::FsWrite<"work", agentengine::unbounded(), agentengine::unbounded()>`.
 //
 // REAL, DISCLOSED BEHAVIOR CHANGE from this file's own ADR-114 original: before this widening, a
 // session that called `bind_sandbox()` + `bind_task_branch_tools()` could reach all four verbs
