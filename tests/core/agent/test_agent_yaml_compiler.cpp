@@ -137,13 +137,13 @@ int main() {
             auto r = ae::compile_agent_document(*yaml::parse(
                 "spec:\n  approval: " + std::string(ae::agent_choice_options::approval[i]) + "\n"));
             check(r.has_value() && r->approval == static_cast<ae::approval_mode>(i),
-                  "F-3b: approval option '" + std::string(ae::agent_choice_options::approval[i]) + "' parses to its enumerator");
+                  ("F-3b: approval option '" + std::string(ae::agent_choice_options::approval[i]) + "' parses to its enumerator").c_str());
         }
         for (std::size_t i = 0; i < ae::agent_choice_options::concurrency.size(); ++i) {
             auto r = ae::compile_agent_document(*yaml::parse(
                 "spec:\n  concurrency: " + std::string(ae::agent_choice_options::concurrency[i]) + "\n"));
             check(r.has_value() && r->concurrency == static_cast<ae::concurrency_mode>(i),
-                  "F-3b: concurrency option '" + std::string(ae::agent_choice_options::concurrency[i]) + "' parses");
+                  ("F-3b: concurrency option '" + std::string(ae::agent_choice_options::concurrency[i]) + "' parses").c_str());
         }
         auto bad = ae::compile_agent_document(*yaml::parse("spec:\n  approval: sometimes\n"));
         bool lists_all = !bad.has_value();
