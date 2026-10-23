@@ -19,6 +19,8 @@
 #include <filesystem>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
@@ -56,13 +58,13 @@ struct BlockedReply {
     std::string unused;
 };
 AE_JSON_SCHEMA(BlockedReply, unused)
-struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>> {
+struct BlockedNetTool : Tool<BlockedNetTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "blocked_net_tool";
     static constexpr std::string_view description = "Always fails as if net_egress_proxy blocked the address.";
     using Args = BlockedArgs;
     using Reply = BlockedReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
+        co_return std::unexpected(
             error{failure_class::policy, "address is in a blocked range", "net.address_blocked"});
     }
 };
@@ -94,11 +96,13 @@ int main() {
         cfg.mount_roots["work"] = widen(work_dir);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a 'work' mount initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"work", "", std::nullopt}},
         });
@@ -111,7 +115,7 @@ int main() {
                          "    print('KIND:', type(e).__name__)\n"
                          "    print('IS_OSERROR:', isinstance(e, OSError))\n"
                          "    print('TEXT:', str(e))"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value(), "G4-R1: setup -- the script runs");
         AE_CHECK(out.has_value() && out->stdout_text.find("KIND: FileNotFoundError") != std::string::npos,
                  "G4-R1: a read of a nonexistent path under a granted mount raises the real "
@@ -136,39 +140,41 @@ int main() {
         cfg.mount_roots["count"] = widen(count_dir);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with quota/count mounts initializes cleanly");
 
         // -- quota_bytes axis: a 10-byte cap on the 'quota' mount. --------------------------------
         {
             ExecState state{};
             EffectContext ctx{};
+            ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"quota", "", std::uint64_t{10}, std::nullopt}},
             });
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
             // a.txt: 5 bytes, usage before this open() is 0 (<=10) -- allowed.
-            auto a = runner.run(ExecRequest{"python", "open('/quota/a.txt','w').write('hello')"}, state, ctx);
+            auto a = agentengine::rt::block_on(runner.run(ExecRequest{"python", "open('/quota/a.txt','w').write('hello')"}, state, ctx));
             AE_CHECK(a.has_value(), "G4-R2-Q1: a write within quota (usage 0/10 before open) succeeds");
 
             // b.txt: 6 bytes. Pre-open usage is 5 (<=10) -- allowed, even though writing 6 more bytes
             // pushes real on-disk usage to 11, past the cap -- this pass's own named, narrower scope:
             // checked at the open() boundary, not intercepted mid-write on an already-open handle.
-            auto b = runner.run(ExecRequest{"python", "open('/quota/b.txt','w').write('world!')"}, state, ctx);
+            auto b = agentengine::rt::block_on(runner.run(ExecRequest{"python", "open('/quota/b.txt','w').write('world!')"}, state, ctx));
             AE_CHECK(b.has_value(),
                      "G4-R2-Q2: a write whose pre-open usage (5/10) is still under quota succeeds, even "
                      "though its own bytes push on-disk usage past the cap -- checked at open(), not "
                      "per-byte on an in-flight handle");
 
             // c.txt: pre-open usage is now 11 (>10) -- denied before any Win32 call.
-            auto c = runner.run(ExecRequest{"python",
+            auto c = agentengine::rt::block_on(runner.run(ExecRequest{"python",
                                              "try:\n"
                                              "    open('/quota/c.txt','w')\n"
                                              "except OSError as e:\n"
                                              "    print('KIND:', type(e).__name__)\n"
                                              "    print('TEXT:', str(e))"},
-                                 state, ctx);
+                                 state, ctx));
             AE_CHECK(c.has_value() && c->stdout_text.find("KIND: OSError") != std::string::npos,
                      "G4-R2-Q3: a write attempted once usage already exceeds quota_bytes raises OSError");
             AE_CHECK(c.has_value() && c->stdout_text.find("TEXT: No space left on device") != std::string::npos,
@@ -180,26 +186,28 @@ int main() {
         {
             ExecState state{};
             EffectContext ctx{};
+            ctx.session_nonce = ae_test::kTestSessionNonce;
+            ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
                 Capability{cap::FsWrite{"count", "", std::nullopt, std::uint32_t{1}}},
             });
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-            auto x = runner.run(ExecRequest{"python", "open('/count/x.txt','w').write('x')"}, state, ctx);
+            auto x = agentengine::rt::block_on(runner.run(ExecRequest{"python", "open('/count/x.txt','w').write('x')"}, state, ctx));
             AE_CHECK(x.has_value(), "G4-R2-C1: the first file (pre-open count 0/1) is allowed");
 
             // y.txt: pre-open count is 1, not > 1 -- allowed (matches quota_bytes' own "checked before
             // this open, not retroactively" boundary).
-            auto y = runner.run(ExecRequest{"python", "open('/count/y.txt','w').write('y')"}, state, ctx);
+            auto y = agentengine::rt::block_on(runner.run(ExecRequest{"python", "open('/count/y.txt','w').write('y')"}, state, ctx));
             AE_CHECK(y.has_value(), "G4-R2-C2: a second file whose pre-open count (1/1) is not yet OVER the cap is allowed");
 
             // z.txt: pre-open count is now 2 (>1) -- denied.
-            auto z = runner.run(ExecRequest{"python",
+            auto z = agentengine::rt::block_on(runner.run(ExecRequest{"python",
                                              "try:\n"
                                              "    open('/count/z.txt','w')\n"
                                              "except OSError as e:\n"
                                              "    print('TEXT:', str(e))"},
-                                 state, ctx);
+                                 state, ctx));
             AE_CHECK(z.has_value() && z->stdout_text.find("TEXT: No space left on device") != std::string::npos,
                      "G4-R2-C3: a third file, once file_count_cap is already exceeded, is denied with "
                      "the same spec-exact message");
@@ -213,19 +221,24 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<BlockedNetTool>();
-        bridge.capabilities = {cap::Entropy{}};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(BlockedNetTool{}),
+                         .capabilities  = {cap::Entropy{}},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a blocked-net tool bridge initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
-        auto caps = CapabilitySet::grant_root({});  // no cap::NetOut granted at all
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // No cap::NetOut granted at all. ADR-244 §2.4: the caller does hold what the bridged tool itself needs
+        // (cap::Entropy), since the bridge never reaches more than its caller holds.
+        auto caps = CapabilitySet::grant_root({Capability{cap::Entropy{}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // G4-R3-1: the raw-socket path -- a connect() attempt with no NetOut capability.
@@ -238,7 +251,7 @@ int main() {
                              "except ConnectionRefusedError as e:\n"
                              "    print('KIND:', type(e).__name__)\n"
                              "    print('IS_CONN_ERROR:', isinstance(e, ConnectionError))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("KIND: ConnectionRefusedError") != std::string::npos,
                      "G4-R3-1: socket.connect() denied for lack of NetOut raises ConnectionRefusedError, "
                      "not PermissionError -- the host stays indistinguishable from a genuinely "
@@ -257,7 +270,7 @@ int main() {
                              "    tools.blocked_net_tool(unused='')\n"
                              "except ConnectionRefusedError as e:\n"
                              "    print('KIND:', type(e).__name__)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("KIND: ConnectionRefusedError") != std::string::npos,
                      "G4-R3-2: a bridged tool's own 'net.address_blocked' failure surfaces as "
                      "ConnectionRefusedError through agent.tools too, not RuntimeError's fallback");

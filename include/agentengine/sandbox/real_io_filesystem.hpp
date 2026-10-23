@@ -14,7 +14,7 @@
 // now refer to this phase's own real, ported `agentengine::Ledger<>`/`agentengine::IdentityHandle`
 // (core/ledger.hpp, ADR-102 Phase 2) rather than the prove-phase standalone types.
 //
-// PLATFORM-PORTABLE (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md): this class's
+// PLATFORM-PORTABLE (2026-08-29, decisions/archive/ADR-104-real-io-filesystem-linux-parity.md): this class's
 // two methods that need a real, verified OS handle -- `write_verified()`/`read_verified()` -- are
 // declared here but defined out-of-line, once per platform (src/sandbox/real_io_filesystem.cpp for
 // Windows' `open_within_mount_root`+`WriteFile`/`ReadFile`/`GetFileSizeEx`,
@@ -158,7 +158,7 @@ public:
         for (auto const& path : paths) {
             auto bytes = read_real_file(path);   // REAL disk read, independent of what write() staged
             if (!bytes.has_value()) co_return std::unexpected(bytes.error());
-            auto blob_digest = batch.put(*bytes);
+            auto blob_digest = co_await batch.put(*bytes);
             if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
             tree.entries.push_back(agentengine::TreeEntry{path, *blob_digest, false});
         }
@@ -248,7 +248,7 @@ public:
         // One snapshot write for the whole scan, not one per file (`Ledger::BlobWriteBatch`).
         typename agentengine::Ledger<Store>::BlobWriteBatch batch(ledger, author);
         for (auto const& [rel, bytes] : collected) {
-            auto blob_digest = batch.put(bytes);
+            auto blob_digest = co_await batch.put(bytes);
             if (!blob_digest.has_value()) co_return std::unexpected(blob_digest.error());
             tree.entries.push_back(agentengine::TreeEntry{rel, *blob_digest, false});
         }
@@ -271,7 +271,7 @@ public:
             agentengine::IdentityHandle caller) {
         agentengine::rt::AsyncMutex::Guard commit_guard = co_await commit_lock_->lock();
 
-        auto tree = ledger.get_tree_safe(tree_digest, caller);
+        auto tree = co_await ledger.get_tree_safe(tree_digest, caller);
         if (!tree.has_value()) co_return std::unexpected(tree.error());
 
         // Validate every entry's NAME before touching disk -- commit() only ACL-gates an entry's
@@ -280,6 +280,17 @@ public:
         for (auto const& entry : tree->entries) {
             auto safe = real_io_reject_unsafe_relative_path(entry.name);
             if (!safe.has_value()) co_return std::unexpected(safe.error());
+        }
+
+        // ADR-238 §3.10: every blob is read BEFORE `sync_mutex_` is taken. That lock is a std::mutex and must not be
+        // held across a `co_await`, and reading first also means a failed read leaves the working directory intact
+        // rather than half wiped. Costs holding the tree's blobs in memory at once (named residual).
+        std::vector<std::vector<std::byte>> blobs;
+        blobs.reserve(tree->entries.size());
+        for (auto const& entry : tree->entries) {
+            auto bytes = co_await ledger.get_blob_safe(entry.digest, caller);
+            if (!bytes.has_value()) co_return std::unexpected(bytes.error());
+            blobs.push_back(std::move(*bytes));
         }
 
         // Takes the SAME lock write() uses for the actual filesystem mutation (not a different one),
@@ -320,9 +331,8 @@ public:
                 "real_io.materialize_root_create_failed", mkroot_ec.value()});
         }
 
-        for (auto const& entry : tree->entries) {
-            auto bytes = ledger.get_blob_safe(entry.digest, caller);
-            if (!bytes.has_value()) co_return std::unexpected(bytes.error());
+        for (std::size_t i = 0; i < tree->entries.size(); ++i) {
+            auto const& entry = tree->entries[i];
             std::filesystem::path const full_parent = (host_root_ / entry.name).parent_path();
             std::error_code mkdir_ec;
             std::filesystem::create_directories(full_parent, mkdir_ec);
@@ -333,7 +343,7 @@ public:
                         "': " + mkdir_ec.message(),
                     "real_io.materialize_parent_create_failed", mkdir_ec.value()});
             }
-            auto written = write_verified(entry.name, *bytes);
+            auto written = write_verified(entry.name, blobs[i]);
             if (!written.has_value()) co_return std::unexpected(written.error());
         }
         co_return agentengine::result<void>{};

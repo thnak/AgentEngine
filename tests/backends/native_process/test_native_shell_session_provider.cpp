@@ -39,11 +39,13 @@
 // using `live_session` alone as the tool gate (no cap check) fails N1; not setting the job's process limit fails W5;
 // skipping the containment probe fails W0 on a host whose pwsh is the Store build.
 
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_process/native_shell_session_provider.hpp"
 
 #include "../../support/memory_cap.hpp"
 #include "agentengine/core/base64.hpp"
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +53,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 using namespace agentengine::native_process;
 namespace fs = std::filesystem;
@@ -81,8 +84,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Windows PowerShell 5.1 ships with every supported Windows; the Store pwsh fails the containment probe (W0).
@@ -146,7 +148,7 @@ template <class P>
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"});
     std::vector<std::pair<std::string, json::Value>> m{{"command", json::Value::make_string(command)}};
     if (restart) m.emplace_back("restart", json::Value::make_bool(true));
-    auto out = tool->invoke(json::Value::make_object(std::move(m)), c.ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object(std::move(m)), c.ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<NativeShellSessionReply>(*out);
 }
@@ -401,7 +403,7 @@ int main() {
         // The tool is not even offered under the one-shot grant; drive the still-held descriptor from the full context.
         auto tool = tool_of(p, c);
         std::optional<result<json::Value>> n3;
-        if (tool.has_value()) n3 = tool->invoke(json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), revoked.ctx);
+        if (tool.has_value()) n3 = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), revoked.ctx));
         check(n3.has_value() && !n3->has_value() && (*n3).error().code == "native_shell_session.grant_revoked" &&
                   !p.session()->is_live(),
               "N3: a call made after the grant is gone is refused and the shell is killed");
@@ -452,7 +454,7 @@ int main() {
         Ctx stranger({}, "someone-else");
         std::vector<std::pair<std::string, json::Value>> m{{"command", json::Value::make_string("Write-Output x")}};
         auto tool = tool_of(p, c);
-        auto st = tool ? tool->invoke(json::Value::make_object(std::move(m)), stranger.ctx)
+        auto st = tool ? test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object(std::move(m)), stranger.ctx))
                        : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
         check(!st.has_value() && st.error().code == "native_shell_session.principal_mismatch" && p.session()->is_live() &&
                   bg != 0 && process_alive(bg),

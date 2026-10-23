@@ -6,16 +6,28 @@ import {
   workflowGraphSnippet,
   workflowMinimalSnippet,
   workflowPatterns,
+  workflowResultSnippet,
 } from "../data/apiContent";
 import { SITE_BASE } from "../data/content";
 import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { type PatternId, patternHref } from "./ApiWorkflowPatternDetail";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const WORKFLOW_HEADERS = [
+  "agentengine/workflow/graph.hpp",
+  "agentengine/rt/workflow_supervisor.hpp",
+  "agentengine/workflow/workflow_event.hpp",
+  "agentengine/core/tool_call_extraction.hpp",
+  "agentengine/rt/block_on.hpp",
+  "agentengine/core/content.hpp",
+];
 
 function StatusBadge({ status }: { status: "real" | "design" }) {
   const { lang } = useLang();
@@ -41,7 +53,7 @@ const copy = {
         <code>WorkflowSupervisor</code> is what actually runs one, over AgentEngine's own{" "}
         <code>agentengine::rt::</code> runtime, one superstep round at a time. 014 §3's eight named
         orchestration patterns (Sequential, Concurrent, Handoff, Router, and four more) are
-        configurations of the same six edge kinds below, not eight separate subsystems to build.
+        configurations of the same seven edge kinds below, not eight separate subsystems to build.
       </>
     ),
     introNote: (
@@ -52,11 +64,27 @@ const copy = {
         <code>examples/10_conditional_routing.cpp</code>
       </>
     ),
+    includesNote: (
+      <>
+        Six headers. <code>workflow/graph.hpp</code> declares the graph as data (
+        <code>Workflow</code>, <code>Executor</code>, <code>Edge</code>, the enums);{" "}
+        <code>rt/workflow_supervisor.hpp</code> declares what runs it and what it returns (
+        <code>WorkflowSupervisor</code>, <code>WorkflowResult</code>,{" "}
+        <code>workflow_status</code>, <code>ExecutorBody</code>, <code>ExecutorOutcome</code>);{" "}
+        <code>workflow/workflow_event.hpp</code> is the live-view vocabulary;{" "}
+        <code>core/tool_call_extraction.hpp</code> is <code>text_of()</code>, which every body on
+        this page uses and which the other five do not give you; <code>rt/block_on.hpp</code> drives
+        a run from a synchronous <code>main</code>; and <code>core/content.hpp</code> gives you{" "}
+        <code>Message</code> and <code>Text</code> to build one. Note the split: the <em>data</em>{" "}
+        is <code>agentengine::workflow::</code>, the <em>running</em> types are{" "}
+        <code>agentengine::rt::</code>.
+      </>
+    ),
     s1Eyebrow: "graph.hpp — edge_kind",
-    s1Heading: "Six edge kinds are the whole vocabulary",
+    s1Heading: "Seven edge kinds are the whole vocabulary",
     s1Body: (
       <>
-        Every one of 014 §3's eight patterns is a graph built from nothing but these six
+        Every one of 014 §3's eight patterns is a graph built from nothing but these seven
         kinds, a termination bound, and (for <code>fan_out</code>/<code>fan_in</code>) the
         fact that the superstep engine fires every executor reachable in one round
         concurrently, not just the ones an explicit <code>fan_out</code> edge names.
@@ -75,7 +103,42 @@ const copy = {
     fanOutArrow: "fan_out — every target fires in the same superstep round, concurrently",
     fanInArrow: "fan_in — the aggregator runs exactly once per round",
     fanInResultSub: "one ContentItem per contributing branch, in graph-declared order — never once per inbound edge",
+    fanInTrapKind: "trap",
+    fanInTrapLabel: "A fan-in join waits for every declared source",
+    fanInTrap: (
+      <>
+        A <code>fan_in</code> target with two or more declared sources is held until{" "}
+        <strong>every one of those sources has resolved</strong> — not until the first contribution
+        arrives (<code>rt/workflow_supervisor.hpp</code>, the <code>HeldFanIn</code> comment). That
+        is the right join for the only shape 014 §2 documents, <code>fan_out</code> → aggregator,
+        where every branch fires. It becomes a trap when you <em>also</em> route: if routing means
+        only some of an aggregator's declared sources ever fire, the join can starve. The failure is
+        silent — the graph <code>validate_workflow</code> accepts can finish with{" "}
+        <code>workflow_status::completed</code> and an <strong>empty</strong> output, having invoked
+        the aggregator zero times. Do not route into a fan-in join: keep an aggregator's declared
+        sources to ones that always fire, and route <em>before</em> the fan-in rather than inside it.
+        When you get an empty answer with a successful status, count the aggregator's invocations
+        before you trust the status.
+      </>
+    ),
     graphShapeEyebrow: "The graph, verbatim",
+    graphShapeNamespaceNote: (
+      <>
+        Do not assume one namespace holds all of these. <code>edge_kind</code>,{" "}
+        <code>executor_kind</code>, <code>Executor</code>, <code>Edge</code> and{" "}
+        <code>TerminationBound</code> are <code>agentengine::workflow::</code>, but{" "}
+        <code>sharing_mode</code> is <code>agentengine::sharing_mode</code> ({" "}
+        <code>core/sharing_mode.hpp</code>) — so a{" "}
+        <code>using namespace agentengine::workflow;</code> at the top of your file gets you
+        everything in the struct above <em>except</em> that one line, which fails to compile with an
+        unhelpful "is not a member". Qualify it, or pull in both namespaces. And the types a routing
+        body must name itself are in neither of those two: <code>ExecutorOutcome</code> is{" "}
+        <code>agentengine::rt::</code>, alongside <code>ExecutorBody</code>, <code>RunWorkflow</code>,{" "}
+        <code>WorkflowResult</code> and <code>WorkflowSupervisor</code>. A file that writes{" "}
+        <code>using namespace agentengine; using namespace agentengine::workflow;</code> and then a
+        body returning <code>ExecutorOutcome</code> still needs <code>rt::</code> as a third.
+      </>
+    ),
     graphShapeHeading: (
       <>
         <code>Workflow</code> / <code>Executor</code> / <code>Edge</code> — the real shape
@@ -91,8 +154,13 @@ const copy = {
         defaults to <code>function</code>, <code>worktree_mode</code> defaults to{" "}
         <code>branch</code>, <code>Edge::kind</code> defaults to <code>direct</code>, and{" "}
         <code>on_failure</code> defaults to <code>fail</code>. A two-node chain only has to name
-        the executors' typed ports, wire one edge, and set a bound — <code>validate_workflow</code>{" "}
-        rejects a missing id, start, or bound, but nothing else here needs an explicit value.
+        the executors' typed ports, wire one edge, and set a bound — but do not read that as{" "}
+        <code>validate_workflow</code> checking almost nothing. It refuses a missing id, start or
+        bound, and around two dozen other things besides, each with its own stable code. Two worth
+        knowing before you hit them: <code>workflow.unreachable_executor</code> (a node no path from{" "}
+        <code>start</code> reaches — easy to create while editing a routing graph) and{" "}
+        <code>workflow.switch_default_without_cases</code>. The codes are the contract: branch on them
+        rather than on the message text.
       </>
     ),
     graphShapeBuilderNote: (
@@ -108,7 +176,7 @@ const copy = {
     patternsHeading: "Eight named patterns, each a configuration of the same graph",
     patternsBody: (
       <>
-        Every row below is built from nothing but the six edge kinds above, executors, and a
+        Every row below is built from nothing but the seven edge kinds above, executors, and a
         termination bound.
       </>
     ),
@@ -297,15 +365,87 @@ const copy = {
       </>
     ),
 
-    notYetTitle: "Not yet built:",
+    statusEyebrow: "rt/workflow_supervisor.hpp — workflow_status",
+    statusHeading: "Thirteen outcomes, in three kinds",
+    statusBody: (
+      <>
+        Every run ends in one of thirteen <code>workflow_status</code> values, and the distinction
+        that matters when you handle one is not which value it is but which of three kinds it
+        belongs to: a <strong>bound</strong> is an expected, non-error termination; a{" "}
+        <strong>fault</strong> is a real failure; and a <strong>refusal</strong> means the run never
+        started or resumed, so nothing changed and the same call can be made again. A handler that
+        treats "not completed" as one thing will treat a deliberate round cap as a crash, or retry
+        an admission denial that will never succeed.
+      </>
+    ),
+    statusTableColumns: ["workflow_status", "Kind", "What it means"],
+    statusRows: [
+      ["completed", "success", "The run finished with no node left to dispatch — and that is ALL it guarantees. An empty answer is still completed: a starved fan-in join lands here with no output and the aggregator never invoked (see the fan-in caveat above). If your handler treats completed as 'there is a result', it has exactly the bug that caveat warns about."],
+      ["suspended", "waiting", "A request_port or an approval is open. The run holds no resources; it resumes when the port is answered."],
+      ["bound_max_rounds", "bound", "Stopped at TerminationBound::max_rounds. Expected, not a fault."],
+      ["bound_deadline", "bound", "Stopped at deadline_ms. Expected, not a fault."],
+      ["bound_max_stalls", "bound", "The designated stall reporter tripped max_stalls and max_resets was never set. Expected."],
+      ["bound_max_resets", "bound", "Stall trips exceeded max_resets. Expected."],
+      ["cancelled", "bound", "A caller cancelled the run — observed at a round boundary, anywhere inside a round, or while suspended."],
+      ["executor_failed", "fault", "A node's body failed and its inbound edge's own failure policy did not recover it."],
+      ["routing_failed", "fault", "A node returned a route label the graph never declared. A route target is engine-checked structure, never trusted model output."],
+      ["merge_conflict", "fault", "A branch-mode executor's merge-on-join hit a genuine conflict, or the host store's own I/O failed. Terminal by design — never auto-retried."],
+      ["invalid", "refusal", "The graph never validated, the interaction_id is unknown or replayed, or a bound sub-workflow is gone. No run state changed."],
+      ["admission_denied", "refusal", "The caller named on the request is not admitted for this supervisor's owning principal. Kept distinct from invalid so an admission denial is auditable separately from a typo."],
+      ["invalid_routes", "refusal", "ResumeWorkflow::routes names no valid choice among the request port's outgoing edges. The port stays open, so the same interaction can be answered again with a corrected route."],
+    ],
+    statusNote: (
+      <>
+        To print one, <code>agentengine::rt::workflow_status_tag(status)</code> is the engine's own
+        mapping to text — it returns a <code>char const*</code>, not a <code>std::string</code>, so
+        pass it straight to <code>printf</code>/<code>fprintf</code> rather than calling{" "}
+        <code>.c_str()</code> on it.
+      </>
+    ),
+    resultHeading: "What the run hands back — the status is not the whole answer",
+    resultBody: (
+      <>
+        A handler written against the status tag alone will get a fault wrong in a specific way: it
+        cannot say <em>which</em> node failed, and it has no reason to look at what the other nodes
+        produced. Both are on the result. <code>failed_executor</code> names the offending node
+        whenever the run stopped because of one — which includes <code>routing_failed</code>, not
+        only <code>executor_failed</code> — and <code>partial</code> keeps the latest message each
+        executor produced: preserved, not discarded, which is what makes a failed run diagnosable
+        rather than just red.
+      </>
+    ),
+    resultRefusal: (
+      <>
+        <strong>How a refused graph reaches you.</strong>{" "}
+        <code>WorkflowSupervisor::initialize()</code> returns <code>void</code> and reports nothing —
+        it computes validity and stores it. An invalid graph therefore surfaces at the first{" "}
+        <em>run</em> entry point as <code>workflow_status::invalid</code>. The call that gives you a{" "}
+        <code>result</code> is <code>validate_workflow(wf)</code>: check it before{" "}
+        <code>initialize()</code>, and treat <code>invalid</code> from a run as the backstop. A graph
+        also lands in <code>invalid</code> when an <code>agent</code>-kind node's body did not come
+        from <code>agent_session_as_executor_body()</code>, or when a <code>sub_workflow</code> node
+        was never bound.
+      </>
+    ),
+
+    notYetTitle: "Which kinds run, and which call decides:",
     notYet: (
       <>
-        {" "}<code>agent</code>-kind and <code>sub_workflow</code>-kind
-        executors are real, validator-checked graph shapes (a graph naming one still
-        validates), but <code>check_workflow_executable</code> refuses to run one — this
-        build asks every non-port node through <code>FunctionExecutor</code>, so an{" "}
-        <code>agent</code> node would silently run as a plain function otherwise. A refused
-        graph is recoverable; a quietly reinterpreted one is not.
+        {" "}<code>agent</code>- and <code>sub_workflow</code>-kind executors are real,
+        validator-checked graph shapes — a graph naming one still validates. What they need differs,
+        and so does the check that judges them. The one-argument{" "}
+        <code>check_workflow_executable(wf)</code> refuses both outright with{" "}
+        <code>workflow.executor_kind_unsupported</code>, because on its own it has no per-node
+        contexts to judge and this build would otherwise ask an <code>agent</code> node through{" "}
+        <code>FunctionExecutor</code> and silently run it as a plain function.{" "}
+        <code>WorkflowSupervisor::initialize()</code> instead calls the <em>contexts-aware</em>{" "}
+        sibling, which accepts an <code>agent</code> node once <code>contexts[i]</code>'s granted
+        capabilities satisfy that node's declared <code>capability_ceiling</code> — and then applies
+        its own structural check that the bound body really came from{" "}
+        <code>agent_session_as_executor_body()</code> rather than being an ordinary lambda. A{" "}
+        <code>sub_workflow</code> node additionally needs <code>bind_sub_workflow()</code> after{" "}
+        <code>initialize()</code>. A refused graph is recoverable; a quietly reinterpreted one is
+        not.
       </>
     ),
   },
@@ -322,7 +462,7 @@ const copy = {
         quyết định lúc chạy. <code>WorkflowSupervisor</code> mới là thứ thực sự chạy nó, trên
         chính runtime <code>agentengine::rt::</code> của AgentEngine, từng vòng superstep một.
         Tám mẫu điều phối được nêu tên ở 014 §3 (Sequential, Concurrent, Handoff, Router, và
-        bốn mẫu khác) là các cấu hình của cùng sáu loại edge bên dưới, không phải tám phân hệ
+        bốn mẫu khác) là các cấu hình của cùng bảy loại edge bên dưới, không phải tám phân hệ
         riêng biệt cần xây dựng.
       </>
     ),
@@ -333,11 +473,27 @@ const copy = {
         <code>examples/10_conditional_routing.cpp</code>
       </>
     ),
+    includesNote: (
+      <>
+        Sáu header. <code>workflow/graph.hpp</code> khai báo đồ thị như dữ liệu (
+        <code>Workflow</code>, <code>Executor</code>, <code>Edge</code>, các enum);{" "}
+        <code>rt/workflow_supervisor.hpp</code> khai báo thứ chạy nó và thứ nó trả về (
+        <code>WorkflowSupervisor</code>, <code>WorkflowResult</code>, <code>workflow_status</code>,{" "}
+        <code>ExecutorBody</code>, <code>ExecutorOutcome</code>);{" "}
+        <code>workflow/workflow_event.hpp</code> là từ vựng cho live view;{" "}
+        <code>core/tool_call_extraction.hpp</code> là <code>text_of()</code>, thứ mà mọi body trên
+        trang này dùng và năm header kia không cho bạn; <code>rt/block_on.hpp</code> chạy một run từ
+        một <code>main</code> đồng bộ; và <code>core/content.hpp</code> cho bạn <code>Message</code>{" "}
+        cùng <code>Text</code> để dựng một message. Hãy để ý sự chia tách: phần <em>dữ liệu</em>{" "}
+        thuộc <code>agentengine::workflow::</code>, còn các kiểu <em>đang chạy</em> thuộc{" "}
+        <code>agentengine::rt::</code>.
+      </>
+    ),
     s1Eyebrow: "graph.hpp — edge_kind",
-    s1Heading: "Sáu loại edge là toàn bộ từ vựng",
+    s1Heading: "Bảy loại edge là toàn bộ từ vựng",
     s1Body: (
       <>
-        Mỗi một trong tám mẫu của 014 §3 đều là một đồ thị chỉ được xây từ sáu loại này, một
+        Mỗi một trong tám mẫu của 014 §3 đều là một đồ thị chỉ được xây từ bảy loại này, một
         termination bound, và (với <code>fan_out</code>/<code>fan_in</code>) sự thật rằng
         superstep engine kích hoạt đồng thời mọi executor chạm tới được trong một vòng, không
         chỉ những executor mà một cạnh <code>fan_out</code> tường minh nêu tên.
@@ -356,7 +512,44 @@ const copy = {
     fanOutArrow: "fan_out — mọi đích được kích hoạt trong cùng một vòng superstep, đồng thời",
     fanInArrow: "fan_in — bộ tổng hợp chạy đúng một lần mỗi vòng",
     fanInResultSub: "một ContentItem cho mỗi nhánh đóng góp, theo đúng thứ tự khai báo trong đồ thị — không bao giờ một lần cho mỗi cạnh đi vào",
+    fanInTrapKind: "bẫy",
+    fanInTrapLabel: "Điểm gộp fan-in chờ MỌI nguồn đã khai báo",
+    fanInTrap: (
+      <>
+        Một đích <code>fan_in</code> có từ hai nguồn được khai báo trở lên sẽ bị giữ lại cho tới khi{" "}
+        <strong>mọi nguồn trong số đó đã phân giải</strong> — không phải cho tới khi đóng góp đầu
+        tiên tới (xem chú thích <code>HeldFanIn</code> trong <code>rt/workflow_supervisor.hpp</code>
+        ). Đó là phép gộp đúng cho hình dạng duy nhất mà 014 §2 mô tả, <code>fan_out</code> → bộ
+        tổng hợp, nơi mọi nhánh đều kích hoạt. Nó trở thành một cái bẫy khi bạn <em>đồng thời</em>{" "}
+        định tuyến: nếu việc định tuyến khiến chỉ một số nguồn đã khai báo của bộ tổng hợp thực sự
+        kích hoạt, điểm gộp có thể bị "đói" nguồn. Thất bại này diễn ra âm thầm — đồ thị mà{" "}
+        <code>validate_workflow</code> chấp nhận vẫn có thể kết thúc với{" "}
+        <code>workflow_status::completed</code> và đầu ra <strong>rỗng</strong>, sau khi gọi bộ tổng
+        hợp không lần nào. Đừng định tuyến vào một điểm gộp fan-in: hãy giữ các nguồn đã khai báo
+        của bộ tổng hợp là những nguồn luôn kích hoạt, và định tuyến <em>trước</em> điểm gộp thay vì
+        định tuyến bên trong nó. Khi bạn nhận được câu trả lời rỗng kèm trạng thái thành công, hãy
+        đếm số lần bộ tổng hợp được gọi trước khi tin vào trạng thái đó.
+      </>
+    ),
     graphShapeEyebrow: "Đồ thị, nguyên văn",
+    graphShapeNamespaceNote: (
+      <>
+        Đừng giả định rằng một namespace chứa tất cả những thứ này. <code>edge_kind</code>,{" "}
+        <code>executor_kind</code>, <code>Executor</code>, <code>Edge</code> và{" "}
+        <code>TerminationBound</code> thuộc <code>agentengine::workflow::</code>, nhưng{" "}
+        <code>sharing_mode</code> lại là <code>agentengine::sharing_mode</code> ({" "}
+        <code>core/sharing_mode.hpp</code>) — nên một dòng{" "}
+        <code>using namespace agentengine::workflow;</code> ở đầu tệp sẽ cho bạn mọi thứ trong
+        struct ở trên <em>trừ</em> đúng dòng đó, và dòng đó sẽ không biên dịch được với một thông
+        báo vô ích kiểu "is not a member". Hãy ghi rõ namespace, hoặc đưa cả hai vào. Và những kiểu mà
+        một thân routing body phải tự nêu tên lại không nằm ở cả hai namespace đó:{" "}
+        <code>ExecutorOutcome</code> thuộc <code>agentengine::rt::</code>, cùng với{" "}
+        <code>ExecutorBody</code>, <code>RunWorkflow</code>, <code>WorkflowResult</code> và{" "}
+        <code>WorkflowSupervisor</code>. Một tệp viết{" "}
+        <code>using namespace agentengine; using namespace agentengine::workflow;</code> rồi có một
+        body trả về <code>ExecutorOutcome</code> vẫn cần thêm <code>rt::</code> như namespace thứ ba.
+      </>
+    ),
     graphShapeHeading: (
       <>
         <code>Workflow</code> / <code>Executor</code> / <code>Edge</code> — hình dạng thật
@@ -390,7 +583,7 @@ const copy = {
     patternsHeading: "Tám mẫu được nêu tên, mỗi mẫu là một cấu hình của cùng một đồ thị",
     patternsBody: (
       <>
-        Mỗi hàng bên dưới chỉ được xây từ sáu loại edge ở trên, các executor, và một
+        Mỗi hàng bên dưới chỉ được xây từ bảy loại edge ở trên, các executor, và một
         termination bound.
       </>
     ),
@@ -593,6 +786,70 @@ const copy = {
       </>
     ),
 
+    statusEyebrow: "rt/workflow_supervisor.hpp — workflow_status",
+    statusHeading: "Mười ba kết cục, chia làm ba loại",
+    statusBody: (
+      <>
+        Mỗi run kết thúc ở một trong mười ba giá trị <code>workflow_status</code>, và điều quan
+        trọng khi bạn xử lý một giá trị không phải là nó là giá trị nào, mà là nó thuộc loại nào
+        trong ba loại: một <strong>bound</strong> là kết thúc dự kiến trước, không phải lỗi; một{" "}
+        <strong>fault</strong> là thất bại thật; và một <strong>refusal</strong> nghĩa là run chưa
+        hề bắt đầu hoặc chưa hề tiếp tục, nên không có gì thay đổi và có thể gọi lại chính lệnh đó.
+        Một hàm xử lý coi "không phải completed" là một thứ duy nhất sẽ coi một giới hạn vòng có
+        chủ đích như một sự cố, hoặc thử lại một lần từ chối admission mà sẽ không bao giờ thành
+        công.
+      </>
+    ),
+    statusTableColumns: ["workflow_status", "Loại", "Ý nghĩa"],
+    statusRows: [
+      ["completed", "success", "Run kết thúc mà không còn node nào để điều phối — và đó là TẤT CẢ những gì nó bảo đảm. Một câu trả lời rỗng vẫn là completed: một điểm gộp fan-in bị đói nguồn rơi đúng vào đây, với đầu ra rỗng và bộ tổng hợp không được gọi lần nào (xem cảnh báo về fan-in ở trên). Nếu hàm xử lý của bạn coi completed nghĩa là \"có kết quả\", nó đang mắc đúng lỗi mà cảnh báo đó nói tới."],
+      ["suspended", "waiting", "Một request_port hoặc một approval đang mở. Run không giữ tài nguyên nào; nó tiếp tục khi port được trả lời."],
+      ["bound_max_rounds", "bound", "Dừng ở TerminationBound::max_rounds. Dự kiến trước, không phải lỗi."],
+      ["bound_deadline", "bound", "Dừng ở deadline_ms. Dự kiến trước, không phải lỗi."],
+      ["bound_max_stalls", "bound", "Bộ báo stalled được chỉ định đã chạm max_stalls và max_resets chưa từng được đặt. Dự kiến trước."],
+      ["bound_max_resets", "bound", "Số lần stalled vượt quá max_resets. Dự kiến trước."],
+      ["cancelled", "bound", "Một caller đã hủy run — được quan sát ở ranh giới vòng, ở bất kỳ đâu trong vòng, hoặc trong lúc suspend."],
+      ["executor_failed", "fault", "Thân của một node thất bại và chính sách thất bại của cạnh đi vào nó đã không khôi phục được."],
+      ["routing_failed", "fault", "Một node trả về nhãn route mà đồ thị chưa từng khai báo. Đích của route là cấu trúc do engine kiểm tra, không bao giờ là đầu ra model được tin tưởng."],
+      ["merge_conflict", "fault", "Việc merge-on-join của một executor chế độ branch gặp xung đột thật, hoặc I/O của store phía host thất bại. Kết thúc vĩnh viễn theo thiết kế — không bao giờ tự thử lại."],
+      ["invalid", "refusal", "Đồ thị chưa từng được xác thực, interaction_id không rõ hoặc bị phát lại, hoặc một sub-workflow đã gắn không còn. Không có trạng thái run nào thay đổi."],
+      ["admission_denied", "refusal", "Caller được nêu trong yêu cầu không được chấp nhận cho principal sở hữu supervisor này. Được giữ tách biệt khỏi invalid để một lần từ chối admission có thể được audit riêng khỏi một lỗi gõ nhầm."],
+      ["invalid_routes", "refusal", "ResumeWorkflow::routes không nêu lựa chọn hợp lệ nào trong các cạnh đi ra của request port. Port vẫn mở, nên cùng interaction đó có thể được trả lời lại với route đã sửa."],
+    ],
+    statusNote: (
+      <>
+        Để in ra, <code>agentengine::rt::workflow_status_tag(status)</code> là ánh xạ sang văn bản của
+        chính engine — nó trả về <code>char const*</code>, không phải <code>std::string</code>, nên
+        hãy truyền thẳng nó cho <code>printf</code>/<code>fprintf</code> thay vì gọi{" "}
+        <code>.c_str()</code> trên nó.
+      </>
+    ),
+    resultHeading: "Run trả về những gì — trạng thái không phải toàn bộ câu trả lời",
+    resultBody: (
+      <>
+        Một hàm xử lý chỉ dựa vào nhãn trạng thái sẽ sai theo một cách cụ thể: nó không thể nói node{" "}
+        <em>nào</em> đã thất bại, và nó không có lý do gì để nhìn vào những gì các node khác đã tạo
+        ra. Cả hai đều nằm trong kết quả trả về. <code>failed_executor</code> nêu tên node gây ra vấn
+        đề mỗi khi run dừng vì nó — bao gồm cả <code>routing_failed</code>, không chỉ{" "}
+        <code>executor_failed</code> — và <code>partial</code> giữ lại message mới nhất mà mỗi
+        executor tạo ra: được giữ lại chứ không bị loại bỏ, và đó là điều khiến một run thất bại có
+        thể chẩn đoán được thay vì chỉ đỏ.
+      </>
+    ),
+    resultRefusal: (
+      <>
+        <strong>Một đồ thị bị từ chối đến được với bạn bằng cách nào.</strong>{" "}
+        <code>WorkflowSupervisor::initialize()</code> trả về <code>void</code> và không báo gì cả —
+        nó tính toán tính hợp lệ rồi lưu lại. Vì vậy một đồ thị không hợp lệ chỉ lộ ra ở điểm vào{" "}
+        <em>run</em> đầu tiên, dưới dạng <code>workflow_status::invalid</code>. Lệnh gọi cho bạn một{" "}
+        <code>result</code> là <code>validate_workflow(wf)</code>: hãy kiểm tra nó trước{" "}
+        <code>initialize()</code>, và coi <code>invalid</code> từ một run là chốt chặn cuối. Một đồ
+        thị cũng rơi vào <code>invalid</code> khi thân của một node kiểu <code>agent</code> không đến
+        từ <code>agent_session_as_executor_body()</code>, hoặc khi một node <code>sub_workflow</code>{" "}
+        chưa từng được gắn.
+      </>
+    ),
+
     notYetTitle: "Chưa được xây dựng:",
     notYet: (
       <>
@@ -626,6 +883,12 @@ export function ApiWorkflowReference() {
           <p style={{ marginTop: 16 }}>{t.intro}</p>
           <ApiDiagnosticNote>{t.introNote}</ApiDiagnosticNote>
         </div>
+
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={WORKFLOW_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         <RevealGroup>
           <RevealItem>
@@ -670,6 +933,11 @@ export function ApiWorkflowReference() {
               </div>
             </div>
             <div className="flow-loop-note" style={{ marginTop: 14 }}>{t.fanOutNote}</div>
+            <div style={{ marginTop: 16 }}>
+              <ApiDiagnosticNote status="stub" kind={t.fanInTrapKind}>
+                <strong>{t.fanInTrapLabel}.</strong> {t.fanInTrap}
+              </ApiDiagnosticNote>
+            </div>
           </RevealItem>
         </RevealGroup>
 
@@ -692,6 +960,11 @@ export function ApiWorkflowReference() {
             </RevealItem>
             <RevealItem>
               <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowGraphSnippet)}</CodePanel>
+            </RevealItem>
+            <RevealItem>
+              <ApiDiagnosticNote status="stub" kind="namespace">
+                {t.graphShapeNamespaceNote}
+              </ApiDiagnosticNote>
             </RevealItem>
             <RevealItem>
               <p className="gs-note" style={{ marginTop: 20 }}>{t.graphShapeBuilderNote}</p>
@@ -967,6 +1240,51 @@ export function ApiWorkflowReference() {
           </RevealItem>
         </RevealGroup>
 
+        {/* ---- workflow_status reference ---------------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <div
+              className="section-head anchor-target"
+              style={{ marginTop: 48, marginBottom: 22 }}
+              id="workflow-status"
+            >
+              <span className="eyebrow">{t.statusEyebrow}</span>
+              <h3 style={{ fontSize: "1.3rem", margin: "10px 0" }}>{t.statusHeading}</h3>
+              <p>{t.statusBody}</p>
+            </div>
+          </RevealItem>
+
+          <RevealItem>
+            <ApiTable
+              columns={[...t.statusTableColumns]}
+              templateColumns="1.1fr 0.7fr 3fr"
+              rows={t.statusRows.map(([status, kind, meaning]) => [
+                <code key="s" className="api-tag">
+                  {status}
+                </code>,
+                kind,
+                meaning,
+              ])}
+            />
+          </RevealItem>
+
+          <RevealItem>
+            <p className="gs-note" style={{ marginTop: 20 }}>{t.statusNote}</p>
+          </RevealItem>
+          <RevealItem>
+            <div style={{ marginTop: 36, marginBottom: 12 }}>
+              <h4 style={{ fontSize: "1.05rem", margin: "8px 0" }}>{t.resultHeading}</h4>
+              <p style={{ color: "var(--text-dim)", lineHeight: 1.65 }}>{t.resultBody}</p>
+            </div>
+            <CodePanel filename="rt/workflow_supervisor.hpp">{highlightCpp(workflowResultSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind="refusal">
+              {t.resultRefusal}
+            </ApiDiagnosticNote>
+          </RevealItem>
+        </RevealGroup>
+
         <RevealGroup>
           <RevealItem>
             <div className="gs-note" style={{ marginTop: 28, borderLeftColor: "var(--accent-pink)" }}>
@@ -974,7 +1292,7 @@ export function ApiWorkflowReference() {
               {t.notYet}
               <div style={{ marginTop: 8 }}>
                 <a href={gh("include/agentengine/workflow/graph.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
-                  include/agentengine/workflow/graph.hpp:416-443
+                  include/agentengine/workflow/graph.hpp:547-559 (the refusal) · :581 (the contexts-aware sibling)
                 </a>
               </div>
             </div>

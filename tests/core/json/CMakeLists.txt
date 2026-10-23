@@ -9,7 +9,7 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings)
 endif()
 
-# ---- Gap-3 fix (2026-08-14, decisions/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
+# ---- Gap-3 fix (2026-08-14, decisions/archive/ADR-045-*.md) -- core/json_schema_validator.hpp, proving
 # 006 §8 G2 (schema violation -> structured error) and 015 §7 G2 (cyclic $ref rejected). No HTTPS
 # dependency (unlike its neighbors above) -- deliberately outside that conditional block.
 agentengine_add_test(test_json_schema_validator LIBS agentengine::core agentengine_warnings)

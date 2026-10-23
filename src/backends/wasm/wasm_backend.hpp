@@ -1,10 +1,10 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `wasm` profile --
-// 009-Plugin-and-Extension-System.md's `ae:tool` world (wit/ae-tool.wit, revised by this task),
+// rfcs/009-Plugin-and-Extension-System.md's `ae:tool` world (wit/ae-tool.wit, revised by this task),
 // backed by wasmtime's Component Model C API (AGENTENGINE_WITH_WASM, D1) -- Milestone 2 Phase D task
 // D3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Security-critical: built
 // through design->red-team->prove->judge per CLAUDE.md, landed as
-// decisions/ADR-010-wasm-component-host-manifest-capability-binding.md. That ADR is the source of
+// decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md. That ADR is the source of
 // truth for *why* this file is shaped the way it is -- comments here cite it by section, not restate
 // it.
 //
@@ -14,7 +14,7 @@
 // fresh per call -- ADR-010 SS3.5); `blob`/`tool-call` host imports are recognized in the WIT
 // contract but never linked (ADR-010 SS3.1) -- a component that imports either always fails to load.
 // Wired into core/tool_pipeline.hpp's ToolTable/invoke_tool via wasm_tool_bridge.hpp
-// (decisions/ADR-040-wasm-tool-pipeline-bridge.md) -- that bridge calls create()/load_component()/
+// (decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md) -- that bridge calls create()/load_component()/
 // list_tools()/invoke_tool() directly (ADR-010's own §9 point: "any future SandboxBackend consumer
 // written against just the three concept methods will not see plugin loading at all, by design"),
 // never the generic SandboxBackend::exec() adapter below. This backend's own internals (import
@@ -22,7 +22,9 @@
 // test_wasm_backend.cpp); the bridge's own tests (tests/plugin/test_wasm_tool_bridge.cpp) prove only the
 // new seam, not re-prove this file's internals.
 
+#include <concepts>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -32,6 +34,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/plugin/plugin.hpp"
+#include "agentengine/sandbox/net_egress_proxy.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 
 namespace agentengine::wasm {
@@ -56,6 +59,41 @@ struct ToolInvokeRequest {
     std::string args_json;
 };
 
+// ADR-241 follow-up (G7/G17 on the WASM edge): the type-erased, blocking egress call the guest's `http-request` import
+// makes. Its constructor is private and `erase_egress_backend` is the only way to build one, so what it wraps is always a
+// `NetEgressBackend` conformer (which runs the allowlist gate itself) -- never an arbitrary callable that could skip it.
+class EgressBlockingFetch {
+public:
+    EgressBlockingFetch() = default;  // empty = the production HostEgressProxy
+    [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(fn_); }
+    result<sandbox::NetEgressResponse> operator()(sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) const {
+        return fn_(std::move(r), std::move(g), std::move(c));
+    }
+
+private:
+    using Fn = std::function<result<sandbox::NetEgressResponse>(sandbox::NetEgressRequest, cap::NetOut, sandbox::EgressCallControl)>;
+    explicit EgressBlockingFetch(Fn fn) : fn_(std::move(fn)) {}
+    template <class B>
+        requires sandbox::NetEgressBackend<B> &&
+                 requires(B const& b, sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+                     { b.fetch_blocking(std::move(r), std::move(g), std::move(c)) } -> std::same_as<result<sandbox::NetEgressResponse>>;
+                 }
+    friend EgressBlockingFetch erase_egress_backend(std::shared_ptr<B const> backend);
+    Fn fn_;
+};
+
+// Wraps one host-owned conformer (anything with `fetch_blocking`, as `HostEgressProxy` and `TestEgressProxy` have).
+template <class B>
+    requires sandbox::NetEgressBackend<B> &&
+             requires(B const& b, sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+                 { b.fetch_blocking(std::move(r), std::move(g), std::move(c)) } -> std::same_as<result<sandbox::NetEgressResponse>>;
+             }
+[[nodiscard]] EgressBlockingFetch erase_egress_backend(std::shared_ptr<B const> backend) {
+    return EgressBlockingFetch([backend = std::move(backend)](sandbox::NetEgressRequest r, cap::NetOut g, sandbox::EgressCallControl c) {
+        return backend->fetch_blocking(std::move(r), std::move(g), std::move(c));
+    });
+}
+
 class WasmBackend {
 public:
     static constexpr ProfileTraits traits{
@@ -72,6 +110,14 @@ public:
     // destructor) requires Instance to be a complete type, which it is not yet at this point in the
     // header (Pimpl idiom's standard requirement, not specific to this class).
     WasmBackend();
+    // ADR-070-shaped host opt-in (ADR-241 follow-up): HOST code (never model output, never the guest) may supply the
+    // `NetEgressBackend` the guest's `http-request` import goes through. Unset (the default constructor) = the production
+    // `HostEgressProxy`, behaviour unchanged. It is one more egress backend, not a bypass: the guest's `cap::NetOut` grant
+    // (narrowed by `ResourceLimits::net_bytes`) is still handed to it, and every conformer runs the allowlist gate itself;
+    // it receives only the values-only `EgressCallControl` (stop, deadline, admission), never an `EffectContext`. It cannot
+    // mint or widen a grant -- the grant it is passed is the one bound at load. Its production use is tests supplying
+    // `TestEgressProxy` (permit loopback); tools/egress_seam_lint.py keeps that type out of src/ and include/.
+    explicit WasmBackend(EgressBlockingFetch egress);
     ~WasmBackend();
     WasmBackend(WasmBackend const&) = delete;
     WasmBackend& operator=(WasmBackend const&) = delete;
@@ -83,7 +129,11 @@ public:
     // compile-and-verify step happens (a real gap ADR-010 §7.5 found while implementing this, not
     // anticipated during design). It only allocates this handle's private Instance and records
     // `spec`/`limits` for later use by `load_component`.
-    result<SandboxHandle> create(SandboxSpec const& spec, EffectContext& ctx);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `create_blocking()`, completing without suspending.
+    [[nodiscard]] task<result<SandboxHandle>> create(SandboxSpec spec, EffectContext& ctx) {
+        co_return create_blocking(spec, ctx);
+    }
+    result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
 
     // ADR-010 §3.3's real entry point: compiles `component_bytes`, enumerates its actual imports via
     // wasmtime_component_type_import_*, and fails closed (never reaching instantiate) if any imported
@@ -110,9 +160,19 @@ public:
     // it; `request.source` carries `{"tool_name":..., "args_json":...}` as JSON text, decoded and
     // forwarded to invoke_tool() -- exactly one real implementation of "invoke a tool in a wasm
     // component" (006 §2's uniformity rule), not two that could silently diverge.
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `exec_blocking()`, completing without suspending.
+    // `handle` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest request, EffectContext& ctx) {
+        co_return exec_blocking(handle, request, ctx);
+    }
+    result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
 
-    void destroy(SandboxHandle& handle);
+    // ADR-237 §5.1 (#173): the seam is a coroutine over `destroy_blocking()`, completing without suspending.
+    [[nodiscard]] task<void> destroy(SandboxHandle& handle) {
+        destroy_blocking(handle);
+        co_return;
+    }
+    void destroy_blocking(SandboxHandle& handle);
 
     // Defined in wasm_backend.cpp -- owns wasmtime_component_t*, granted kinds, the manifest, and
     // spec.capabilities/limits. Public (not private) so the .cpp's free-function helpers (the
@@ -124,6 +184,7 @@ public:
     struct Instance;
 
 private:
+    EgressBlockingFetch egress_;  // empty = production HostEgressProxy
     std::unordered_map<std::string, std::unique_ptr<Instance>> instances_;
 };
 

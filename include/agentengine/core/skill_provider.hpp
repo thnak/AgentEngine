@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8b-8c -- the `ContextProvider` conformer that
+// Implements rfcs/009-Plugin-and-Extension-System.md §8b-8c -- the `ContextProvider` conformer that
 // actually mounts resolved skills (core/worktree.hpp's real Tree/Ref/Mount machinery) read-only,
 // logically at `/skills/<name>`, and contributes their ~100-token "name: description" advertisement
 // to the model's context. Never introduces `load_skill`/`read_skill_resource` tool wrappers (§8b's
@@ -26,7 +26,7 @@
 // longer merely advisory once wired through that header -- see its own top comment for the real
 // enforcement boundary this depends on).
 //
-// Skills Phase 3 (on-demand mounting, decisions/ADR-024's addendum): "resolved" (this class's own
+// Skills Phase 3 (on-demand mounting, decisions/archive/ADR-024's addendum): "resolved" (this class's own
 // scope -- every configured skill is resolved and its files are materialized unconditionally, per
 // §8b) is a DIFFERENT thing from "mounted" (an agent-triggered SUBSET, tracked outside this class --
 // see `tools/cli_chat.cpp`'s `MountedSkillsState`). `allowed_tool_names_for(mounted_names)` and
@@ -48,6 +48,7 @@
 #include "agentengine/core/skill_source.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -69,7 +70,7 @@ struct PendingTreeEntry {
 // blob `TreeEntry`; everything else is grouped by its leading segment, stripped of that segment, and
 // recursed into a subtree.
 template <WorktreeObjectStore ObjectStoreT>
-[[nodiscard]] result<Digest> assemble_tree(ObjectStoreT& store, std::vector<PendingTreeEntry> entries) {
+[[nodiscard]] task<result<Digest>> assemble_tree(ObjectStoreT& store, std::vector<PendingTreeEntry> entries) {
     std::vector<TreeEntry> tree_entries;
     std::vector<std::pair<std::string, std::vector<PendingTreeEntry>>> groups;
 
@@ -91,12 +92,12 @@ template <WorktreeObjectStore ObjectStoreT>
     }
 
     for (auto& [name, sub_entries] : groups) {
-        auto sub_digest = assemble_tree(store, std::move(sub_entries));
-        if (!sub_digest) return std::unexpected(sub_digest.error());
+        auto sub_digest = co_await assemble_tree(store, std::move(sub_entries));
+        if (!sub_digest) co_return std::unexpected(sub_digest.error());
         tree_entries.push_back(TreeEntry{name, *sub_digest, true});
     }
 
-    return store.put_tree(Tree{std::move(tree_entries)});
+    co_return co_await store.put_tree(Tree{std::move(tree_entries)});
 }
 
 }  // namespace skill_provider_detail
@@ -109,26 +110,25 @@ template <WorktreeObjectStore ObjectStoreT>
 template <WorktreeObjectStore ObjectStoreT = InMemoryWorktreeObjectStore>
 class SkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "skills";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     explicit SkillsProvider(std::vector<SkillSourceDescriptor> sources) : sources_(std::move(sources)) {}
 
-    // Forces resolution outside a coroutine context -- `resolve_and_mount()` is already fully
-    // synchronous internally (no internal `co_await`); `on_context`'s `task<>` wrapper exists only to
-    // satisfy `ContextProvider`, not because resolution itself needs one. Lets a plain synchronous
-    // caller (the native_jail materializer, a CLI's startup sequence) force resolve-once/freeze
-    // without standing up a coroutine driver just to reach it.
-    [[nodiscard]] result<void> ensure_loaded() {
+    // Resolve-once/freeze, now itself a coroutine (ADR-237 §5.1: `load_skills()` is a `task`). A
+    // synchronous caller (the native_jail materializer, a CLI's startup sequence) drives it with
+    // `rt::block_on(...)` at that edge; an engine coroutine (`on_context`) `co_await`s it directly.
+    // The cached `loaded_`/`load_error_` pair keeps a second call from re-resolving.
+    [[nodiscard]] task<result<void>> ensure_loaded() {
         if (!loaded_) {
-            load_error_ = resolve_and_mount();
+            load_error_ = co_await resolve_and_mount();
             loaded_ = true;
         }
-        return load_error_;
+        co_return load_error_;
     }
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) {
-        if (auto r = ensure_loaded(); !r) co_return std::unexpected(r.error());
+        if (auto r = co_await ensure_loaded(); !r) co_return std::unexpected(r.error());
 
         ContextContribution contribution;
         if (!summaries_.empty()) {
@@ -191,7 +191,7 @@ public:
     }
 
 private:
-    [[nodiscard]] result<void> resolve_and_mount() {
+    [[nodiscard]] task<result<void>> resolve_and_mount() {
         // Built entirely into LOCAL vectors and only assigned to `mounts_`/`summaries_` at the very
         // end, on total success -- a mid-loop collision or a later source's own failure must leave
         // the externally-observable state (`mounted()`, and the advertisement message built from
@@ -209,14 +209,14 @@ private:
         std::unordered_map<std::string, std::string> pending_body_by_name;
 
         for (auto const& source : sources_) {
-            auto resolved = source.load_skills();
-            if (!resolved) return std::unexpected(resolved.error());
+            auto resolved = co_await source.load_skills();
+            if (!resolved) co_return std::unexpected(resolved.error());
 
             for (auto& item : *resolved) {
                 std::string const& skill_name = item.skill.frontmatter.name;
                 for (std::size_t i = 0; i < claimed_names.size(); ++i) {
                     if (claimed_names[i] == skill_name) {
-                        return std::unexpected(error{
+                        co_return std::unexpected(error{
                             failure_class::contract,
                             "skill '" + skill_name + "' is declared by both '" + claimed_origins[i] +
                                 "' and '" + source.origin_id + "' -- a skill from one source must "
@@ -230,18 +230,18 @@ private:
                 std::vector<skill_provider_detail::PendingTreeEntry> pending;
                 pending.reserve(item.files.size());
                 for (auto const& file : item.files) {
-                    auto blob_digest = object_store_.put_blob(file.bytes);
-                    if (!blob_digest) return std::unexpected(blob_digest.error());
+                    auto blob_digest = co_await object_store_.put_blob(file.bytes);
+                    if (!blob_digest) co_return std::unexpected(blob_digest.error());
                     auto segments = split_mount_path(file.relative_path);
-                    if (!segments) return std::unexpected(segments.error());
+                    if (!segments) co_return std::unexpected(segments.error());
                     pending.push_back(
                         skill_provider_detail::PendingTreeEntry{std::move(*segments), std::move(*blob_digest)});
                 }
-                auto tree_digest = skill_provider_detail::assemble_tree(object_store_, std::move(pending));
-                if (!tree_digest) return std::unexpected(tree_digest.error());
+                auto tree_digest = co_await skill_provider_detail::assemble_tree(object_store_, std::move(pending));
+                if (!tree_digest) co_return std::unexpected(tree_digest.error());
 
-                auto committed_ref = commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
-                if (!committed_ref) return std::unexpected(committed_ref.error());
+                auto committed_ref = co_await commit_ref(*ref_store_, "skill:" + skill_name, *tree_digest);
+                if (!committed_ref) co_return std::unexpected(committed_ref.error());
 
                 // Bare skill name, not "/skills/" + name -- see this file's own top comment for why
                 // mount_id is a capability-matching key, distinct from the skill's logical path.
@@ -262,7 +262,7 @@ private:
         allowed_tool_names_ = std::move(pending_allowed_tools);
         per_skill_allowed_tools_ = std::move(pending_per_skill_allowed_tools);
         body_by_name_ = std::move(pending_body_by_name);
-        return {};
+        co_return result<void>{};
     }
 
     std::vector<SkillSourceDescriptor> sources_;

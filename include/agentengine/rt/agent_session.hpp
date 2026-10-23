@@ -234,7 +234,7 @@ public:
         return chat_client_.emplace(std::forward<Args>(args)...);
     }
 
-    // decisions/ADR-066-context-provider-attribution-provenance.md §7 residual / ADR-070 amendment:
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §7 residual / ADR-070 amendment:
     // this session calls `history_provider_.on_context()` DIRECTLY, never `assemble_context()` --
     // messages/tools this session assembles carry NO `attribution` (`Message::attribution`/
     // `ToolDescriptor::attribution` stay `nullopt` throughout), even for a genuinely multi-role
@@ -342,7 +342,7 @@ public:
     // same-pass mechanical tightening. Matches this hazard's own pre-ADR-123 status: not reachable
     // through any real call site in this codebase today.
     //
-    // CLOSED BY decisions/ADR-175 -- and a worse failure the thread comparison also had: after a lock
+    // CLOSED BY decisions/archive/ADR-175 -- and a worse failure the thread comparison also had: after a lock
     // hand-off, the thread that released `session_mutex_` (or resumed the new holder inline) could run
     // unrelated code for which the check was TRUE, and this function then skipped the lock while the real
     // holder was mid-round (an I1 violation, demonstrated). `is_held_by_current_thread()` now compares the
@@ -545,27 +545,27 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
 [[nodiscard]] task<result<void>> save_agent_session_snapshot(
     AgentSession<ChatClientT, StateT, HistoryProviderT>& session, StoreT& store) {
     AgentSessionRecord rec = co_await session.snapshot_record();
-    co_return store.save(rec.session_id, encode_agent_session_record(rec));
+    co_return co_await store.save(rec.session_id, encode_agent_session_record(rec));
 }
 
 // Load the latest durable record for `session_id`, or std::nullopt if it was never snapshotted or
 // was deleted (delete_session()'s tombstone) -- a caller of THIS function sees no distinction
 // between "never existed" and "deleted", matching the Quark original's own read-path property.
-// Synchronous (no task<T>) -- unlike save/delete, this never touches a live AgentSession instance,
-// so there is no in-flight state to guard against.
+// `task`-shaped since decisions/archive/ADR-237 §5.1 (#172) because the store is -- it still never touches a live
+// AgentSession instance, so there is no in-flight state to guard against. `store` must outlive the await.
 template <SessionStore StoreT>
-[[nodiscard]] result<std::optional<AgentSessionRecord>> load_agent_session_snapshot(
-    StoreT const& store, std::string const& session_id) {
-    if (!store.exists(session_id)) return std::optional<AgentSessionRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(session_id);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::optional<AgentSessionRecord>>> load_agent_session_snapshot(
+    StoreT const& store, std::string session_id) {
+    if (!co_await store.exists(session_id)) co_return std::optional<AgentSessionRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(session_id);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<AgentSessionRecord> rec = decode_agent_session_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    if (rec->deleted) return std::optional<AgentSessionRecord>{};
-    return std::optional<AgentSessionRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    if (rec->deleted) co_return std::optional<AgentSessionRecord>{};
+    co_return std::optional<AgentSessionRecord>{std::move(*rec)};
 }
 
-// Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): 005 §2's exact policy vocabulary
+// Gap-15 fix (2026-08-14, decisions/archive/ADR-043-*.md): 005 §2's exact policy vocabulary
 // ("acknowledged... only after its effects and history delta are durable, or the session declares
 // an at_most_once_ack durability policy"). `at_most_once` is today's only real behavior (a bare
 // start_run()/resolve_interaction() call, unchanged) -- `require_durable` is new, wired ONLY through
@@ -656,22 +656,22 @@ template <SessionStore StoreT>
                                                           std::uint64_t turn_index,
                                                           std::span<Message const> delta) {
     TurnDeltaRecord rec{session_id, turn_index, std::vector<Message>(delta.begin(), delta.end())};
-    co_return store.save(turn_delta_store_key(session_id, turn_index), encode_turn_delta_record(rec));
+    co_return co_await store.save(turn_delta_store_key(session_id, turn_index), encode_turn_delta_record(rec));
 }
 
 // Symmetric reader, for a future restore path to consume -- not itself wired into
 // load_agent_session_snapshot() (rehydrating history_ on restart is a separate, larger question this
 // ADR does not answer; see the ADR's own "what this does not claim").
 template <SessionStore StoreT>
-[[nodiscard]] inline result<std::optional<TurnDeltaRecord>> load_turn_delta(
-    StoreT const& store, std::string const& session_id, std::uint64_t turn_index) {
+[[nodiscard]] inline task<result<std::optional<TurnDeltaRecord>>> load_turn_delta(
+    StoreT const& store, std::string session_id, std::uint64_t turn_index) {
     std::string const key = turn_delta_store_key(session_id, turn_index);
-    if (!store.exists(key)) return std::optional<TurnDeltaRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(key);
-    if (!bytes) return std::unexpected(bytes.error());
+    if (!co_await store.exists(key)) co_return std::optional<TurnDeltaRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(key);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<TurnDeltaRecord> rec = decode_turn_delta_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    return std::optional<TurnDeltaRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    co_return std::optional<TurnDeltaRecord>{std::move(*rec)};
 }
 
 // 005 §2's ack-durability contract, honored WITHOUT giving AgentSession ambient Store access (I2,
@@ -809,7 +809,7 @@ template <class ChatClientT, class StateT, class HistoryProviderT, SessionStore 
     // site was the real, hand-built AgentSessionRecord construction §23a Finding 1 found silently
     // contradicting the struct's own "only two places" comment.
     AgentSessionRecord tombstone = make_tombstone_record(receipt.session_id);
-    result<void> saved = store.save(receipt.session_id, encode_agent_session_record(tombstone));
+    result<void> saved = co_await store.save(receipt.session_id, encode_agent_session_record(tombstone));
     if (!saved) co_return std::unexpected(saved.error());
     receipt.durable_record_removed = true;
 

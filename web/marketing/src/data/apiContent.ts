@@ -9,6 +9,7 @@
 
 import { REPO_URL, SITE_BASE } from "./content";
 import type { Lang } from "../i18n/LanguageContext";
+import type { ApiSidebarSection } from "../components/ApiToc";
 
 export const gh = (path: string) => `${REPO_URL}/blob/main/${path}`;
 
@@ -25,6 +26,76 @@ export interface ApiPage {
   description: string;
   status: ApiStatus;
 }
+
+// Right-rail "on this page" anchors for the first-program page (api/first-app.html) — the ids that
+// page's own sub-headings carry.
+export const firstAppSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "depend", label: "How to depend on the engine" },
+    { id: "program", label: "The program" },
+    { id: "build-and-run", label: "Build it and run it" },
+    { id: "real-model", label: "Point it at a real model" },
+    { id: "bundle-and-session", label: "The bundle, and the session inside it" },
+    { id: "errors", label: "The error model" },
+    { id: "next-steps", label: "Where to go next" },
+  ],
+  vi: [
+    { id: "depend", label: "Cách phụ thuộc vào engine" },
+    { id: "program", label: "Chương trình" },
+    { id: "build-and-run", label: "Build và chạy" },
+    { id: "real-model", label: "Trỏ vào một model thật" },
+    { id: "bundle-and-session", label: "Bundle, và session nằm trong đó" },
+    { id: "errors", label: "Mô hình lỗi" },
+    { id: "next-steps", label: "Đi tiếp đến đâu" },
+  ],
+};
+
+// Right-rail "on this page" anchors for the orientation page (api/how-it-works.html) — the ids
+// that page's own sub-headings carry. Kept here with the rest of the API section's shared page data
+// rather than in the page component, so that component exports components only (oxlint's
+// react/only-export-components).
+export const howItWorksSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "lifecycle", label: "One run, end to end" },
+    { id: "authority", label: "How authority reaches an effect" },
+    { id: "invariants", label: "The eight invariants" },
+    { id: "layers", label: "Five layers, one direction" },
+    { id: "ownership", label: "Engine vs host" },
+    { id: "status", label: "What is real today" },
+  ],
+  vi: [
+    { id: "lifecycle", label: "Một run, từ đầu đến cuối" },
+    { id: "authority", label: "Quyền hạn đi tới một hiệu ứng" },
+    { id: "invariants", label: "Tám bất biến" },
+    { id: "layers", label: "Năm lớp, một chiều" },
+    { id: "ownership", label: "Engine và host" },
+    { id: "status", label: "Hôm nay đã có gì" },
+  ],
+};
+
+// Right-rail "on this page" anchors for the worked-example page (api/pizza-order.html).
+export const pizzaOrderSections: Record<Lang, ApiSidebarSection[]> = {
+  en: [
+    { id: "cast", label: "Act 0 — the cast" },
+    { id: "order", label: "Act 1 — the order" },
+    { id: "denial", label: "Act 2 — the denial" },
+    { id: "approval", label: "Act 3 — the human" },
+    { id: "restart", label: "Act 4 — the restart" },
+    { id: "replay", label: "Act 5 — the replay" },
+    { id: "escalation", label: "Act 6 — the escalation" },
+    { id: "proves", label: "What this proves" },
+  ],
+  vi: [
+    { id: "cast", label: "Hồi 0 — dàn diễn viên" },
+    { id: "order", label: "Hồi 1 — đơn hàng" },
+    { id: "denial", label: "Hồi 2 — từ chối" },
+    { id: "approval", label: "Hồi 3 — con người" },
+    { id: "restart", label: "Hồi 4 — khởi động lại" },
+    { id: "replay", label: "Hồi 5 — phát lại" },
+    { id: "escalation", label: "Hồi 6 — leo thang" },
+    { id: "proves", label: "Trang này chứng minh gì" },
+  ],
+};
 
 export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
   en: {
@@ -50,6 +121,46 @@ export const apiGroupLabels: Record<Lang, Record<ApiGroup, string>> = {
 // in both the hub grid and the sidebar list; ApiSidebar clusters them by `group` underneath.
 export const apiPages: Record<Lang, ApiPage[]> = {
   en: [
+    {
+      id: "first-app",
+      group: "core",
+      label: "Your first program",
+      href: `${SITE_BASE}/api/first-app.html`,
+      eyebrow: "Start here — a complete program, and the build that produces it",
+      description:
+        "One whole program — includes and main() included — plus the CMake that builds it against a vendored engine, how to point it at a real model, and the result-based error model every call uses.",
+      status: "real",
+    },
+    {
+      id: "how-it-works",
+      group: "core",
+      label: "How AgentEngine works",
+      href: `${SITE_BASE}/api/how-it-works.html`,
+      eyebrow: "Orientation — 001 §3–§4 · CONVENTIONS.md",
+      description:
+        "Start here: the lifecycle of a run, how authority reaches an effect, the eight core invariants and what enforces each, and who owns what between the engine and its host.",
+      status: "real",
+    },
+    {
+      id: "pizza-order",
+      group: "core",
+      label: "Worked example: a pizza order",
+      href: `${SITE_BASE}/api/pizza-order.html`,
+      eyebrow: "Worked example — one order, end to end",
+      description:
+        "A customer application followed from greeting to refund: the grant, the denial, the human approval, the restart, the offline replay, and the escalation graph — each act citing the real example behind it.",
+      status: "real",
+    },
+    {
+      id: "use-cases",
+      group: "core",
+      label: "Use cases",
+      href: `${SITE_BASE}/api/use-cases.html`,
+      eyebrow: "The picker — one use case per feature",
+      description:
+        "A concrete use case for every AgentEngine feature, the runnable offline example that proves it, and the entry points to implement against — plus a quick-pick table by goal.",
+      status: "real",
+    },
     {
       id: "agent",
       group: "core",
@@ -214,6 +325,46 @@ export const apiPages: Record<Lang, ApiPage[]> = {
     },
   ],
   vi: [
+    {
+      id: "first-app",
+      group: "core",
+      label: "Chương trình đầu tiên của bạn",
+      href: `${SITE_BASE}/api/first-app.html`,
+      eyebrow: "Bắt đầu từ đây — một chương trình trọn vẹn, và tệp build tạo ra nó",
+      description:
+        "Một chương trình hoàn chỉnh — kể cả các dòng include và hàm main() — cùng CMake để build nó với engine đã vendor, cách trỏ nó vào một model thật, và mô hình lỗi dựa trên result mà mọi lệnh gọi đều dùng.",
+      status: "real",
+    },
+    {
+      id: "how-it-works",
+      group: "core",
+      label: "AgentEngine vận hành thế nào",
+      href: `${SITE_BASE}/api/how-it-works.html`,
+      eyebrow: "Định hướng — 001 §3–§4 · CONVENTIONS.md",
+      description:
+        "Bắt đầu từ đây: vòng đời của một run, cách quyền hạn đi tới một hiệu ứng, tám bất biến cốt lõi cùng cơ chế thực thi từng cái, và phần nào thuộc engine, phần nào thuộc host.",
+      status: "real",
+    },
+    {
+      id: "pizza-order",
+      group: "core",
+      label: "Ví dụ trọn vẹn: một đơn pizza",
+      href: `${SITE_BASE}/api/pizza-order.html`,
+      eyebrow: "Ví dụ trọn vẹn — một đơn hàng, từ đầu đến cuối",
+      description:
+        "Một ứng dụng khách hàng được đi theo từ lời chào tới hoàn tiền: cấp quyền, từ chối, phê duyệt bởi con người, khởi động lại, phát lại ngoại tuyến, và đồ thị leo thang — mỗi hồi đều dẫn nguồn ví dụ thật đứng sau nó.",
+      status: "real",
+    },
+    {
+      id: "use-cases",
+      group: "core",
+      label: "Các trường hợp sử dụng",
+      href: `${SITE_BASE}/api/use-cases.html`,
+      eyebrow: "Bộ chọn — một trường hợp sử dụng cho mỗi tính năng",
+      description:
+        "Một trường hợp sử dụng cụ thể cho mọi tính năng AgentEngine, chương trình ngoại tuyến chạy được đã chứng minh nó, và các điểm vào để triển khai dựa trên — cộng một bảng chọn nhanh theo mục tiêu.",
+      status: "real",
+    },
     {
       id: "agent",
       group: "core",
@@ -545,9 +696,9 @@ export const toolStaticMembers: Record<Lang, FieldSpec[]> = {
     },
     {
       name: "invoke(Args, EffectContext&)",
-      type: "static result<Reply>",
+      type: "const agentengine::task<result<Reply>>",
       required: true,
-      notes: "Synchronous by design, not a coroutine — ae::task<T> stays deferred until a milestone actually needs concurrent tool calls (tool.hpp:112-114).",
+      notes: "ADR-237 §5.2's form, and the one to write: a NON-STATIC const member returning a coroutine, so a stateless tool is an empty object and a stateful one holds its injected state (registered by value). const because a Parallelizable tool called twice in one batch runs two invokes on the same object concurrently — mutable per-call state belongs in the frame. The older static result<Reply> form is still accepted transitionally and is deleted once every conformer is converted, so new code should not use it.",
     },
     {
       name: "declared_capabilities()",
@@ -595,9 +746,9 @@ export const toolStaticMembers: Record<Lang, FieldSpec[]> = {
     },
     {
       name: "invoke(Args, EffectContext&)",
-      type: "static result<Reply>",
+      type: "const agentengine::task<result<Reply>>",
       required: true,
-      notes: "Đồng bộ (synchronous) theo chủ ý thiết kế, không phải coroutine — ae::task<T> vẫn bị hoãn lại cho đến khi có milestone nào đó thực sự cần các lệnh gọi tool đồng thời (tool.hpp:112-114).",
+      notes: "Dạng của ADR-237 §5.2, và là dạng nên viết: một thành viên const KHÔNG static trả về coroutine, nên một tool không trạng thái là một đối tượng rỗng còn tool có trạng thái thì giữ state được tiêm vào (đăng ký theo giá trị). const vì một tool Parallelizable được gọi hai lần trong cùng một batch sẽ chạy hai invoke trên cùng một đối tượng đồng thời — state thay đổi theo từng lệnh gọi phải nằm trong frame. Dạng static result<Reply> cũ vẫn được chấp nhận trong giai đoạn chuyển tiếp và sẽ bị xóa khi mọi conformer được chuyển đổi, nên code mới không nên dùng nó.",
     },
     {
       name: "declared_capabilities()",
@@ -629,7 +780,14 @@ struct WebSearchTool : agentengine::Tool<WebSearchTool> {
     using Args = SearchArgs;    // AE_JSON_SCHEMA(SearchArgs, query, max_results, after_cursor)
     using Reply = SearchReply;  // AE_JSON_SCHEMA(SearchReply, hits, truncated)
     static result<Reply> invoke(Args args, EffectContext& ctx) { /* ... */ }
-};`;
+};
+
+// WRITE THE STATIC FORM ABOVE, for now. ADR-237 §5.2 is converting invoke to a non-static const
+// coroutine member -- task<result<Reply>> invoke(Args, EffectContext&) const -- and core/tool.hpp
+// already documents that as the target shape. It is not usable yet: the registration path still
+// calls the tool's invoke statically, so a non-static member fails to compile with C2352 ("a call of
+// a non-static member function requires an object") from core/tool_descriptor.hpp. Both spellings
+// compile in the abstract; only this one binds. Convert when the ADR lands, not before.`;
 
 export interface TypeMapping {
   cpp: string;
@@ -704,7 +862,7 @@ export const toolSchemaOutput = `{
   },
   "required": ["hits", "truncated"]
 }
-// json_schema_of<SearchReply>() — pretty-printed here for reading; the real
+// agentengine::schema::json_schema_of<SearchReply>() — pretty-printed here for reading; the real
 // emission is compact, single-line, no whitespace.`;
 
 export const toolDescriptorSnippet = `// One entry in the immutable per-run tool table (006 §6). Type-erased:
@@ -766,10 +924,39 @@ struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_
 // value get_weather actually returned, and get_time/stock_price must NEVER be called for this
 // prompt -- a real sequential-dependency + distractor-discipline proof, not a toy round trip.`;
 
-// tests/core/json/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is a SEPARATE channel from
-// AE_JSON_SCHEMA's own bare field-name list (the note above): the description lives on the FIELD'S
-// OWN TYPE, not as a macro argument, so it survives exactly where a plain field can't carry one.
+// tests/core/json/test_json_schema_described.cpp:36-41 -- Described<T, "..."> is THE way to give a
+// field a description: it lives on the FIELD'S OWN TYPE, not as an AE_JSON_SCHEMA macro argument
+// (the macro only lists field names).
 // Described<std::optional<T>, "..."> composes correctly too -- still detected as NOT required.
+// How a tool CALL is produced. No page showed this, and it is the piece you need the moment you
+// want to test a tool-using agent offline -- it is what every example's scripted client does, and
+// what a real vendor client parses its wire response into. Verified end to end by
+// devsim/verify-toolcall: the synthesised call runs the declared tool exactly once.
+export const fakeToolCallSnippet = `// core/content.hpp -- a ToolCall is one ContentItem's value, and a ChatClient is free to build one.
+// That is how every scripted client in examples/ works, and how you test a tool-using agent with
+// no network and no API key.
+ToolCall call;
+call.call_id        = "call-1";           // correlates this call with the ToolResult it produces
+call.tool_name      = "roll_die";         // must match a declared Tool<>::name, or the pipeline
+                                          // refuses it with tool.unknown_name
+call.arguments_json = R"({"sides":6})";   // the arguments as JSON TEXT -- validated against the
+                                          // tool's own Args schema before invoke() is reached
+call.provenance     = call_provenance::vendor_structured;
+
+ContentItem item{};
+item.origin = content_origin::assistant;
+item.value  = std::move(call);
+
+Message reply{};
+reply.role = role::assistant;
+reply.content.push_back(std::move(item));
+co_return ChatResponse{reply, Usage{10, 10, 0, 0, 0.0}};
+
+// From here the session does the rest, in one turn, with no further help from you: the capability
+// check, the approval gate, the tool's own invoke(), and a ToolResult carrying its reply fed back
+// to the model as the next thing it sees. The model's second chat() call is what turns that reply
+// into an answer -- read it back with text_of()/schema::from_json, the same way examples/01 does.`;
+
 export const describedFieldSchemaSnippet = `// tests/core/json/test_json_schema_described.cpp:36-41
 struct SearchArgs {
     Described<std::string, "The search query text"> query;
@@ -1103,7 +1290,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "A tool declared Approval<approval_mode::always_require> normally needs a synchronous approval_decider_ configured on the session. ADR-029 adds the alternative: with suspend_for_approval_ set and no decider configured, the WHOLE StartRun ask genuinely suspends — it never resolves — and a real Interaction opens (interaction_reason::approval), with input_required/approval_requested events on the run's event stream. A later ResolveInteraction{interaction_id, approved} ask resumes the SAME run (never a new run_id — 001's attributability invariant, I4): approved=true invokes the pending call for real through the ordinary capability-checked pipeline; approved=false folds a denial into history as an ordinary tool error. A second StartRun sent while an interaction is open is rejected outright, and a ResolveInteraction from a caller that doesn't match the session's owning principal is denied at admission before the interaction lookup even runs.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
-      href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
+      href: gh("decisions/archive/ADR-029-suspend-for-human-approval.md"),
     },
     {
       id: "middleware-chain",
@@ -1113,7 +1300,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "A decorator over any ModelCallGatewayLike backend (typically a retry/failover ModelCallGateway<Primary, Fallback...>), a real coroutine so a hook's co_await is completely ordinary: each Ms... in order gets a before_model(ModelCallContext&) hook (can rewrite the outgoing request or short-circuit with a synthetic response) and an after_model(ModelCallContext&) hook (sees the real response once it's settled). A red-team pass found the fatal case this mechanism has to close on its own: a content-rewriting middleware could otherwise forge or mutate a trusted ToolCall reconstructed from plain text, silently bypassing ADR-023's confused-deputy gate — content-rewrite is not the same threat class as capability-widening, but it reaches the same outcome if unchecked. enforce_backend_tool_call_provenance() forces any ToolCall a middleware's rewritten Message content didn't come verbatim from the backend down to call_provenance::text_derived, so it still has to earn its way through the ordinary declassification gate — a middleware can change what the model is asked or told, never what a tool call is trusted to have come from.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
-      href: gh("decisions/ADR-036-model-call-gateway.md"),
+      href: gh("decisions/archive/ADR-036-model-call-gateway.md"),
     },
     {
       id: "turn-middleware",
@@ -1215,7 +1402,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "Một tool được khai báo Approval<approval_mode::always_require> thông thường cần một approval_decider_ đồng bộ được cấu hình trên session. ADR-029 bổ sung một lựa chọn khác: khi suspend_for_approval_ được thiết lập và không có decider nào được cấu hình, TOÀN BỘ yêu cầu StartRun sẽ thực sự tạm dừng — nó không bao giờ được giải quyết — và một Interaction thật được mở ra (interaction_reason::approval), kèm các sự kiện input_required/approval_requested trên luồng sự kiện của run. Một yêu cầu ResolveInteraction{interaction_id, approved} sau đó sẽ khôi phục lại CHÍNH run đó (không bao giờ tạo run_id mới — theo invariant về khả năng quy trách nhiệm I4 của 001): approved=true sẽ gọi thực thi thật lệnh gọi đang chờ, thông qua pipeline kiểm tra capability thông thường; approved=false gộp một sự từ chối vào history như một lỗi tool bình thường. Một StartRun thứ hai gửi tới trong lúc một interaction đang mở sẽ bị từ chối thẳng, và một ResolveInteraction từ một caller không khớp với principal sở hữu session sẽ bị từ chối ngay ở bước tiếp nhận, trước cả khi việc tra cứu interaction diễn ra.",
       cite: "include/agentengine/rt/agent_session.hpp:1488",
-      href: gh("decisions/ADR-029-suspend-for-human-approval.md"),
+      href: gh("decisions/archive/ADR-029-suspend-for-human-approval.md"),
     },
     {
       id: "middleware-chain",
@@ -1225,7 +1412,7 @@ export const runtimeEntries: Record<Lang, ApiEntry[]> = {
       body:
         "Một decorator bọc quanh bất kỳ backend nào kiểu ModelCallGatewayLike (thường là một ModelCallGateway<Primary, Fallback...> có retry/failover), là một coroutine thật nên co_await trong một hook hoàn toàn bình thường: mỗi Ms... theo thứ tự có một hook before_model(ModelCallContext&) (có thể viết lại request đi ra hoặc short-circuit bằng một phản hồi tổng hợp) và một hook after_model(ModelCallContext&) (nhìn thấy phản hồi thật một khi nó đã ổn định). Một đợt red-team đã phát hiện trường hợp chí mạng mà cơ chế này phải tự đóng lại: nếu không, một middleware viết lại nội dung có thể giả mạo hoặc thay đổi một ToolCall đáng tin cậy được tái dựng từ văn bản thuần, âm thầm vượt qua cổng confused-deputy của ADR-023 — viết lại nội dung không cùng loại mối đe dọa với mở rộng capability, nhưng nếu không được kiểm soát thì dẫn tới cùng một hậu quả. enforce_backend_tool_call_provenance() buộc mọi ToolCall mà nội dung Message đã bị middleware viết lại — nếu không đến nguyên văn từ backend — phải hạ xuống thành call_provenance::text_derived, nên nó vẫn phải tự giành lấy quyền đi qua cổng giải mật thông thường — một middleware có thể thay đổi những gì model được hỏi hay được nói, nhưng không bao giờ thay đổi được việc một lệnh gọi tool được tin là đến từ đâu.",
       cite: "include/agentengine/core/model_call_gateway.hpp",
-      href: gh("decisions/ADR-036-model-call-gateway.md"),
+      href: gh("decisions/archive/ADR-036-model-call-gateway.md"),
     },
     {
       id: "turn-middleware",
@@ -1493,6 +1680,42 @@ std::string const id = session.open_interactions().front().interaction_id;
 auto r2 = drive(session.resolve_interaction(ResolveInteraction{id, /*approved=*/true, std::nullopt}));
 // r2 converges: send_message's invoke() ran for real, through the ordinary capability-checked
 // pipeline -- and it's still the SAME run_id as r1, never a new run (I4).`;
+
+// The two shapes every suspend/resume site needs and the snippets above use without defining: the
+// sentinel CODES you branch on, and the ResolveInteraction struct you answer with. Verbatim from
+// rt/agent_session_core.hpp:1209-1239 (the codes) and :129-160 (the struct).
+export const suspendCodesSnippet = `// One stable string per suspend reason, each a static member of YOUR session type. A suspended run
+// is NOT a failure -- its failure class is "contract" -- so branch on the code, not on whether the
+// result happens to hold a value.
+static_assert(std::string_view(Session::kSuspendedForApproval)     == "run.suspended_for_approval");
+static_assert(std::string_view(Session::kSuspendedForCodeActAsk)   == "run.suspended_for_codeact_ask");
+static_assert(std::string_view(Session::kSuspendedForHookDecision) == "run.suspended_for_hook_decision");
+static_assert(std::string_view(Session::kSuspendedForClientInput)  == "run.suspended_for_client_input");
+
+auto r = drive(session.start_run(StartRun{user_message("refund order 1042")}));
+if (r.has_value()) {
+    // It answered. Nothing was waiting.
+} else if (r.error().code == Session::kSuspendedForApproval) {
+    // Expected, deliberate, and nothing ran: a real Interaction is open, waiting for a human.
+    std::string const id = session.open_interactions().front().interaction_id;
+} else {
+    // A real failure. r.error().klass names its class; r.error().message is for the operator log.
+}
+
+// ResolveInteraction, as declared -- NINE fields. The first three are what almost every call site
+// uses; the rest are reason-specific and defaulted, which is why the positional braces in the
+// examples above are safe to copy.
+struct ResolveInteraction {
+    std::string interaction_id;                                       // 1  required
+    bool        approved = false;                                     // 2  approval only
+    std::optional<SessionCaller> caller = std::nullopt;               // 3  SessionCaller{id, tenant_id}
+    std::optional<std::string>   answer = std::nullopt;               // 4  codeact_ask only
+    std::optional<RequestAuthority> authority = std::nullopt;         // 5  Tier-3 identity+grant bundle
+    std::optional<std::vector<HookDispatchAnswer>>  hook_dispatch_answers;  // 6  hook_decision only
+    std::optional<std::vector<ApprovalCallDecision>> call_decisions;        // 7  per-call decisions
+    std::optional<std::string> approver_id = std::nullopt;            // 8  who decided (I4)
+    std::optional<ClientInputAnswer> client_answer = std::nullopt;    // 9  client_input only
+};`;
 
 // OQ-21 -- a DIFFERENT question from the human-approval flow above, answered through the same
 // suspend/resume machinery: "should an EXTERNAL PROCESS decide (or rewrite) this call", not "did a
@@ -2075,7 +2298,7 @@ export const skillSourceConceptSnippet = `// The interface both sources above sa
 template <class T>
 concept SkillSource = requires(T& s) {
     { s.origin_id() } -> std::convertible_to<std::string_view>;
-    { s.load_skills() } -> std::same_as<result<std::vector<SkillSourceResult>>>;
+    { s.load_skills() } -> std::same_as<task<result<std::vector<SkillSourceResult>>>>;
 };
 
 // One file inside a skill's bundle, SKILL.md itself included.
@@ -2095,7 +2318,7 @@ struct SkillSourceResult {
 // because resolving sources happens once per run, never on Tool/ChatClient's hot path.
 struct SkillSourceDescriptor {
     std::string origin_id;
-    std::function<result<std::vector<SkillSourceResult>>()> load_skills;
+    std::function<task<result<std::vector<SkillSourceResult>>>()> load_skills;
 };
 
 template <class SourceT> requires SkillSource<SourceT>
@@ -2115,7 +2338,7 @@ public:
         : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
 
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
-    [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const { return skills_; }
+    [[nodiscard]] task<result<std::vector<SkillSourceResult>>> load_skills() const { co_return skills_; }
 
 private:
     std::string origin_id_;
@@ -2184,7 +2407,7 @@ export const inlineSkillSourceMembers: Record<Lang, MemberSpec[]> = {
         "Valid while this object lives. make_skill_source_descriptor copies it into SkillSourceDescriptor::origin_id. SkillsProvider uses it only to name both sources in a skill.name_collision_across_sources error; it is not a namespace, and two sources may share one.",
     },
     {
-      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      sig: "task<result<std::vector<SkillSourceResult>>> load_skills() const",
       returns: "a copy of what the constructor stored",
       contract:
         "Same value every call, no side effects, safe to call concurrently (nothing is mutated). The copy includes every file's bytes, so its cost grows with the bundle. SkillsProvider calls it once per resolve and caches the result (ensure_loaded()).",
@@ -2210,7 +2433,7 @@ export const inlineSkillSourceMembers: Record<Lang, MemberSpec[]> = {
         "Hợp lệ khi đối tượng này còn sống. make_skill_source_descriptor sao chép nó vào SkillSourceDescriptor::origin_id. SkillsProvider chỉ dùng nó để nêu tên hai nguồn trong lỗi skill.name_collision_across_sources; nó không phải namespace, và hai nguồn có thể dùng chung một origin id.",
     },
     {
-      sig: "result<std::vector<SkillSourceResult>> load_skills() const",
+      sig: "task<result<std::vector<SkillSourceResult>>> load_skills() const",
       returns: "một bản sao của thứ constructor đã lưu",
       contract:
         "Cùng một giá trị ở mọi lần gọi, không có side effect, gọi đồng thời vẫn an toàn (không có gì bị thay đổi). Bản sao gồm cả bytes của mọi file, nên chi phí tăng theo kích thước bundle. SkillsProvider gọi nó một lần cho mỗi lần resolve và cache kết quả (ensure_loaded()).",
@@ -2226,15 +2449,15 @@ export const inlineSkillSourceFailureConstructorSnippet = `result<std::vector<Sk
 
 InlineSkillSource source("failing-origin", failed);
 source.origin_id();                       // == "failing-origin" -- round-trips even on the failure path
-source.load_skills().has_value();         // == false
-source.load_skills().error().code;        // == "test.fixture_parse_failed" -- the EXACT error, unchanged
+(co_await source.load_skills()).has_value();        // == false
+(co_await source.load_skills()).error().code;       // == "test.fixture_parse_failed" -- the EXACT error, unchanged
 
 // Calling load_skills() again returns the identical failure -- no retry, no re-parse attempt:
-source.load_skills().error().code;        // == "test.fixture_parse_failed", still
+(co_await source.load_skills()).error().code;       // == "test.fixture_parse_failed", still
 
 // And it survives make_skill_source_descriptor's type erasure too:
 auto descriptor = make_skill_source_descriptor(std::move(source));
-descriptor.load_skills().error().code;    // == "test.fixture_parse_failed"`;
+(co_await descriptor.load_skills()).error().code;   // == "test.fixture_parse_failed"`;
 
 // A real caller of that second constructor -- tools/extract_pdf_text.hpp:537-548, verbatim. This is
 // the exact shape builtin_skills.hpp's make_builtin_skills_source() also uses (there, the immediately-
@@ -2266,7 +2489,7 @@ public:
     // returns the SAME cached result (009 §8c: "loading is dynamic but
     // snapshotted per run -- a skill loaded mid-run does not retroactively
     // change what earlier turns were permitted to do").
-    [[nodiscard]] result<void> ensure_loaded();
+    [[nodiscard]] task<result<void>> ensure_loaded();
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&);
 
@@ -2357,7 +2580,7 @@ allowed = skills.allowed_tool_names_for(mount_state.all());                   //
 scoped  = scope_tools_to_mounted_skills(universe, allowed);
 result  = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);           // succeeds now`;
 
-// 026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
+// rfcs/026-Agent-Facing-Runtime-Surface.md §4/§5 -- CodeAct is not a separate tool, it's execute_code
 // with the agent Python library present in the sandbox. agent_library_manifest.hpp is the ONE
 // shared registry both the real dir(agent)/help(agent) story and the model-facing prompt summary
 // read from -- listed here in that same order.
@@ -2422,8 +2645,8 @@ export const codeActEntries: Record<Lang, ApiEntry[]> = {
       title: "One interpreter per session, enforced in code — not just true by accident",
       body:
         "Before ADR-030, tools/cli_chat.cpp wired execute_code/mount_skill through five independent process-wide static variables — a MediatedPythonRunner, ExecState, MountedSkillsState, a pending-mount-roots vector, and a second SkillsProvider instance — correct only because the CLI happens to run one session per process, with nothing enforcing that. A red-team pass rejected the obvious fix (give each session's provider its own separately-owned MediatedPythonRunner) on two fatal grounds: the runner routes through unsynchronized process-wide globals internally, and ADR-002 §5.5.6's own 'one OS process per session' rule was still just prose, never enforced. ADR-030's CodeActState makes each of the five pieces a real per-AgentSession member via ADR-028's make_tool_descriptor_with_invoke — the interpreter process boundary itself is what now keeps two sessions' CodeAct state genuinely apart, not a shared-process convention nobody checks.",
-      cite: "decisions/ADR-030-session-scoped-codeact-wiring.md",
-      href: gh("decisions/ADR-030-session-scoped-codeact-wiring.md"),
+      cite: "decisions/archive/ADR-030-session-scoped-codeact-wiring.md",
+      href: gh("decisions/archive/ADR-030-session-scoped-codeact-wiring.md"),
     },
   ],
   vi: [
@@ -2454,8 +2677,8 @@ export const codeActEntries: Record<Lang, ApiEntry[]> = {
       title: "Một trình thông dịch cho mỗi session, được thực thi trong mã — không chỉ đúng một cách tình cờ",
       body:
         "Trước ADR-030, tools/cli_chat.cpp đấu nối execute_code/mount_skill thông qua năm biến static độc lập, toàn tiến trình — một MediatedPythonRunner, ExecState, MountedSkillsState, một vector pending-mount-roots, và một thực thể SkillsProvider thứ hai — chỉ đúng vì CLI tình cờ chạy đúng một session cho mỗi tiến trình, mà không có gì thực thi điều đó. Một đợt red-team đã bác bỏ giải pháp hiển nhiên (cho mỗi provider của session sở hữu riêng một MediatedPythonRunner) vì hai lý do chí mạng: runner định tuyến qua các biến toàn cục toàn-tiến-trình không được đồng bộ hóa ở bên trong, và quy tắc 'một tiến trình OS cho mỗi session' của chính ADR-002 §5.5.6 vẫn chỉ là văn xuôi, chưa từng được thực thi. CodeActState của ADR-030 biến mỗi trong năm thành phần đó thành một thành viên thật riêng theo từng AgentSession thông qua make_tool_descriptor_with_invoke của ADR-028 — chính ranh giới tiến trình của trình thông dịch giờ đây là thứ giữ cho trạng thái CodeAct của hai session thực sự tách biệt nhau, không phải một quy ước dùng-chung-tiến-trình mà không ai kiểm tra.",
-      cite: "decisions/ADR-030-session-scoped-codeact-wiring.md",
-      href: gh("decisions/ADR-030-session-scoped-codeact-wiring.md"),
+      cite: "decisions/archive/ADR-030-session-scoped-codeact-wiring.md",
+      href: gh("decisions/archive/ADR-030-session-scoped-codeact-wiring.md"),
     },
   ],
 };
@@ -2633,7 +2856,7 @@ auto resumed = drive(session.resolve_interaction(
 // Durability page's B7 cost note: a file write before the ask runs TWICE in total) -- with the new
 // answer now available to the SAME ask_or_raise() call, which returns normally this time.`;
 
-// 014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
+// rfcs/014-Workflow-and-Orchestration.md §1/§2/§3 -- Milestone 6, complete. A Workflow is DATA (nothing
 // here is an actor, a scheduler, or an execution decision); a WorkflowSupervisor runs it
 // round-by-round over AgentEngine's own agentengine::rt:: runtime (historical: originally a real
 // quark::Engine; ADR-037 replaced it).
@@ -2641,6 +2864,44 @@ export interface WorkflowEdgeKind {
   kind: string;
   meaning: string;
 }
+
+export const workflowResultSnippet = `// rt/workflow_supervisor.hpp -- what a run hands back. Read this before writing a handler: the
+// status alone is not enough, and two of these fields are what a fault handler actually needs.
+struct WorkflowResult {
+    workflow_status status = workflow_status::invalid;
+    std::uint32_t   rounds = 0;
+    Message         output{};        // the output selection's result -- EMPTY on a fault, and empty
+                                     // on a starved join that still reports completed
+    std::vector<ExecutorOutput> partial{};     // the LATEST message each executor produced -- one
+                                               // entry per executor id, overwritten on every revisit
+    std::vector<ExecutorOutput> transcript{};  // every visit, in completion order -- empty unless the
+                                               // host called enable_transcript(); see
+                                               // transcript_truncated for the cap
+    std::string     failed_executor{};         // WHICH node caused the stop: executor_failed,
+                                               // merge_conflict, and routing_failed too
+    std::vector<Interaction> open_interactions{};  // what a suspended run is waiting on
+    std::vector<std::string> unopened_ports{};     // request_ports the run never reached
+    Usage           usage{};         // what THIS call spent -- a resume reports only its own delta
+};
+
+// So a handler has more to work with than the status tag:
+auto r = drive(sup.run_workflow(RunWorkflow{text_message("...")}));
+switch (r.status) {
+    case workflow_status::completed:
+        // Still check r.output: a starved fan-in lands here with an empty answer (see the caveat).
+        break;
+    case workflow_status::executor_failed:
+    case workflow_status::merge_conflict:
+        std::fprintf(stderr, "node '%s' failed after %u rounds\\n",
+                     r.failed_executor.c_str(), r.rounds);
+        // r.partial still holds what the other nodes produced -- partial results are preserved
+        break;
+    case workflow_status::suspended:
+        // r.open_interactions names the port(s) to answer
+        break;
+    default:
+        break;
+}`;
 
 export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
   en: [
@@ -2650,6 +2911,7 @@ export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
     { kind: "fan_in", meaning: "Many sources, one target (the aggregator). The superstep model makes this well-defined: the target runs exactly ONCE per round, receiving one ContentItem per contributing branch in graph-declared order -- not once per inbound edge." },
     { kind: "switch_case", meaning: "One source, many targets, exactly one selected by a case label the source executor returns in ExecutorOutcome::routes. The unselected branch's invoke() is never called." },
     { kind: "multi_selection", meaning: "One source, many targets, a caller-chosen SUBSET fired -- the same routes mechanism as switch_case, naming more than one label." },
+    { kind: "switch_default", meaning: "The switch's own default (ADR-215): fires iff ZERO of the same source's switch_case edges matched the reply's routes. Carries no case label -- validate_workflow refuses one -- and a source may have at most one. More than one matching case is still a routing failure, default or not." },
   ],
   vi: [
     { kind: "direct", meaning: "Một nguồn, một đích." },
@@ -2658,6 +2920,7 @@ export const workflowEdgeKinds: Record<Lang, WorkflowEdgeKind[]> = {
     { kind: "fan_in", meaning: "Nhiều nguồn, một đích (bộ tổng hợp — aggregator). Mô hình superstep khiến điều này được định nghĩa rõ ràng: đích chạy đúng MỘT LẦN mỗi vòng, nhận một ContentItem cho mỗi nhánh đóng góp theo đúng thứ tự khai báo trong đồ thị — không phải một lần cho mỗi cạnh đi vào." },
     { kind: "switch_case", meaning: "Một nguồn, nhiều đích, đúng một đích được chọn bởi một nhãn case mà executor nguồn trả về trong ExecutorOutcome::routes. invoke() của nhánh không được chọn không bao giờ được gọi." },
     { kind: "multi_selection", meaning: "Một nguồn, nhiều đích, một TẬP CON do caller chọn được kích hoạt — cùng cơ chế routes như switch_case, chỉ khác là nêu tên nhiều hơn một nhãn." },
+    { kind: "switch_default", meaning: "Nhánh mặc định của switch (ADR-215): kích hoạt khi KHÔNG có cạnh switch_case nào của cùng nguồn đó khớp với routes trong reply. Không mang nhãn case — validate_workflow từ chối nếu có — và một nguồn chỉ được có tối đa một cạnh như vậy. Nhiều hơn một case khớp vẫn là lỗi định tuyến, dù có default hay không." },
   ],
 };
 
@@ -2785,7 +3048,9 @@ wf.bound.max_rounds = 4;              // required -- validate_workflow rejects a
 
 export const workflowGraphSnippet = `// The graph AS DATA -- no execution, no actors, no scheduling.
 // include/agentengine/workflow/graph.hpp
-enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain };
+// Seven kinds. switch_default (ADR-215) fires iff ZERO of the same source's switch_case edges
+// matched -- unlabelled, at most one per source, and only on a source that has a case edge.
+enum class edge_kind { direct, fan_out, fan_in, switch_case, multi_selection, chain, switch_default };
 enum class executor_kind { agent, function, sub_workflow, request_port };
 
 struct Executor {
@@ -2797,13 +3062,20 @@ struct Executor {
     // Default is branch, UNCONDITIONALLY -- see the ADR for why "shared
     // for provably-sequential nodes" was rejected as unsound in general.
     sharing_mode  worktree_mode = sharing_mode::branch;
+    // OQ-19: what THIS node needs, declared -- consulted only for agent-kind nodes. The
+    // CapabilitySet it actually runs under is the per-run contexts[i] passed to initialize().
+    std::vector<agentengine::Capability> capability_ceiling;
+    // ADR-235: eligible for a vendor batch job, function-kind nodes only, and only ever
+    // ELIGIBLE -- the host must also call enable_batch_coalescing().
+    bool          batch = false;
 };
 
 struct Edge {
     std::string from;
     std::string to;
     edge_kind   kind = edge_kind::direct;
-    std::string case_label;         // switch_case / multi_selection only
+    std::string case_label;         // switch_case / multi_selection only -- REQUIRED there,
+                                    // and refused ("workflow.unexpected_case_label") elsewhere
     EdgeFailurePolicy on_failure;   // fail (default) | propagate | retry | fallback
 };
 
@@ -2811,6 +3083,9 @@ struct TerminationBound {
     std::optional<std::uint32_t> max_rounds;
     std::optional<std::uint64_t> deadline_ms;
     std::optional<std::uint64_t> token_budget;
+    // ADR-149: the designated stall reporter's own consecutive "stalled" self-reports.
+    std::optional<std::uint32_t> max_stalls;
+    std::optional<std::uint32_t> max_resets;
     // validate_workflow REQUIRES at least one -- "an unbounded workflow does not run" (014 §2).
 };
 
@@ -2848,7 +3123,7 @@ WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("Hello, World
 export const workflowConcurrentSnippet = `// examples/09_concurrent_workflow.cpp -- Concurrent: fan_out to N workers, fan_in to one aggregator.
 Workflow wf;
 wf.id        = "fan-out-fan-in";
-wf.executors = {node("src"), node("upper"), node("lower"), node("title"), node("agg")};
+wf.executors = {node_desc("src"), node_desc("upper"), node_desc("lower"), node_desc("title"), node_desc("agg")};
 for (char const* w : {"upper", "lower", "title"}) {
     wf.edges.push_back(Edge{"src", w, edge_kind::fan_out, {}});
     wf.edges.push_back(Edge{w, "agg", edge_kind::fan_in, {}});
@@ -2865,7 +3140,7 @@ WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("hi")}));
 export const workflowRouterSnippet = `// examples/10_conditional_routing.cpp -- Router: switch_case on a classifier's typed output.
 Workflow wf;
 wf.id        = "triage-router";
-wf.executors = {node("triage"), node("billing"), node("tech")};
+wf.executors = {node_desc("triage"), node_desc("billing"), node_desc("tech")};
 wf.edges.push_back(Edge{"triage", "billing", edge_kind::switch_case, "billing"});
 wf.edges.push_back(Edge{"triage", "tech",    edge_kind::switch_case, "tech"});
 wf.start = "triage";
@@ -2881,20 +3156,29 @@ ExecutorBody triage = [](Message const& in, EffectContext&) -> result<ExecutorOu
 
 export const workflowReflectionSnippet = `// tests/workflow/test_rt_workflow_supervisor_patterns.cpp (CY-1) -- Reflection/critic: a bounded cycle.
 Workflow wf;
-wf.id        = "writer-critic";
-wf.executors = {node("writer"), node("critic"), node("done")};
-wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct,      {}});
+wf.id        = "cy-converge";
+wf.executors = {node_desc("writer"), node_desc("critic"), node_desc("done")};
+wf.edges.push_back(Edge{"writer", "critic", edge_kind::direct,       {}});
 wf.edges.push_back(Edge{"critic", "writer", edge_kind::switch_case, "revise"});
 wf.edges.push_back(Edge{"critic", "done",   edge_kind::switch_case, "approve"});
 wf.start = "writer";
 wf.output_selection.push_back("done");
 wf.bound.max_rounds = 8;   // validate_workflow REQUIRES a bound -- an unbounded cycle does not run
 
-// critic's body: revise twice, then approve
-int revisions = 0;
-ExecutorBody critic = [&revisions](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-    auto const label = (revisions++ < 2) ? "revise" : "approve";
-    return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {label}};
+// The critic's body, as the test writes it: revise twice, then approve. The counter is a shared_ptr
+// captured BY VALUE, not a local captured by reference -- initialize() takes the body vector by
+// value, so a body is a copy that can outlive the scope that built it.
+auto critic_calls = std::make_shared<std::atomic<int>>(0);
+std::vector<ExecutorBody> bodies = {
+    appender("writer"),
+    [critic_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+        std::string const text = all_text_of(in) + ">critic";
+        if (critic_calls->fetch_add(1) < 2) {
+            return ExecutorOutcome{text_message(text), {"revise"}};
+        }
+        return ExecutorOutcome{text_message(text), {"approve"}};
+    },
+    appender("done"),
 };
 // converges at "done" once approved; a critic that never approves stops CLEANLY at bound.max_rounds
 // (workflow_status::bound_max_rounds -- not a crash, not a hang)`;
@@ -2903,7 +3187,7 @@ export const workflowGroupChatSnippet = `// Same cyclic switch_case shape CY-1 p
 // not a separately proven test, just the same primitives composed differently.
 Workflow wf;
 wf.id        = "panel-debate";
-wf.executors = {node("moderator"), node("alice"), node("bob"), node("carol")};
+wf.executors = {node_desc("moderator"), node_desc("alice"), node_desc("bob"), node_desc("carol")};
 for (char const* p : {"alice", "bob", "carol"}) {
     wf.edges.push_back(Edge{"moderator", p, edge_kind::switch_case, p});
     wf.edges.push_back(Edge{p, "moderator", edge_kind::direct, {}});
@@ -2934,10 +3218,12 @@ export const workflowSequentialBodiesSnippet = `// examples/04_first_workflow.cp
     std::reverse(text.begin(), text.end());
     return text_message(std::move(text));
 }
-// rt::ExecutorBody is exactly std::function<result<ExecutorOutcome>(Message const&,
-// EffectContext&)>, and a Message converts implicitly into an ExecutorOutcome for the common
-// "just pass a message downstream" case -- these bodies need no changes to plug into the graph,
-// only the wiring around them does.`;
+// rt::ExecutorBody is exactly std::function<result<ExecutorOutcome>(Message const&, EffectContext&)>.
+// A PASS-THROUGH body can simply return text_message(...): a Message converts implicitly into an
+// ExecutorOutcome. A ROUTING body must be annotated result<ExecutorOutcome> -- NOT result<Message>.
+// That convenience lives inside std::expected's own converting constructor, and two user-defined
+// conversions do not chain, so writing -> result<Message> on a routing body fails with a C2440 that
+// names std::expected rather than the real cause. Both shapes are compiled by verify-bodyforms.`;
 
 export const workflowConcurrentMergeSnippet = `// examples/09_concurrent_workflow.cpp:62-91 -- how a fan_in delivery is actually read: one
 // ContentItem per contributing branch, in graph-declared order -- and the worker/aggregate bodies
@@ -3213,7 +3499,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       tag: "014 §3 — eight patterns, one graph vocabulary",
       title: "Sequential, Concurrent, Handoff, Router, and four more — configurations, not subsystems",
       body:
-        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the six edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
+        "§3's claim is that its eight named orchestration patterns are configurations of the graph, not eight separate things to build, and test_rt_workflow_supervisor_patterns.cpp is that claim's proof: every row is built from nothing but executors, the seven edge kinds above, and a termination bound, then run for real on the superstep engine. A fan-in aggregator is checked on its INVOCATION COUNT (exactly one call, not one per inbound edge) because a merge that silently ran three times would still produce a plausible-looking answer. A router is run against two different inputs through the SAME graph, because one probe can't distinguish a working classifier from a node hardcoded to one branch. An executor that names a route label the graph never declared fails the run with workflow_status::routing_failed rather than being silently ignored (an I3 boundary: a route target is engine-checked structure, never treated as free-form model output to trust).",
       cite: "tests/workflow/test_rt_workflow_supervisor_patterns.cpp",
       href: gh("tests/workflow/test_rt_workflow_supervisor_patterns.cpp"),
     },
@@ -3225,7 +3511,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       body:
         "014 §1 named a real gap: nothing stated whether a workflow executor gets its own sub-worktree, inherits the caller's, or shares one. ADR-032 closes it: mint_executor_worktrees walks a Workflow's executors and mints a real 025 §3 SubWorktree (and, for shared/branch modes, a Mount + FsRead/FsWrite capability pair) per executor, keyed off each executor's own sharing_mode -- defaulting to branch UNCONDITIONALLY rather than reusing 025 §3's 'sequential defaults to shared' rule per node, because the superstep model gives concurrent asks to any two executors reachable in the same round (not only explicit fan_out edges), and general graphs here have cycles and dynamic switch_case routing that make proving two nodes can never co-occur unsound to do cheaply. A red-team pass found the mechanism's own fatal case before it shipped: readonly sharing_mode is structurally incompatible with a Mount (a Mount is what makes a sub-worktree reachable from inside a sandbox at all) -- resume_executor_worktrees fails closed on it rather than silently minting a working-but-wrong grant.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
     {
       id: "workflow-executable-kinds",
@@ -3267,7 +3553,7 @@ export const workflowEntries: Record<Lang, ApiEntry[]> = {
       body:
         "014 §1 đã nêu tên một khoảng trống có thật: không có gì khẳng định liệu một executor của workflow có nhận sub-worktree riêng, kế thừa của caller, hay dùng chung một cái. ADR-032 đóng khoảng trống này lại: mint_executor_worktrees duyệt qua các executor của một Workflow và tạo mới một SubWorktree thật theo 025 §3 (và, với chế độ shared/branch, thêm một cặp capability Mount + FsRead/FsWrite) cho mỗi executor, dựa theo sharing_mode riêng của từng executor — mặc định là branch một cách VÔ ĐIỀU KIỆN thay vì tái sử dụng quy tắc 'sequential mặc định là shared' của 025 §3 theo từng node, bởi vì mô hình superstep trao các yêu cầu đồng thời cho bất kỳ hai executor nào có thể chạm tới nhau trong cùng một vòng (không chỉ các cạnh fan_out tường minh), và các đồ thị tổng quát ở đây có chu trình và định tuyến switch_case động khiến việc chứng minh hai node không bao giờ đồng thời xảy ra là điều không thể làm một cách rẻ và an toàn. Một đợt red-team đã phát hiện trường hợp chí mạng của chính cơ chế này trước khi nó được phát hành: sharing_mode readonly về mặt cấu trúc không tương thích với một Mount (một Mount chính là thứ khiến một sub-worktree có thể chạm tới được từ bên trong sandbox) — resume_executor_worktrees từ chối đóng trên trường hợp đó thay vì âm thầm tạo ra một cấp phát chạy-được-nhưng-sai.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
     {
       id: "workflow-executable-kinds",
@@ -3372,7 +3658,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "mcp",
       name: "MCP server + client",
       rfc: "011-MCP-Conformance",
-      rfcHref: gh("011-MCP-Conformance.md"),
+      rfcHref: gh("rfcs/011-MCP-Conformance.md"),
       status: "real",
       note: "protocol/mcp/ has real headers (json_rpc.hpp, server.hpp, client.hpp, progress.hpp) and five test files. McpServer is a transport-agnostic request dispatcher over the real ToolTable — server/discover, tools/list, tools/call all work. What's missing: real Streamable HTTP/stdio transport (a later sub-phase) — hand it a JsonRpcRequest and you get a JsonRpcResponse back, but nothing puts bytes on a socket yet.",
     },
@@ -3380,7 +3666,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "a2a",
       name: "A2A",
       rfc: "012-A2A-Conformance",
-      rfcHref: gh("012-A2A-Conformance.md"),
+      rfcHref: gh("rfcs/012-A2A-Conformance.md"),
       status: "real",
       note: "protocol/a2a/ has real headers and six test files. A2aServer implements SendMessage/GetTask/CancelTask over a real AgentSession run. Two real gaps: no JSON-RPC/REST envelope yet (transport-agnostic, same layering as MCP), and AgentSession's turn loop is still fully synchronous end-to-end, so TASK_STATE_SUBMITTED/WORKING are never independently observable.",
     },
@@ -3388,7 +3674,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "agui",
       name: "AG-UI streaming surface",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "real",
       note: "protocol/agui/ has real headers and three test files. RunEventProjector maps the real internal run-event stream onto AG-UI wire events (TEXT_MESSAGE_START/CONTENT/END, RunFinishedInterrupt) and sse.hpp encodes them — real projection logic, not yet wired to a serving transport.",
     },
@@ -3396,7 +3682,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "openai-inbound",
       name: "OpenAI-compatible HTTP (inbound)",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "design",
       note: "Not the same thing as OpenAIChatClient above, which is an outbound provider client. Serving agentengine agents behind an OpenAI-shaped endpoint is unbuilt — the one surface on this page with no real code behind it yet.",
     },
@@ -3404,7 +3690,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "declarative",
       name: "Declarative YAML/JSON agent format",
       rfc: "015-Declarative-Agent-Format",
-      rfcHref: gh("015-Declarative-Agent-Format.md"),
+      rfcHref: gh("rfcs/015-Declarative-Agent-Format.md"),
       status: "real",
       note: "core/agent_yaml_compiler.hpp is real and tested: it compiles an Agent document to the same AgentMetadata register_agent<A>() produces, for agent_name, instructions, chat_client_id, max_turns, token_budget, approval, concurrency, telemetry, and sandbox_profile.is_strict. tools/capability_ceiling stay honestly empty — no name-keyed tool/capability registry exists yet to resolve spec.tools against — which is exactly why the Milestone 7 exit criterion (byte-identical AgentMetadata against the C++ equivalent, I6) isn't reached yet.",
     },
@@ -3414,7 +3700,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "mcp",
       name: "MCP server + client",
       rfc: "011-MCP-Conformance",
-      rfcHref: gh("011-MCP-Conformance.md"),
+      rfcHref: gh("rfcs/011-MCP-Conformance.md"),
       status: "real",
       note: "protocol/mcp/ có các header thật (json_rpc.hpp, server.hpp, client.hpp, progress.hpp) và năm file test. McpServer là một bộ điều phối request không phụ thuộc transport (transport-agnostic), xây trên ToolTable thật — server/discover, tools/list, tools/call đều hoạt động. Cái còn thiếu: transport Streamable HTTP/stdio thật (một sub-phase sau này) — đưa cho nó một JsonRpcRequest, bạn nhận lại một JsonRpcResponse, nhưng chưa có gì đưa byte lên socket cả.",
     },
@@ -3422,7 +3708,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "a2a",
       name: "A2A",
       rfc: "012-A2A-Conformance",
-      rfcHref: gh("012-A2A-Conformance.md"),
+      rfcHref: gh("rfcs/012-A2A-Conformance.md"),
       status: "real",
       note: "protocol/a2a/ có các header thật và sáu file test. A2aServer triển khai SendMessage/GetTask/CancelTask trên một run AgentSession thật. Có hai khoảng trống có thật: chưa có envelope JSON-RPC/REST (không phụ thuộc transport, cùng cách phân lớp với MCP), và vòng lặp lượt của AgentSession vẫn hoàn toàn đồng bộ đầu-cuối, nên TASK_STATE_SUBMITTED/WORKING không bao giờ có thể quan sát độc lập được.",
     },
@@ -3430,7 +3716,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "agui",
       name: "AG-UI streaming surface",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "real",
       note: "protocol/agui/ có các header thật và ba file test. RunEventProjector ánh xạ luồng sự kiện run nội bộ thật sang các sự kiện wire của AG-UI (TEXT_MESSAGE_START/CONTENT/END, RunFinishedInterrupt) và sse.hpp mã hóa chúng — logic ánh xạ có thật, chỉ là chưa được đấu nối vào một transport phục vụ.",
     },
@@ -3438,7 +3724,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "openai-inbound",
       name: "OpenAI-compatible HTTP (inbound)",
       rfc: "013-UI-and-Streaming-Surfaces",
-      rfcHref: gh("013-UI-and-Streaming-Surfaces.md"),
+      rfcHref: gh("rfcs/013-UI-and-Streaming-Surfaces.md"),
       status: "design",
       note: "Đây không phải cùng thứ với OpenAIChatClient ở trên, vốn là một client provider chiều ra (outbound). Việc phục vụ agent của agentengine đứng sau một endpoint có hình dạng OpenAI vẫn chưa được xây dựng — đây là bề mặt duy nhất trên trang này chưa có mã thật đứng sau.",
     },
@@ -3446,7 +3732,7 @@ export const protocolEntries: Record<Lang, ProtocolEntry[]> = {
       id: "declarative",
       name: "Declarative YAML/JSON agent format",
       rfc: "015-Declarative-Agent-Format",
-      rfcHref: gh("015-Declarative-Agent-Format.md"),
+      rfcHref: gh("rfcs/015-Declarative-Agent-Format.md"),
       status: "real",
       note: "core/agent_yaml_compiler.hpp có thật và đã được kiểm thử: nó biên dịch một tài liệu Agent thành đúng AgentMetadata mà register_agent<A>() tạo ra, cho agent_name, instructions, chat_client_id, max_turns, token_budget, approval, concurrency, telemetry, và sandbox_profile.is_strict. tools/capability_ceiling vẫn được để trống một cách trung thực — chưa có registry tool/capability theo tên nào tồn tại để phân giải spec.tools dựa vào — và đó chính xác là lý do vì sao tiêu chí thoát của Milestone 7 (AgentMetadata giống hệt từng byte so với bản C++ tương đương, I6) vẫn chưa đạt được.",
     },
@@ -3652,7 +3938,7 @@ export const worktreeEntries: Record<Lang, ApiEntry[]> = {
       title: "Every workflow executor gets its own worktree grant, minted or resumed",
       body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() are real and tested, but this is policy-and-minting ONLY: not yet wired into FunctionExecutor's own EffectContext inside WorkflowSupervisor's real construction path (no production host builds a FunctionExecutor fleet today, confirmed by grep). readonly executors can't resume (a pinned digest isn't durably persisted); branch executors lose their merge ancestor on resume too — both named residuals, not bugs.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
   ],
   vi: [
@@ -3690,7 +3976,7 @@ export const worktreeEntries: Record<Lang, ApiEntry[]> = {
       title: "Mỗi executor workflow đều nhận cấp phát worktree riêng, được tạo mới hoặc khôi phục",
       body: "ExecutorWorktreeGrant{sub, mount, read, write} — mint_executor_worktrees()/resume_executor_worktrees() có thật và đã kiểm thử, nhưng đây CHỈ là policy và cấp phát: chưa được đấu nối vào EffectContext riêng của FunctionExecutor bên trong đường xây dựng thật của WorkflowSupervisor (chưa có host production nào xây một fleet FunctionExecutor hôm nay, đã xác nhận bằng grep). Executor readonly không thể resume (digest ghim không được lưu bền vững); executor branch cũng mất merge ancestor khi resume — cả hai đều là tồn đọng có tên, không phải lỗi.",
       cite: "include/agentengine/workflow/worktree_scoping.hpp",
-      href: gh("decisions/ADR-032-workflow-executor-worktree-scoping.md"),
+      href: gh("decisions/archive/ADR-032-workflow-executor-worktree-scoping.md"),
     },
   ],
 };
@@ -3731,18 +4017,18 @@ export interface RfcLink {
 }
 
 export const apiRfcLinks: RfcLink[] = [
-  { label: "002 — Agent Model and Authoring", href: gh("002-Agent-Model-and-Authoring.md"), status: "real" },
-  { label: "004 — Model Provider Plane", href: gh("004-Model-Provider-Plane.md"), status: "real" },
-  { label: "006 — Tool and Function Plane", href: gh("006-Tool-and-Function-Plane.md"), status: "real" },
-  { label: "007 — Capability and Trust Model", href: gh("007-Capability-and-Trust-Model.md"), status: "real" },
-  { label: "008 — Sandbox and Isolation", href: gh("008-Sandbox-and-Isolation.md"), status: "real" },
-  { label: "009 — Plugin and Extension System", href: gh("009-Plugin-and-Extension-System.md"), status: "real" },
-  { label: "011 — MCP Conformance", href: gh("011-MCP-Conformance.md"), status: "real" },
-  { label: "012 — A2A Conformance", href: gh("012-A2A-Conformance.md"), status: "real" },
-  { label: "013 — UI and Streaming Surfaces", href: gh("013-UI-and-Streaming-Surfaces.md"), status: "real" },
-  { label: "014 — Workflow and Orchestration", href: gh("014-Workflow-and-Orchestration.md"), status: "real" },
-  { label: "015 — Declarative Agent Format", href: gh("015-Declarative-Agent-Format.md"), status: "real" },
-  { label: "025 — Worktree and Virtual Filesystem", href: gh("025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
+  { label: "002 — Agent Model and Authoring", href: gh("rfcs/002-Agent-Model-and-Authoring.md"), status: "real" },
+  { label: "004 — Model Provider Plane", href: gh("rfcs/004-Model-Provider-Plane.md"), status: "real" },
+  { label: "006 — Tool and Function Plane", href: gh("rfcs/006-Tool-and-Function-Plane.md"), status: "real" },
+  { label: "007 — Capability and Trust Model", href: gh("rfcs/007-Capability-and-Trust-Model.md"), status: "real" },
+  { label: "008 — Sandbox and Isolation", href: gh("rfcs/008-Sandbox-and-Isolation.md"), status: "real" },
+  { label: "009 — Plugin and Extension System", href: gh("rfcs/009-Plugin-and-Extension-System.md"), status: "real" },
+  { label: "011 — MCP Conformance", href: gh("rfcs/011-MCP-Conformance.md"), status: "real" },
+  { label: "012 — A2A Conformance", href: gh("rfcs/012-A2A-Conformance.md"), status: "real" },
+  { label: "013 — UI and Streaming Surfaces", href: gh("rfcs/013-UI-and-Streaming-Surfaces.md"), status: "real" },
+  { label: "014 — Workflow and Orchestration", href: gh("rfcs/014-Workflow-and-Orchestration.md"), status: "real" },
+  { label: "015 — Declarative Agent Format", href: gh("rfcs/015-Declarative-Agent-Format.md"), status: "real" },
+  { label: "025 — Worktree and Virtual Filesystem", href: gh("rfcs/025-Worktree-and-Virtual-Filesystem.md"), status: "real" },
 ];
 
 // ---- Trust & Sandbox page: RFC 008 §2a/§4/§4a (backend mechanics, custom backends, remote
@@ -3902,9 +4188,9 @@ template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,
                                    ExecRequest request, EffectContext& ctx) {
     { T::traits } -> std::convertible_to<ProfileTraits const&>;
-    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
-    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
-    { backend.destroy(handle) } -> std::same_as<void>;
+    { backend.create(spec, ctx) } -> std::same_as<task<result<SandboxHandle>>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
+    { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 
 // Both real backends assert conformance at file scope -- the exact mechanism a deployer's own
@@ -4225,7 +4511,7 @@ export interface JobTimeRun {
   overrun: string;
 }
 
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10.2 -- test_job_time_limit, run 11
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §10.2 -- test_job_time_limit, run 11
 // times across 3 invocations of the test binary: a CPU-spinning child under cpu_ms=500 with a
 // generous wall_ms=5000 backstop, so the measurement shows which mechanism actually fires.
 // Purely numeric/measured data -- language-neutral, not a Record<Lang, ...>.

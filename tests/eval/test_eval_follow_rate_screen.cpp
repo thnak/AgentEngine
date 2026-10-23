@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.0 item 2: the first real end-to-end proof
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.0 item 2: the first real end-to-end proof
 // that multi-trial orchestration is wired to tier1_statistics.hpp for real -- N+N real run_trial
 // calls, structurally graded, aggregated into follow_rate_screen_passes/clopper_pearson_lower_bound.
 // The model is scripted (deterministic) throughout; this file proves the SCREEN's own new logic
@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "agentengine/eval/eval_follow_rate_screen.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace {
 
@@ -33,8 +35,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- The same ScriptedChatClient/ScriptStep shape test_eval_trial_driver.cpp uses, adapted, not
@@ -225,12 +226,12 @@ std::vector<ScriptStep> unmeasurable_script() {
 }
 ae::eval::GraderFn throwing_on_boom_grader() {
     auto inner = ae::eval::make_tool_argument_grader("set_deploy_region", "region", "eu-west-1");
-    return [inner](ae::eval::TrialResult const& t) {
+    return [inner](ae::eval::TrialResult const& t) -> ae::rt::task<ae::eval::grade_outcome> {
         for (auto const& c : t.tool_calls) {
             auto const* r = c.arguments.find("region");
             if (r != nullptr && r->is_string() && r->as_string() == "boom") throw std::runtime_error("unmeasurable");
         }
-        return inner(t);
+        co_return co_await inner(t);
     };
 }
 

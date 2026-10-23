@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §4-§5, §7 -- the shared core of a LIVE shell:
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §4-§5, §7 -- the shared core of a LIVE shell:
 // the `PersistentShellSurface` concept a held-container surface conforms to (`SandboxRuntime::run_live()`
 // drives it), the per-command outcome, and the cwd/env SNAPSHOT that survives a re-open as data (§5).
 // Both the sandboxed tier (`DockerPersistentShellSurface`) and the native tier (`NativeShellSessionProvider`,
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -79,14 +80,18 @@ struct LiveExecOutcome {
 //                           exactly the environment's workspace (issue #143).
 //   close()              -- destroy the environment. Idempotent; a failure keeps the handle for a retry.
 //   is_live()            -- an environment exists AND its shell is usable.
+//
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): open/exec/drain_to/close are `task`-shaped -- each is a round trip to a
+// container daemon and may suspend. `is_live()` stays synchronous (§5.3: a trivial accessor). The surface, and
+// the snapshot `open` is handed, must outlive the returned task.
 template <class T>
 concept PersistentShellSurface = requires(T& t, T const& ct, std::filesystem::path const& host_dir,
                                           std::string const& command, ShellSnapshot const* snapshot,
                                           std::chrono::milliseconds deadline) {
-    { t.open(host_dir, snapshot) } -> std::same_as<agentengine::result<void>>;
-    { t.exec(command, deadline) } -> std::same_as<agentengine::result<LiveExecOutcome>>;
-    { t.drain_to(host_dir) } -> std::same_as<agentengine::result<void>>;
-    { t.close() } -> std::same_as<agentengine::result<void>>;
+    { t.open(host_dir, snapshot) } -> std::same_as<agentengine::task<agentengine::result<void>>>;
+    { t.exec(command, deadline) } -> std::same_as<agentengine::task<agentengine::result<LiveExecOutcome>>>;
+    { t.drain_to(host_dir) } -> std::same_as<agentengine::task<agentengine::result<void>>>;
+    { t.close() } -> std::same_as<agentengine::task<agentengine::result<void>>>;
     { ct.is_live() } -> std::same_as<bool>;
 };
 

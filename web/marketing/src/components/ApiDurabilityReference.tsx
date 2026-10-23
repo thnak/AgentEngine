@@ -31,11 +31,21 @@ import type { Lang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { DuEffectJournalDiagram } from "./DuEffectJournalDiagram";
 import { DuWakeDiagram } from "./DuWakeDiagram";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const DURABILITY_HEADERS = [
+  "agentengine/rt/agent_session.hpp",
+  "agentengine/rt/agent_session_core.hpp",
+  "agentengine/rt/session_store.hpp",
+  "agentengine/core/interaction.hpp",
+  "agentengine/rt/block_on.hpp",
+];
 
 function entryById(lang: Lang, id: string) {
   const e = durabilityEntries[lang].find((entry) => entry.id === id);
@@ -109,6 +119,18 @@ function StageMono({ text }: { text: string }) {
 const copy = {
   en: {
     eyebrow: "019 — Durability and Long-Running Agents",
+    includesNote: (
+      <>
+        Five headers. <code>rt/agent_session.hpp</code> carries the snapshot calls (
+        <code>save_agent_session_snapshot</code>, <code>load_agent_session_snapshot</code>,{" "}
+        <code>restore_from_record</code>); <code>rt/agent_session_core.hpp</code> declares{" "}
+        <code>AgentSessionRecord</code> and the vocabulary around it;{" "}
+        <code>rt/session_store.hpp</code> is the store seam you implement (
+        <code>FileSessionStore</code> is the shipped one); <code>core/interaction.hpp</code> is what
+        an open approval actually is; and <code>rt/block_on.hpp</code> drives the coroutine snapshot
+        calls from synchronous code.
+      </>
+    ),
     headingPrefix: "Runs that outlive the process,",
     headingHighlight: "and effects that don't repeat twice",
     intro: (
@@ -321,7 +343,7 @@ const copy = {
     step3Title: "The process restarts",
     step3Body: "Identity, run_counter, turn_index and the open interactions come back. history_ does not — the record never carried it.",
     step4Title: "…and the resume cannot complete",
-    step4Body: "resolve_interaction() requires history_'s tail to still be the exact assistant tool-call message that suspended; on a restored session it isn't, so the call fails session.resolve_interaction.stale. ADR-029 named this residual itself: the Interaction survives the restart, the resumable round does not.",
+    step4Body: "resolve_interaction() refuses on its FIRST guard: the restored interaction has no recorded round in this session, because restore_from_record() clears the in-memory per-interaction records the session being replaced had. The call fails session.resolve_interaction.round_not_recorded and CLOSES the interaction with nothing run — not session.resolve_interaction.stale, which is the second guard a live session hits when its history has moved on. ADR-029 named this residual itself: the Interaction survives the restart, the resumable round does not. The restored session is still usable for new work — a fresh start_run() is accepted.",
     s6Note: (
       <>
         <strong>The CodeAct variant pays a different price.</strong> An{" "}
@@ -404,6 +426,18 @@ const copy = {
   },
   vi: {
     eyebrow: "019 — Tính bền vững và Agent chạy dài",
+    includesNote: (
+      <>
+        Năm header. <code>rt/agent_session.hpp</code> mang các lệnh gọi snapshot (
+        <code>save_agent_session_snapshot</code>, <code>load_agent_session_snapshot</code>,{" "}
+        <code>restore_from_record</code>); <code>rt/agent_session_core.hpp</code> khai báo{" "}
+        <code>AgentSessionRecord</code> cùng từ vựng quanh nó;{" "}
+        <code>rt/session_store.hpp</code> là seam store mà bạn hiện thực (
+        <code>FileSessionStore</code> là bản được phát hành sẵn);{" "}
+        <code>core/interaction.hpp</code> cho biết một phê duyệt đang mở thực sự là gì; và{" "}
+        <code>rt/block_on.hpp</code> chạy các lệnh gọi snapshot dạng coroutine từ code đồng bộ.
+      </>
+    ),
     headingPrefix: "Những run sống lâu hơn tiến trình,",
     headingHighlight: "và những hiệu ứng không lặp lại lần hai",
     intro: (
@@ -429,7 +463,7 @@ const copy = {
     s1Heading: "Một checkpoint thực sự mang theo những gì",
     s1Body: (
       <>
-        Checkpoint không phải cuộc hội thoại. Nó là một bản ghi sổ sách phẳng gồm bảy trường, mã
+        Checkpoint không phải cuộc hội thoại. Nó là một bản ghi sổ sách phẳng gồm tám trường, mã
         hóa JSON bằng tay rồi trao cho một <code>rt::SessionStore</code> do host cung cấp dưới
         dạng byte mờ. Thứ nó bỏ lại còn thú vị hơn thứ nó giữ — và mỗi phần bỏ lại đều được nêu
         tên ngay trong header, kèm lý do, chứ không phải để người ta phát hiện về sau.
@@ -615,7 +649,7 @@ const copy = {
     step3Title: "Tiến trình khởi động lại",
     step3Body: "Danh tính, run_counter, turn_index và các interaction đang mở quay về. history_ thì không — bản ghi chưa từng mang nó.",
     step4Title: "…và việc tiếp tục không thể hoàn tất",
-    step4Body: "resolve_interaction() đòi phần đuôi của history_ vẫn phải là đúng thông điệp gọi tool của assistant lúc treo; trên một session vừa khôi phục thì không phải vậy, nên lời gọi hỏng với session.resolve_interaction.stale. Chính ADR-029 đã nêu tên phần dư này: Interaction sống sót qua khởi động lại, còn vòng chạy có thể tiếp tục thì không.",
+    step4Body: "resolve_interaction() từ chối ngay ở điểm bảo vệ ĐẦU TIÊN: interaction đã khôi phục không có vòng nào được ghi lại trong session này, vì restore_from_record() xóa các bản ghi interaction trong bộ nhớ mà session đang bị thay thế vốn có. Lời gọi hỏng với session.resolve_interaction.round_not_recorded và ĐÓNG interaction đó mà không chạy gì cả — không phải session.resolve_interaction.stale, vốn là điểm bảo vệ thứ hai mà một session đang sống gặp khi history của nó đã đi tiếp. Chính ADR-029 đã nêu tên phần dư này: Interaction sống sót qua khởi động lại, còn vòng chạy có thể tiếp tục thì không. Session đã khôi phục vẫn dùng được cho công việc mới — một start_run() mới vẫn được chấp nhận.",
     s6Note: (
       <>
         <strong>Biến thể CodeAct trả một cái giá khác.</strong> Một lần treo do{" "}
@@ -732,6 +766,13 @@ export function ApiDurabilityReference() {
             </div>
           </div>
         </div>
+
+        {/* ---- What to include --------------------------------------------------------------- */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={DURABILITY_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. What a checkpoint carries -------------------------------------------------- */}
         <section className="anchor-target" id="du-checkpoint">

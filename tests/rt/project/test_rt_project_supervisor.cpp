@@ -13,11 +13,14 @@
 //   Q4 -- member_count()/workflow_count() accessors track registrations.
 //   Q5 -- 030 Sec4/Sec8 Q4's own ordering: all member hooks run before any workflow hook.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
 #include "agentengine/rt/project_supervisor.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::CheckpointReport;
@@ -45,8 +48,7 @@ void check(bool cond, char const* what) {
 // fully, matching every other single-caller rt:: test file's own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -100,17 +102,21 @@ static_assert(agentengine::ChatClient<OneShotChatClient>);
 // stubbed to the simplest contract-satisfying answer.
 class AlwaysFailingStore {
 public:
-    [[nodiscard]] agentengine::result<void> save(agentengine::rt::SessionId const&, std::vector<std::byte>) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::transient,
-                                                    "AlwaysFailingStore refuses every save()",
-                                                    "test.always_failing_store.save"});
+    [[nodiscard]] agentengine::task<agentengine::result<void>> save(agentengine::rt::SessionId,
+                                                                      std::vector<std::byte>) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::transient,
+                                                       "AlwaysFailingStore refuses every save()",
+                                                       "test.always_failing_store.save"});
     }
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> load(agentengine::rt::SessionId const&) const {
-        return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
-                                                    "test.always_failing_store.load"});
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<std::byte>>> load(
+        agentengine::rt::SessionId) const {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::contract, "unused",
+                                                       "test.always_failing_store.load"});
     }
-    [[nodiscard]] bool exists(agentengine::rt::SessionId const&) const { return false; }
-    [[nodiscard]] agentengine::result<void> remove(agentengine::rt::SessionId const&) { return {}; }
+    [[nodiscard]] agentengine::task<bool> exists(agentengine::rt::SessionId) const { co_return false; }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> remove(agentengine::rt::SessionId) {
+        co_return agentengine::result<void>{};
+    }
 };
 static_assert(agentengine::rt::SessionStore<AlwaysFailingStore>);
 
@@ -123,7 +129,7 @@ int main() {
         // PassivatableHandle's own closure-over-a-concrete-ActorRef<A> trick existed to absorb in the
         // Quark original, re-proven here with zero Quark involvement.
         AgentSession<OneShotChatClient> member_a;
-        member_a.initialize("member-a", Principal{"p1", "tenant-1"});
+        member_a.initialize("member-a", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member_a.emplace_chat_client();
         auto ran_a = drive(member_a.start_run(StartRun{user_message("hi")}));
         check(ran_a.has_value(), "Q1 setup: member_a's run converges");
@@ -131,7 +137,7 @@ int main() {
         AgentSession<OneShotChatClient, agentengine::rt::NoSessionState,
                      agentengine::HistoryProvider<agentengine::Window<8>>>
             member_b;
-        member_b.initialize("member-b", Principal{"p1", "tenant-1"});
+        member_b.initialize("member-b", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member_b.emplace_chat_client();
         auto ran_b = drive(member_b.start_run(StartRun{user_message("hi")}));
         check(ran_b.has_value(), "Q1 setup: member_b's run converges");
@@ -151,8 +157,8 @@ int main() {
         // ---- Q2: checkpoint_members_and_workflows() actually writes both members' snapshots -------
         CheckpointReport report = drive(sup.checkpoint_members_and_workflows());
         check(report.all_ok(), "Q2: checkpointing two healthy members reports no failures");
-        check(store_a.exists("member-a"), "Q2: member_a's snapshot actually landed in its own store");
-        check(store_b.exists("member-b"), "Q2: member_b's snapshot actually landed in its own store");
+        check(agentengine::rt::block_on(store_a.exists("member-a")), "Q2: member_a's snapshot actually landed in its own store");
+        check(agentengine::rt::block_on(store_b.exists("member-b")), "Q2: member_b's snapshot actually landed in its own store");
     }
 
     // ---- Q2/Q5: a workflow's checkpoint is also written, and runs AFTER every member's -------------
@@ -175,8 +181,8 @@ int main() {
         check(validate_workflow(wf).has_value(), "Q5 setup: the single-node workflow validates");
 
         std::vector<agentengine::rt::ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> agentengine::result<agentengine::rt::ExecutorOutcome> {
-                return agentengine::rt::ExecutorOutcome{in};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<agentengine::rt::ExecutorOutcome>> {
+                co_return agentengine::rt::ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor wf_sup;
@@ -186,7 +192,7 @@ int main() {
               "Q5 setup: the workflow converges before this test checkpoints it");
 
         AgentSession<OneShotChatClient> member;
-        member.initialize("member-c", Principal{"p1", "tenant-1"});
+        member.initialize("member-c", Principal{"p1", "tenant-1"}, ae_test::trusted_unbounded());
         member.emplace_chat_client();
         auto ran = drive(member.start_run(StartRun{user_message("hi")}));
         check(ran.has_value(), "Q5 setup: member-c's run converges");
@@ -199,25 +205,25 @@ int main() {
 
         CheckpointReport report = drive(sup.checkpoint_members_and_workflows());
         check(report.all_ok(), "Q2/Q5: checkpointing a healthy member + a healthy workflow succeeds");
-        check(member_store.exists("member-c"), "Q2: the member's snapshot landed");
-        check(workflow_store.exists(wf_sup.run_id()),
+        check(agentengine::rt::block_on(member_store.exists("member-c")), "Q2: the member's snapshot landed");
+        check(agentengine::rt::block_on(workflow_store.exists(wf_sup.run_id())),
               "Q2: the workflow's checkpoint landed under its own run_id");
     }
 
     // ---- Q3: a failing member store is reported by index/kind, WITHOUT aborting later checkpoints --
     {
         AgentSession<OneShotChatClient> healthy_first;
-        healthy_first.initialize("ok-first", Principal{"p1", ""});
+        healthy_first.initialize("ok-first", Principal{"p1", ""}, ae_test::trusted_unbounded());
         healthy_first.emplace_chat_client();
         (void)drive(healthy_first.start_run(StartRun{user_message("hi")}));
 
         AgentSession<OneShotChatClient> failing_member;
-        failing_member.initialize("fails", Principal{"p1", ""});
+        failing_member.initialize("fails", Principal{"p1", ""}, ae_test::trusted_unbounded());
         failing_member.emplace_chat_client();
         (void)drive(failing_member.start_run(StartRun{user_message("hi")}));
 
         AgentSession<OneShotChatClient> healthy_last;
-        healthy_last.initialize("ok-last", Principal{"p1", ""});
+        healthy_last.initialize("ok-last", Principal{"p1", ""}, ae_test::trusted_unbounded());
         healthy_last.emplace_chat_client();
         (void)drive(healthy_last.start_run(StartRun{user_message("hi")}));
 
@@ -239,9 +245,9 @@ int main() {
             check(report.failures[0].err.code == "test.always_failing_store.save",
                   "Q3: the real underlying store error is surfaced through, not swallowed");
         }
-        check(store_first.exists("ok-first"),
+        check(agentengine::rt::block_on(store_first.exists("ok-first")),
               "Q3: the member registered BEFORE the failing one still got checkpointed");
-        check(store_last.exists("ok-last"),
+        check(agentengine::rt::block_on(store_last.exists("ok-last")),
               "Q3: the member registered AFTER the failing one ALSO still got checkpointed -- "
               "checkpoint_members_and_workflows() does not abort on the first failure");
     }

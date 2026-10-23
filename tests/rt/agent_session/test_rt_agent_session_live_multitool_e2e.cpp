@@ -66,12 +66,15 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -100,8 +103,7 @@ void note(char const* label, std::string const& value) {
 // as an ordinary synchronous call inside the coroutine body, never a real suspension point.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
@@ -175,17 +177,17 @@ AE_JSON_SCHEMA(GetWeatherReply, temp_c, condition)
 // way into producing on its own, unlike a value like 10.0/20.0/0.0 -- if `convert_temperature`'s own
 // `celsius` argument matches this exactly, that is real evidence the model read the tool's actual
 // reply rather than estimating or hallucinating a plausible-looking one.
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description =
         "Get the current weather for a city. Returns temperature in Celsius ONLY -- never Fahrenheit.";
     using Args = GetWeatherArgs;
     using Reply = GetWeatherReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("get_weather");
         Reply const reply{13.7, "overcast"};
         weather_returned_celsius_log() = reply.temp_c;
-        return reply;
+        co_return reply;
     }
 };
 
@@ -201,18 +203,18 @@ struct ConvertTempReply {
 };
 AE_JSON_SCHEMA(ConvertTempReply, value, unit)
 
-struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ConvertTempTool : Tool<ConvertTempTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "convert_temperature";
     static constexpr std::string_view description =
         "Convert an EXACT celsius value (as returned by get_weather) to fahrenheit or kelvin. Must be "
         "called with the precise celsius number from a prior get_weather result, never an estimate.";
     using Args = ConvertTempArgs;
     using Reply = ConvertTempReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         called_tools_log().insert("convert_temperature");
         convert_arg_celsius_log() = a.celsius;
-        if (a.to_unit == "kelvin") return Reply{a.celsius + 273.15, "kelvin"};
-        return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
+        if (a.to_unit == "kelvin") co_return Reply{a.celsius + 273.15, "kelvin"};
+        co_return Reply{a.celsius * 9.0 / 5.0 + 32.0, "fahrenheit"};
     }
 };
 
@@ -226,14 +228,14 @@ struct GetTimeReply {
     std::string time;
 };
 AE_JSON_SCHEMA(GetTimeReply, time)
-struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetTimeTool : Tool<GetTimeTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_time";
     static constexpr std::string_view description = "Get the current local time for a timezone.";
     using Args = GetTimeArgs;
     using Reply = GetTimeReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("get_time");
-        return Reply{"14:32"};
+        co_return Reply{"14:32"};
     }
 };
 
@@ -246,20 +248,20 @@ struct StockPriceReply {
     std::string currency;
 };
 AE_JSON_SCHEMA(StockPriceReply, price, currency)
-struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct StockPriceTool : Tool<StockPriceTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "stock_price";
     static constexpr std::string_view description = "Get the current market price for a stock ticker.";
     using Args = StockPriceArgs;
     using Reply = StockPriceReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         called_tools_log().insert("stock_price");
-        return Reply{198.42, "USD"};
+        co_return Reply{198.42, "USD"};
     }
 };
 
 using AllToolsTable = ToolTable;
 [[nodiscard]] AllToolsTable all_tools_table() {
-    return ToolTable::from_tools<GetWeatherTool, ConvertTempTool, GetTimeTool, StockPriceTool>();
+    return ToolTable::from(GetWeatherTool{}, ConvertTempTool{}, GetTimeTool{}, StockPriceTool{});
 }
 
 // The ContextProvider fixture: same windowing behaviour as HistoryProvider<Window<0>>, plus a fixed
@@ -349,8 +351,7 @@ int main() {
                                      /*transport=*/sandbox::ProviderTransport::tls,
                                      /*scan_response_format_leaks=*/false,
                                      /*session_id=*/std::string{"mt1-session"});
-        session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.initialize("mt1-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
         session.set_capabilities(&held);
 
         Message const input = user_message(
@@ -413,8 +414,7 @@ int main() {
                                      /*transport=*/sandbox::ProviderTransport::tls,
                                      /*scan_response_format_leaks=*/false,
                                      /*session_id=*/std::string{"mt2-session"});
-        session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+        session.initialize("mt2-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
         session.set_capabilities(&held);
 
         agentengine::result<agentengine::rt::AgentResponse> resp = drive(session.start_run(StartRun{

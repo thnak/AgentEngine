@@ -1,7 +1,7 @@
 #pragma once
 // A private, header-only SHA-256 (FIPS 180-4) primitive shared by TWO POSIX/Linux-only translation
 // units: `src/core/worktree_digest_posix.cpp` (content-addressed digests for the worktree object
-// store, hex-encoded) and `src/trust/hmac_posix.cpp` (HMAC-SHA256, decisions/ADR-107-hmac-sha256-
+// store, hex-encoded) and `src/trust/hmac_posix.cpp` (HMAC-SHA256, decisions/archive/ADR-107-hmac-sha256-
 // linux-parity.md) -- one audited compression-function implementation, not two independent copies.
 //
 // Extracted FROM `worktree_digest_posix.cpp` (which owned this code first, Milestone 3 Phase C4) so

@@ -31,15 +31,18 @@
 //         reproduction of the *pre-fix* hazard is named in the task's own residual list, not
 //         attempted here -- see the final report.)
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn_child_run.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
 
 using agentengine::AgentMetadata;
@@ -99,8 +102,7 @@ void check(bool cond, char const* what) {
 // session_mutex_ is never genuinely contended.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // -- The scripted backend, extended from test_rt_agent_workflow_executor.cpp's own fixture with one
@@ -195,18 +197,23 @@ AE_JSON_SCHEMA(SpawnArgs, label)
 struct SpawnReply { std::string output; };
 AE_JSON_SCHEMA(SpawnReply, output)
 
-struct SpawnTool : agentengine::Tool<SpawnTool> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `spawn_child` through the
+// `friend` declaration below; `invoke` is defined out-of-line, where `SpawnHistoryProvider` is complete.
+class SpawnHistoryProvider;
+
+struct SpawnTool : agentengine::Tool<SpawnTool, agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "agent.spawn";
     static constexpr std::string_view description =
         "test-only stand-in for item 1's real AgentSpawnTool -- proves item 2's drive mechanism only.";
     using Args  = SpawnArgs;
     using Reply = SpawnReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::contract,
-                                      "SpawnTool::invoke() must never run directly in this test -- "
-                                      "only through the custom_invoke closure below",
-                                      "test.dead_static_invoke_path"});
-    }
+
+    explicit SpawnTool(SpawnHistoryProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    SpawnHistoryProvider* provider_;
 };
 
 // Parent HistoryProviderT: advertises SpawnTool; its custom_invoke closure is the real §2 pipeline,
@@ -226,38 +233,43 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {agentengine::make_tool_descriptor_with_invoke<SpawnTool>(
-            [this](SpawnArgs a, EffectContext& ctx) { return spawn_child(std::move(a), ctx); })};
+        c.tools = {agentengine::make_tool_descriptor(SpawnTool{*this})};
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
-    [[nodiscard]] result<SpawnReply> spawn_child(SpawnArgs a, EffectContext& ctx) {
+    // ADR-237 §5.2: the instance-form SpawnTool above reaches this.
+    friend struct SpawnTool;
+
+    [[nodiscard]] task<result<SpawnReply>> spawn_child(SpawnArgs a, EffectContext& ctx) {
         ++spawn_call_count_;
         // §2 step [2] (item 4, already landed).
         auto depth = check_and_consume_spawn_depth(*caller_held_, "helper");
-        if (!depth) return std::unexpected(depth.error());
+        if (!depth) co_return std::unexpected(depth.error());
         // §2 steps [3]/[6] (item 5, already landed). Item 3's real worktree mint is not built here --
         // an empty grant, matching that header's own "data-only mirror" scope.
         agentengine::SpawnWorktreeGrant const empty_worktree_grant{};
         auto minted = mint_child_spawn_capabilities(*caller_held_, target_, empty_worktree_grant, *depth);
-        if (!minted) return std::unexpected(minted.error());
+        if (!minted) co_return std::unexpected(minted.error());
 
         // §2 step [8] -- THIS task's own mechanism.
         ChildSpawnRequest req;
         req.input         = text_message(a.label);
         req.capabilities  = minted->capabilities;
         req.principal     = ctx.principal;
-        req.max_turns     = 5;
+        req.max_turns     = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.authority_source     = ctx.authority_source;
+        req.authority_expires_at = ctx.authority_expires_at;
         std::string const child_script = child_script_text_;
-        auto response = run_child_agent_session<ScriptedChatClient>(
+        auto response = co_await run_child_agent_session<ScriptedChatClient>(
             "child-1", std::move(req), [this, &child_script](ScriptedChatClient& c) {
                 c.set_script({{text_response(child_script), Usage{1, 1, 0, 0, 0.0}}});
                 child_observed_state_ = c.shared_state();
             });
-        if (!response) return std::unexpected(response.error());
-        return SpawnReply{agentengine::text_of(response->message)};
+        if (!response) co_return std::unexpected(response.error());
+        co_return SpawnReply{agentengine::text_of(response->message)};
     }
 
     CapabilitySet const* caller_held_ = nullptr;
@@ -267,6 +279,11 @@ private:
     std::shared_ptr<ScriptedChatClient::State> child_observed_state_;
 };
 static_assert(agentengine::ContextProvider<SpawnHistoryProvider>);
+
+// ADR-237 §5.2: out-of-line -- needs `SpawnHistoryProvider` complete.
+task<result<SpawnReply>> SpawnTool::invoke(SpawnArgs a, EffectContext& ctx) const {
+    co_return co_await provider_->spawn_child(std::move(a), ctx);
+}
 
 }  // namespace
 
@@ -290,14 +307,16 @@ int main() {
         req.input        = text_message("do the sub-task");
         req.capabilities = minted->capabilities;
         req.principal    = Principal{"caller-1", ""};
-        req.max_turns    = 5;
+        req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.authority_source = agentengine::authority_mode::single_trusted_caller;
 
         std::shared_ptr<ScriptedChatClient::State> observed;
-        auto response = run_child_agent_session<ScriptedChatClient>(
+        auto response = agentengine::rt::block_on(run_child_agent_session<ScriptedChatClient>(
             "child-t1", std::move(req), [&observed](ScriptedChatClient& c) {
                 c.set_script({{text_response("child-converged"), Usage{1, 1, 0, 0, 0.0}}});
                 observed = c.shared_state();
-            });
+            }));
         check(response.has_value(), "T1: run_child_agent_session() drives a fresh child to completion");
         if (response.has_value()) {
             check(agentengine::text_of(response->message) == "child-converged",
@@ -338,7 +357,7 @@ int main() {
         AgentMetadata target;  // empty declared ceiling
 
         AgentSession<ScriptedChatClient, NoSessionState, SpawnHistoryProvider> parent;
-        parent.initialize("parent-1", Principal{"caller-1", ""});
+        parent.initialize("parent-1", Principal{"caller-1", ""}, ae_test::trusted_unbounded());
         parent.set_capabilities(&caller_held);
         parent.history_provider().configure(&caller_held, target, "child-said-done");
         parent.emplace_chat_client().set_script({
@@ -381,13 +400,13 @@ int main() {
     // ---- T5: RC-1 -- background execution is disabled on every spawned child, positive + negative -
     {
         AgentSession<ScriptedChatClient> plain;
-        plain.initialize("plain-1", Principal{"p", ""});
+        plain.initialize("plain-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         check(!plain.background_execution_disabled(),
               "T5 negative control: an ORDINARY (non-spawned) session defaults to backgrounding "
               "allowed -- every existing caller is unaffected by this task's own change");
 
         AgentSession<ScriptedChatClient> flagged;
-        flagged.initialize("flagged-1", Principal{"p", ""});
+        flagged.initialize("flagged-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         flagged.set_background_execution_disabled(true);
         check(flagged.background_execution_disabled(), "T5: the flag is set and observable");
 
@@ -405,7 +424,7 @@ int main() {
         // Same session, flag OFF, proves the guard is what changed the outcome above -- not, say, the
         // empty ToolTable rejecting every call the same way regardless of the flag.
         AgentSession<ScriptedChatClient> unflagged;
-        unflagged.initialize("unflagged-1", Principal{"p", ""});
+        unflagged.initialize("unflagged-1", Principal{"p", ""}, ae_test::trusted_unbounded());
         auto rejected_for_other_reason = drive(unflagged.start_background_task(empty_table, bg_request));
         check(!rejected_for_other_reason.has_value(),
               "T5 negative control: WITHOUT the flag, the same empty-table call still fails (no such "

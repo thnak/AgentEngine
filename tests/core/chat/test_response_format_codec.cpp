@@ -1,4 +1,4 @@
-// Implements decisions/ADR-023-response-format-codec-seam.md, Phase 1 -- proves
+// Implements decisions/archive/ADR-023-response-format-codec-seam.md, Phase 1 -- proves
 // core/response_format_codec.hpp's `decode_response_format` directly against the real example
 // strings the ADR's own spike and red-team passes used (docs/research/2026-08-10-provider-and-
 // harmony-adapter-landscape.md, Parts 2-3 and 5), plus the negative and adversarial controls the

@@ -101,6 +101,6 @@ The order that does work (CRI's) requires creating and populating the netns **be
 container-create call -- i.e. before generating the OCI spec at all, which for `ctr` means
 `--config` mode (a hand-built OCI spec with `linux.namespaces` already pointing at a pre-populated
 netns), not the `--cni` convenience flag. See
-`decisions/ADR-093-kata-backend-netpolicy-allowlist-investigated-and-deferred.md` for how this
-folds into the same `--config`-exclusivity blocker `decisions/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md`
+`decisions/archive/ADR-093-kata-backend-netpolicy-allowlist-investigated-and-deferred.md` for how this
+folds into the same `--config`-exclusivity blocker `decisions/archive/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md`
 already found for `pids`.

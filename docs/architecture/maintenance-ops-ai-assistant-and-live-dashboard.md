@@ -12,10 +12,10 @@ server for query and CRUD (equipment lookup, maintenance history, work orders, s
 
 This maps directly onto the tool/capability/MCP stack as specified — no new mechanism needed:
 
-- Standard MCP client/tool flow (`006`, `011-MCP-Conformance.md`).
+- Standard MCP client/tool flow (`006`, `rfcs/011-MCP-Conformance.md`).
 - The real design decision is **write-path safety, not connectivity**: reads are free to leave
   agent-autonomous; every CRUD write/delete needs its own declared capability, an `Approval` mode
-  (`007-Capability-and-Trust-Model.md §3`) appropriate to blast radius, and an audit record
+  (`rfcs/007-Capability-and-Trust-Model.md §3`) appropriate to blast radius, and an audit record
   attributable to the actual caller (I4) — never inferred from model intent (I2/I3).
 - If the app's technical docs (manuals, incident history) aren't exposed over MCP, that's a
   separate RAG/context-provider concern, not something to fold into the same MCP server.
@@ -76,13 +76,13 @@ hand-written in advance).
 
 MCP is a pull/request-response protocol, driven by an agent turn. The 2026-07-28 spec revision
 removed `resources/subscribe`/`unsubscribe` entirely, replacing it with `subscriptions/listen` —
-but that only covers `*ListChanged` notification types (`011-MCP-Conformance.md §3.3`), not
+but that only covers `*ListChanged` notification types (`rfcs/011-MCP-Conformance.md §3.3`), not
 per-value change push. So a numeric reading or equipment status from a maintenance app is, in
 practice, always poll-based — there is no MCP shortcut being missed here.
 
 ### The mechanism that fits: StandingEffect, not a bespoke poll loop
 
-`006-Tool-and-Function-Plane.md §6b` gives three agent-callable entry points onto the run's
+`rfcs/006-Tool-and-Function-Plane.md §6b` gives three agent-callable entry points onto the run's
 existing `Suspended`-run machinery:
 
 - **`watch_resource(ResourceRef, WakeCondition)`** — over a source with no native push (the normal
@@ -104,7 +104,7 @@ live-updating dashboard — no separate push-notification layer needs to be buil
 
 ### Fetch + aggregate: Map-reduce workflow, `function` executor kind
 
-`014-Workflow-and-Orchestration.md §3`'s Map-reduce pattern (fan-out over a collection + fan-in
+`rfcs/014-Workflow-and-Orchestration.md §3`'s Map-reduce pattern (fan-out over a collection + fan-in
 reducer) is exactly "call N MCP tools, then aggregate." The reducer can be an
 `executor_kind::function` node — **implemented, not just specified**: `graph.hpp:91,437` — Milestone
 6 Phase B built `function` and `request_port`; only `agent`/`sub_workflow` kinds are currently
@@ -124,14 +124,14 @@ can't contain that.
 
 Resolution: the `ExecutorBody` doesn't need to *contain* the logic — it needs to be a thin, fixed
 wrapper that calls the built-in code interpreter tool, `execute_code(code, data)`
-(`010-Python-Code-Interpreter.md §1`, Interpreter mode), where `data` is the fan-in message and
+(`rfcs/010-Python-Code-Interpreter.md §1`, Interpreter mode), where `data` is the fan-in message and
 `code` is a Python snippet the LLM writes **once**, when the technician defines the query. Every
 subsequent `StandingEffect` wake reruns the *same* code against freshly fetched data — no further
 LLM call per cycle.
 
 This is consistent with I3 ("model output is data, never authority"): the generated code never
 becomes trusted — every invocation, the first or the five-hundredth, goes through the same sandbox
-(`008-Sandbox-and-Isolation.md`) and the same capability gate as any other tool call. Reuse doesn't
+(`rfcs/008-Sandbox-and-Isolation.md`) and the same capability gate as any other tool call. Reuse doesn't
 elevate its trust level.
 
 **Caveat, not automatic:** because this then runs unattended on a schedule, a human should approve
@@ -142,14 +142,14 @@ gate itself; it's a deployment choice (`Approval` mode, `007 §3`, applied to th
 ### Reuse across sessions: Skills — with a subtlety worth being precise about
 
 The natural next step — let the LLM package the aggregation as a **Skill** (`SKILL.md` +
-`scripts/`/`references/`, `009-Plugin-and-Extension-System.md §8`) so a later session doesn't
+`scripts/`/`references/`, `rfcs/009-Plugin-and-Extension-System.md §8`) so a later session doesn't
 re-derive the query from scratch.
 
 Checked against the actual loader, not just the RFC prose: `DiskSkillSource::load_skills()`
 (`include/agentengine/core/skill_source.hpp:143-192`) walks `scripts/`, `references/`, and
 `assets/` **uniformly** (`collect_files`, same call for all three, lines 183-187) — there is no
 differential trust check at the loading layer between a bundled script and a bundled reference
-file. `026-Agent-Facing-Runtime-Surface.md §6` confirms why that's fine: a bundled script "runs as
+file. `rfcs/026-Agent-Facing-Runtime-Surface.md §6` confirms why that's fine: a bundled script "runs as
 an ordinary program" through the same sandboxed interpreter (010) as any other agent-run code,
 using whatever capabilities the session already holds — no elevation.
 
@@ -160,7 +160,7 @@ declared, capability-bearing tool** — not to a script an agent simply reads an
 operator sign-off ceremony to become reusable.
 
 **Where the real gate lives:** skills are mounted **read-only** at `/skills/<name>` (`009 §8b`,
-`025-Worktree-and-Virtual-Filesystem.md §3`) — an agent cannot write into its own mounted view to
+`rfcs/025-Worktree-and-Virtual-Filesystem.md §3`) — an agent cannot write into its own mounted view to
 plant a new skill. Creating a new skill on disk requires a distinct, explicitly granted write
 capability (e.g. `FsWrite` scoped to the skill source root, or a dedicated `create_skill` tool) —
 and *that* capability is where an operator attaches `Approval` mode if human review before reuse is

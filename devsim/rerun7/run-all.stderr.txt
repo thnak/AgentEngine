@@ -1,0 +1,16 @@
+REFUSED graph 'docpipeline-unbounded'
+  validate_workflow: workflow declares no termination bound -- 014 §2 requires MaxRounds, a deadline, or a budget; an unbounded workflow does not run (workflow.unbounded)
+exit 2: refused before any run started -- nothing executed
+REFUSED graph 'docpipeline-unbounded'
+  validate_workflow: workflow declares no termination bound -- 014 §2 requires MaxRounds, a deadline, or a budget; an unbounded workflow does not run (workflow.unbounded)
+REFUSED graph 'docpipeline-unlabelled-case'
+  validate_workflow: edge 'classify' -> 'structured' is switch/case or multi-selection but carries no case label (workflow.missing_case_label)
+REFUSED graph 'docpipeline-phoney-label'
+  validate_workflow: edge 'aggregate' -> 'summarize' carries a case label but is not a switch/case or multi-selection edge (workflow.unexpected_case_label)
+run failed: routing_failed (node 'classify')
+  partial: ingest round 0 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 
+  partial: entities round 1 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 
+  partial: dates round 1 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 
+  partial: keywords round 1 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 
+  partial: aggregate round 2 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 
+  partial: classify round 3 -> doc=Invoice 1042 disputed. Ana Reyes reported on 2026-03-04 that the charge did 

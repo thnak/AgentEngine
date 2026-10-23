@@ -1,8 +1,8 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md §3 — the unforgeable handle authorizing one class of
+// Implements rfcs/007-Capability-and-Trust-Model.md §3 — the unforgeable handle authorizing one class of
 // effect, and its in-process representation/enforcement (grant, check, attenuate, per-invocation
 // bind + revoke). Design settled by
-// decisions/ADR-009-capability-set-enforcement-mechanism.md (design -> red-team -> prove -> judge,
+// decisions/archive/ADR-009-capability-set-enforcement-mechanism.md (design -> red-team -> prove -> judge,
 // required here per CLAUDE.md and decisions/README.md because this mechanism is what actually
 // upholds I2 in-process — "there is no constructor that grants everything" is not just a comment on
 // this type, it is what the API surface below is built to make true, not merely follow by
@@ -56,7 +56,7 @@ enum class capability_kind {
     background,    // 006 §6b.
     elicit,        // 026 §5 — agent.ask; not yet in 007 §3's own table (pre-existing drift this
                    // enum does not otherwise attempt to reconcile).
-    native_exec,   // decisions/ADR-071-native-unsandboxed-process-execution-providers.md — a host-
+    native_exec,   // decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md — a host-
                    // granted allowlist entry naming one native, unsandboxed executable a
                    // NativeShellProvider/NativeBashProvider/NativePythonProvider/NativeNodeProvider
                    // may invoke; distinct from `exec` (sandbox PROFILE selection for nested/managed
@@ -188,7 +188,7 @@ struct NativeExec {
     // capability_detail::native_exec_pattern_covers below for the exact narrowing rule this enforces.
     std::string program_pattern;
     // Which materialized worktree mount the child process's cwd must be confined to
-    // (decisions/ADR-071-...md — worktree confinement stays mandatory even though the OS sandbox
+    // (decisions/archive/ADR-071-...md — worktree confinement stays mandatory even though the OS sandbox
     // jail is optional for these providers).
     std::string worktree_mount_id;
     std::optional<std::uint64_t> cpu_ms_cap;
@@ -212,7 +212,7 @@ struct NativeExec {
 // constructor here takes a TaintedText, same posture as NativeExec above). `quota_bytes` is
 // deliberately NOT a field here yet: SandboxSpec::MountSpec::quota_bytes is a bare (non-optional)
 // uint64_t with no way to distinguish "0 = unspecified" from "0 = an explicit zero-byte request", and
-// no backend enforces it yet (decisions/ADR-086-kata-backend-slice-2-enforcement.md names it a REAL
+// no backend enforces it yet (decisions/archive/ADR-086-kata-backend-slice-2-enforcement.md names it a REAL
 // GAP) -- adding an ambiguous check now, before there is anything real to check it against, would
 // risk inventing unsafe accept-by-default semantics for a comparison that does nothing today. Add it
 // once MountSpec::quota_bytes itself becomes std::optional<std::uint64_t> and a backend actually
@@ -320,7 +320,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                              // switch.
 }
 
-// decisions/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: is this capability
+// decisions/archive/ADR-023-response-format-codec-seam.md §6 point 4 / 007 §4 amendment: is this capability
 // KIND provably inert -- read-only/informational, no egress, no mutation, no recursive authority --
 // such that a tool whose ENTIRE declared ceiling is made of kinds like this can safely auto-
 // declassify a `text_derived` `ToolCall` (core/content.hpp) with no human in the loop? Consulted from
@@ -378,7 +378,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                     // so a legacy call site keeps compiling; this one guards a security decision).
 }
 
-// Compile-time capability *declaration* tags (002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
+// Compile-time capability *declaration* tags (rfcs/002-Agent-Model-and-Authoring.md §3 / 006-Tool-and-
 // Function-Plane.md §1's own examples: `Capabilities<NetOut<"api.search.example">>`) — distinct
 // from the runtime `cap::*` instances above, and necessarily so: `cap::NetOut` carries a
 // `std::vector<std::string>` and is therefore not a structural type, so it cannot itself be used as
@@ -667,7 +667,7 @@ template <class T>
 }
 [[nodiscard]] inline bool subsumes_payload(cap::RunCommand const&, cap::RunCommand const&) { return true; }
 
-// decisions/ADR-071-native-unsandboxed-process-execution-providers.md — the narrowing rule for
+// decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md — the narrowing rule for
 // `cap::NativeExec::program_pattern`. `parent` is host-granted (may end in a single trailing '*'
 // for a prefix grant, e.g. "python*"); `requested` is either (a) an identical re-request of the
 // same grant (attenuate-to-self, same shape every other exact-string kind above already permits),
@@ -723,7 +723,7 @@ template <class T>
     return true;
 }
 
-// decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md -- the quantity axes of a kind are
+// decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md -- the quantity axes of a kind are
 // its `std::optional` caps (the `cap_covers` fields above, where `nullopt` = no limit). `cap_meet`
 // is the tighter of two such caps; `clamp_quantities` lowers every quantity cap of `requested` to the
 // parent's wherever the parent's is tighter, and leaves every SCOPE axis (mount, path prefix, host
@@ -822,6 +822,8 @@ private:
 // host policy calls — never reachable from anything derived from model output, I3). No convenience
 // "give me everything" shortcut exists; that is the actual property 007 §9 G1 tests, not merely a
 // comment promising it.
+class CapabilityCeiling;  // ae-naming-lint: allow CapabilityCeiling — ADR-244
+
 // ae-naming-lint: allow CapabilitySet — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class CapabilitySet {
 public:
@@ -982,7 +984,7 @@ public:
         return std::nullopt;
     }
 
-    // decisions/ADR-071-native-unsandboxed-process-execution-providers.md -- unlike find_background/
+    // decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md -- unlike find_background/
     // find_schedule above (at most one meaningful grant per session), a session may hold SEVERAL
     // independent cap::NativeExec grants at once (e.g. one for "python*", one for "node"), so this
     // returns ALL of them, verbatim, rather than the first/only match. A Native*Provider filters this
@@ -1060,7 +1062,7 @@ public:
         return BoundCapability(requirement, std::make_shared<capability_detail::InvocationTicket>());
     }
 
-    // decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md. The capability a
+    // decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md. The capability a
     // grant-enforcing tool's ceiling entry binds to: `requirement` itself when `contains()` already
     // admits it (so every call that bound before binds to the identical capability), otherwise
     // `requirement` with its quantity caps lowered to the first granted capability whose scope covers
@@ -1103,8 +1105,43 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return granted_.size(); }
 
+    // ADR-244 §2.3: true iff every entry of `other` is subsumed by this set -- the ceiling check for a
+    // per-request authority, which is refused when it holds anything outside, never silently narrowed.
+    [[nodiscard]] bool covers(CapabilitySet const& other) const {
+        return std::all_of(other.granted_.begin(), other.granted_.end(),
+                           [this](Capability const& c) { return contains(c); });
+    }
+
+    // ADR-244 §2.3: the named "no ceiling" for `AuthoritySource::per_request`. A set cannot hold "everything"
+    // (this class has no such state), so the absence of a ceiling is its own value, never an empty set.
+    [[nodiscard]] static CapabilityCeiling no_ceiling() noexcept;
+
 private:
     std::vector<Capability> granted_;
 };
+
+// ADR-244 §2.3: what a per-request authority may hold -- a host-supplied `CapabilitySet`, or the named
+// `CapabilitySet::no_ceiling()`. No default: a ceiling is always one or the other, stated.
+class CapabilityCeiling {  // ae-naming-lint: allow CapabilityCeiling — ADR-244
+public:
+    CapabilityCeiling() = delete;
+    // Implicit, so `per_request(set)` reads as written.
+    CapabilityCeiling(CapabilitySet ceiling) : ceiling_(std::move(ceiling)) {}  // NOLINT(google-explicit-constructor)
+
+    [[nodiscard]] bool is_none() const noexcept { return !ceiling_.has_value(); }
+    [[nodiscard]] bool admits(CapabilitySet const& request) const {
+        return !ceiling_.has_value() || ceiling_->covers(request);
+    }
+    [[nodiscard]] CapabilitySet const* set() const noexcept { return ceiling_ ? &*ceiling_ : nullptr; }
+
+private:
+    friend class CapabilitySet;
+    struct none_tag {};
+    explicit CapabilityCeiling(none_tag) noexcept {}
+
+    std::optional<CapabilitySet> ceiling_;
+};
+
+inline CapabilityCeiling CapabilitySet::no_ceiling() noexcept { return CapabilityCeiling(CapabilityCeiling::none_tag{}); }
 
 }  // namespace agentengine

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.0 item 1 / E26: `render_lesson` must be pure
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.0 item 1 / E26: `render_lesson` must be pure
 // (same candidate + template_version -> byte-identical MemoryItem), the digest must cover the
 // rendered bytes and template_version (not the raw candidate fields alone -- E26's planted mutant),
 // and ADR-179 §3.3's own validator must actually reject what it claims to reject.

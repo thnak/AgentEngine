@@ -1,10 +1,12 @@
-// decisions/ADR-235-batch-inference-coalescing.md -- claims C1-C14 and C16-C21, proven against the real
+// decisions/archive/ADR-235-batch-inference-coalescing.md -- claims C1-C14 and C16-C21, proven against the real
 // WorkflowSupervisor with testing::ScriptedBatchBackend standing in for a vendor (C15, the live OpenRouter run,
 // is tests/protocol/openai/test_openrouter_batch_live_e2e.cpp).
 //
 // Every negative claim here was also run against a mutated guard (ADR-235 §6) -- a check that cannot fail
 // proves nothing.
 
+#include <atomic>
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -13,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -57,8 +60,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text, role r = role::user) {
@@ -94,23 +96,24 @@ T drive(agentengine::rt::task<T> t) {
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name, std::shared_ptr<int> calls = nullptr) {
-    return [name = std::move(name), calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    return [name = std::move(name), calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (calls) ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
 [[nodiscard]] ExecutorBody failing() {
-    return [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-        return std::unexpected(error{failure_class::fatal, "injected", "test.injected"});
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(error{failure_class::fatal, "injected", "test.injected"});
     };
 }
 
-// Counters a batch node's three steps bump, so a test can tell which path ran.
+// Counters a batch node's three steps bump, so a test can tell which path ran. Atomic: the fan-out nodes w1..w3
+// run their synchronous calls concurrently, and a plain int lost increments (C1 under clang, C20 under gcc-14 in CI).
 struct Calls {
-    int build = 0;
-    int sync  = 0;
-    int complete = 0;
+    std::atomic<int> build{0};
+    std::atomic<int> sync{0};
+    std::atomic<int> complete{0};
 };
 
 // A model-call node: the request carries "<node>:<input>"; the synchronous "model" answers "sync(<request>)";
@@ -124,12 +127,12 @@ struct Calls {
             r.messages.push_back(text_message(name + ":" + all_text_of(in)));
             return r;
         },
-        [calls](ChatRequest const& req, EffectContext&) -> result<ChatResponse> {
+        [calls](ChatRequest const& req, EffectContext&) -> agentengine::task<result<ChatResponse>> {
             ++calls->sync;
             ChatResponse resp;
             resp.message = text_message("sync(" + all_text_of(req.messages.front()) + ")", role::assistant);
             resp.usage.input_tokens = 10;
-            return resp;
+            co_return resp;
         },
         [name, calls](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
             ++calls->complete;
@@ -190,12 +193,12 @@ public:
         if (++seen_ == nth_ && on_admit_) on_admit_();
         return out;
     }
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
         return inner_->submit(items, c);
     }
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& c) override { return inner_->poll(job, c); }
-    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
-    [[nodiscard]] result<void> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job, EffectContext& c) override { return inner_->poll(job, c); }
+    [[nodiscard]] task<result<void>> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
+    [[nodiscard]] task<result<void>> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
 
 private:
     std::shared_ptr<ScriptedBatchBackend> inner_;
@@ -308,7 +311,7 @@ int main() {
         g.init(sup);
         (void)sup.enable_batch_coalescing();
         RunStateRecord saved;
-        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord const& rec) { saved = rec; });
+        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> { saved = std::move(rec); co_return; });
         (void)drive(sup.run_workflow(RunWorkflow{text_message("x")}));
         check(saved.batch_items.size() == 3, "C6: the round's checkpoint records the 3 pending items");
         auto decoded = rt::decode_run_state_record(rt::encode_run_state_record(saved));
@@ -380,7 +383,7 @@ int main() {
         (void)sup.enable_batch_coalescing(pol);
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("x")}));
         check(r.status == workflow_status::executor_failed && f.calls->sync == 0,
-              "C8 fail: not retried under a retry policy (sync calls " + std::to_string(f.calls->sync) + ")");
+              "C8 fail: not retried under a retry policy (sync calls " + std::to_string(f.calls->sync.load()) + ")");
     }
 
     // ---- C9/C10/C21: an expired item runs synchronously once; the fan_in still joins once ---------------
@@ -722,7 +725,7 @@ spec:
         check(body.has_value(), "C18 setup: the adapter itself constructs");
         if (body) {
             EffectContext ctx;
-            auto out = (*body)(text_message("x"), ctx);
+            auto out = drive((*body)(text_message("x"), ctx));
             check(!out.has_value(), "C18: workflow_as_executor_body refuses a batch-enabled inner");
         }
         check(enabled->pending_batches().empty(), "C18: and nothing was submitted through it");
@@ -757,13 +760,19 @@ spec:
             std::string group_key() const override { return "throwing"; }
             BatchLimits limits() const override { return {}; }
             result<std::size_t> admit(ChatRequest const&) const override { return std::size_t{10}; }
-            result<std::string> submit(std::vector<BatchItemRequest> const&, EffectContext&) override {
+            bool throw_poll = true;
+            // submit and poll throw from inside their coroutine bodies (rethrown at the co_await); cancel throws
+            // before it returns a task. The supervisor's guard has to classify both shapes.
+            task<result<std::string>> submit(std::vector<BatchItemRequest> const&, EffectContext&) override {
                 if (throw_submit) throw std::runtime_error("submit boom");
-                return std::string("tjob");
+                co_return std::string("tjob");
             }
-            result<BatchPoll> poll(std::string const&, EffectContext&) override { throw std::runtime_error("poll boom"); }
-            result<void> cancel(std::string const&, EffectContext&) override { throw std::runtime_error("cancel boom"); }
-            result<void> release(std::string const&, EffectContext&) override { return {}; }
+            task<result<BatchPoll>> poll(std::string const&, EffectContext&) override {
+                if (throw_poll) throw std::runtime_error("poll boom");
+                co_return BatchPoll{};
+            }
+            task<result<void>> cancel(std::string const&, EffectContext&) override { throw std::runtime_error("cancel boom"); }
+            task<result<void>> release(std::string const&, EffectContext&) override { co_return result<void>{}; }
         };
         auto backend = std::make_shared<ThrowingBackend>();
         auto calls   = std::make_shared<Calls>();
@@ -810,7 +819,7 @@ spec:
         wf.bound.max_rounds = 2;
         BatchableModelCall body{
             [](Message const&, EffectContext&) -> result<ChatRequest> { throw std::runtime_error("build boom"); },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;
@@ -840,7 +849,7 @@ spec:
                 r.messages.push_back(text_message("q"));
                 return r;
             },
-            [](ChatRequest const&, EffectContext&) -> result<ChatResponse> { return ChatResponse{}; },
+            [](ChatRequest const&, EffectContext&) -> agentengine::task<result<ChatResponse>> { co_return ChatResponse{}; },
             [](Message const&, ChatResponse const&) -> result<ExecutorOutcome> { throw std::runtime_error("complete boom"); },
             backend};
         WorkflowSupervisor sup;

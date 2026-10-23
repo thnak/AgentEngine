@@ -1,4 +1,4 @@
-// Milestone 7 Phase E3 (013-UI-and-Streaming-Surfaces.md §4, docs/research/2026-a2a-and-agui-detail.md
+// Milestone 7 Phase E3 (rfcs/013-UI-and-Streaming-Surfaces.md §4, docs/research/2026-a2a-and-agui-detail.md
 // §B.3, docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves the SSE framing
 // (protocol/agui/sse.hpp) against real `RunEventProjector` output -- a genuine internal event,
 // projected to a real AG-UI event, framed exactly as §4 specifies.

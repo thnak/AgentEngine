@@ -67,13 +67,16 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -118,8 +121,7 @@ void note(char const* label, std::string const& value) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
@@ -173,9 +175,9 @@ struct SendMessageTool
         "Sends a message to a recipient. Requires human approval before it actually sends.";
     using Args = SendArgs;
     using Reply = SendReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         send_invoked_log() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -192,14 +194,14 @@ AE_JSON_SCHEMA(GetWeatherReply, temp_c)
 // Deliberately ORDINARY -- no Approval<> override at all, so this tool's default approval_mode never
 // requires a human. The whole point of HITL-4 is that this tool's own execution should NEVER be
 // gated on anything a human decides about SendMessageTool.
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Get the current weather for a city, in Celsius.";
     using Args = GetWeatherArgs;
     using Reply = GetWeatherReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         weather_invoked_log() = true;
-        return Reply{13.7};
+        co_return Reply{13.7};
     }
 };
 
@@ -208,7 +210,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<SendMessageTool, GetWeatherTool>().descriptors();
+        c.tools = ToolTable::from(SendMessageTool{}, GetWeatherTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -265,8 +267,7 @@ void configure_session(Session& session, std::string const& id, std::string cons
                                  /*x_title=*/kXTitle, /*end_user_id=*/id, /*seed=*/std::nullopt,
                                  /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false, /*session_id=*/id);
-    session.initialize(id, Principal{"live-hitl-e2e-principal", ""}, /*token_budget=*/std::nullopt,
-                        /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize(id, Principal{"live-hitl-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
     session.set_suspend_for_approval(true);
 }

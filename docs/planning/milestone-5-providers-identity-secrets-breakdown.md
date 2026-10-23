@@ -36,7 +36,7 @@ exit-criterion proof.
 | `EffectContext` (`core/effect_context.hpp:16-39`) | Real, carries `principal`, `capabilities`, `bound_capabilities`, `deadline`, `trace_id`/`span_id`, `run_id`/`turn_index` (since M4). This is exactly the parameter 018 §4's `SecretStore::resolve(SecretRef, EffectContext&)` should hang off of — nothing does yet |
 | Admission check at the `AgentSession` actor boundary (018 §2) | Does not exist. Consistent with M4's own finding that `session_id_` wasn't even actor-keyed until Phase A1 — no principal-ownership check runs before a turn starts |
 | ADR-013 (HTTPS egress, mbedTLS) | **Accepted.** `TlsClientSession` (`include/agentengine/sandbox/tls_client.hpp`) wraps mbedTLS 3.6.7, real hostname verification, real HTTPS exchange — but **scoped to one consumer**: ADR-013 §9 states "only the WASM `http-request` import consumes this," gated through a guest-held `cap::NetOut` grant, called only from `wasm_backend.cpp`/`net_egress_proxy.cpp`. **No general-purpose host-side HTTP/SSE client exists** for a native `ChatClient` backend to call `api.openai.com`/`api.anthropic.com` directly — reusing `TlsClientSession`'s TLS primitive is plausible, but the call path (capability-grant/single-verified-endpoint model built for sandboxed guest egress) is new wiring for a host-initiated call with SSE streaming, retries, and vendor JSON bodies |
-| Quark `task<T>` (submodule bumped `9ecbf1c` → `dcb191f`, commit `634a2cc`) | **Real for non-void `T` (ADR-047).** A nested, awaitable coroutine a `task<>` handler (or another `task<T>`) `co_await`s to get a value back — NOT a synchronous "drive to completion" API (no such thing exists; see Phase B4a's own note on `tests/support/run_task_sync.hpp`). `include/agentengine/core/task.hpp` adds the `agentengine::task<T>` alias (`ae::task<T>`, matching `027-Vocabulary-and-Naming.md:112,126`); 004 §1's literal `ChatClient::chat()` signature is real, Phase B4a |
+| Quark `task<T>` (submodule bumped `9ecbf1c` → `dcb191f`, commit `634a2cc`) | **Real for non-void `T` (ADR-047).** A nested, awaitable coroutine a `task<>` handler (or another `task<T>`) `co_await`s to get a value back — NOT a synchronous "drive to completion" API (no such thing exists; see Phase B4a's own note on `tests/support/run_task_sync.hpp`). `include/agentengine/core/task.hpp` adds the `agentengine::task<T>` alias (`ae::task<T>`, matching `rfcs/027-Vocabulary-and-Naming.md:112,126`); 004 §1's literal `ChatClient::chat()` signature is real, Phase B4a |
 | Quark streaming (RFC 024, ADR-018) | **Accepted (x86-64), real code**: `include/quark/core/stream_channel.hpp` (inbound credit-ring), `include/quark/core/reply_stream.hpp` (`ReplyStream`/`AskStream`, outbound, Accepted 2026-08-04). **Wrapped, Phase B4b**: `include/agentengine/core/stream.hpp` adapts the raw ring (bypassing actor addressing; boxing non-trivially-copyable `T`) into `ae::stream<T>`/`ae::stream_producer<T>`/`ae::make_stream<T>`, `ChatClient::chat_stream()`'s real 004 §1 return type |
 | Quark 022 (governance: `TokenBucket`, `CircuitBreaker`, `FairShare`) | **Accepted, real, tested** (`include/quark/core/governance.hpp:47,104,179`; `tests/governance_circuit_breaker_test.cpp`, `governance_rate_limit_test.cpp`). Scoped today to Quark's actor-mailbox admission boundary (`GovernanceKey`-keyed) — wiring it to an HTTP provider call path is greenfield integration, not reuse of an existing call site |
 | 011 (MCP Conformance) / 012 (A2A Conformance) | Both Reviewed, not built. `include/agentengine/protocol/{mcp,a2a}/` are README-only. Roadmap schedules both for **Milestone 7** |
@@ -764,7 +764,7 @@ above) both clean except the same pre-existing `native_jail_backend_windows` OOM
 dropped):**
 
 - ~~**`AgentSession<ChatClientT>` cannot host a non-default-constructible `ChatClient` conformer.**~~
-  **CLOSED 2026-08-07 by `decisions/ADR-018-agent-session-real-chat-client-wiring.md`**, and sharper
+  **CLOSED 2026-08-07 by `decisions/archive/ADR-018-agent-session-real-chat-client-wiring.md`**, and sharper
   than J1 recorded it in two ways. (a) It did not fail to CONFIGURE, it failed to COMPILE:
   `quark::TestKit<A>` declares `A actor_;`, `AgentSession` held `ChatClientT` as a value, and a real
   backend holds a `Store const&` (004 §1's resolve-at-point-of-use rule) — so
@@ -783,7 +783,7 @@ dropped):**
   real grant, real socket, real parse, real history append, across two runs, plus a fail-closed case
   for a never-emplaced client. Deterministic, so it is a default-suite test.
 - ~~**`chat_stream()`'s underlying fetch has no cancellation wiring from the consumer.**~~ **CLOSED
-  2026-08-07 by `decisions/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
+  2026-08-07 by `decisions/archive/ADR-017-stream-consumer-cancellation-signal.md`.** Root cause was a real
   gap in the ring's shape, not an oversight at the call site: a `stream_producer<T>` learns the
   consumer is gone ONLY by attempting a `push()`, which is useless for a producer blocked in I/O with
   nothing to push yet. `make_stream<T>` now shares one `std::stop_source` between the two halves
@@ -803,7 +803,7 @@ dropped):**
 - **The full 018 §7 G4 admission surface** (audit query) — no audit log/query API exists yet.
 - **Full A2A/MCP delegation chains** (018 §7 G5's complete text) — need 012/011, M7 (decision 10).
 - ~~**`Local/embedded via OpenAI-compatible server`**~~ — **REAL 2026-08-07** via
-  `decisions/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
+  `decisions/archive/ADR-016-provider-egress-address-policy.md`: the provider path resolves through
   `resolve_host` (no blocked-range filter — that table is an SSRF defence and the provider
   destination is deployment config, never guest-supplied, never model-derived per I3) and gained an
   opt-in `ProviderTransport::plaintext_http`. `tests/protocol/openai/test_llamacpp_live_e2e.cpp` drives the real
@@ -827,7 +827,7 @@ dropped):**
   ~~`ae::stream<T>`~~ — built, Phase B4b (`core/stream.hpp`). ~~Still owed: threading `task<T>`/a live
   producer into `sandbox/provider_http_client.hpp`'s SSE read loop and a real Phase D/E backend's
   own `chat()`/`chat_stream()` bodies~~ — **CLOSED 2026-08-07 by
-  `decisions/ADR-019-incremental-streaming-response.md`.** `chat_stream()` was streaming in shape
+  `decisions/archive/ADR-019-incremental-streaming-response.md`.** `chat_stream()` was streaming in shape
   only: one COMPLETE blocking fetch, then a replay of already-received events, so the vendor's
   chunk boundaries survived in delivery ORDER (004 §7 G3) but not in TIME. Now three layers —
   `sandbox/incremental_http_body.hpp`'s stateful `ChunkedBodyDecoder`/`SseEventFramer` (pure, no
@@ -845,7 +845,7 @@ dropped):**
   status quo every earlier milestone established.
 - ~~**A portable `reasoning_effort` design and `prompt_cache_key`** for Phase D/E's two backends —
   surveyed, still not built~~ — **`reasoning_effort` CLOSED 2026-08-07 by
-  `decisions/ADR-020-portable-reasoning-effort.md`** (004 §2 amended: `enum class reasoning_effort
+  `decisions/archive/ADR-020-portable-reasoning-effort.md`** (004 §2 amended: `enum class reasoning_effort
   {off, low, medium, high}` + `ChatRequest::reasoning_effort`, appended last; OpenAI maps to its flat
   string, Anthropic to `thinking:{type, budget_tokens}` computed as 25/50/75% of the same request's
   `max_tokens`; `low`/`medium`/`high` gated on the declared `reasoning` bit, `off` exempt).

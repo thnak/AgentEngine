@@ -1,5 +1,5 @@
 // Milestone 5 Phase J2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, roadmap
-// exit criterion; 018-Identity-Authorization-and-Secrets.md §7 G2, "secret hygiene"): "a canary
+// exit criterion; rfcs/018-Identity-Authorization-and-Secrets.md §7 G2, "secret hygiene"): "a canary
 // secret is planted and every persisted artifact (logs, traces, audit, checkpoints, recordings,
 // crash dumps, plugin memory dumps) is scanned; zero occurrences."
 //
@@ -39,6 +39,7 @@
 #endif
 
 #include "agentengine/pal/net.hpp"
+#include "../support/session_choices.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -50,6 +51,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_recording.hpp"
@@ -60,6 +62,7 @@
 #include "agentengine/rt/session_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -82,8 +85,7 @@ void check(bool cond, char const* what) {
 // this suite uses.
 template <class T>
 T drive(rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // The planted canary -- distinctive enough that an accidental substring collision is not a realistic
@@ -475,7 +477,7 @@ int main() {
 
     // ---- (4) SecretLease itself cannot leak even if something mistakenly tried to print/persist it --
     {
-        auto lease = store.resolve(SecretRef{"openai-api-key"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"openai-api-key"}, ctx));
         check(lease.has_value(), "J2: resolving the canary directly succeeds");
         if (lease) {
             check(to_redacted_string(*lease) == "***",
@@ -500,7 +502,7 @@ int main() {
     {
         using Session = rt::AgentSession<CannedChatClient>;
         Session session;
-        session.initialize("s-canary-checkpoint", Principal{"p-test", ""});
+        session.initialize("s-canary-checkpoint", Principal{"p-test", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(rt::StartRun{[] {
@@ -520,7 +522,7 @@ int main() {
         auto saved = drive(rt::save_agent_session_snapshot(session, snap_store));
         check(saved.has_value(), "J2: the session snapshot saves");
 
-        auto raw = snap_store.load(session.session_id());
+        auto raw = agentengine::rt::block_on(snap_store.load(session.session_id()));
         check(raw.has_value(), "J2: the raw snapshot record is readable back");
         if (raw.has_value()) {
             check(!contains(*raw, kCanary),

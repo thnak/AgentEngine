@@ -1,8 +1,8 @@
-// Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase). See
+// Implements decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase). See
 // python_lockdown.hpp for the public surface and file-level scope notes. This TU is the only
 // place in this backend that includes <Python.h> or touches a `PyObject*`.
 //
-// ALSO implements decisions/ADR-003-caller-aware-import-gating.md (prove phase) §3.2/§3.3 --
+// ALSO implements decisions/archive/ADR-003-caller-aware-import-gating.md (prove phase) §3.2/§3.3 --
 // search this file for "ADR-003" to find every addition. Summary of what was added and where:
 //
 //  - `g_gated_modules` (TU-static pointer, mirrors `g_allowed_modules`): the caller-gated tier.

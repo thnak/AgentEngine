@@ -46,7 +46,7 @@ enum class strict_eligibility { eligible, named_only };  // ae-naming-lint: allo
 // (trust/secret_quarantine.hpp) and `MiddlewareTraceHook`: a deployment that wires nothing gets no
 // durable record at all, a real named limitation, not a silent one.
 //
-// `downgraded` (008 §9 G6, decisions/ADR-082-native-jail-promotion-gate-008-9.md §4's own finding
+// `downgraded` (008 §9 G6, decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md §4's own finding
 // that G6 was real, disclosed, open work, not silently claimed covered by this registry's mere
 // existence): true when some OTHER strict-eligible backend registered in this same registry has a
 // HIGHER `strength` than the one that actually won, i.e. a stronger candidate exists but does not
@@ -73,9 +73,11 @@ struct RegisteredSandboxBackend {  // ae-naming-lint: allow RegisteredSandboxBac
     std::string name;
     ProfileTraits traits;
     strict_eligibility strict_mode;
-    std::function<result<SandboxHandle>(SandboxSpec const&, EffectContext&)> create;
-    std::function<result<ExecOutcome>(SandboxHandle&, ExecRequest const&, EffectContext&)> exec;
-    std::function<void(SandboxHandle&)> destroy;
+    // ADR-237 §5.1 (#173): the type-erased seam, so it returns the seam's tasks. The returned task borrows
+    // the shared instance this entry owns, so the registry must outlive it.
+    std::function<task<result<SandboxHandle>>(SandboxSpec const&, EffectContext&)> create;
+    std::function<task<result<ExecOutcome>>(SandboxHandle&, ExecRequest const&, EffectContext&)> exec;
+    std::function<task<void>(SandboxHandle&)> destroy;
 };
 
 // design draft §2c: constructible only from something a host actually controls at
@@ -131,7 +133,7 @@ public:
             [instance](SandboxHandle& h, ExecRequest const& r, EffectContext& ctx) {
                 return instance->exec(h, r, ctx);
             },
-            [instance](SandboxHandle& h) { instance->destroy(h); },
+            [instance](SandboxHandle& h) { return instance->destroy(h); },
         });
         return {};
     }

@@ -1,4 +1,4 @@
-// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) residual, closed here:
+// ADR-145 (decisions/archive/ADR-145-containerd-execution-surface-promotion.md) residual, closed here:
 // "Not wired into tools/cli_chat.cpp/tools/sandboxed_shell_chat.cpp or any real session builder --
 // this ADR promotes the CONFORMER... A future pass wiring ContainerdExecutionSurface into a real,
 // user-reachable tool surface is real, contained, disclosed follow-on work, not attempted here."
@@ -113,7 +113,10 @@ int main(int argc, char** argv) {
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    // ADR-244 slice 4a: this demo's host choice -- neither shell tier asks a human (it installs no approval
+    // decider); the sandboxes are the boundary.
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     // ---- The session itself, via the already-shipped, already-tested §2b builder ---------------
     using Builder = quickstart::ComposedQuickstartSessionBuilder<
@@ -129,6 +132,11 @@ int main(int argc, char** argv) {
     auto built = Builder(model)
                      .session_id(session_id)
                      .principal(cli_principal)
+                     // ADR-244: stated, not defaulted -- the builders' former 25-turn default, kept; one user
+                     // watches the session and can stop it, so tokens are not capped.
+                     .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                          agentengine::Bound<std::uint64_t>::unbounded(),
+                                                          agentengine::Bound<std::uint64_t>::at_most(25)})
                      .grant(Capability{cap::FsRead{"work", "", std::nullopt}})
                      .grant(Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}})
                      .grant(Capability{cap::RunCommand{}})

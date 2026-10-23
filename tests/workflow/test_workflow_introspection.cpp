@@ -1,4 +1,4 @@
-// Implements 014-Workflow-and-Orchestration.md §7 (Visualization and introspection): render
+// Implements rfcs/014-Workflow-and-Orchestration.md §7 (Visualization and introspection): render
 // (Mermaid/DOT) and diff across versions. Milestone 6 Phase G
 // (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md).
 //

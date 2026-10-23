@@ -1,0 +1,95 @@
+
+=== REQ 1/2/3: declared tool -> suspend -> interaction id -> human answers -> resume ===
+  ....  session identity before the run: id=sess-refunds-1 principal.id=principal-ada principal.tenant_id=tenant-backoffice
+  ....  start_run() -> code="run.suspended_for_approval" class=contract message="round suspended awaiting human approval"
+  ....  branch taken: this is the SUSPEND sentinel, not a failure. NOTHING ran.
+  ok   : start_run() suspended rather than proceeding (error code run.suspended_for_approval)
+  ok   : refund_order::invoke() did NOT run -- suspension is strictly before the effect
+  ok   : a real Interaction is open on the session
+  ....  open interactions: 1
+  ....    id=sess-refunds-1:interaction:1 reason=approval run_id=sess-refunds-1:run:1
+  ....  interaction id handed to the human: sess-refunds-1:interaction:1
+  ....  calls this round asked about: 1
+  ....    call_id=c-refund-1 args={"order_id":"ORD-88231","amount_cents":90000,"reason":"arrived cold"} amount_known=true amount_cents=90000
+  ....  host threshold rule (50000 cents): ESCALATE TO A HUMAN
+  ok   : the human's approval resumed the run and it converged
+  ok   : refund_order::invoke() ran for real after approval
+  ....  ledger: order=ORD-88231 amount_cents=90000
+  ok   : the interaction closed once resolved
+  ok   : the resumed call is the SAME run_id, not a new run
+  ok   : turn_index advanced across the resume (the run continued, it did not restart)
+  ....  final answer: Refund request handled.
+
+=== REQ 5 (business branch): a human says no ===
+  ok   : the second refund suspended the same way
+  ok   : a refusal is folded in as an ordinary tool error; the run still converges
+  ok   : the interaction closed on refusal
+
+=== REQ 5 (engine branches): a second request while one is pending, and a foreign principal ===
+  ok   : a fourth refund suspended and is now pending
+  ....  second start_run() -> code="run.approval_pending" class=contract message="a round is already suspended awaiting approval, an agent.ask() answer, or an external tool-call hook decision -- resolve it before starting a new run"
+  ....  branch taken: exactly the code the durability page names for this case
+  ok   : a second run is refused while an interaction is open (run.approval_pending)
+  ok   : the refused second run ran nothing
+  ....  resolve_interaction() from a non-owning caller -> code="run.admission_denied" class=policy message="caller not admitted for this session"
+  ok   : the foreign principal's answer was refused; the interaction is still open
+  ok   : the foreign principal's answer ran nothing
+
+[lifecycle] OK (failures=0)
+EXIT_lifecycle=0
+
+=== REQ: a threshold rule based on the call's arguments ===
+  ....  (a) an ApprovalDecider configured on the session, deciding on the amount it is handed
+  ....    decider called: tool=refund_order args={"order_id":"ORD-77001","amount_cents":90000,"reason":"above threshold"}
+  ....    decider saw amount_cents=90000, threshold=50000 -> deny
+  ok   : (a) with a decider configured the call does NOT suspend -- it is answered in-process
+  ok   : (a) the over-threshold refund was DENIED in-process -- a denial, not an escalation to a human
+  ....  (a) so an ApprovalDecider can express the threshold, but its answer is approve/deny only:
+  ....  (a) it has no third answer that means 'park this for a human'.
+  ....  (b) a PolicyDecider returning require_approval, with no ApprovalDecider
+  ....    policy decider called: tool=refund_order tainted=true (no argument values are passed)
+  ok   : (b) require_approval + suspend_for_approval suspends, even for a below-threshold amount
+  ....  start_run() -> code="run.suspended_for_approval" class=contract message="round suspended awaiting human approval"
+  ....  (b) the PolicyDecider signature is (caller, ToolDescriptor, arguments_tainted): it can gate,
+  ....  (b) but structurally it cannot see the amount, so the threshold cannot live there.
+  ....    policy decider called: tool=refund_order tainted=true (no argument values are passed)
+  ok   : (b) the host answers it and the below-threshold refund runs
+  ok   : (b) the effect ran
+
+[threshold] OK (failures=0)
+EXIT_threshold=0
+
+=== REQ 4a: suspend, then snapshot the session to a durable store ===
+  ....  start_run() -> code="run.suspended_for_approval" class=contract message="round suspended awaiting human approval"
+  ok   : the refund suspended and is waiting on a human
+  ok   : the session snapshot reached the store
+  ....  process A: session_id=sess-refunds-durable principal.id=principal-ada principal.tenant_id=tenant-backoffice
+  ....  process A: history size=2 (deliberately NOT part of the record)
+  ....  process A: last_run_id=sess-refunds-durable:run:1
+  ....  open interactions: 1
+  ....    id=sess-refunds-durable:interaction:1 reason=approval run_id=sess-refunds-durable:run:1
+  ....  process A exits now; nothing in this process is reused by the next one
+
+[durable-save] OK (failures=0)
+EXIT_save=0
+
+=== REQ 4b: a FRESH process reloads it and reports what is still pending ===
+  ok   : the store itself answered (a failed store and an absent record differ)
+  ok   : a record for sess-refunds-durable came back
+  ....  record: session_id=sess-refunds-durable principal_id=principal-ada tenant_id=tenant-backoffice run_counter=1 turn_index=0 open_interactions=1
+  ok   : the fresh session starts with no history
+  ok   : session_id round-trips through the store
+  ok   : the pending refund is still attributable to the SAME principal
+  ok   : the tenant round-trips too
+  ok   : conversation history did NOT survive (documented gap)
+  ....  restored: session_id=sess-refunds-durable principal.id=principal-ada tenant_id=tenant-backoffice history=0
+  ....  open interactions: 1
+  ....    id=sess-refunds-durable:interaction:1 reason=approval run_id=sess-refunds-durable:run:1
+  ok   : the refund is STILL listed as awaiting a human
+  ....  resolve_interaction() -> code="session.resolve_interaction.round_not_recorded" class=contract message="this interaction has no recorded round in this session (restored or replaced) -- closed, nothing ran"
+  ....  branch taken: the documented fail-closed code. The host must reconcile this itself.
+  ok   : answering a restored interaction fails closed with a NAMED code, not a wrong run
+  ok   : the refusal closed the interaction, with nothing run
+
+[durable-reload] OK (failures=0)
+EXIT_reload=0

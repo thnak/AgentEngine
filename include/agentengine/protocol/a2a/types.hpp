@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md's object model (§0/§A.4 of
+// Implements rfcs/012-A2A-Conformance.md's object model (§0/§A.4 of
 // docs/research/2026-a2a-and-agui-detail.md's Part A) -- Milestone 7 Phase D1
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md). Wire types only: `Part`, `Message`,
 // `Artifact`, `TaskStatus`, `Task`, `task_state`, `a2a_role`, with `to_json()`/`from_json()` proving

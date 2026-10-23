@@ -2,13 +2,13 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "core/chat" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- decisions/ADR-069-content-triggered-model-response-replay.md's prove phase: ContentReplayGateway
+# ---- decisions/archive/ADR-069-content-triggered-model-response-replay.md's prove phase: ContentReplayGateway
 # -- a settled response's content-triggered discard-and-retry, wrapping any ModelCallGatewayLike,
 # bounded both per-trigger-site and across a session's lifetime independently.
 agentengine_add_test(test_content_replay_gateway LIBS agentengine::core agentengine_warnings)
 
 if(AGENTENGINE_WITH_HTTPS)
-  # ---- ADR-023 Phase 1: response-format codec (decisions/ADR-023-response-format-codec-seam.md) ----
+  # ---- ADR-023 Phase 1: response-format codec (decisions/archive/ADR-023-response-format-codec-seam.md) ----
   # Pure logic (core/response_format_codec.hpp) proven directly against real Harmony/DeepSeek/Hermes/
   # <think> example strings -- no network, no ChatClient backend involved, only core content types.
   agentengine_add_test(test_response_format_codec LIBS agentengine::core agentengine_warnings)
@@ -49,6 +49,15 @@ if(AGENTENGINE_WITH_HTTPS)
       MbedTLS::mbedx509 MbedTLS::mbedcrypto
     TIMEOUT 120)
 
+  # ADR-237 §4.5 rules 3a/4/5 on the real reactor stream pump: lossless back-pressure, bounded shutdown with an
+  # undrained stream, multi-line SSE data. Loopback server, default suite.
+  agentengine_add_test(test_chat_client_stream_pump_lifecycle
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 120)
+  # P7 drives src/protocol/sse_stream_pump.hpp (private to src/) directly, with a faulting accumulator.
+  target_include_directories(test_chat_client_stream_pump_lifecycle PRIVATE "${PROJECT_SOURCE_DIR}/src")
+
   # ---- Milestone 5 Phase J1 (roadmap exit criterion, 004 §7 G1): the same unchanged call site, run
   # against real OpenAI/Anthropic backends over local TLS servers, a ReplayChatClient, and a
   # FailoverChatClient<real, real> composition with a genuinely failing primary.
@@ -67,7 +76,7 @@ endif()
 # ---- RecordedChatClient fixture player (test-only) ---------------------------------------------
 # Proves the ChatClient concept and ChatRequest/ChatResponse vocabulary are usable end-to-end
 # against hand-authored JSON fixtures, without a real network call or API key (CLAUDE.md task
-# brief; concept: 004-Model-Provider-Plane.md §6).
+# brief; concept: rfcs/004-Model-Provider-Plane.md §6).
 # nlohmann/json is a test-only dependency, FetchContent-ed in tests/CMakeLists.txt.
 add_executable(test_recorded_chat_client test_recorded_chat_client.cpp)
 target_link_libraries(test_recorded_chat_client PRIVATE
@@ -127,6 +136,10 @@ agentengine_add_test(test_recording_chat_client LIBS agentengine::core agentengi
 # ---- Milestone 5 Phase G2 -- ReplayChatClient (core/replay_chat_client.hpp), the real replay
 # mechanism with identical chunk boundaries and inter-chunk timing (004 §7 G3).
 agentengine_add_test(test_replay_chat_client LIBS agentengine::core agentengine_warnings)
+
+# ---- ADR-237 §9 D6 -- failure_class::canceled, its one spelling, and the one retry decision
+# (core/error.hpp's is_retryable), plus the gateway's shared-budget column and its fail-over rule.
+agentengine_add_test(test_failure_class LIBS agentengine::core agentengine_warnings)
 
 add_executable(test_stream_delta_coalescing test_stream_delta_coalescing.cpp)
 target_link_libraries(test_stream_delta_coalescing PRIVATE agentengine::core agentengine_warnings)

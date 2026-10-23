@@ -15,6 +15,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
@@ -52,12 +54,12 @@ AE_JSON_SCHEMA(EchoReply, message)
 
 // Needs cap::decl::Entropy purely as a stand-in "this tool requires some capability" declaration,
 // the same pattern test_tool_bridge.cpp's own EchoTool already uses.
-struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
+struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.message}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.message}; }
 };
 
 // Scenario 4's own second tool set -- a DIFFERENT tool from EchoTool, so refreshing to this one
@@ -71,12 +73,12 @@ struct RefreshedReply {
 };
 AE_JSON_SCHEMA(RefreshedReply, label)
 
-struct RefreshedTool : Tool<RefreshedTool> {
+struct RefreshedTool : Tool<RefreshedTool, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "refreshed_tool";
     static constexpr std::string_view description = "Present only after the second refresh.";
     using Args = RefreshedArgs;
     using Reply = RefreshedReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.label}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.label}; }
 };
 
 }  // namespace
@@ -91,18 +93,24 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
-        bridge.capabilities = {cap::Entropy{}};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {cap::Entropy{}},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-setup: a MediatedPythonRunner with a tool bridge initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
 
         // G1-I1: an ordinary `from agent import tools` import, then an ordinary keyword call.
         {
@@ -110,7 +118,7 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='hello from agent.tools')\n"
                              "print('GOT:', r.message)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "G1-I1: setup -- the script runs");
             AE_CHECK(out.has_value() && out->stdout_text.find("GOT: hello from agent.tools") != std::string::npos,
                      "G1-I1: tools.echo_tool(message=...) is an ordinary keyword call returning an "
@@ -124,7 +132,7 @@ int main() {
                              "import agent\n"
                              "print('HAS_ECHO:', 'echo_tool' in dir(agent.tools))\n"
                              "print('DOC:', agent.tools.echo_tool.__doc__)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("HAS_ECHO: True") != std::string::npos,
                      "G1-I2: agent.tools.echo_tool is discoverable via dir(), matching 026 §4's claim");
             AE_CHECK(out.has_value() &&
@@ -142,7 +150,7 @@ int main() {
                              "import agent\n"
                              "print('TOOLS_DOC:', agent.tools.__doc__)\n"
                              "print('AGENT_DOC:', repr(agent.__doc__))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             std::string expected_one_line(agentengine::trust::module_one_line("tools"));
             AE_CHECK(out.has_value() && out->stdout_text.find("TOOLS_DOC: " + expected_one_line) !=
                                              std::string::npos,
@@ -162,7 +170,7 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='quote\" and backslash\\\\ and newline\\n')\n"
                              "print('ROUNDTRIP:', repr(r.message))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find(R"(ROUNDTRIP: 'quote" and backslash\\ and newline\n')") !=
                              std::string::npos,
@@ -180,25 +188,31 @@ int main() {
     {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
-        bridge.capabilities = {};  // no cap::Entropy granted
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {},  // no cap::Entropy granted
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-N1: setup -- a second interpreter initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
         ExecRequest req{"python",
                          "from agent import tools\n"
                          "try:\n"
                          "    tools.echo_tool(message='should be denied')\n"
                          "except PermissionError as e:\n"
                          "    print('DENIED:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                  "G1-N1: agent.tools.echo_tool() without the bridge's required capability raises "
                  "PermissionError -- the real pipeline denial, not a bypass");
@@ -214,17 +228,22 @@ int main() {
         // cfg.tool_bridge left at its default nullopt.
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G1-N2: setup -- a third interpreter (no tool bridge) initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
         ExecRequest req{"python",
                          "try:\n"
                          "    import agent\n"
                          "except ModuleNotFoundError as e:\n"
                          "    print('NO_AGENT:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT") != std::string::npos,
                  "G1-N2: with no tool bridge configured, 'import agent' fails ModuleNotFoundError -- "
                  "an ungranted module is simply absent (026 §5a), not present-but-empty");
@@ -243,11 +262,16 @@ int main() {
         // it, not the constructor, proving this ALSO works starting from "no bridge at all".
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-R1: setup -- a fourth interpreter (no initial bridge) initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
+        ctx.capabilities = std::make_shared<CapabilitySet const>(
+            CapabilitySet::grant_root({Capability{cap::Entropy{}}}));
 
         {
             ExecRequest req{"python",
@@ -255,17 +279,18 @@ int main() {
                              "    import agent\n"
                              "except ModuleNotFoundError as e:\n"
                              "    print('NO_AGENT_YET:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT_YET") != std::string::npos,
                      "G2-R1: before any refresh, agent.tools is absent, exactly like Scenario 3's "
                      "construction-time nullopt case");
         }
 
         {
-            ToolBridgeConfig bridge_a;
-            bridge_a.bridged_tools = ToolTable::from_tools<EchoTool>();
-            bridge_a.capabilities = {cap::Entropy{}};
-            bridge_a.approved = true;
+            // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+            // anonymous test principal these contexts run as.
+            ToolBridgeConfig bridge_a{.bridged_tools = ToolTable::from(EchoTool{}),
+                             .capabilities  = {cap::Entropy{}},
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_a));
             AE_CHECK(refreshed.has_value(), "G2-R2: refresh_agent_tools() with tool A succeeds");
 
@@ -273,17 +298,18 @@ int main() {
                              "from agent import tools\n"
                              "r = tools.echo_tool(message='after first refresh')\n"
                              "print('A_WORKS:', r.message)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("A_WORKS: after first refresh") != std::string::npos,
                      "G2-R2: a FRESH import agent (never previously bound in this session) sees the "
                      "just-refreshed tool set on the very next run() call, real round trip");
         }
 
         {
-            ToolBridgeConfig bridge_b;
-            bridge_b.bridged_tools = ToolTable::from_tools<RefreshedTool>();  // note: NO EchoTool this time
-            bridge_b.capabilities = {};
-            bridge_b.approved = true;
+            // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+            // anonymous test principal these contexts run as.
+            ToolBridgeConfig bridge_b{.bridged_tools = ToolTable::from(RefreshedTool{}),
+                             .capabilities  = {},
+                             .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
             auto refreshed = runner.refresh_agent_tools(std::move(bridge_b));
             AE_CHECK(refreshed.has_value(), "G2-R3: refresh_agent_tools() with a DIFFERENT tool B succeeds");
 
@@ -292,7 +318,7 @@ int main() {
                              "r = agent.tools.refreshed_tool(label='after second refresh')\n"
                              "print('B_WORKS:', r.label)\n"
                              "print('A_GONE:', hasattr(agent.tools, 'echo_tool'))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("B_WORKS: after second refresh") != std::string::npos,
                      "G2-R3: the new tool B is callable via a fresh 'import agent; agent.tools....' "
                      "reference on the very next run() call");

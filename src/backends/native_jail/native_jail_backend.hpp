@@ -1,9 +1,9 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `native-jail` profile,
-// Windows half (008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2
+// Windows half (rfcs/008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2
 // (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md). Written fresh against 008
 // as currently Reviewed (per project-owner direction, 2026-08-05), carrying forward
-// decisions/ADR-004-appcontainer-native-jail-windows-backend.md's *findings*, not its unbuilt spike
+// decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md's *findings*, not its unbuilt spike
 // code:
 //   - AppContainer (`app_container_profile.hpp`) for process identity/authority: zero granted
 //     Windows capabilities (denies NetOut/socket by construction, ADR-004 AC-S1) and
@@ -40,7 +40,7 @@
 //     `FramedChannel`/message-catalog split (`jailed_worker_rpc.hpp`,
 //     `mediated_python_worker_protocol.hpp`) is shaped to compose with, not solved.
 //
-// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/archive/ADR-087-
 // sandbox-spec-capability-enforcement.md): both `create()` and `create_python_worker()` below now
 // call `agentengine::authorize_spec()` (sandbox/sandbox.hpp) first -- a real, opt-in check that
 // `spec.mounts`/`spec.net` are covered by `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut`
@@ -62,7 +62,7 @@
 // executable path plus arguments) that the CALLER -- test code today, a closed Runner/Tool
 // registry from M3 onward (008 §1b layer 2, 010 §1a) -- is trusted to have already resolved and
 // mediated. This backend does not itself interpret `language`; it exists on ExecRequest for forward
-// compatibility with the Runner-routed shape 010 will need. 008-Sandbox-and-Isolation.md §2's
+// compatibility with the Runner-routed shape 010 will need. rfcs/008-Sandbox-and-Isolation.md §2's
 // "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
 // canonical statement of why (docs/planning/sandbox-exec-request-capability-mediation-design-
 // draft.md investigated and confirmed this is correct-by-design, not unfinished, for every backend
@@ -111,13 +111,14 @@
 #include "agentengine/sandbox/net_egress_proxy.hpp"  // VerifiedEndpoint -- set_test_connect_resolver_override
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
+#include "backends/native_jail/app_container_profile.hpp"
 #include "backends/native_jail/job_object_limits.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
 
 namespace agentengine::native_jail {
 
-// Jailed-Python-worker design (008-Sandbox-and-Isolation.md §1b/§3, 010-Python-Code-Interpreter.md
-// §2/§6 -- decisions/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
+// Jailed-Python-worker design (rfcs/008-Sandbox-and-Isolation.md §1b/§3, rfcs/010-Python-Code-Interpreter.md
+// §2/§6 -- decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md is the ADR superseding this
 // header's former "Correction (2026-08-23)" comment, which claimed the CPython-interpreter/host-
 // filesystem-boundary gap was closed "by an entirely different, now-permanent mechanism" without any
 // ADR amending 008/010's "locked to native-jail permanently" requirement; it was not closed, and this
@@ -148,8 +149,8 @@ struct PythonWorkerSessionConfig {
     std::unordered_map<std::string, std::wstring> mount_roots;
     bool   expose_agent_files_data = false;
     bool   expose_agent_ask = false;
-    bool   expose_agent_output = false;  // decisions/ADR-154-agent-output-codeact-module.md, 026 §5
-    bool   expose_agent_progress = false;  // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5
+    bool   expose_agent_output = false;  // decisions/archive/ADR-154-agent-output-codeact-module.md, 026 §5
+    bool   expose_agent_progress = false;  // decisions/archive/ADR-155-agent-progress-codeact-module.md, 026 §5
     std::size_t output_cap_bytes = 0;  // 0 -> the worker's own default (output_discipline.hpp)
     std::wstring worker_exe_path;      // fixed, host-controlled path to agentengine_python_worker.exe
                                         // -- NEVER derived from anything guest/model-influenced (I2).
@@ -161,6 +162,22 @@ struct PythonWorkerSessionConfig {
     std::chrono::milliseconds init_timeout_ms{10000};
     std::chrono::milliseconds idle_cpu_window_ms{1000};
     std::chrono::milliseconds idle_cpu_budget_ms{100};
+};
+
+// ADR-244 §2.4: one sandbox's read-write mounts, granted to its own capability SID. Revoked when the sandbox goes
+// (normal destroy, or a create that fails after granting); after a crash the ACEs stay but name a SID no later
+// token holds.
+struct RwGrants {
+    std::optional<OwnedSid>   sid;
+    std::vector<std::wstring> paths;
+
+    RwGrants() = default;
+    RwGrants(RwGrants const&) = delete;
+    RwGrants& operator=(RwGrants const&) = delete;
+    ~RwGrants() {
+        if (!sid.has_value()) return;
+        for (std::wstring const& path : paths) (void)revoke_sid_path(path, sid->get());
+    }
 };
 
 class NativeJailBackend {
@@ -178,24 +195,24 @@ public:
     NativeJailBackend(NativeJailBackend&&) = delete;   // instances_ holds handles other objects
     NativeJailBackend& operator=(NativeJailBackend&&) = delete;  // reference by opaque_id; keep simple
 
-    result<SandboxHandle> create(SandboxSpec const& spec, EffectContext& ctx);
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
-    void destroy(SandboxHandle& handle);
+    // The `SandboxBackend` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies below, completing
+    // without suspending -- the bodies still block (moving process spawn onto `rt::` is #180's). `handle` and
+    // `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<SandboxHandle>> create(SandboxSpec spec, EffectContext& ctx) {
+        co_return create_blocking(spec, ctx);
+    }
+    [[nodiscard]] task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest request, EffectContext& ctx) {
+        co_return exec_blocking(handle, request, ctx);
+    }
+    [[nodiscard]] task<void> destroy(SandboxHandle& handle) {
+        destroy_blocking(handle);
+        co_return;
+    }
 
-    // Grants this backend's shared, deployment-scoped AppContainer profile read+execute access to a
-    // FIXED, host-controlled path (never a caller/model-supplied one -- I2), deduplicated for the life
-    // of the process the same way `python_home`/`extra_sys_path`/the worker-binary directory already
-    // are internally for `create_python_worker()`. Exists so a caller outside this translation unit
-    // (e.g. a first-party `Tool<>` that needs one fixed scratch directory readable by an
-    // AppContainer'd worker it spawns via plain `create()`/`exec()`, not `create_python_worker()`) can
-    // reach that same dedup guarantee -- `grant_ro_deduped()`/`shared_profile()` are anonymous-
-    // namespace internals of native_jail_backend.cpp and were never reachable from outside it before
-    // this method (docs/planning/pdf-text-extraction-design-draft.md Revision 6, round-5/round-6
-    // red-team finding). Calling this repeatedly with the SAME `path` is a safe no-op after the first
-    // call -- it does not grow the shared profile's DACL. Does not itself add `path` to any
-    // `SandboxSpec::mounts` list; the grant lives on the AppContainer SID's own ACL, independent of any
-    // particular `SandboxHandle`'s `SandboxSpec` bookkeeping.
-    [[nodiscard]] result<void> grant_ro_path_once(std::wstring const& path);
+    // The synchronous bodies. Called directly only where the caller cannot suspend (a destructor).
+    result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
+    result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
+    void destroy_blocking(SandboxHandle& handle);
 
     // ---- Jailed-Python-worker surface (additive; NOT part of the SandboxBackend concept -- see
     // sandbox/sandbox.hpp's own `exec_session` is intentionally absent from that `requires` clause,
@@ -226,10 +243,10 @@ public:
     // hermetic same-machine test target exists for proving the round trip's POST-resolution
     // composition (does connect_authorize correctly connect to what the resolver reports, does
     // connect_send/connect_recv correctly relay real bytes) -- exactly the same problem
-    // `HostEgressProxy::resolver`'s own header comment names for the tool-bridged path. Overrides the
+    // `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`)'s own header comment names for the tool-bridged path. Overrides the
     // process-wide resolver every `dispatch_connect_authorize` call uses; `nullptr` (the default)
     // means "use the real `sandbox::resolve_and_validate`". Production code never calls this --
-    // UNLIKE `HostEgressProxy::resolver` (a per-instance field, scoped to one object), this is a
+    // UNLIKE `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`) (a per-instance field, scoped to one object), this is a
     // process-WIDE static, so setting it affects every worker session sharing the process, and
     // "never used from production" is enforced by convention/review only, not the type system or a
     // build flag. Callers MUST reset to `nullptr` unconditionally (an RAII guard, not a bare
@@ -238,6 +255,10 @@ public:
     // the pattern every future caller should copy, not reinvent.
     static void set_test_connect_resolver_override(
         std::function<result<sandbox::VerifiedEndpoint>(std::string_view, std::uint16_t)> fn);
+
+    // TEST-ONLY seam: called by the session watchdog right after TerminateJobObject, to widen the
+    // kill-vs-classify window deterministically. nullptr (default) = no-op. Process-wide; reset it.
+    static void set_test_post_terminate_hook(void (*fn)());
 
 private:
     // ae-naming-lint: allow watchdog_phase — this design's own new vocabulary, not yet in 027's registry
@@ -301,6 +322,9 @@ private:
     // library implementations and hard-errors on this one) -- `Instance` stays private, just not
     // opaque across the header boundary.
     struct Instance {
+        // Declared first, so it is destroyed last: the job (and every process in it) is gone before the
+        // read-write ACEs are revoked.
+        RwGrants        rw;
         JobObjectLimits job;
         ResourceLimits  limits;
         std::wstring    cwd;  // first read-write mount's host path, if any; empty = inherit

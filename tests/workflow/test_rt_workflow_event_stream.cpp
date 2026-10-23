@@ -45,6 +45,7 @@
 //
 // Run: ./test_rt_workflow_event_stream
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -56,6 +57,8 @@
 #include <variant>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
@@ -91,8 +94,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text) {
@@ -145,11 +147,11 @@ template <class T>
 
 [[nodiscard]] std::vector<ExecutorBody> linear_bodies() {
     return {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">a")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">a")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">b")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">b")};
         },
     };
 }
@@ -215,8 +217,8 @@ void w2_no_wiring_is_a_no_op() {
 void w3_request_port_events() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">planned")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">planned")};
         },
         {},
     };
@@ -245,8 +247,9 @@ void w4_checkpoint_saved() {
     sup.initialize(linear_graph(), linear_bodies());
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
     int checkpoint_calls = 0;
-    sup.set_checkpoint_hook([&checkpoint_calls](std::uint32_t, agentengine::rt::RunStateRecord const&) {
+    sup.set_checkpoint_hook([&checkpoint_calls](std::uint32_t, agentengine::rt::RunStateRecord) -> agentengine::task<void> {
         ++checkpoint_calls;
+        co_return;
     });
 
     WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
@@ -281,14 +284,14 @@ void w4_checkpoint_saved() {
 void w5_fan_out_fan_in_events() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">a")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">a")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">b")};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">b")};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(fan_graph(), bodies);
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
@@ -335,11 +338,11 @@ void w5_fan_out_fan_in_events() {
 void w6_route_selected_events() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{in, {"billing"}};
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in, {"billing"}};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(switch_graph(), bodies);
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
@@ -382,18 +385,18 @@ void w6_route_selected_events() {
 void w7_retry_attempt_discriminator() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-        [](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             ctx.moderator_delta_sink("hello from this attempt");
             static bool failed_once = false;
             if (!failed_once) {
                 failed_once = true;
-                return std::unexpected(
+                co_return std::unexpected(
                     error{failure_class::transient, "scripted transient failure", "test.flaky"});
             }
-            return ExecutorOutcome{in};
+            co_return ExecutorOutcome{in};
         },
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
     };
     sup.initialize(retry_graph(), bodies);
     WorkflowEventStream stream = sup.enable_event_stream(std::pmr::get_default_resource());
@@ -463,6 +466,7 @@ static_assert(agentengine::ContextProvider<NoToolsHistoryProvider>);
 
 void w8_agent_bridge_composes_with_direct_tap() {
     AgentSession<ScriptedChatClient, NoSessionState, NoToolsHistoryProvider> session;
+    session.initialize("w8", agentengine::Principal{"p-w8", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.2
     std::vector<ExecutorBody> bodies = {agent_session_as_executor_body(session)};
 
     WorkflowSupervisor sup;
@@ -516,21 +520,21 @@ void w8_agent_bridge_composes_with_direct_tap() {
 }
 
 [[nodiscard]] ExecutorBody chatty_body(int n) {
-    return [n](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+    return [n](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         // Far more pushes than multiplex_sink's default capacity (1024) -- with 3 concurrently
         // dispatched nodes each pushing this many, a blocking implementation would stall the
         // ThreadPool; a non-blocking one just drops the overflow and keeps going.
         for (int i = 0; i < 5000; ++i) {
             ctx.moderator_delta_sink("chatty node " + std::to_string(n) + " delta " + std::to_string(i));
         }
-        return ExecutorOutcome{in};
+        co_return ExecutorOutcome{in};
     };
 }
 
 void w9_backpressure_never_stalls_compute() {
     WorkflowSupervisor sup;
     std::vector<ExecutorBody> bodies = {
-        [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
         chatty_body(1), chatty_body(2), chatty_body(3),
     };
     sup.initialize(chatty_fan_graph(), bodies);
@@ -591,9 +595,9 @@ void w9_backpressure_never_stalls_compute() {
 }
 
 [[nodiscard]] std::vector<ExecutorBody> w42_outer_bodies() {
-    return {[](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
+    return {[](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
             {},
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; }};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; }};
 }
 
 [[nodiscard]] std::optional<payload::ModeratorDelta> find_moderator_delta(
@@ -608,9 +612,9 @@ void w9_backpressure_never_stalls_compute() {
 void w10_single_level_forwarding_and_path_tagging() {
     auto inner = std::make_shared<WorkflowSupervisor>();
     inner->initialize(w42_leaf_graph("w10-inner", "leaf"),
-                       {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                       {[](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                            ctx.moderator_delta_sink("nested delta");
-                           return ExecutorOutcome{in};
+                           co_return ExecutorOutcome{in};
                        }});
 
     WorkflowSupervisor outer;
@@ -639,9 +643,9 @@ void w10_single_level_forwarding_and_path_tagging() {
 void w11_three_level_forwarding_carries_the_full_path() {
     auto leaf = std::make_shared<WorkflowSupervisor>();
     leaf->initialize(w42_leaf_graph("w11-leaf", "leaf"),
-                      {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                      {[](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                           ctx.moderator_delta_sink("deep delta");
-                          return ExecutorOutcome{in};
+                          co_return ExecutorOutcome{in};
                       }});
 
     auto mid = std::make_shared<WorkflowSupervisor>();
@@ -676,11 +680,11 @@ void w12_nested_events_are_observed_while_the_run_is_still_in_progress() {
     auto inner = std::make_shared<WorkflowSupervisor>();
     inner->initialize(
         w42_leaf_graph("w12-inner", "blocker"),
-        {[&](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+        {[&](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             ctx.moderator_delta_sink("nested live delta");
             std::unique_lock<std::mutex> lock(cv_mutex);
             cv.wait_for(lock, std::chrono::seconds(10), [&] { return may_proceed.load(); });
-            return ExecutorOutcome{in};
+            co_return ExecutorOutcome{in};
         }});
 
     WorkflowSupervisor outer;
@@ -738,9 +742,9 @@ void w13_bind_enable_order_independence() {
     {
         auto inner = std::make_shared<WorkflowSupervisor>();
         inner->initialize(w42_leaf_graph("w13a-inner", "leaf"),
-                           {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                           {[](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                                ctx.moderator_delta_sink("order-a delta");
-                               return ExecutorOutcome{in};
+                               co_return ExecutorOutcome{in};
                            }});
         WorkflowSupervisor outer;
         outer.initialize(w42_outer_graph("w13a-outer"), w42_outer_bodies());
@@ -757,9 +761,9 @@ void w13_bind_enable_order_independence() {
     {
         auto inner = std::make_shared<WorkflowSupervisor>();
         inner->initialize(w42_leaf_graph("w13b-inner", "leaf"),
-                           {[](Message const& in, EffectContext& ctx) -> result<ExecutorOutcome> {
+                           {[](Message const& in, EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                                ctx.moderator_delta_sink("order-b delta");
-                               return ExecutorOutcome{in};
+                               co_return ExecutorOutcome{in};
                            }});
         WorkflowSupervisor outer;
         outer.initialize(w42_outer_graph("w13b-outer"), w42_outer_bodies());

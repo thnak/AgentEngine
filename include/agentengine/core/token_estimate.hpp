@@ -1,5 +1,5 @@
 #pragma once
-// Milestone 3 Phase H1 (026-Agent-Facing-Runtime-Surface.md §7's prompt budget table -- "Enforced by
+// Milestone 3 Phase H1 (rfcs/026-Agent-Facing-Runtime-Surface.md §7's prompt budget table -- "Enforced by
 // a test that measures the assembled system prompt"). A real BPE tokenizer (the exact count any
 // given vendor's API would bill) is a heavy dependency this project has no other reason to take on
 // for a budget GATE, whose job is catching bloat regressions, not billing accuracy. This is a

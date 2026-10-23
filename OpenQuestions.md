@@ -13,11 +13,11 @@ the one genuinely reopened item (020 §8 Q2) left where this file's own rule put
 in 020's own §8. OQ-1 through OQ-19 and
 OQ-21 through OQ-24 are all resolved (OQ-22 was closed 2026-08-21 by ADR-066, ahead of this file's own
 stale "seven open" count; OQ-24 was scoped and resolved as a non-issue on 2026-08-23; OQ-23 was closed
-the same day by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it
-was first raised in; OQ-19 was closed the same day too, by `decisions/ADR-077-agent-executor-
+the same day by `decisions/archive/ADR-076-undeclared-tool-call-leak-refusal.md`, judged the same session it
+was first raised in; OQ-19 was closed the same day too, by `decisions/archive/ADR-077-agent-executor-
 capabilityset-bridge.md`, once the project owner explicitly lifted this file's own prior "document
 only, do not implement yet" instruction; OQ-21's minimum tool-call-point slice was closed the same day
-by `decisions/ADR-078-tool-call-hook-stage.md`, run/turn-level gating hooks and a reference external
+by `decisions/archive/ADR-078-tool-call-hook-stage.md`, run/turn-level gating hooks and a reference external
 dispatcher left as named follow-on work). New questions are added here as they're identified; per-RFC
 open questions that don't change the shape of the project stay in their own RFC's §Open questions and
 are never promoted here by default.
@@ -111,7 +111,7 @@ PER round). This does not block the idea — it fits N independent single-shot c
 fan-out nodes) well — but it means "batch mode" cannot be a blanket accelerator for arbitrary agents.
 **Explicit project-owner direction (2026-08-13): document only, do not implement yet.**
 
-**Resolved 2026-10-02 by `decisions/ADR-235-batch-inference-coalescing.md` (Judged 2026-10-02,
+**Resolved 2026-10-02 by `decisions/archive/ADR-235-batch-inference-coalescing.md` (Judged 2026-10-02,
 project-owner sign-off).** The project owner lifted the "document only" direction ("lift it, go through ADR and
 implement"). Vendor limits were re-researched first
 (`docs/research/2026-10-02-batch-inference-provider-limits.md`): every vendor is single-shot, results
@@ -141,13 +141,13 @@ Per this file's rule, a per-RFC question stays in its RFC and is not promoted he
 
 **Part A, answered — `EmbeddedHost` is unbuilt, and that is tracked, not open.** No `EmbeddedHost`
 type exists anywhere in the tree (only prose references: `020` §3a/§7 G5, `027-Vocabulary-and-
-Naming.md:144`, `030-Project-Workspace-and-Lifecycle.md:151`, and one forward-looking comment at
+Naming.md:144`, `rfcs/030-Project-Workspace-and-Lifecycle.md:151`, and one forward-looking comment at
 `include/agentengine/rt/agent_session.hpp:196`). Four separate planning documents already say why and
 when: `docs/planning/v1-implementation-roadmap.md:207-227` (020 is a Milestone 9 RFC),
 `docs/planning/milestone-6-multi-agent-orchestration-breakdown.md:28,41,56` (*"Does not exist. It
 belongs to 020 (Configuration and Hosting), scheduled M9"* — with 030 §6's four verbs deliberately
 built as engine-level operations *beneath* the not-yet-existing facade), `docs/planning/milestone-6-
-residuals-for-m7-m9.md:51,130`, and `decisions/ADR-053-schedule-wakeup-standing-effect.md:129-130`
+residuals-for-m7-m9.md:51,130`, and `decisions/archive/ADR-053-schedule-wakeup-standing-effect.md:129-130`
 (which names the missing facade as the reason the host-side poller is out of its own scope). Nothing
 about this is undecided. The only defensible complaint is editorial and is folded into the residual
 list below: 020 §3a's present-tense prose reads as if the contract already ships.
@@ -226,8 +226,8 @@ which survived it: Milestone 9 is where someone writes the first real host adapt
 document they will read. Five edits now is cheap; discovering mid-M9 that the RFC describes a listener
 the project decided in August 2026 never to build is not.
 
-References: `decisions/ADR-061-host-provided-inbound-transport.md` §0, §2a, §7c R21, §8.6, §13.7,
-§33.3, §45; `020-Configuration-and-Hosting.md` §3, §3a, §4, §7 G2/G5, §8 Q2; `027-Vocabulary-and-
+References: `decisions/archive/ADR-061-host-provided-inbound-transport.md` §0, §2a, §7c R21, §8.6, §13.7,
+§33.3, §45; `rfcs/020-Configuration-and-Hosting.md` §3, §3a, §4, §7 G2/G5, §8 Q2; `027-Vocabulary-and-
 Naming.md:144`; `include/agentengine/protocol/mcp/server.hpp:178,201`;
 `include/agentengine/pal/net.hpp:140`; `include/agentengine/core/session_builder.hpp:524`;
 `docs/planning/v1-implementation-roadmap.md:207-227`;
@@ -294,7 +294,7 @@ undisclosed gap.
 
 **Update (2026-08-23, non-reopening):** `history_and_skills_provider.hpp` and
 `HistoryAndSkillsProvider<H,S>`, cited above as the proof-of-pattern, were deleted by
-`decisions/ADR-074-composed-context-provider-consolidation.md` — their move-only/exception-safety
+`decisions/archive/ADR-074-composed-context-provider-consolidation.md` — their move-only/exception-safety
 fixes were absorbed into the general `ComposedContextProvider<Ms...>`
 (`include/agentengine/core/composed_context_provider.hpp`), which now serves as the ordering-composite
 example this entry originally pointed to (declare `Ms...` in the desired wire order). The decision
@@ -305,7 +305,7 @@ unchanged — no reactive composite type exists yet, built-in or otherwise. A co
 
 Full text: `docs/research/2026-08-11-maf-middleware-codeact-skills-deep-dive.md` §2;
 `include/agentengine/core/context_assembly.hpp`; `include/agentengine/core/composed_context_provider.hpp`;
-`decisions/ADR-074-composed-context-provider-consolidation.md`.
+`decisions/archive/ADR-074-composed-context-provider-consolidation.md`.
 
 ### OQ-22 — Should `ContextContribution` carry per-contributor provenance, independent of chaining?
 
@@ -315,7 +315,7 @@ message, a tool), there was no way to attribute which contributor produced it af
 re-reading each contributor's own code — a gap against I4 (every effect is attributable) for a later
 transcript reader, not just the composite provider's own author.
 
-**Resolved by `decisions/ADR-066-context-provider-attribution-provenance.md` (Judged, 2026-08-21;
+**Resolved by `decisions/archive/ADR-066-context-provider-attribution-provenance.md` (Judged, 2026-08-21;
 that ADR's own text states it "creates and closes" this question) — closes as a targeted, per-seam
 stamp, exactly the minimal fix this entry originally speculated about, no generic mechanism added.**
 `ContributorProvenance{contributor_index, contributor_type}` (`content.hpp`) is stamped onto every
@@ -335,14 +335,14 @@ Proven: `tests/core/context/test_context_provenance.cpp` (16/16 checks, adversar
 `ComposedContextProvider`, inspecting the actual outbound `ChatRequest`). **Named residual, not
 closed by this ADR:** `AgentSession`'s dominant single-`HistoryProviderT`-slot construction path
 (most of today's production usage) bypasses `assemble_context()` entirely and so carries no
-attribution at all — formalized by `decisions/ADR-070-host-configurable-responsibility-boundary.md`
+attribution at all — formalized by `decisions/archive/ADR-070-host-configurable-responsibility-boundary.md`
 as a deliberate two-tier contract (a host choosing the simpler single-provider API is knowingly
 forgoing provenance, not hitting an undocumented gap), not a defect. Also named, not closed:
 `content_origin::system`/`::assistant`/`::tool` forgery by a genuinely *compromised* (not merely
 non-cooperating) conformer, and `HistoryProvider<Summarize<N,SummarizerT>>`'s synthesized summary
 inheriting `content_origin::assistant` with nothing marking it as a summary.
 
-Full text: `decisions/ADR-066-context-provider-attribution-provenance.md`;
+Full text: `decisions/archive/ADR-066-context-provider-attribution-provenance.md`;
 `docs/planning/context-provider-provenance-design-draft.md`; `tests/core/context/test_context_provenance.cpp`;
 `tests/rt/agent_session/test_rt_agent_session_context_provenance.cpp`.
 
@@ -374,7 +374,7 @@ precedents:
    swap in a trivial `FakeRunner` at construction. Build-time CRTP composition, not per-`.run()`, but
    the same substitution PydanticAI's DI achieves, just bound earlier in the object's lifetime.
 
-022's own testing story (`022-Testing-and-Evaluation.md` §2/§6) describes a `TestKit` with mock
+022's own testing story (`rfcs/022-Testing-and-Evaluation.md` §2/§6) describes a `TestKit` with mock
 providers that was Quark-scheduler-based and was never rebuilt after ADR-037 removed Quark — today's
 tests are ordinary unit/integration tests over `rt::` primitives directly, which is exactly where
 these two idioms already operate. No test anywhere in the tree needs a swap that isn't expressible as
@@ -400,7 +400,7 @@ error and no warning — the leak was captured as ordinary, untainted `Text`, un
 `AgentSession::scan_response_format_leaks` (a separate, default-`false` flag with no relationship to
 `tool_calling` anywhere in the code) was also armed.
 
-**Resolved by `decisions/ADR-076-undeclared-tool-call-leak-refusal.md` (Judged, 2026-08-23 — design,
+**Resolved by `decisions/archive/ADR-076-undeclared-tool-call-leak-refusal.md` (Judged, 2026-08-23 — design,
 red-team, and prove all completed and judged the same session this question was raised in).** A new
 `detect_undeclared_tool_call_leak()` (`core/response_format_leak_scan.hpp`) — detect-only,
 refuse-not-promote, structurally distinct from and never touching ADR-023's own declassifier — is
@@ -436,7 +436,7 @@ red-team's required revision targeted; 13 real `AgentSession::run_model_call()` 
 `tests/rt/agent_session/test_rt_agent_session_streaming_and_events.cpp`). Full `ctest`: 227/229 real passes; the only 2
 failures (`test_openai_chat_client_live`, `test_anthropic_chat_client_live`) were confirmed
 pre-existing and unrelated to this change — reproduced identically against the untouched pre-change
-baseline via `git stash`, rebuild, and re-run. Amends `004-Model-Provider-Plane.md` §2 with the inbound
+baseline via `git stash`, rebuild, and re-run. Amends `rfcs/004-Model-Provider-Plane.md` §2 with the inbound
 half of "capabilities are declared, not probed."
 
 **Named residual, not closed:** a direct `OpenAIChatClient::chat()` call bypassing `AgentSession`
@@ -445,9 +445,9 @@ entirely gets none of this protection — matching the identical, pre-existing s
 same order ADR-035 already took) was a deliberate choice; porting down to the `ChatClient` layer is
 real, named follow-on work if judged valuable later.
 
-Full text: `decisions/ADR-076-undeclared-tool-call-leak-refusal.md`;
+Full text: `decisions/archive/ADR-076-undeclared-tool-call-leak-refusal.md`;
 `docs/planning/oq23-undeclared-tool-call-leak-design-draft.md` (the complete, uncompressed design →
-red-team → prove record); `decisions/ADR-023-response-format-codec-seam.md`.
+red-team → prove record); `decisions/archive/ADR-023-response-format-codec-seam.md`.
 
 ### OQ-11 — Licence and governance
 
@@ -560,7 +560,7 @@ conformance stories**. That is a real cost, and the benefit is currently an assu
 cold-start comparison is generic, not measured on our workload. Blocked on a 023-budget measurement
 before it is even a candidate.
 
-**Resolved 2026-08-03 by `decisions/ADR-008-wasm3-cold-start-vs-wasmtime.md`: the measurement now
+**Resolved 2026-08-03 by `decisions/archive/ADR-008-wasm3-cold-start-vs-wasmtime.md`: the measurement now
 exists, and it clears the gate.** A real, symmetric, correctness-checked cold-start comparison (fresh
 parse/compile+instantiate+call+teardown per iteration, 1000 iterations, four consistent runs on this
 machine) found wasm3's p50 ≈ 0.7 µs against Wasmtime's p50 ≈ 111-128 µs (**160-180x**), p99 ≈
@@ -582,7 +582,7 @@ mixes user text with a quoted tool result taints wholesale. Span-level taint wou
 declassification and structural separation far more precise, at a real cost in the content model's
 complexity and in every mapping layer.
 
-**Resolved 2026-08-03 by `decisions/ADR-007-span-level-taint-vs-per-item.md`: no, keep per-item
+**Resolved 2026-08-03 by `decisions/archive/ADR-007-span-level-taint-vs-per-item.md`: no, keep per-item
 taint.** A small prove built both a span-level taint prototype and the naive way someone would
 plausibly implement it, and red-teamed the naive version rather than assuming it correct. Result: the
 precision claim is real (per-item taint does deny genuinely trusted material that shares an item with
@@ -623,7 +623,7 @@ reliable, on-every-run hazard given a forced interleaving, not a rare timing acc
 `shared` stays available but is not the default for concurrent siblings** — 025 §3's existing
 default (`branch`) was already right, and this prove is the falsifiable reason why; using `shared`
 for concurrent siblings now requires an explicit opt-in that documents the read-skew hazard rather
-than a bare mode flag. See `025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
+than a bare mode flag. See `rfcs/025-Worktree-and-Virtual-Filesystem.md` §3 and §10 Q1/Q2 for the full
 resolution.
 
 ### OQ-6 — Plugin distribution
@@ -643,7 +643,7 @@ digest, SHA-256 verify) is a few hundred lines against an HTTP capability the en
 not a heavyweight OCI SDK — push, garbage collection, and resumable chunked upload are never needed
 because AgentEngine is never the publisher (009 §7/§8 already assume third-party or operator-side
 tooling publishes plugins and skills). **Decision: reuse OCI, no first-party registry** — see
-`009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
+`rfcs/009-Plugin-and-Extension-System.md` §11 Q2 for the full resolution, including the one concrete gap
 this surfaced (blob storage lives on a host distinct from the registry API host, so the egress
 allowlist for a plugin pull must name both) and the one item explicitly left as follow-on design
 work (mapping `plugin.aepkg`, §3, onto an OCI artifact's layer/annotation/referrer shape).
@@ -663,13 +663,13 @@ combination of other granted modules; every symbol still passes the "guessable f
 its own) — applied to all nine current modules (all pass, for stated reasons) and to a plausible
 rejected candidate (`agent.email`, which fails rule 3) to show the rubric actually discriminates
 rather than rubber-stamps. Second, `agent.spawn`'s named "sharpest case" — small-proved and
-red-teamed in `decisions/ADR-006-agent-spawn-depth-budget-bound.md`: depth bounds are sufficient
+red-teamed in `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md`: depth bounds are sufficient
 against unbounded recursion, conditional on the effect-mediation boundary already assumed elsewhere
 (006 §9 G4) holding.
 
 **The cost half is now also real, real-proven code, but only the standalone consume-pool
 primitive — not a wired `agent.spawn` call path (2026-08-11,
-`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`).** `SpawnCostBudgetActor` (historical: a
+`decisions/archive/ADR-031-spawn-cost-budget-actor-primitive.md`).** `SpawnCostBudgetActor` (historical: a
 real Quark `Sequential` actor holding a consumable token pool, proven under a REAL, multi-worker
 `quark::Engine`, not just `quark::TestKit`, which cannot exercise a genuine race — ADR-037 later
 ported this onto `agentengine::rt::SpawnCostBudget`, `rt::AsyncMutex` replacing `quark::Actor<
@@ -686,7 +686,7 @@ machinery landing first — the same "small-proved standalone, not yet wired" sh
 established for the depth half. Wall-clock/deadline budgeting stays fully open, unchanged.
 
 **Resolved 2026-08-23 — the "sharpest case" now has a real, wired, end-to-end call path
-(`decisions/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** `agent.spawn` is a real
+(`decisions/archive/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** `agent.spawn` is a real
 `Tool<>` conformer (`rt::AgentSpawnTool`, `include/agentengine/rt/agent_spawn.hpp`) a running agent
 can actually invoke: `perform_agent_spawn()`'s nine-step pipeline constructs and drives a *fresh*
 `rt::AgentSession` to completion mid-run (`rt::run_child_agent_session()`,
@@ -770,7 +770,7 @@ or called a "skill" (009 §8's vocabulary is reserved for authored, distributabl
 026 G7. Full text: 026 §5a/§5b, §7, §8 G7.
 
 **Resolved further 2026-08-23 — `push_side_summary()` now has real, non-test callers, wired into a
-real session (`decisions/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** The small-proved
+real session (`decisions/archive/ADR-079-agent-spawn-runtime-and-capability-minting.md`).** The small-proved
 mechanism above had zero callers anywhere in the tree; that gap is closed. `AgentSession` gained a
 new, additive, opt-in `set_static_instructions()` (`rt/agent_session.hpp`) — a second, independent,
 unconditionally-untainted `role::system` message (host/engine-derived from a `CapabilitySet`, never
@@ -813,7 +813,7 @@ real `.wasm` component (as opposed to a core module) through the `wasmtime_compo
 needs `wasm-tools`/`cargo-component` to produce a component binary, out of this small prove's scope;
 the Component Model support claim rests on header inspection plus the module-level round trip, not
 a component-level execution.~~ **Closed 2026-08-05 by M2 task D3**
-(`decisions/ADR-010-wasm-component-host-manifest-capability-binding.md`): a real component, compiled
+(`decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md`): a real component, compiled
 via `cargo component build --target wasm32-unknown-unknown`, loads, instantiates, and executes
 through these same headers — engine/store/linker/instance/func-call all exercised for real, on
 Windows and Linux, not merely the module-level round trip this entry originally stopped at.
@@ -826,7 +826,7 @@ capability with caveats is the known answer; it adds a crypto dependency, a revo
 a new forgery surface. Without it, each remote path invents its own bespoke authority protocol —
 which is worse.
 
-**Resolved 2026-08-03 by `decisions/ADR-005-capability-bearer-tokens-cross-process.md`**, a small
+**Resolved 2026-08-03 by `decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md`**, a small
 prove (per the project owner's direction: real C++23, red-teamed, not a full-scale build) rather
 than a design→prove loop measuring overhead first: **yes, narrowly.** A self-verifying HMAC-chained
 bearer token (`trust/capability_token.hpp`) is accepted for the `ExpiresAt`/`PathPrefix` caveat
@@ -929,7 +929,8 @@ a stable state** (021 §2). This replaces the "contribute upstream vs. downgrade
 question was originally posed with — neither candidate resolution was taken; macOS is dropped
 outright rather than downgraded to a lower tier.
 
-008 §1's `no microvm profile` decision, whose original rationale cited the macOS PAL gap, was
+*(Superseded 2026-10-20 by [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R2: `microvm` is now a Linux-only first-class profile; the
+paragraph below is kept as history.)* 008 §1's `no microvm profile` decision, whose original rationale cited the macOS PAL gap, was
 re-grounded instead in a Windows-hosting finding (`docs/research/2026-microvm-windows-portability.md`,
 2026-08-04: Firecracker is architecturally Linux+KVM-only, no production-grade Windows-hosted path
 exists either) so the decision doesn't lose its footing now that macOS is moot rather than missing.
@@ -937,14 +938,14 @@ Re-adding macOS later, if a macOS PAL backend is ever built for `agentengine::pa
 was originally framed as "contributed to Quark," back when Quark was still the vendored PAL; ADR-037
 removed that dependency), is a fresh decision starting at Best-effort — not a reinstatement.
 
-Updated to match: `021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
+Updated to match: `rfcs/021-Platform-Support-and-Portability.md` §2 (target matrix), §3 (per-subsystem
 table), §5 (CI matrix), §6 (G1), §7 (this question); `CONVENTIONS.md` Target & scope;
 `AgentEngineSpecification.md` (portability property, WASM-artifact claim); `008-Sandbox-and-
 Isolation.md` (goal statement, locked-decision bullet, `wasm`/`native-jail` profile table, G1 gate);
-`009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `010-Python-Code-Interpreter.md`
-(shell-portability discussion, G1 and G6 gates); `024-Versioning-Compatibility-and-Governance.md`
-Q2; `025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
-`src/backends/native_jail/README.md` and `src/backends/wasm/README.md`. `decisions/ADR-001/002/004`
+`rfcs/009-Plugin-and-Extension-System.md` (goal statement, G1 gate); `rfcs/010-Python-Code-Interpreter.md`
+(shell-portability discussion, G1 and G6 gates); `rfcs/024-Versioning-Compatibility-and-Governance.md`
+Q2; `rfcs/025-Worktree-and-Virtual-Filesystem.md` G2; `README.md` (plugin-portability line);
+`src/backends/native_jail/README.md` and `src/backends/wasm/README.md`. `decisions/archive/ADR-001/002/004`
 and the dated `docs/research/*.md` notes are left as-is — they are historical records of what was
 actually run/researched, not live claims.
 
@@ -969,7 +970,7 @@ level rather than the tool/skill-catalog level.
 
 ### OQ-15 — Module-name import gating can't distinguish a trusted package's internals from guest code
 
-Originally raised by `decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase
+Originally raised by `decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase
 (2026-08-01): making `import numpy, pandas` work under `PythonRunner`'s import allowlist required
 granting roughly 130 top-level module names, not 2 — including `ctypes`, `winreg`, `_wmi`, `_winapi`,
 and `subprocess`, all transitively required by numpy's own platform-detection code, and all worked
@@ -978,7 +979,7 @@ examples (008 §1b, ADR-002) of names the mechanism exists to deny. The finder i
 *which module* is being imported, never *which code is asking*, so granting `numpy` also grants
 guest code identical, indistinguishable access to `ctypes` directly.
 
-**Resolved by `decisions/ADR-003-caller-aware-import-gating.md` (2026-08-01)**, candidate resolution
+**Resolved by `decisions/archive/ADR-003-caller-aware-import-gating.md` (2026-08-01)**, candidate resolution
 1 (caller-aware import gating): designed, red-teamed, revised twice (once after red-team, once after
 an additional gap surfaced during independent prove-phase re-verification), implemented, and proven
 against the real target (CPython 3.13.5, numpy 2.3.3, pandas 2.3.3, Windows/MSVC+clang) for the
@@ -1007,10 +1008,10 @@ existed: the first pass found the original "no core-seam change needed" claim FA
 (a genuine checkpoint/resume amnesia bug and a genuine concurrent double-resume race, both FATAL as
 originally scoped); the second pass resolved the full punch list. Carried an explicit, dated
 project-owner instruction (2026-08-13): "document only, do not implement yet" — reaffirmed as still
-standing in `decisions/ADR-070-host-configurable-responsibility-boundary.md`'s own §7 cross-reference
+standing in `decisions/archive/ADR-070-host-configurable-responsibility-boundary.md`'s own §7 cross-reference
 (2026-08-21), which named the eventual direction without resolving the question.
 
-**Resolved by `decisions/ADR-077-agent-executor-capabilityset-bridge.md` (Judged, 2026-08-23 — the
+**Resolved by `decisions/archive/ADR-077-agent-executor-capabilityset-bridge.md` (Judged, 2026-08-23 — the
 project owner explicitly lifted the 2026-08-13 "document only" instruction this same session, then
 design → red-team → prove completed against the already-red-teamed second-pass design).** Capability
 sourcing: `Executor` (`workflow/graph.hpp`) gained a static, graph-declared `capability_ceiling` field;
@@ -1055,7 +1056,7 @@ being first scoped 2026-08-14.** Full record: `docs/planning/external-process-ho
 re-grounding every claim against nine days of code drift BEFORE implementation started — `run_rounds()`
 had grown to eleven `co_return` exits, not the original seven; `interaction_reason` had four values,
 not three — while `SandboxBackend::exec`'s synchronous-today claim held up unchanged). One finding
-changed the design, not just a citation: `decisions/ADR-067-middleware-turn-point-pre-model-
+changed the design, not just a citation: `decisions/archive/ADR-067-middleware-turn-point-pre-model-
 enforcement.md`'s `TurnMiddlewareHook` (Judged 2026-08-20/21, built for an unrelated reason — closing
 017 §4's `pre_model` filter gap) turned out to already be a real, wired, async, gating, pre-model
 turn-level hook, the exact thing this question's Q1 originally concluded needed `run_rounds()`
@@ -1063,7 +1064,7 @@ restructuring to build. It doesn't, because it never wraps the whole round — o
 point before the model call, which the loop already provides. Documented as reusable rather than
 re-solved.
 
-**Resolved by `decisions/ADR-078-tool-call-hook-stage.md` (Judged, 2026-08-23)** for the minimum
+**Resolved by `decisions/archive/ADR-078-tool-call-hook-stage.md` (Judged, 2026-08-23)** for the minimum
 real, coherent slice — a gating hook at the tool-call point, Claude Code's own most-used
 `PreToolUse`/`PostToolUse` pair. Extends the already-proven `ApprovalDecider` seam (a new
 `ToolCallHook` stage runs once per round, per call, strictly before it) rather than adding a parallel

@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.0 items 2-4 / §3.2 / §3.4: the first real
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.0 items 2-4 / §3.2 / §3.4: the first real
 // end-to-end trial-running driver, `run_trial`. Proves both delivery routes (context injection and
 // recall), the baseline arm's negative control, the arm/candidate contract check, and that the
 // harness seeds a lesson at exactly the caller-supplied salience -- against a REAL AgentSession,
@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "agentengine/eval/eval_trial.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace {
 
@@ -31,8 +33,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // One scripted round: either a tool call or a final text answer.

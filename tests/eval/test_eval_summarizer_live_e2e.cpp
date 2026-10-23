@@ -1,4 +1,4 @@
-// Live check for decisions/ADR-195-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
+// Live check for decisions/archive/ADR-195-evaluation-harness.md's summarizer accounting (PR #100: §3.8's
 // "recorded (E19), budgeted (§3.9)", and the R3-GH-3 fix): runs real `run_trial` calls in which BOTH the
 // agent's model and the memory SUMMARIZER are a real OpenAI-compatible endpoint. Every earlier test drove
 // the summarizer with a scripted mock, so none could show what the budget actually depends on:
@@ -24,6 +24,8 @@
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 
@@ -46,8 +48,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kSecretName = "eval-summarizer-live-api-key";

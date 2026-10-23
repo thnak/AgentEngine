@@ -1,4 +1,4 @@
-// 014-Workflow-and-Orchestration.md §1's compile-time half, Milestone 6 Phase A:
+// rfcs/014-Workflow-and-Orchestration.md §1's compile-time half, Milestone 6 Phase A:
 // "An edge that connects incompatible types fails to build -- at compile time for the C++ form."
 //
 // MUST NOT COMPILE. `WorkflowBuilder::connect` static_asserts that the source executor's output

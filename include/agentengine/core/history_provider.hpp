@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §4/§5's `HistoryProvider` kind — the first real
+// Implements rfcs/005-Sessions-State-and-Memory.md §4/§5's `HistoryProvider` kind — the first real
 // `ContextProvider` conformer (Milestone 4 Phase B2,
 // docs/planning/milestone-4-sessions-durability-memory-breakdown.md), replacing
 // `AgentSession`'s M1-scope "the full history, trivially" shortcut (agent_session.hpp's own top
@@ -54,7 +54,7 @@ class HistoryProvider;
 template <std::size_t N>
 class HistoryProvider<Window<N>> {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: both `HistoryProvider`
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: both `HistoryProvider`
     // specializations share the name "history" -- same logical contributor kind (replaying
     // conversation history to the model), differing only in retention strategy, and 029's memory
     // system (the durable, cross-turn consumer of this identity) has no reason to distinguish them.
@@ -98,7 +98,7 @@ template <std::size_t N, class SummarizerT>
     requires ChatClient<SummarizerT>
 class HistoryProvider<Summarize<N, SummarizerT>> {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: same name as
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: same name as
     // `HistoryProvider<Window<N>>` above -- see that specialization's own comment.
     static constexpr std::string_view name = "history";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 

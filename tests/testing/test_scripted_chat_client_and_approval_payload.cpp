@@ -1,4 +1,4 @@
-// Proof for ADR-182 P1 and P2 (decisions/ADR-182-agent-test-driver-mcp.md).
+// Proof for ADR-182 P1 and P2 (decisions/archive/ADR-182-agent-test-driver-mcp.md).
 //
 //   P2 -- agentengine::testing::ScriptedChatClient (include/agentengine/testing/scripted_chat_client.hpp)
 //     SC1 -- chat() plays scripted turns in order and captures each request.
@@ -17,10 +17,13 @@
 //            gated one says needs_approval == true, the ungated one false, each with its own name
 //            and arguments.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/chat_stream_drain.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
@@ -53,8 +56,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 agentengine::Message user_message(std::string text) {
@@ -79,16 +81,16 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.value}; }
 };
 
 struct FreeTool : agentengine::Tool<FreeTool, agentengine::Capabilities<>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "free_tool";
     static constexpr std::string_view description = "Never needs approval.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.value}; }
 };
 
 class ToolsHistoryProvider {
@@ -97,7 +99,7 @@ public:
         agentengine::SessionContext& sc, agentengine::EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool, FreeTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}, FreeTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
@@ -184,7 +186,7 @@ int main() {
     // ---- SC4 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("sc4", agentengine::Principal{"p", ""});
+        session.initialize("sc4", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         auto& client = session.emplace_chat_client();
         (void)client.push(text_turn("hello back"));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
@@ -198,7 +200,7 @@ int main() {
     // ---- AP1 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("ap1", agentengine::Principal{"p", ""});
+        session.initialize("ap1", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         (void)session.emplace_chat_client().push(
             tool_calls_turn({{"c1", "gated_tool", R"({"value":7})"}}));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
@@ -224,7 +226,7 @@ int main() {
     // ---- AP2 -------------------------------------------------------------------------------------
     {
         Session session;
-        session.initialize("ap2", agentengine::Principal{"p", ""});
+        session.initialize("ap2", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         (void)session.emplace_chat_client().push(tool_calls_turn(
             {{"c1", "gated_tool", R"({"value":1})"}, {"c2", "free_tool", R"({"value":2})"}}));
         agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});

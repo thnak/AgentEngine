@@ -109,7 +109,12 @@ T drive(agentengine::rt::task<T> t) {
 int main() {
     using JokeAgent = AgentSession<JokerChatClient>;
     JokeAgent session;
-    session.initialize("s-multi-turn", Principal{"p-demo", ""});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-multi-turn", Principal{"p-demo", ""},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
 
     // Turn 1, on the session.

@@ -11,9 +11,12 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -34,8 +37,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -219,7 +221,7 @@ int main() {
     // content of is dropped entirely, and a policy_decision event records why.
     {
         AgentSession<IdentifiedRecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t1", Principal{"p1", ""});
+        session.initialize("t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {reasoning_only_message("m-reasoning", "anthropic:claude-x")};
         IdentifiedRecordingChatClient& client = session.emplace_chat_client();
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
@@ -256,7 +258,7 @@ int main() {
     // survives untouched -- proves T1 isn't "every Reasoning item is dropped unconditionally."
     {
         AgentSession<IdentifiedRecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t2", Principal{"p1", ""});
+        session.initialize("t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {reasoning_only_message("m-reasoning", "mock:test-model")};
         IdentifiedRecordingChatClient& client = session.emplace_chat_client();
 
@@ -275,7 +277,7 @@ int main() {
     // Only the Reasoning item is stripped; the message (and its Text) survives.
     {
         AgentSession<IdentifiedRecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t3", Principal{"p1", ""});
+        session.initialize("t3", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {mixed_message("m-mixed", "openai:gpt-5")};
         IdentifiedRecordingChatClient& client = session.emplace_chat_client();
 
@@ -306,7 +308,7 @@ int main() {
     // gate" default degrade (agentengine::HasProducerChatClientId, chat_client.hpp).
     {
         AgentSession<PlainRecordingChatClient, NoSessionState, FixedSeedProvider> session;
-        session.initialize("t4", Principal{"p1", ""});
+        session.initialize("t4", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().seed = {reasoning_only_message("m-reasoning", "anthropic:claude-x")};
         PlainRecordingChatClient& client = session.emplace_chat_client();
 

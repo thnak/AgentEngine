@@ -1,8 +1,10 @@
-// Implements net_egress_proxy.hpp. See decisions/ADR-011-first-party-egress-proxy.md and
+// Implements net_egress_proxy.hpp. See decisions/archive/ADR-011-first-party-egress-proxy.md and
 // docs/research/2026-08-05-ssrf-dns-rebinding-defense.md for the design/citations this satisfies.
 
 #include "agentengine/sandbox/net_egress_proxy.hpp"
+#include "agentengine/sandbox/detail/net_egress_impl.hpp"  // ADR-241: the shared gate, policy and error table
 #include "agentengine/sandbox/io_timeout.hpp"
+#include "agentengine/rt/http_wire.hpp"
 
 #ifdef AGENTENGINE_WITH_HTTPS
 #include "agentengine/sandbox/tls_client.hpp"
@@ -91,11 +93,11 @@ struct FdGuard {
 // Milestone 5 Phase C2 (net_egress_proxy.hpp's own comment on `perform_http_exchange`/
 // `perform_https_exchange`'s new `stop` parameter): the one check both read loops share -- a plain
 // error, not an exception (CONVENTIONS.md's no-exceptions-for-control-flow rule).
-// `quark::errc::cancelled`'s own comment ("std::stop_token fired") is the established meaning for
-// this failure_class already; reused here rather than inventing a second cancellation vocabulary.
+// ADR-237 D6: a fired stop_token is `failure_class::canceled` (it was `transient` before D6, which made every
+// retry site special-case the `net.cancelled` code -- agent_session_core.cpp's stream-retry predicate did).
 result<std::monostate> check_not_cancelled(std::stop_token const& stop) {
     if (stop.stop_requested()) {
-        return std::unexpected(error{failure_class::transient, "cancelled via stop_token", "net.cancelled"});
+        return std::unexpected(error{failure_class::canceled, "cancelled via stop_token", "net.cancelled"});
     }
     return std::monostate{};
 }
@@ -293,9 +295,10 @@ bool is_blocked_address(std::uint32_t ipv4_host_order) noexcept {
 }
 
 result<std::monostate> reject_crlf(std::string_view field_name, std::string_view value) {
-    if (value.find('\r') != std::string_view::npos || value.find('\n') != std::string_view::npos) {
+    // ADR-241 D2 / R2-9: NUL is the third request-splitting byte (the old check ignored it).
+    if (value.find_first_of(std::string_view("\r\n\0", 3)) != std::string_view::npos) {
         return std::unexpected(error{failure_class::contract,
-                                      "value for '" + std::string(field_name) + "' contains a CR or LF byte",
+                                      "value for '" + std::string(field_name) + "' contains a CR, LF or NUL byte",
                                       "net.header_injection_rejected"});
     }
     return std::monostate{};
@@ -366,6 +369,24 @@ result<VerifiedEndpoint> resolve_and_validate(std::string_view host, std::uint16
                                   candidates->literal ? "address is in a blocked range"
                                                        : "every resolved address is in a blocked range",
                                   "net.address_blocked"});
+}
+
+result<std::vector<VerifiedEndpoint>> resolve_and_validate_all(std::string_view host, std::uint16_t port) {
+    auto candidates = resolve_candidates(std::string(host));
+    if (!candidates) return std::unexpected(candidates.error());
+    std::vector<VerifiedEndpoint> accepted;
+    for (std::uint32_t const addr : candidates->addresses) {
+        if (is_blocked_address(addr)) continue;
+        bool const seen = std::any_of(accepted.begin(), accepted.end(), [&](VerifiedEndpoint const& e) { return e.ipv4_host_order == addr; });
+        if (!seen) accepted.push_back(VerifiedEndpoint{addr, port});
+    }
+    if (accepted.empty()) {
+        return std::unexpected(error{failure_class::policy,
+                                      candidates->literal ? "address is in a blocked range"
+                                                           : "every resolved address is in a blocked range",
+                                      "net.address_blocked"});
+    }
+    return accepted;
 }
 
 // Shared between perform_http_exchange and perform_https_exchange (ADR-013) -- the raw HTTP/1.1
@@ -468,7 +489,7 @@ result<NetEgressResponse> perform_http_exchange(VerifiedEndpoint endpoint, std::
 }
 
 #ifdef AGENTENGINE_WITH_HTTPS
-// decisions/ADR-013-https-egress-tls-client.md. Identical structure to perform_http_exchange above
+// decisions/archive/ADR-013-https-egress-tls-client.md. Identical structure to perform_http_exchange above
 // (connect -> build the same raw request -> byte-cap-enforced read loop -> parse) except the
 // transport: a TlsClientSession wraps the socket immediately after connect, and the read loop calls
 // its `recv()` instead of raw `wait_ready`+`recv_some` -- the session already blocks/retries
@@ -726,39 +747,72 @@ result<NetEgressResponse> perform_https_exchange_streaming(
 }
 #endif
 
-result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, cap::NetOut const& granted) const {
-    // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/
-    // scheme come entirely from the grant (see this header's own file-top comment) -- so a grant
-    // with anything other than exactly one allowlist entry is genuinely ambiguous, not resolvable by
-    // picking [0] silently.
+
+// ---------------------------------------------------------------------------------------------------------------
+// ADR-241 S2: the egress gate and the pure functions around it (decisions/archive/ADR-241, D2 / D3 / D5 / section 9).
+//
+// The blocking `HostEgressProxy::fetch_blocking` that lived here ran the gates and then the blocking exchange
+// (`resolve_and_validate` + `perform_http_exchange`); both entry points are now one implementation on `rt::http`
+// (net_egress_fetch.cpp). `resolve_and_validate*` and `perform_*_exchange*` above stay: the provider client, the Kata
+// backend and the native-jail relay still call them (ADR-241 R6, R11).
+// ---------------------------------------------------------------------------------------------------------------
+
+EgressLimits& egress_limits() noexcept {
+    static EgressLimits limits;  // atomics only: constructing it starts no thread and touches no I/O context
+    return limits;
+}
+
+}  // namespace agentengine::sandbox
+
+namespace agentengine::sandbox::egress_detail {
+
+namespace {
+
+[[nodiscard]] bool is_managed_header(std::string_view name) noexcept {
+    return equals_ci(name, "host") || equals_ci(name, "content-length") || equals_ci(name, "transfer-encoding") ||
+           equals_ci(name, "connection");
+}
+
+[[nodiscard]] bool method_forbids_body(std::string_view method) noexcept {
+    return equals_ci(method, "GET") || equals_ci(method, "HEAD") || equals_ci(method, "TRACE") ||
+           equals_ci(method, "OPTIONS");
+}
+
+[[nodiscard]] std::uint32_t be32(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) noexcept {
+    return make_ipv4(a, b, c, d);
+}
+
+}  // namespace
+
+result<GatedEgressTarget> egress_gate(NetEgressRequest& req, cap::NetOut const& granted) {
+    // C1: the WIT `http-request` call gives the guest no way to name a host at all -- host/port/scheme come entirely
+    // from the grant -- so a grant with anything other than exactly one allowlist entry is genuinely ambiguous, not
+    // resolvable by picking [0] silently.
     if (granted.host_allowlist.size() != 1) {
         return std::unexpected(error{failure_class::policy,
-                                      "http-request needs a NetOut grant with exactly one allowlist entry",
-                                      "net.ambiguous_grant"});
+                                     "http-request needs a NetOut grant with exactly one allowlist entry",
+                                     "net.ambiguous_grant"});
     }
     auto const target = parse_allowlist_entry(granted.host_allowlist.front());
     if (!target) return std::unexpected(target.error());
 
-    // C3: http always; https only when AGENTENGINE_WITH_HTTPS vendors a TLS client (ADR-013). Off by
-    // default (CONVENTIONS.md tier 2: never linked into a build that does not select this backend)
-    // -- ADR-011 section 3 Design C's original "no TLS client exists" reasoning for rejecting https
-    // no longer holds once this option is on, but the option itself still defaults off.
+    // C3: http always; https only when AGENTENGINE_WITH_HTTPS vendors a TLS client (ADR-013).
     bool const is_https = equals_ci(target->scheme, "https");
     if (!equals_ci(target->scheme, "http") && !is_https) {
         return std::unexpected(error{failure_class::policy,
-                                      "only http/https schemes are supported (see ADR-011 section 3, ADR-013)",
-                                      "net.scheme_unsupported"});
+                                     "only http/https schemes are supported (see ADR-011 section 3, ADR-013)",
+                                     "net.scheme_unsupported"});
     }
 #ifndef AGENTENGINE_WITH_HTTPS
     if (is_https) {
         return std::unexpected(error{failure_class::policy,
-                                      "https requested but this build has no TLS client vendored (ADR-013, "
-                                      "AGENTENGINE_WITH_HTTPS is off)",
-                                      "net.scheme_unsupported"});
+                                     "https requested but this build has no TLS client vendored (ADR-013, "
+                                     "AGENTENGINE_WITH_HTTPS is off)",
+                                     "net.scheme_unsupported"});
     }
 #endif
 
-    // C9: reject before any network activity -- this proxy builds the raw request itself.
+    // C9: reject before any network activity (CR, LF or NUL in method, path, header names and values).
     if (auto const c = reject_crlf("method", req.method); !c) return std::unexpected(c.error());
     if (auto const c = reject_crlf("path", req.path); !c) return std::unexpected(c.error());
     for (auto const& [k, v] : req.headers) {
@@ -769,19 +823,121 @@ result<NetEgressResponse> HostEgressProxy::fetch(NetEgressRequest const& req, ca
     // C7: method_restrictions empty == unrestricted (cap::NetOut's own documented default).
     if (!granted.method_restrictions.empty()) {
         bool const allowed = std::any_of(granted.method_restrictions.begin(), granted.method_restrictions.end(),
-                                          [&](std::string const& m) { return equals_ci(m, req.method); });
+                                         [&](std::string const& m) { return equals_ci(m, req.method); });
         if (!allowed) {
-            return std::unexpected(error{failure_class::policy, "method not permitted by this grant", "net.method_not_allowed"});
+            return std::unexpected(
+                error{failure_class::policy, "method not permitted by this grant", "net.method_not_allowed"});
         }
     }
 
-    auto const endpoint = resolver(target->host, target->port);
-    if (!endpoint) return std::unexpected(endpoint.error());
+    // D11: no grant field caps the REQUEST body (C8 caps responses only), so the host does -- before any copy beyond the
+    // one the WASM import already made.
+    if (req.body.size() > egress_limits().max_request_bytes.load(std::memory_order_relaxed)) {
+        return std::unexpected(error{failure_class::resource, "the request body exceeds the host's request size limit",
+                                     "net.request_too_large"});
+    }
 
-#ifdef AGENTENGINE_WITH_HTTPS
-    if (is_https) return perform_https_exchange(*endpoint, target->host, req, granted.byte_cap);
-#endif
-    return perform_http_exchange(*endpoint, target->host, req, granted.byte_cap);
+    // R2-9: the proxy owns framing. A guest Host, Content-Length, Transfer-Encoding or Connection is dropped, in place
+    // (no body copy), and recomputed by the wire builder: a guest Content-Length can no longer smuggle, a guest Host can
+    // no longer address another virtual host. Rejecting them instead broke every guest HTTP library that sets them.
+    std::erase_if(req.headers, [](auto const& h) { return is_managed_header(h.first); });
+
+    // R3-6: a body on GET/HEAD/TRACE/OPTIONS is the CL.0 desync primitive (an origin that ignores the body reads it as
+    // a second request). DELETE with a body stays allowed (R13).
+    if (!req.body.empty() && method_forbids_body(req.method)) {
+        return std::unexpected(error{failure_class::contract, "this method may not carry a request body",
+                                     "net.invalid_request"});
+    }
+
+    // The same rule set `rt::http_request` applies before it touches the network (defence in depth: each layer is
+    // mutated alone in G2). No body copy: the line borrows `req`.
+    rt::http_wire::RequestLine const line{req.method, req.path, target->host, target->port,
+                                          is_https ? std::uint16_t{443} : std::uint16_t{80}, &req.headers, req.body};
+    if (auto const e = rt::http_wire::validate_request(line); !e.ok()) {
+        return std::unexpected(error{failure_class::contract, e.message, e.code});
+    }
+    return GatedEgressTarget{target->host, target->port, is_https};
 }
 
-}  // namespace agentengine::sandbox
+bool egress_address_policy(pal::IpAddress const& a) noexcept {
+    // Fail closed on EVERY non-v4 family -- by family, never by decoding the address (D3).
+    if (a.family != pal::IpAddress::family_kind::v4) return false;
+    return !is_blocked_address(be32(a.bytes[0], a.bytes[1], a.bytes[2], a.bytes[3]));
+}
+
+rt::HostResolver ipv4_only_resolver(rt::HostResolver inner) {
+    return [inner = std::move(inner)](std::string const& host) -> pal::ResolveOutcome {
+        pal::ResolveOutcome out = inner ? inner(host) : pal::resolve_host_blocking(host);
+        if (out.error != pal::resolve_error::none) return out;
+        std::erase_if(out.addresses, [](pal::IpAddress const& a) { return a.family != pal::IpAddress::family_kind::v4; });
+        if (out.addresses.empty()) out.error = pal::resolve_error::not_found;  // AAAA-only stays host_unresolvable
+        return out;
+    };
+}
+
+rt::HostResolver production_host_resolver() {
+    return ipv4_only_resolver([](std::string const& host) { return pal::resolve_host_blocking(host); });
+}
+
+std::optional<std::chrono::milliseconds> effective_total_timeout(std::chrono::milliseconds configured,
+                                                                 std::chrono::steady_clock::time_point deadline,
+                                                                 std::chrono::steady_clock::time_point now) noexcept {
+    std::chrono::milliseconds const total = configured.count() > 0 ? configured : kDefaultEgressTotalTimeout;
+    if (deadline == std::chrono::steady_clock::time_point{}) return total;  // no per-call deadline
+    if (deadline <= now) return std::nullopt;
+    auto const remaining = deadline - now;
+    if (remaining >= total) return total;
+    // ceil, and never 0: HttpOptions::total_timeout == 0 means "no timer", the opposite of "almost out of time".
+    return std::max(std::chrono::ceil<std::chrono::milliseconds>(remaining), std::chrono::milliseconds{1});
+}
+
+error egress_error(rt::HttpResponse const& r) {
+    auto const make = [&r](failure_class klass) {
+        return error{klass, r.message.empty() ? std::string("egress request failed") : r.message, r.code};
+    };
+    switch (r.error) {
+        case rt::http_error::none:
+            return error{failure_class::fatal, "an egress error was requested for a successful response", "net.internal"};
+        case rt::http_error::canceled: return make(failure_class::canceled);
+        case rt::http_error::deadline_exceeded: return make(failure_class::resource);  // I8: the wall budget ran out
+        case rt::http_error::idle_timeout: return make(failure_class::transient);
+        case rt::http_error::consumer_stalled: return make(failure_class::resource);
+        case rt::http_error::invalid_request: return make(failure_class::contract);
+        case rt::http_error::no_policy: return make(failure_class::policy);
+        case rt::http_error::resolve_failed: return make(failure_class::transient);
+        case rt::http_error::address_rejected: return make(failure_class::policy);
+        case rt::http_error::connect_failed: return make(failure_class::transient);
+        case rt::http_error::tls_unavailable: return make(failure_class::policy);
+        case rt::http_error::tls_failed:
+            // The TLS client's own class: a refused certificate (a MITM, a wrong name) is policy and must not become
+            // something a retry site retries; a broken CA bundle is fatal (ADR-241 R2-2).
+            switch (r.failure) {
+                case rt::http_failure::policy: return make(failure_class::policy);
+                case rt::http_failure::fatal: return make(failure_class::fatal);
+                case rt::http_failure::transient: return make(failure_class::transient);
+                case rt::http_failure::unspecified: break;
+            }
+            if (r.code == "net.tls_certificate_rejected" || r.code == "net.tls_handshake_failed") {
+                return make(failure_class::policy);
+            }
+            if (r.code == "net.tls_setup_failed") return make(failure_class::fatal);
+            return make(failure_class::transient);
+        case rt::http_error::transport:
+            return make(r.code == "net.too_many_open_files" ? failure_class::resource : failure_class::transient);
+        case rt::http_error::malformed_response:
+        case rt::http_error::ambiguous_framing: return make(failure_class::transient);  // as the blocking client's
+        case rt::http_error::header_too_large:
+        case rt::http_error::response_too_large:
+        case rt::http_error::body_too_large:
+        case rt::http_error::event_too_large: return make(failure_class::resource);
+        case rt::http_error::truncated: return make(failure_class::transient);
+        case rt::http_error::busy: return make(failure_class::contract);
+    }
+    return make(failure_class::fatal);
+}
+
+EgressSeams production_seams() {
+    return EgressSeams{production_host_resolver(), egress_address_policy, std::string{}};
+}
+
+}  // namespace agentengine::sandbox::egress_detail

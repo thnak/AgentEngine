@@ -2,7 +2,7 @@
 // 4) -- proof for `agentengine::native_jail::mediated_shell::MediatedShellRunner` and its supporting
 // parser/dispatch/registry/adapter, all genuinely new translation units built on top of
 // `core/worktree_mount_fs.hpp`'s `open_within_mount_root` (ADR-014) rather than reusing
-// decisions/ADR-001's cited spike code, which stays completely untouched (its own tests --
+// decisions/archive/ADR-001's cited spike code, which stays completely untouched (its own tests --
 // test_shell_runner_proof, test_shell_parser_adversarial, test_shell_runner_no_process_creation --
 // still pass unmodified, proven by regression, not asserted here).
 //
@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -118,51 +119,51 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-        auto echo_out = shell.run(ExecRequest{"shell", "echo hello world"}, state, ctx);
+        auto echo_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo hello world"}, state, ctx));
         AE_CHECK(echo_out.has_value() && echo_out->stdout_text == "hello world\n",
                  "E3-C1: echo builtin produces the expected stdout");
 
-        auto mkdir_out = shell.run(ExecRequest{"shell", "mkdir sub"}, state, ctx);
+        auto mkdir_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "mkdir sub"}, state, ctx));
         AE_CHECK(mkdir_out.has_value(), "E3-C2: mkdir with a granted FsWrite capability succeeds");
         AE_CHECK(std::filesystem::exists(scratch + "/sub"), "E3-C2: the real directory now exists on disk");
 
-        auto write_out = shell.run(ExecRequest{"shell", "echo written-by-shell > sub/f.txt"}, state, ctx);
+        auto write_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo written-by-shell > sub/f.txt"}, state, ctx));
         AE_CHECK(write_out.has_value() && write_out->stderr_text.empty(),
                  "E3-C3: echo with a > redirect writes a real file (granted FsWrite)");
 
-        auto cat_out = shell.run(ExecRequest{"shell", "cat sub/f.txt"}, state, ctx);
+        auto cat_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cat sub/f.txt"}, state, ctx));
         AE_CHECK(cat_out.has_value() && cat_out->stdout_text.find("written-by-shell") != std::string::npos,
                  "E3-C4: cat reads the real file content back byte-for-byte");
 
-        auto ls_out = shell.run(ExecRequest{"shell", "ls sub"}, state, ctx);
+        auto ls_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "ls sub"}, state, ctx));
         AE_CHECK(ls_out.has_value() && ls_out->stdout_text.find("f.txt") != std::string::npos,
                  "E3-C5: ls lists the real directory's real content");
 
-        auto mv_out = shell.run(ExecRequest{"shell", "mv sub/f.txt sub/g.txt"}, state, ctx);
+        auto mv_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "mv sub/f.txt sub/g.txt"}, state, ctx));
         AE_CHECK(mv_out.has_value(), "E3-C6: mv succeeds with both FsRead (source) and FsWrite (dest) granted");
         AE_CHECK(!std::filesystem::exists(scratch + "/sub/f.txt") && std::filesystem::exists(scratch + "/sub/g.txt"),
                  "E3-C6: the real rename happened on disk");
 
-        auto cp_out = shell.run(ExecRequest{"shell", "cp sub/g.txt sub/h.txt"}, state, ctx);
+        auto cp_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cp sub/g.txt sub/h.txt"}, state, ctx));
         AE_CHECK(cp_out.has_value() && std::filesystem::exists(scratch + "/sub/h.txt") &&
                      std::filesystem::exists(scratch + "/sub/g.txt"),
                  "E3-C7: cp leaves BOTH the source and a real copy at the destination");
 
-        auto rm_out = shell.run(ExecRequest{"shell", "rm sub/h.txt"}, state, ctx);
+        auto rm_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "rm sub/h.txt"}, state, ctx));
         AE_CHECK(rm_out.has_value() && !std::filesystem::exists(scratch + "/sub/h.txt"),
                  "E3-C8: rm deletes the real file");
 
         // cd + pwd: ExecState.cwd holds the adapter's canonical output (ADR-001 §2.5.3, carried
         // forward), and persists into the next call on the same Runner (010 §9 G3).
-        auto cd_out = shell.run(ExecRequest{"shell", "cd sub"}, state, ctx);
+        auto cd_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cd sub"}, state, ctx));
         AE_CHECK(cd_out.has_value(), "E3-C9: cd into an existing directory succeeds");
-        auto pwd_out = shell.run(ExecRequest{"shell", "pwd"}, state, ctx);
+        auto pwd_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "pwd"}, state, ctx));
         AE_CHECK(pwd_out.has_value() && pwd_out->stdout_text.find("sub") != std::string::npos,
                  "E3-C9: pwd, on the NEXT call, reflects the cd from the previous call -- shared "
                  "ExecState, not a fresh one per call");
 
         // export: EnvWrite-gated, and visible via ExecState.env afterward (010 §3a).
-        auto export_out = shell.run(ExecRequest{"shell", "export MY_VAR=42"}, state, ctx);
+        auto export_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "export MY_VAR=42"}, state, ctx));
         AE_CHECK(export_out.has_value() && state.env["MY_VAR"] == "42",
                  "E3-C10: export with a granted EnvWrite capability sets the real, shared ExecState.env");
     }
@@ -172,17 +173,17 @@ int main() {
         ExecState state{};
         EffectContext ctx{};  // no capabilities at all -- the fail-closed default
 
-        auto mkdir_denied = shell.run(ExecRequest{"shell", "mkdir denied_dir"}, state, ctx);
+        auto mkdir_denied = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "mkdir denied_dir"}, state, ctx));
         AE_CHECK(!mkdir_denied.has_value() && mkdir_denied.error().code == "shell.capability_denied",
                  "E3-D1: mkdir without a granted FsWrite capability is denied");
         AE_CHECK(!std::filesystem::exists(scratch + "/denied_dir"),
                  "E3-D1: the denied mkdir never reached the filesystem");
 
-        auto cat_denied = shell.run(ExecRequest{"shell", "cat sub/g.txt"}, state, ctx);
+        auto cat_denied = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cat sub/g.txt"}, state, ctx));
         AE_CHECK(!cat_denied.has_value() && cat_denied.error().code == "shell.capability_denied",
                  "E3-D2: cat without a granted FsRead capability is denied");
 
-        auto export_denied = shell.run(ExecRequest{"shell", "export OTHER_VAR=1"}, state, ctx);
+        auto export_denied = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "export OTHER_VAR=1"}, state, ctx));
         AE_CHECK(!export_denied.has_value() && export_denied.error().code == "shell.capability_denied",
                  "E3-D3: export without a granted EnvWrite capability is denied");
         AE_CHECK(!state.env.contains("OTHER_VAR"), "E3-D3: the denied export never touched ExecState.env");
@@ -199,7 +200,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         for (char const* hostile : {"cmd.exe", "/bin/sh", "totally_bogus_xyz123", "powershell"}) {
-            auto out = shell.run(ExecRequest{"shell", hostile}, state, ctx);
+            auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", hostile}, state, ctx));
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation,
                      (std::string("E3-N1: '") + hostile + "' is an inspectable non-ok outcome, not a hard stop").c_str());
             AE_CHECK(out.has_value() && out->stderr_text == (std::string(hostile) + ": command not found"),
@@ -213,7 +214,7 @@ int main() {
         CapabilitySet caps = full_caps();
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        auto out = shell.run(ExecRequest{"shell", "echo piped-through | cat"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo piped-through | cat"}, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("piped-through") != std::string::npos,
                  "E3-PL1: a pipeline hands the first command's stdout to the second as stdin, in-process");
     }
@@ -224,11 +225,11 @@ int main() {
         CapabilitySet caps = full_caps();
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        auto and_out = shell.run(ExecRequest{"shell", "echo a && echo b"}, state, ctx);
+        auto and_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo a && echo b"}, state, ctx));
         AE_CHECK(and_out.has_value() && and_out->stdout_text.find("b") != std::string::npos,
                  "E3-AO1: && runs the second pipeline when the first succeeds");
 
-        auto or_out = shell.run(ExecRequest{"shell", "cat nonexistent.txt || echo fallback"}, state, ctx);
+        auto or_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cat nonexistent.txt || echo fallback"}, state, ctx));
         AE_CHECK(or_out.has_value() && or_out->stdout_text.find("fallback") != std::string::npos,
                  "E3-AO2: || runs the second pipeline when the first fails");
     }
@@ -239,11 +240,11 @@ int main() {
         CapabilitySet caps = full_caps();
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        auto if_out = shell.run(ExecRequest{"shell", "if echo cond then echo then-branch fi"}, state, ctx);
+        auto if_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "if echo cond then echo then-branch fi"}, state, ctx));
         AE_CHECK(if_out.has_value() && if_out->stdout_text.find("then-branch") != std::string::npos,
                  "E3-IF1: 'if' runs the then-branch when the condition succeeds");
 
-        auto for_out = shell.run(ExecRequest{"shell", "for x in a b c do echo item done"}, state, ctx);
+        auto for_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "for x in a b c do echo item done"}, state, ctx));
         AE_CHECK(for_out.has_value() && for_out->stdout_text.find("item") != std::string::npos,
                  "E3-FOR1: 'for' executes its body once per item");
     }
@@ -256,7 +257,7 @@ int main() {
         EffectContext ctx{};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         fake_invoked = false;
-        auto out = shell.run(ExecRequest{"shell", "fake hello"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "fake hello"}, state, ctx));
         AE_CHECK(out.has_value() && fake_invoked, "E3-RC1: a registered Runner is invoked when the "
                                                     "RunnerCall capability is granted");
     }
@@ -264,7 +265,7 @@ int main() {
         ExecState state{};
         EffectContext ctx{};  // no capabilities -- RunnerCall{"fake"} not granted
         fake_invoked = false;
-        auto out = shell.run(ExecRequest{"shell", "fake hello"}, state, ctx);
+        auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "fake hello"}, state, ctx));
         AE_CHECK(!out.has_value() && !fake_invoked,
                  "E3-RC2 (negative control): the registered Runner is NEVER invoked without the "
                  "RunnerCall capability");
@@ -283,7 +284,7 @@ int main() {
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         std::string big_word(1000, 'a');
-        auto out = capped_shell.run(ExecRequest{"shell", "echo " + big_word}, state, ctx);
+        auto out = agentengine::rt::block_on(capped_shell.run(ExecRequest{"shell", "echo " + big_word}, state, ctx));
         AE_CHECK(out.has_value(), "F3-S1: setup -- a large-output echo runs");
         AE_CHECK(out.has_value() && out->stdout_text.size() < 1000,
                  "F3-S1: stdout exceeding a small explicit output_cap_bytes is shorter than the raw "
@@ -314,7 +315,7 @@ int main() {
             CapabilitySet caps = full_caps();
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto out = quota_shell.run(ExecRequest{"shell", "echo 123456789 > seed.txt"}, state, ctx);
+            auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo 123456789 > seed.txt"}, state, ctx));
             AE_CHECK(out.has_value(), "E3-Q0: setup -- seeding a known 10-byte file succeeds");
         }
 
@@ -326,7 +327,7 @@ int main() {
                 {Capability{cap::FsWrite{"work", "", std::uint64_t{1'000'000}, std::nullopt}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto out = quota_shell.run(ExecRequest{"shell", "mkdir under_quota"}, state, ctx);
+            auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir under_quota"}, state, ctx));
             AE_CHECK(out.has_value(), "E3-Q1: mkdir succeeds under a quota-capped FsWrite grant with headroom");
         }
 
@@ -345,7 +346,7 @@ int main() {
                 {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});  // 5 < the 10 already used
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto out = quota_shell.run(ExecRequest{"shell", "mkdir over_quota"}, state, ctx);
+            auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir over_quota"}, state, ctx));
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation &&
                          out->stderr_text == "No space left on device",
                      "E3-Q2: mkdir is denied once real usage already exceeds the grant's quota_bytes");
@@ -361,7 +362,7 @@ int main() {
                 {Capability{cap::FsWrite{"work", "", std::uint64_t{5}, std::nullopt}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto out = quota_shell.run(ExecRequest{"shell", "rm seed.txt"}, state, ctx);
+            auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "rm seed.txt"}, state, ctx));
             AE_CHECK(out.has_value(),
                      "E3-Q3: rm succeeds under an already-exhausted quota (deletion is never quota-gated)");
         }
@@ -374,7 +375,7 @@ int main() {
             CapabilitySet setup_caps = full_caps();
             EffectContext setup_ctx{};
             setup_ctx.capabilities = agentengine::borrow_capabilities(setup_caps);
-            auto setup_out = quota_shell.run(ExecRequest{"shell", "echo cp-src > cp_src.txt"}, setup_state, setup_ctx);
+            auto setup_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo cp-src > cp_src.txt"}, setup_state, setup_ctx));
             AE_CHECK(setup_out.has_value(), "E3-Q4: setup -- a real source file for cp exists");
 
             ExecState state{};
@@ -384,10 +385,10 @@ int main() {
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
-            auto mv_out = quota_shell.run(ExecRequest{"shell", "mv under_quota moved_dir"}, state, ctx);
+            auto mv_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mv under_quota moved_dir"}, state, ctx));
             AE_CHECK(mv_out.has_value(), "E3-Q4: mv succeeds under an exhausted quota (rename adds no usage)");
 
-            auto cp_denied = quota_shell.run(ExecRequest{"shell", "cp cp_src.txt cp_dst.txt"}, state, ctx);
+            auto cp_denied = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cp cp_src.txt cp_dst.txt"}, state, ctx));
             AE_CHECK(cp_denied.has_value() && cp_denied->klass == exec_outcome_class::policy_violation &&
                          cp_denied->stderr_text == "No space left on device",
                      "E3-Q4: cp is denied under the same exhausted quota that mv is exempt from");
@@ -404,7 +405,7 @@ int main() {
             CapabilitySet caps = full_caps();
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto write_out = quota_shell.run(ExecRequest{"shell", "echo hi > readable.txt"}, state, ctx);
+            auto write_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo hi > readable.txt"}, state, ctx));
             AE_CHECK(write_out.has_value(), "E3-Q5: setup -- write a small file to read back");
         }
         {
@@ -413,7 +414,7 @@ int main() {
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{100}}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto cat_out = quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx);
+            auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));
             AE_CHECK(cat_out.has_value() && cat_out->stdout_text.find("hi") != std::string::npos,
                      "E3-Q5: cat succeeds under a size_cap_bytes-capped FsRead grant with headroom");
         }
@@ -430,7 +431,7 @@ int main() {
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{2}}}});
             EffectContext ctx{};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
-            auto cat_out = quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx);
+            auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));
             AE_CHECK(cat_out.has_value() && cat_out->klass == exec_outcome_class::policy_violation &&
                          cat_out->stderr_text.find("size cap") != std::string::npos,
                      "E3-Q6: cat is refused (as an ordinary, catchable command failure, not a hard "

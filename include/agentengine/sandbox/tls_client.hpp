@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-013-https-egress-tls-client.md: an ordinary outbound TLS client (system-
+// Implements decisions/archive/ADR-013-https-egress-tls-client.md: an ordinary outbound TLS client (system-
 // CA-style validation against a vendored root bundle, real hostname verification) wrapping mbedTLS
 // -- distinct from Quark's SecureTransport, built for node-identity cluster mTLS (ADR-011 section 3
 // Design C's own rejection reasoning: SecureTransport deliberately opts OUT of hostname verification
@@ -49,7 +49,7 @@ public:
     // deterministic, offline-generated certificates rather than needing real, publicly-trusted ones
     // (impossible to test hostname-mismatch/expired/untrusted-root rejection against deterministically
     // otherwise). A testability seam, not a security bypass, matching ADR-011's own injectable-
-    // resolver precedent (net_egress_proxy.hpp's `HostEgressProxy::resolver`) -- production code
+    // resolver precedent (net_egress_proxy.hpp's `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`)) -- production code
     // (net_egress_proxy.cpp's own call site) never passes a non-empty override.
     [[nodiscard]] static result<TlsClientSession> handshake(agentengine::pal::fd_t fd, std::string_view hostname,
                                                               std::string_view ca_bundle_pem_override = {});

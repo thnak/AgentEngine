@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.0's "Tier-1 pre-registration and attempt
 // accounting" (E32): the pre-registration digest is recorded before any trial runs; every started attempt
 // for a lesson family is counted; the `Tier1ScreenResult` names the count and shows every attempt's figures,
 // not only the latest. The model is scripted throughout; the two screens themselves are proven by
@@ -24,6 +24,8 @@
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/eval/eval_tier1_screen.hpp"
 #include "agentengine/eval/promotion_ack.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace {
 
@@ -41,8 +43,7 @@ int g_failures = 0;
 
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- Scripted clients, the same shape test_eval_follow_rate_screen.cpp uses (each file self-contained).
@@ -148,7 +149,7 @@ auto make_factory(Behaviour b, std::shared_ptr<CallLog> calls, ae::eval::Tier1At
                   ae::eval::Tier1Family family = {}, ae::Digest expected_prereg = {}) {
     return [b, calls, log, family, expected_prereg](ae::eval::TrialSlot const& slot) {
         if (!calls->counted_before_first_trial.has_value() && log != nullptr) {
-            auto attempts = log->lineage_attempts(family.lineage);
+            auto attempts = agentengine::rt::block_on(log->lineage_attempts(family.lineage));
             calls->counted_before_first_trial = attempts.has_value() && !attempts->empty() &&
                                                 attempts->back().preregistration == expected_prereg &&
                                                 !attempts->back().completed;
@@ -241,19 +242,19 @@ struct FlakyStore {
     bool fail_read = false;
     bool hide_all = false;  // reads succeed but return nothing, as if the log had been wiped
     std::size_t read_limit = 0;  // non-zero: reads return only the first this-many records (a truncated log)
-    [[nodiscard]] ae::result<ae::rt::SeqNo> append(ae::rt::LogId const& id, std::vector<std::byte> bytes) {
-        if (fail_append) return std::unexpected(ae::error{ae::failure_class::transient, "disk full", "test.append"});
-        return inner.append(id, std::move(bytes));
+    [[nodiscard]] ae::task<ae::result<ae::rt::SeqNo>> append(ae::rt::LogId id, std::vector<std::byte> bytes) {
+        if (fail_append) co_return std::unexpected(ae::error{ae::failure_class::transient, "disk full", "test.append"});
+        co_return co_await inner.append(id, std::move(bytes));
     }
-    [[nodiscard]] ae::result<std::vector<std::vector<std::byte>>> read_from(ae::rt::LogId const& id,
+    [[nodiscard]] ae::task<ae::result<std::vector<std::vector<std::byte>>>> read_from(ae::rt::LogId id,
                                                                             ae::rt::SeqNo from) const {
-        if (fail_read) return std::unexpected(ae::error{ae::failure_class::transient, "io error", "test.read"});
-        if (hide_all) return std::vector<std::vector<std::byte>>{};
-        auto all = inner.read_from(id, from);
+        if (fail_read) co_return std::unexpected(ae::error{ae::failure_class::transient, "io error", "test.read"});
+        if (hide_all) co_return std::vector<std::vector<std::byte>>{};
+        auto all = co_await inner.read_from(id, from);
         if (all && read_limit != 0 && all->size() > read_limit) all->resize(read_limit);
-        return all;
+        co_return all;
     }
-    [[nodiscard]] ae::rt::SeqNo last_seq(ae::rt::LogId const& id) const { return inner.last_seq(id); }
+    [[nodiscard]] ae::task<ae::rt::SeqNo> last_seq(ae::rt::LogId id) const { co_return co_await inner.last_seq(id); }
 };
 static_assert(ae::rt::AppendLogStore<FlakyStore>);
 
@@ -261,30 +262,30 @@ static_assert(ae::rt::AppendLogStore<FlakyStore>);
 struct LosingStore {
     ae::rt::InMemoryAppendLogStore inner;
     bool keep = false;  // true: store normally (to seed earlier attempts); false: accept and drop
-    [[nodiscard]] ae::result<ae::rt::SeqNo> append(ae::rt::LogId const& id, std::vector<std::byte> bytes) {
-        if (keep) return inner.append(id, std::move(bytes));
-        return inner.last_seq(id) + 1;
+    [[nodiscard]] ae::task<ae::result<ae::rt::SeqNo>> append(ae::rt::LogId id, std::vector<std::byte> bytes) {
+        if (keep) co_return co_await inner.append(id, std::move(bytes));
+        co_return co_await inner.last_seq(id) + 1;
     }
-    [[nodiscard]] ae::result<std::vector<std::vector<std::byte>>> read_from(ae::rt::LogId const& id,
+    [[nodiscard]] ae::task<ae::result<std::vector<std::vector<std::byte>>>> read_from(ae::rt::LogId id,
                                                                             ae::rt::SeqNo from) const {
-        return inner.read_from(id, from);
+        co_return co_await inner.read_from(id, from);
     }
-    [[nodiscard]] ae::rt::SeqNo last_seq(ae::rt::LogId const& id) const { return inner.last_seq(id); }
+    [[nodiscard]] ae::task<ae::rt::SeqNo> last_seq(ae::rt::LogId id) const { co_return co_await inner.last_seq(id); }
 };
 static_assert(ae::rt::AppendLogStore<LosingStore>);
 
 // Stores every record but always reports seq 1 -- the old FileAppendLogStore's duplicate-seq failure.
 struct SameSeqStore {
     ae::rt::InMemoryAppendLogStore inner;
-    [[nodiscard]] ae::result<ae::rt::SeqNo> append(ae::rt::LogId const& id, std::vector<std::byte> bytes) {
-        (void)inner.append(id, std::move(bytes));
-        return 1;
+    [[nodiscard]] ae::task<ae::result<ae::rt::SeqNo>> append(ae::rt::LogId id, std::vector<std::byte> bytes) {
+        (void)co_await inner.append(id, std::move(bytes));
+        co_return 1;
     }
-    [[nodiscard]] ae::result<std::vector<std::vector<std::byte>>> read_from(ae::rt::LogId const& id,
+    [[nodiscard]] ae::task<ae::result<std::vector<std::vector<std::byte>>>> read_from(ae::rt::LogId id,
                                                                             ae::rt::SeqNo from) const {
-        return inner.read_from(id, from);
+        co_return co_await inner.read_from(id, from);
     }
-    [[nodiscard]] ae::rt::SeqNo last_seq(ae::rt::LogId const& id) const { return inner.last_seq(id); }
+    [[nodiscard]] ae::task<ae::rt::SeqNo> last_seq(ae::rt::LogId id) const { co_return co_await inner.last_seq(id); }
 };
 static_assert(ae::rt::AppendLogStore<SameSeqStore>);
 
@@ -566,7 +567,7 @@ int main() {
             auto s = spec();
             c.mutate(s);
             auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), s));
-            auto const attempts = log.lineage_attempts(s.lineage);
+            auto const attempts = agentengine::rt::block_on(log.lineage_attempts(s.lineage));
             if (std::string_view(c.code).empty()) {
                 AE_CHECK(!r.setup_error.has_value() && r.outcome.has_value(), c.label);
             } else {
@@ -607,7 +608,7 @@ int main() {
         AE_CHECK(!r.probes.empty() && r.gross_harm.has_value() && r.attempt_count == 0,
                  "T8: the per-screen results are kept; the attempt count is unknown (0), not claimed");
         store.fail_read = false;
-        auto a = log.lineage_attempts(family.lineage);
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         AE_CHECK(a.has_value() && a->size() == 1 && (*a)[0].completed && (*a)[0].outcome == ev::tier1_screen_outcome::cleared,
                  "T8: the attempt itself was still counted and completed in the log");
     }
@@ -635,12 +636,12 @@ int main() {
         std::string const old_design = R"({"an":"older design"})";
         auto const old_digest = ev::detail::tier1_digest_of(old_design);
         // Started, never completed (the process died).
-        auto crashed = log.begin_attempt(family, *old_digest, old_design, "op", "t0");
+        auto crashed = agentengine::rt::block_on(log.begin_attempt(family, *old_digest, old_design, "op", "t0"));
         auto const id = ev::detail::tier1_lineage_log_id(family.lineage);
         AE_CHECK(crashed.has_value() && id.has_value(), "T10: setup");
-        (void)store.append(*id, bytes_of("not json"));
-        (void)store.append(*id, bytes_of(R"({"schema":"adr181.tier1.attempt.v2","event":"completed","attempt_id":"nope",)"
-                                         R"("outcome":"cleared","probes":[],"gross_harm":null})"));
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of("not json")));
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(R"({"schema":"adr181.tier1.attempt.v2","event":"completed","attempt_id":"nope",)"
+                                         R"("outcome":"cleared","probes":[],"gross_harm":null})")));
         auto calls = std::make_shared<CallLog>();
         auto r = drive(ev::run_tier1_screen(log, make_factory<Store>(Behaviour{}, calls), summarizer_factory(), spec()));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && r.attempt_count == 4 && r.attempt_ordinal == 4,
@@ -665,12 +666,12 @@ int main() {
         for (int t = 0; t < 4; ++t) {
             threads.emplace_back([&] {
                 for (int i = 0; i < 50; ++i) {
-                    if (!log.begin_attempt(family, *digest, design, "op", "t").has_value()) ++failures;
+                    if (!agentengine::rt::block_on(log.begin_attempt(family, *digest, design, "op", "t")).has_value()) ++failures;
                 }
             });
         }
         for (auto& th : threads) th.join();
-        auto a = log.lineage_attempts(family.lineage);
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         std::set<std::string> ids;
         if (a.has_value()) {
             for (auto const& r : *a) ids.insert(r.attempt_id);
@@ -813,7 +814,7 @@ int main() {
         Store store;
         ev::Tier1AttemptLog<Store> log(store);
         std::string const design = "{}";
-        auto started = log.begin_attempt(family, *ev::detail::tier1_digest_of(design), design, "op", "t");
+        auto started = agentengine::rt::block_on(log.begin_attempt(family, *ev::detail::tier1_digest_of(design), design, "op", "t"));
         ev::Tier1ProbeFigures p;
         p.probe_id = "p-1";
         p.seed = 18446744073709551615ull;
@@ -849,8 +850,8 @@ int main() {
         h.baseline_faulted = 10;
         h.treatment_faulted = 11;
         h.error_code = "eval.y";
-        auto done = log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {p}, h);
-        auto a = log.lineage_attempts(family.lineage);
+        auto done = agentengine::rt::block_on(log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {p}, h));
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         bool same = done.has_value() && a.has_value() && a->size() == 1 && (*a)[0].completed &&
                     (*a)[0].probes.size() == 1 && (*a)[0].gross_harm.has_value();
         if (same) {
@@ -886,7 +887,7 @@ int main() {
         auto const id = ev::detail::tier1_lineage_log_id(family.lineage);
         std::string const design = "{}";
         auto const digest = *ev::detail::tier1_digest_of(design);
-        auto a1 = log.begin_attempt(family, digest, design, "op", "t");
+        auto a1 = agentengine::rt::block_on(log.begin_attempt(family, digest, design, "op", "t"));
         auto completed = [&](std::string const& harm, char const* schema = "v2") {
             return std::string(R"({"schema":"adr181.tier1.attempt.)") + schema +
                    R"(","event":"completed","attempt_id":")" + a1->attempt_id +
@@ -900,26 +901,26 @@ int main() {
                    R"("min_task_pvalue":"0.5","baseline_success_rate":"1","baseline_ungraded":"0",)"
                    R"("treatment_ungraded":"0","baseline_faulted":"0","treatment_faulted":"0","error_code":""})";
         };
-        (void)store.append(*id, bytes_of(completed(harm("2x"))));             // a u64 with trailing text
-        (void)store.append(*id, bytes_of(completed(harm("3", false))));       // a missing double
-        (void)store.append(*id, bytes_of(completed(harm("4"), "v9")));        // another schema
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(completed(harm("2x")))));             // a u64 with trailing text
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(completed(harm("3", false)))));       // a missing double
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(completed(harm("4"), "v9"))));        // another schema
         std::string const forged_start =
             R"({"schema":"adr181.tier1.attempt.v2","event":"started","attempt_id":"f1",)"
             R"("subject":"deployregion","lineage":"session-7","operator_id":"op","started_at":"t",)"
             R"("preregistration":")" + digest + R"(","design":"{\"changed\":1}"})";
-        (void)store.append(*id, bytes_of(forged_start));                      // design does not hash to digest
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(forged_start)));                      // design does not hash to digest
         std::string misfiled = R"({"schema":"adr181.tier1.attempt.v2","event":"started","attempt_id":"f2",)"
                                R"("subject":"deployregion","lineage":"session-8","operator_id":"op","started_at":"t",)"
                                R"("preregistration":")" + digest + R"(","design":"{}"})";
-        (void)store.append(*id, bytes_of(misfiled));                          // names another lineage
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(misfiled)));                          // names another lineage
         std::string reused = R"({"schema":"adr181.tier1.attempt.v2","event":"started","attempt_id":")" +
                              a1->attempt_id + R"(","subject":"deployregion","lineage":"session-7",)"
                              R"("operator_id":"op","started_at":"t","preregistration":")" + digest +
                              R"(","design":"{}"})";
-        (void)store.append(*id, bytes_of(reused));                            // repeats a1's attempt id
-        (void)store.append(*id, bytes_of(completed(harm("1"))));              // the one good completion
-        (void)store.append(*id, bytes_of(completed(harm("5"))));              // a second completion
-        auto a = log.lineage_attempts(family.lineage);
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(reused)));                            // repeats a1's attempt id
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(completed(harm("1")))));              // the one good completion
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(completed(harm("5")))));              // a second completion
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         bool shape = a.has_value() && a->size() == 8 && (*a)[0].completed && !(*a)[0].unreadable;
         for (std::size_t i = 1; shape && i < 8; ++i) shape = (*a)[i].unreadable;
         AE_CHECK(shape && (*a)[0].gross_harm.has_value() && (*a)[0].gross_harm->seed == 1,
@@ -963,7 +964,7 @@ int main() {
         for (auto& th : threads) th.join();
         ae::rt::FileAppendLogStore store(root);
         ev::Tier1AttemptLog<ae::rt::FileAppendLogStore> log(store);
-        auto a = log.lineage_attempts(family.lineage);
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         std::map<std::string, ev::tier1_screen_outcome> logged;
         std::size_t unreadable = 0;
         if (a.has_value()) {
@@ -1111,7 +1112,7 @@ int main() {
         auto const id = ev::detail::tier1_lineage_log_id(family.lineage);
         std::string const design = "{}";
         auto const digest = *ev::detail::tier1_digest_of(design);
-        auto a1 = log.begin_attempt(family, digest, design, "op", "t");
+        auto a1 = agentengine::rt::block_on(log.begin_attempt(family, digest, design, "op", "t"));
         std::string const probe_ok =
             R"({"probe_id":"p","seed":"1","pass":true,"invalid":false,"invalid_baseline_too_easy":false,)"
             R"("invalid_differential_missingness":false,"invalid_insufficient_grading":false,"n_per_arm":"10",)"
@@ -1153,9 +1154,9 @@ int main() {
             {"no gross_harm key", record("completed", aid, "harmful", "[]", "")},
             {"probes not an array", record("completed", aid, "harmful", "{}", with_gross(harm("10")))},
         };
-        for (auto const& [name, text] : bad) (void)store.append(*id, bytes_of(text));
-        (void)store.append(*id, bytes_of(record("completed", aid, "harmful", "[" + probe_ok + "]", with_gross(harm("1")))));
-        auto a = log.lineage_attempts(family.lineage);
+        for (auto const& [name, text] : bad) (void)agentengine::rt::block_on(store.append(*id, bytes_of(text)));
+        (void)agentengine::rt::block_on(store.append(*id, bytes_of(record("completed", aid, "harmful", "[" + probe_ok + "]", with_gross(harm("1"))))));
+        auto a = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         bool ok = a.has_value() && a->size() == 1 + bad.size() && (*a)[0].completed && (*a)[0].gross_harm.has_value() &&
                   (*a)[0].gross_harm->seed == 1 && (*a)[0].probes.size() == 1;
         for (std::size_t i = 1; ok && i < a->size(); ++i) ok = (*a)[i].unreadable;
@@ -1382,12 +1383,12 @@ int main() {
         auto const digest = *ev::detail::tier1_digest_of(design);
         bool setup = true;
         for (int i = 0; i < 4; ++i) {
-            auto started = log.begin_attempt(family, digest, design, "op", "t");
+            auto started = agentengine::rt::block_on(log.begin_attempt(family, digest, design, "op", "t"));
             setup = setup && started.has_value() &&
-                    log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {}, std::nullopt)
+                    agentengine::rt::block_on(log.complete_attempt(family, *started, ev::tier1_screen_outcome::harmful, {}, std::nullopt))
                         .has_value();
         }
-        auto const before = log.lineage_attempts(family.lineage);
+        auto const before = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         setup = setup && before.has_value() && before->size() == 4;
         auto const path = root / *ev::detail::tier1_lineage_log_id(family.lineage);
         std::string raw;
@@ -1404,8 +1405,8 @@ int main() {
             std::ofstream out(path, std::ios::binary | std::ios::trunc);
             out.write(damaged.data(), static_cast<std::streamsize>(damaged.size()));
         }
-        auto const next = log.begin_attempt(family, digest, design, "op", "t");
-        auto const after = log.lineage_attempts(family.lineage);
+        auto const next = agentengine::rt::block_on(log.begin_attempt(family, digest, design, "op", "t"));
+        auto const after = agentengine::rt::block_on(log.lineage_attempts(family.lineage));
         std::string now;
         {
             std::ifstream in(path, std::ios::binary);
@@ -1531,7 +1532,7 @@ int main() {
         ev::Tier1AttemptLog<Store> log(store);
         auto r = screen_at(log, ev::lesson_delivery::approved, Behaviour{});
         auto const rec = ev::tier1_screen_record(r);
-        auto const fresh = ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id);
+        auto const fresh = agentengine::rt::block_on(ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && rec.delivery == ev::lesson_delivery::approved &&
                      rec.history_complete && rec.outcome == ev::tier1_screen_outcome::cleared &&
                      rec.rendered_lesson_digest == ack_with({}).digest && fresh.delivery == rec.delivery &&
@@ -1560,7 +1561,7 @@ int main() {
         Store store;
         ev::Tier1AttemptLog<Store> log(store);
         auto r = screen_at(log, ev::lesson_delivery::approved, Behaviour{true, true});
-        auto const rec = ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id);
+        auto const rec = agentengine::rt::block_on(ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id));
         ae::ApprovedLessonRegistry reg;
         auto refused = ev::approve_lesson(reg, "p-ops", candidate(), ack_with(rec), 0.3f, ev::lesson_delivery::approved);
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::harmful && !refused.has_value() &&
@@ -1594,7 +1595,7 @@ int main() {
         ev::Tier1AttemptLog<Store> log(store);
         (void)screen_at(log, ev::lesson_delivery::approved_automatic, Behaviour{true, true});
         auto r = screen_at(log, ev::lesson_delivery::approved_automatic, Behaviour{});
-        auto const rec = ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id);
+        auto const rec = agentengine::rt::block_on(ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id));
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && rec.other_attempts_harmful == 1 &&
                      rec.attempt_count == 2 && rec.attempt_ordinal == 2,
                  "T38: the record of the clean retry counts the earlier harmful attempt");
@@ -1627,7 +1628,7 @@ int main() {
         s.delivery = ev::lesson_delivery::approved;
         auto r = drive(ev::run_tier1_screen(flaky_log, make_factory<FlakyStore>(Behaviour{}, calls), summarizer_factory(), s));
         flaky.fail_read = true;
-        auto const unread = ev::tier1_screen_record_from_log(flaky_log, "session-7", r.attempt_id);
+        auto const unread = agentengine::rt::block_on(ev::tier1_screen_record_from_log(flaky_log, "session-7", r.attempt_id));
         auto refused = ev::approve_lesson(reg, "p-ops", candidate(), ack_with(unread), 0.3f,
                                           ev::lesson_delivery::approved);
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && !unread.history_complete && !refused.has_value() &&
@@ -1649,7 +1650,7 @@ int main() {
         (void)drive(ev::run_tier1_screen(log, crash, summarizer_factory(), s));
         store.fail_append = false;
         auto r = drive(ev::run_tier1_screen(log, make_factory<FlakyStore>(Behaviour{}, calls), summarizer_factory(), s));
-        auto const rec = ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id);
+        auto const rec = agentengine::rt::block_on(ev::tier1_screen_record_from_log(log, "session-7", r.attempt_id));
         ae::ApprovedLessonRegistry reg;
         auto refused = ev::approve_lesson(reg, "p-ops", candidate(), ack_with(rec), 0.3f, ev::lesson_delivery::approved);
         AE_CHECK(r.outcome == ev::tier1_screen_outcome::cleared && rec.other_attempts_unfinished == 1 &&

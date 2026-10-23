@@ -1,4 +1,4 @@
-// #120 S8 (decisions/ADR-203-one-base64-one-process-identity.md): proves the one orphan-reaping process-identity
+// #120 S8 (decisions/archive/ADR-203-one-base64-one-process-identity.md): proves the one orphan-reaping process-identity
 // check (sandbox/detail/process_identity.hpp), and the docker_cli_detail:: / ctr_cli_detail:: names over it, behave
 // exactly like the two implementations they replaced (ADR-108 §5/§7). Those decide whether an orphaned container is
 // destroyed, and must fail closed.

@@ -16,10 +16,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::CheckpointCadence;
@@ -45,8 +48,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -100,7 +102,7 @@ int main() {
     using agentengine::Principal;
 
     AgentSession<OneShotChatClient> session;
-    session.initialize("s-cadence", Principal{"p-mia", ""});
+    session.initialize("s-cadence", Principal{"p-mia", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client();
     InMemorySessionStore store;
 
@@ -125,7 +127,7 @@ int main() {
           "D2-R1: CheckpointCadence<3> fires at exactly turns 3 and 6 out of 7 -- 5 writes skipped, "
           "not every turn hitting the Store (019 §1's 'cost is bounded')");
 
-    auto loaded = load_agent_session_snapshot(store, "s-cadence");
+    auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "s-cadence"));
     check(loaded.has_value() && loaded->has_value() && (*loaded)->run_counter == 6,
           "D2-R2: after turn 7, the durable checkpoint still reflects turn 6's position "
           "(run_counter=6) -- an HONEST lag the cadence policy creates, never silently advanced to "

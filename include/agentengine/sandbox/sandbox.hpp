@@ -1,5 +1,5 @@
 #pragma once
-// Implements 008-Sandbox-and-Isolation.md §2-3 — one isolation contract, named profiles. This
+// Implements rfcs/008-Sandbox-and-Isolation.md §2-3 — one isolation contract, named profiles. This
 // header fixes the shape only; every backend (wasm/, native_jail/, remote/ under src/backends/)
 // implements `SandboxBackend` and is where the actual isolation logic — and its own design ->
 // red-team -> prove -> judge cycle — lives.
@@ -19,6 +19,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
@@ -159,7 +160,7 @@ namespace sandbox_detail {
 // (capability_detail::path_prefix_covers) has no defense against a '..' segment lexically escaping a
 // granted prefix with no filesystem access at all -- this check closes that at the string level, the
 // same "reject the injection surface outright" move KataBackend::create() already uses for a literal
-// comma in its own --mount grammar (decisions/ADR-086-kata-backend-slice-2-enforcement.md).
+// comma in its own --mount grammar (decisions/archive/ADR-086-kata-backend-slice-2-enforcement.md).
 [[nodiscard]] inline bool has_dot_or_dotdot_component(std::string const& path) {
     std::size_t start = 0;
     for (std::size_t i = 0; i <= path.size(); ++i) {
@@ -182,6 +183,21 @@ namespace sandbox_detail {
     return out;
 }
 
+// ADR-244 §2.4: the one normal form host paths are compared in. On Windows `\` and `/` are the same
+// separator and the file system is case-insensitive, so a grant written `C:\Work` must cover
+// `c:/work/sub` (and a test written with `/` must take the same branch as a real Windows path); ASCII
+// case-folding matches NTFS for every drive letter and ASCII name. Elsewhere paths are byte-exact.
+[[nodiscard]] inline std::string host_path_key(std::string_view path) {
+    std::string out(path);
+#if defined(_WIN32)
+    for (char& c : out) {
+        if (c == '\\') c = '/';
+        else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+#endif
+    return out;
+}
+
 }  // namespace sandbox_detail
 
 // docs/planning/sandbox-spec-capability-enforcement-design-draft.md -- the real authority behind
@@ -191,68 +207,76 @@ namespace sandbox_detail {
 // mount-granting entry point, design draft §6 finding B1), before any backend-specific mount/net
 // logic runs.
 //
-// Enforcement is scoped to the SPECIFIC capability kinds this mechanism defines
-// (`sandbox_mount_grants()`/`sandbox_net_out_grants()` presence), never to whole-`CapabilitySet`
-// emptiness (design draft §6 finding B2): checking whole-set emptiness would (a) fail OPEN the
-// moment a caller holds ANY unrelated capability (e.g. cap::Background) on a spec that also carries
-// real mounts, since the decision would flip on with zero SandboxMount grants existing for those
-// mounts, and (b) accidentally engage as a side effect of an unrelated feature composing onto the
-// same spec -- neither is a real "opt in". Scoping to presence of the RELEVANT grant kind means
-// enforcement engages exactly when a caller actually populated a grant of that kind, independent of
-// anything else in the set.
-//
-// Every existing call site today builds a SandboxSpec with NO SandboxMount/SandboxNetOut grants at
-// all (confirmed by reading every real construction site: mediated_python_runner.cpp, every
-// native-jail/Kata test) -- for those, both checks below are skipped entirely and behavior is
-// byte-for-byte unchanged, preserving full backward compatibility (ADR-070's Delegated Decision Seam
-// shape: explicit host opt-in, fails closed once engaged, changes nothing for a caller that hasn't
-// opted in).
+// ADR-244 §2.4 (G-C4): the check is UNCONDITIONAL. Every host-path mount must be covered by a granted
+// `cap::SandboxMount`, and every network policy other than `deny_all` by a granted `cap::SandboxNetOut`,
+// whether or not the set holds any grant of that kind. It used to engage only when a grant of the
+// relevant kind was present (ADR-087's opt-in), so a spec built with no grants -- every engine call site
+// at the time -- mounted and networked unchecked; ADR-242 §2 lists that as an implicit permissive choice.
+// The authority checked is `spec.capabilities`, which a caller fills from what it was handed (never more
+// than the calling `EffectContext` holds, ADR-244 §2.4) -- this function has no other source of authority
+// and grants none.
 [[nodiscard]] inline result<void> authorize_spec(SandboxSpec const& spec) {
     std::vector<cap::SandboxMount> const mount_grants = spec.capabilities.sandbox_mount_grants();
-    if (!mount_grants.empty()) {
-        for (MountSpec const& mount : spec.mounts) {
-            std::string const* host_path = std::get_if<std::string>(&mount.source);
-            // A BlobRef source has no host path for a SandboxMount grant to cover at all -- each
-            // backend's own existing, pre-existing check (kata_backend.blob_mount_unsupported /
-            // linux_native_jail.blob_mount_unsupported / native_jail.blob_mount_unsupported) already
-            // unconditionally rejects it downstream; this function does not duplicate that rejection,
-            // it simply has nothing to authorize here and lets that check fire.
-            if (host_path == nullptr) continue;
-
-            if (sandbox_detail::has_dot_or_dotdot_component(*host_path) ||
-                sandbox_detail::has_dot_or_dotdot_component(mount.guest_path)) {
+    // ADR-244 §2.4: a grant must name its path. An empty host prefix would cover every host path
+    // (`path_prefix_covers("")` is true) -- an "everything" nobody spelled out -- so it is refused, not
+    // skipped, whenever this spec mounts anything.
+    if (!spec.mounts.empty()) {
+        for (cap::SandboxMount const& grant : mount_grants) {
+            if (grant.host_path_prefix.empty()) {
                 return std::unexpected(error{
                     failure_class::policy,
-                    "sandbox mount host or guest path contains a '.' or '..' path component -- "
-                    "rejected outright rather than risking a lexical prefix-check bypass (a literal "
-                    "'..' can escape a granted prefix with no filesystem access at all)",
-                    "sandbox.mount_path_invalid"});
+                    "a cap::SandboxMount grant has an empty host_path_prefix; a grant must name the host "
+                    "path it covers",
+                    "sandbox.mount_grant_invalid"});
             }
+        }
+    }
+    for (MountSpec const& mount : spec.mounts) {
+        std::string const* host_path = std::get_if<std::string>(&mount.source);
+        // A BlobRef source has no host path for a SandboxMount grant to cover at all -- each
+        // backend's own existing, pre-existing check (kata_backend.blob_mount_unsupported /
+        // linux_native_jail.blob_mount_unsupported / native_jail.blob_mount_unsupported) already
+        // unconditionally rejects it downstream; this function does not duplicate that rejection,
+        // it simply has nothing to authorize here and lets that check fire.
+        if (host_path == nullptr) continue;
 
-            bool covered = false;
-            for (cap::SandboxMount const& grant : mount_grants) {
-                if (!capability_detail::path_prefix_covers(grant.host_path_prefix, *host_path)) continue;
-                if (!capability_detail::path_prefix_covers(grant.guest_path_prefix, mount.guest_path)) continue;
-                if (mount.read_write && !grant.read_write) continue;  // a read grant never authorizes write
-                covered = true;
-                break;
+        if (sandbox_detail::has_dot_or_dotdot_component(*host_path) ||
+            sandbox_detail::has_dot_or_dotdot_component(mount.guest_path)) {
+            return std::unexpected(error{
+                failure_class::policy,
+                "sandbox mount host or guest path contains a '.' or '..' path component -- "
+                "rejected outright rather than risking a lexical prefix-check bypass (a literal "
+                "'..' can escape a granted prefix with no filesystem access at all)",
+                "sandbox.mount_path_invalid"});
+        }
+
+        bool covered = false;
+        std::string const host_key = sandbox_detail::host_path_key(*host_path);
+        for (cap::SandboxMount const& grant : mount_grants) {
+            if (!capability_detail::path_prefix_covers(sandbox_detail::host_path_key(grant.host_path_prefix),
+                                                       host_key)) {
+                continue;
             }
-            if (!covered) {
-                // Deliberately the SAME diagnostic regardless of why coverage failed (no grant at
-                // all vs. a grant with the wrong read_write polarity vs. a grant with a
-                // non-covering prefix) -- design draft §6 finding S2: distinguishing them would leak
-                // grant existence/shape to a caller that might not be trusted to know it.
-                return std::unexpected(error{
-                    failure_class::policy,
-                    "sandbox mount '" + mount.guest_path + "' is not covered by any granted "
-                    "cap::SandboxMount",
-                    "sandbox.mount_not_authorized"});
-            }
+            if (!capability_detail::path_prefix_covers(grant.guest_path_prefix, mount.guest_path)) continue;
+            if (mount.read_write && !grant.read_write) continue;  // a read grant never authorizes write
+            covered = true;
+            break;
+        }
+        if (!covered) {
+            // Deliberately the SAME diagnostic regardless of why coverage failed (no grant at
+            // all vs. a grant with the wrong read_write polarity vs. a grant with a
+            // non-covering prefix) -- design draft §6 finding S2: distinguishing them would leak
+            // grant existence/shape to a caller that might not be trusted to know it.
+            return std::unexpected(error{
+                failure_class::policy,
+                "sandbox mount '" + mount.guest_path + "' is not covered by any granted "
+                "cap::SandboxMount",
+                "sandbox.mount_not_authorized"});
         }
     }
 
     std::vector<cap::SandboxNetOut> const net_grants = spec.capabilities.sandbox_net_out_grants();
-    if (!net_grants.empty() && (!spec.net.deny_all || !spec.net.allowlist.empty())) {
+    if (!spec.net.deny_all || !spec.net.allowlist.empty()) {
         for (std::string const& entry : spec.net.allowlist) {
             if (entry.find('*') != std::string::npos) {
                 return std::unexpected(error{
@@ -344,7 +368,7 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     // unpopulated" convention `result_repr` above already documents for exactly this reason (a
     // `Runner` that never implements `agent.ask()` never sets this field either).
     std::string ask_prompt;
-    // decisions/ADR-154-agent-output-codeact-module.md (026 §5's `agent.output`): the JSON-encoded
+    // decisions/archive/ADR-154-agent-output-codeact-module.md (026 §5's `agent.output`): the JSON-encoded
     // value a script's `agent.output.set(value)` call declared, if any -- empty means "never called,"
     // the SAME "empty means legitimately absent" convention `result_repr`/`ask_prompt` above already
     // establish (a JSON-encoded value is never the literal empty string: `json.dumps("")` is `'""'`,
@@ -363,22 +387,22 @@ struct ExecOutcome {  // ae-naming-lint: allow ExecOutcome — pre-existing M0 s
     std::string structured_output_json;
 };
 
-// concept, not a base class (008 §2). Return types are constrained to their synchronous
-// equivalents (`result<T>`, `void`) for the same reason `Runner`/`ChatClient` are — `ae::task<T>`
-// is not yet wired into this header; each becomes `ae::task<result<T>>` (or `ae::task<>` for
-// `destroy`) once it is. `T::traits` is 008 §2's "static constexpr ProfileTraits traits" line,
+// concept, not a base class (008 §2). decisions/archive/ADR-237 §5.1 (Phase D, #173): `create`/`exec` return
+// `ae::task<result<T>>` and `destroy` returns `ae::task<void>` -- a backend may be remote (a microVM host,
+// a container daemon), so every call can suspend. The handle and the context are borrowed and must
+// outlive the returned task; callers await it in place. `T::traits` is 008 §2's "static constexpr ProfileTraits traits" line,
 // completed by Phase C (C1) — every conforming backend must declare one, not just the three
 // methods, or `Profile::Strict` (§3) has nothing to resolve against.
 template <class T>
 concept SandboxBackend = requires(T backend, SandboxSpec spec, SandboxHandle& handle,  // ae-naming-lint: allow SandboxBackend — pre-existing M0 scaffolding, reconcile at owning milestone
                                    ExecRequest request, EffectContext& ctx) {
     { T::traits } -> std::convertible_to<ProfileTraits const&>;
-    { backend.create(spec, ctx) } -> std::same_as<result<SandboxHandle>>;
-    { backend.exec(handle, request, ctx) } -> std::same_as<result<ExecOutcome>>;
-    { backend.destroy(handle) } -> std::same_as<void>;
+    { backend.create(spec, ctx) } -> std::same_as<task<result<SandboxHandle>>>;
+    { backend.exec(handle, request, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
+    { backend.destroy(handle) } -> std::same_as<task<void>>;
 };
 
-// 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/ADR-012-sandbox-
+// 008 §3's "Strict" (RFC prose previously spelled it `Profile::Strict`; decisions/archive/ADR-012-sandbox-
 // profile-template-parameter-kind.md corrects both the RFC text and this symbol together) — "the
 // named alias meaning 'the strongest profile available on this platform, never `none`'", the default
 // for every agent (002 §3). A resolution SELECTOR, not a backend itself: it has no `create`/`exec`/

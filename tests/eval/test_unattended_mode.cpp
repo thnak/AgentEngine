@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-192-unattended-mode.md, the delivery half (what the model is sent; the approval half is
+// Proof for decisions/archive/ADR-192-unattended-mode.md, the delivery half (what the model is sent; the approval half is
 // test_unattended_approvals.cpp, which needs no HTTPS):
 //   L1-L6  Approved lessons delivered as `instructions` (plain, unfenced system text, still tainted); the
 //          system-channel fence switched off for every tainted system text; a provider cannot set the delivery mark
@@ -12,10 +12,13 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace ae = agentengine;
 using ae::rt::AgentSession;
@@ -34,8 +37,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message text_msg(ae::role r, std::string text, ae::content_origin origin, bool tainted) {
@@ -101,7 +103,7 @@ struct Captured {
 template <class Configure>
 Captured capture(Configure configure) {
     LessonSession session;
-    session.initialize("s-l", ae::Principal{"p1", ""});
+    session.initialize("s-l", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     configure(session);
     Captured out;
     session.set_run_event_tap([&out](ae::RunEvent const& e) {

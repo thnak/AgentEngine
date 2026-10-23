@@ -1,5 +1,5 @@
 #pragma once
-// GitHub issue #47; decisions/ADR-224-host-premounted-builtin-skills.md. The part of
+// GitHub issue #47; decisions/archive/ADR-224-host-premounted-builtin-skills.md. The part of
 // tools/cli_chat.cpp's wiring that is a DECISION rather than plumbing -- which shell tools the session
 // offers, which capabilities that requires minting, which tools a human must approve, and which
 // built-in skills the host pre-mounts -- factored out of cli_chat.cpp so it can be tested without a

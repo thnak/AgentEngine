@@ -1,7 +1,7 @@
 // Proof for ADR-037 Phase 3, Slice 1: request-port behavior against agentengine::rt::WorkflowSupervisor
 // (include/agentengine/rt/workflow_supervisor.hpp) -- the Quark-actor-free replacement for
 // agentengine::workflow::WorkflowSupervisor. This file supersedes two OLD, Quark-actor-based files
-// that proved real behavioral claims about 014-Workflow-and-Orchestration.md §4 (human-in-the-loop /
+// that proved real behavioral claims about rfcs/014-Workflow-and-Orchestration.md §4 (human-in-the-loop /
 // the request port) with no equivalent against `rt::` yet:
 //   - test_workflow_request_port.cpp (E0-E5; E0 and the activation-passivation half of E1/E4 are OUT
 //     OF SCOPE here -- E0 is shared, unchanged workflow/graph.hpp validator code, and there are no
@@ -50,6 +50,7 @@
 // MACHINE SAFETY (CLAUDE.md): bounded round counts throughout; the one real sleep (IQ1) is 200ms,
 // tens-of-ms scale like the rest of this migration's timing checks, not unbounded.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -57,6 +58,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ContinueWorkflow;
@@ -86,8 +88,7 @@ void check(bool cond, char const* what) {
 // blocking call. One resume() call resolves the whole chain in this single-caller test file.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -146,22 +147,22 @@ using agentengine::workflow::validate_workflow;
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](Message const& in,
-                                    agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+                                    agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
 [[nodiscard]] ExecutorBody counting_appender(std::string name, std::shared_ptr<int> calls) {
     return [name = std::move(name), calls](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
 [[nodiscard]] ExecutorBody failing_body(agentengine::failure_class klass) {
-    return [klass](Message const&, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(agentengine::error{klass, "injected failure", "test.injected"});
+    return [klass](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(agentengine::error{klass, "injected failure", "test.injected"});
     };
 }
 
@@ -192,9 +193,9 @@ int main() {
             // NEVER invoked" empirically rather than relying only on the structural guarantee that
             // port_deliveries never reach run_executor_job.
             [port_calls](Message const& in,
-                         agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                         agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*port_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
             appender("sib"),
         };
@@ -538,9 +539,9 @@ int main() {
         std::vector<ExecutorBody> bodies = {
             appender("start"),
             [port_calls](Message const& in,
-                         agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                         agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*port_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
             failing_body(agentengine::failure_class::fatal),
             appender("sink"),

@@ -1,4 +1,4 @@
-// Proof for ADR-183 (decisions/ADR-183-approval-resolved-before-dispatch.md): on every path that
+// Proof for ADR-183 (decisions/archive/ADR-183-approval-resolved-before-dispatch.md): on every path that
 // resolves an `interaction_reason::approval` interaction, `approval_resolved` is emitted
 //   (a) for exactly the calls that got `approval_requested` for that interaction, in the same order,
 //   (b) before any `tool_call_started` of the resumed round,
@@ -26,12 +26,15 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -53,8 +56,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -101,21 +103,21 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++gated_runs();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
 struct PlainTool : agentengine::Tool<PlainTool, agentengine::Capabilities<>,
-                                       agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                       agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "plain_tool";
     static constexpr std::string_view description = "Never needs approval.";
     using Args = ValueArgs;
     using Reply = ValueReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++plain_runs();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -125,7 +127,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool, PlainTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}, PlainTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -275,7 +277,7 @@ Suspended start_suspended(Session& s, Viewer& viewer, std::string const& tag) {
 }
 
 void setup(Session& s, std::string const& id, CapabilitySet const& held, std::vector<Message> script) {
-    s.initialize(id, agentengine::Principal{"p", ""});
+    s.initialize(id, agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script(std::move(script));
     s.set_capabilities(&held);
     s.set_suspend_for_approval(true);

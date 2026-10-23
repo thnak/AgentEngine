@@ -7,7 +7,7 @@
 // store, and reports whether the lesson was delivered and what the trial's stub tools captured.
 //
 // Explicitly OUT OF SCOPE for this slice (named, not silently dropped -- see
-// decisions/ADR-195-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
+// decisions/archive/ADR-195-evaluation-harness.md §8): the SlotTable/steering-manifest arm S (§3.7); the
 // look ledger, EvalSuite/EvalRun/PromotionEvidence (§3.3); the kill switch and promotion-write
 // digest re-check (§3.0 item 5's remaining half); the `eval.tool_not_stub` refusal gate (not
 // needed yet -- this slice's ToolTable is built exclusively from `EvalStubToolProvider` plus
@@ -219,7 +219,7 @@ namespace detail {
 // non-const `inner_.chat(...)` on a const member) -- fixed anyway since the cost is one call to
 // `remove_cvref_t` and a defense-in-depth check should not rely on a caller never trying.
 //
-// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/ADR-195-evaluation-
+// Round-2 red-team RESIDUAL, disclosed rather than silently left (decisions/archive/ADR-195-evaluation-
 // harness.md §8): this trait is a NOMINAL check on the exact template-id `RecordingChatClient<T>`.
 // `LegacyChatClient` is pure structural/duck typing (chat_client.hpp), so a hand-written class that
 // privately holds an already-wrapped `RecordingChatClient<X>` and forwards `capabilities()`/
@@ -338,7 +338,7 @@ public:
         } else if (terminal == stream_terminal::failed) {
             pair.producer.fail(*rec.stream_error);
         } else {
-            pair.producer.fail(error{failure_class::fatal, "the summarizer's stream was cancelled",
+            pair.producer.fail(error{failure_class::canceled, "the summarizer's stream was cancelled",  // ADR-237 D6 (was fatal)
                                      "eval.summarizer_stream_cancelled"});
         }
         trial_->summarizer_recordings.push_back(std::move(rec));
@@ -415,7 +415,7 @@ template <class Inner, class SummarizerT>
     // MemoryOrigin::attribution.principal to the same identity -- an audit/uniqueness residual (I4-
     // adjacent), not a confinement break. A caller minting many trials should pass a genuinely
     // unique trial_id per attempt.
-    auto store_result = EvalStore::make("trial", spec.trial_id);
+    auto store_result = co_await EvalStore::make("trial", spec.trial_id);
     if (!store_result) {
         trial_result.setup_error = store_result.error();
         co_return trial_result;
@@ -436,7 +436,7 @@ template <class Inner, class SummarizerT>
         // procedural/model_inferred item; that decision is made HERE, by the harness, not inferred.
         item.origin = MemoryOrigin{memory_source::model_inferred, spec.trial_id, "0", store.principal()};
         rendered_lesson_content = item.content;
-        if (auto written = write_memory_item(store.object_store(), store.ref_store(), store.mount(),
+        if (auto written = co_await write_memory_item(store.object_store(), store.ref_store(), store.mount(),
                                               store.write_cap(), item);
             !written) {
             trial_result.setup_error = written.error();
@@ -456,7 +456,14 @@ template <class Inner, class SummarizerT>
     }
 
     rt::AgentSession<RecordingChatClient<Inner>, rt::NoSessionState, ComposedProvider> session;
-    session.initialize(spec.trial_id, store.principal(), spec.token_budget, spec.max_turns);
+    // ADR-244 slice 3a: the trial session holds `held` itself (`single_trusted_caller`); `TrialSpec`'s optional
+    // budget and turn cap keep their meaning (unset is none) until the planning log's eval row is closed.
+    session.initialize(spec.trial_id, store.principal(),
+                       SessionChoices{AuthoritySource::single_trusted_caller(),
+                                      spec.token_budget ? Bound<std::uint64_t>::at_most(*spec.token_budget)
+                                                        : Bound<std::uint64_t>::unbounded(),
+                                      spec.max_turns ? Bound<std::uint64_t>::at_most(*spec.max_turns)
+                                                     : Bound<std::uint64_t>::unbounded()});
     session.set_capabilities(&held);
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),

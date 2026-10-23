@@ -1,5 +1,5 @@
 // Windows half of `agentengine::RealIoFileSystem::write_verified()`/`read_verified()`
-// (sandbox/real_io_filesystem.hpp) -- decisions/ADR-104-real-io-filesystem-linux-parity.md. Kept
+// (sandbox/real_io_filesystem.hpp) -- decisions/archive/ADR-104-real-io-filesystem-linux-parity.md. Kept
 // verbatim from the original, entirely-header-only implementation (ADR-102 Phase 3) -- this pass
 // only moves the two Win32-specific bodies out-of-line, unchanged, so real_io_filesystem.hpp itself
 // no longer needs to include `core/worktree_mount_fs.hpp` (and, transitively, `<windows.h>`).

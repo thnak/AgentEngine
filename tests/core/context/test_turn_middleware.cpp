@@ -1,4 +1,4 @@
-// Implements decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's own prove phase --
+// Implements decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md's own prove phase --
 // the first executed evidence against that ADR's §3 falsifiable claims (all previously
 // INCONCLUSIVE, no code existed). See turn_middleware.hpp's own top comment for two real,
 // mid-implementation refinements this test file also covers: the chain is a single forward pass
@@ -70,10 +70,11 @@ Message make_tool_result_msg(std::string call_id, std::string message_id) {
 
 ToolDescriptor make_marker_tool(std::string name, std::string marker) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name        = name;
     d.description = "original description";
-    d.invoke      = [marker](json::Value const&, EffectContext&) -> result<json::Value> {
-        return json::Value::make_string(marker);
+    d.invoke      = [marker](json::Value const&, EffectContext&) -> task<result<json::Value>> {
+        co_return json::Value::make_string(marker);
     };
     return d;
 }
@@ -138,7 +139,7 @@ int main() {
                  "redact(1) removed exactly the middle tool, applied at finalize()");
         bool found_a = false, found_c = false;
         for (ToolDescriptor const& t : assembled.combined.tools) {
-            auto reply = t.invoke(json::Value::make_null(), ctx);
+            auto reply = test_support::run_task_sync<result<json::Value>>(t.invoke(json::Value::make_null(), ctx));
             AE_CHECK(reply.has_value(), "a surviving tool's invoke() still succeeds when called");
             if (reply.has_value()) {
                 std::string const marker = reply->as_string();

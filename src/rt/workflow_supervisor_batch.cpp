@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md (OQ-20): rt::WorkflowSupervisor's vendor batch coalescing --
+// decisions/archive/ADR-235-batch-inference-coalescing.md (OQ-20): rt::WorkflowSupervisor's vendor batch coalescing --
 // gathering a round's `batch: true` deliveries into vendor jobs, polling them, and folding the results back into
 // the run. The declarations, and the design rule each function implements, are in
 // include/agentengine/rt/workflow_supervisor.hpp; the ADR has the red-team findings that shaped them (§5).
@@ -34,6 +34,32 @@ auto guarded(F&& f) -> decltype(f()) {
         return std::unexpected(agentengine::error{agentengine::failure_class::transient,
                                                   "batch step threw a non-standard exception", "rt.batch.threw"});
     }
+}
+
+// ADR-237 §5.1: the same guard for a backend's vendor calls, which are `task`-shaped. A throw from the call itself
+// or from its body (rethrown at the co_await) is the same classified, transient failure. `f` is held by value in
+// the frame; what it captures by reference the caller keeps alive, since it awaits at once.
+template <class>
+struct task_value;
+template <class T>
+struct task_value<task<T>> {
+    using type = T;
+};
+
+template <class F>
+auto guarded_async(F f) -> std::remove_cvref_t<decltype(f())> {
+    using T = typename task_value<std::remove_cvref_t<decltype(f())>>::type;
+    std::optional<T> out;
+    std::string      what;
+    try {
+        out.emplace(co_await f());
+    } catch (std::exception const& e) {
+        what = std::string("batch step threw: ") + e.what();
+    } catch (...) {
+        what = "batch step threw a non-standard exception";
+    }
+    if (out) co_return std::move(*out);
+    co_return std::unexpected(agentengine::error{agentengine::failure_class::transient, std::move(what), "rt.batch.threw"});
 }
 
 [[nodiscard]] ExecuteReply failed_reply(agentengine::failure_class klass, agentengine::Usage usage = {}) {
@@ -143,6 +169,7 @@ agentengine::EffectContext WorkflowSupervisor::batch_context(std::size_t executo
     agentengine::EffectContext ctx =
         executor_index < contexts_.size() ? contexts_[executor_index] : agentengine::EffectContext{};
     ctx.cancellation = cancellation_token();
+    if (ctx.root_run_id.empty()) ctx.root_run_id = run_id_;  // ADR-241 §8.4: same stamp as synchronous dispatch
     return ctx;
 }
 
@@ -191,9 +218,12 @@ void WorkflowSupervisor::gather_batch_candidates(std::vector<Delivery>& exec_del
             return;
         }
         BatchableModelCall const call = *body;
+        // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped, so this one-off override is a
+        // coroutine; it awaits `call_request` (`call`/`request` are closure members, alive while the body runs).
         keep_override.emplace_back(ExecutorBody{
-            [call, request = std::move(request)](agentengine::Message const& in, agentengine::EffectContext& ctx) {
-                return call.call_request(in, request, ctx);
+            [call, request = std::move(request)](agentengine::Message const& in, agentengine::EffectContext& ctx)
+                -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return co_await call.call_request(in, request, ctx);
             }});
         keep_preset.emplace_back();
     };
@@ -286,10 +316,10 @@ void WorkflowSupervisor::gather_batch_candidates(std::vector<Delivery>& exec_del
     preset          = std::move(keep_preset);
 }
 
-std::vector<std::size_t> WorkflowSupervisor::submit_batch_chunks(std::vector<BatchChunk>& chunks,
-                                                                 std::vector<Delivery>& exec_deliveries,
-                                                                 std::vector<ExecuteReply>& replies,
-                                                                 std::vector<Delivery>& deferred) {
+task<std::vector<std::size_t>> WorkflowSupervisor::submit_batch_chunks(std::vector<BatchChunk>& chunks,
+                                                                       std::vector<Delivery>& exec_deliveries,
+                                                                       std::vector<ExecuteReply>& replies,
+                                                                       std::vector<Delivery>& deferred) {
     BatchPolicy const& pol = *batch_policy_;
     std::vector<std::size_t> waiting;
     std::size_t              n = 0;  // custom ids are unique across the whole round (§5 finding 18)
@@ -299,7 +329,7 @@ std::vector<std::size_t> WorkflowSupervisor::submit_batch_chunks(std::vector<Bat
         for (agentengine::ChatRequest& r : chunk.requests) items.push_back({"i" + std::to_string(n++), std::move(r)});
 
         std::string const key = chunk.backend->group_key();
-        auto job = guarded([&] { return chunk.backend->submit(items, chunk.ctx); });
+        auto job = co_await guarded_async([&] { return chunk.backend->submit(items, chunk.ctx); });
         if (job && (job->empty() || std::any_of(batch_items_.begin(), batch_items_.end(),
                                                   [&](BatchItem const& b) { return b.job_id == *job; }))) {
             job = std::unexpected(agentengine::error{agentengine::failure_class::contract,
@@ -341,7 +371,7 @@ std::vector<std::size_t> WorkflowSupervisor::submit_batch_chunks(std::vector<Bat
         push_structural_event(workflow_event_kind::batch_submitted,
                               wp::BatchJobRef{key, *job, std::move(executor_ids), {}});
     }
-    return waiting;
+    co_return waiting;
 }
 
 task<WorkflowResult> WorkflowSupervisor::poll_batches(PollBatches request) {
@@ -352,7 +382,7 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches(PollBatches request) {
     WorkflowResult r = co_await poll_batches_locked(std::move(request));
     if (r.status == workflow_status::suspended && cancel_requested()) {  // issue #156, as in resume_workflow()
         r = finish(workflow_status::cancelled, std::chrono::steady_clock::now());
-        cancel_abandoned_batches();
+        co_await cancel_abandoned_batches();
         fill_batch_fields(r);
     }
     r.usage                   = usage_added_since(before);
@@ -370,9 +400,9 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches_locked(PollBatches request
         co_return r;
     }
     // §3.5 step 1: owed cancels first -- on an ended or cancelled run too, which is exactly when they are owed.
-    cancel_abandoned_batches();
+    co_await cancel_abandoned_batches();
     if (std::optional<WorkflowResult> cancelled = refuse_if_cancelled()) {
-        cancel_abandoned_batches();  // a cancel this call just settled abandoned the run's jobs
+        co_await cancel_abandoned_batches();  // a cancel this call just settled abandoned the run's jobs
         fill_batch_fields(*cancelled);
         co_return std::move(*cancelled);
     }
@@ -424,16 +454,17 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches_locked(PollBatches request
         std::int64_t oldest = pending.front()->submitted_at_ns;
         for (BatchItem const* b : pending) oldest = std::min(oldest, b->submitted_at_ns);
         if (pol.now_ns() - oldest > static_cast<std::int64_t>(pol.max_wait.count())) {
-            (void)guarded([&] { return backend.cancel(job, ctx); });
+            (void)co_await guarded_async([&] { return backend.cancel(job, ctx); });
             for (BatchItem* b : pending) {
+                // ADR-237 D6: max_wait is a deadline -- `resource` (was `transient`; an edge retry treats both alike)
                 resolve_batch_item_failed(*b, agentengine::batch_item_status::expired,
-                                          agentengine::failure_class::transient, "batch max_wait exceeded",
+                                          agentengine::failure_class::resource, "batch max_wait exceeded",
                                           /*honour_policy=*/true);
             }
             continue;
         }
 
-        auto polled = guarded([&] { return backend.poll(job, ctx); });
+        auto polled = co_await guarded_async([&] { return backend.poll(job, ctx); });
         if (!polled) {
             ++batch_poll_errors_this_call_;
             push_structural_event(workflow_event_kind::batch_poll_failed,
@@ -479,9 +510,12 @@ task<WorkflowResult> WorkflowSupervisor::poll_batches_locked(PollBatches request
 
 void WorkflowSupervisor::resolve_batch_item(BatchItem& item, agentengine::BatchItemResult const& result) {
     if (result.status != agentengine::batch_item_status::succeeded) {
-        agentengine::failure_class const klass = result.status == agentengine::batch_item_status::errored
-                                                     ? result.klass
-                                                     : agentengine::failure_class::transient;
+        // ADR-237 D6: a vendor-side `canceled` item was stopped on request (this engine only cancels a job when the
+        // run itself is cancelled or past max_wait, both resolved elsewhere) -- `canceled`, never retried; an
+        // `expired` item ran out the vendor's completion window -- a deadline, so `resource`. Both were `transient`.
+        agentengine::failure_class klass = agentengine::failure_class::resource;
+        if (result.status == agentengine::batch_item_status::errored) klass = result.klass;
+        if (result.status == agentengine::batch_item_status::canceled) klass = agentengine::failure_class::canceled;
         resolve_batch_item_failed(item, result.status, klass, result.detail, /*honour_policy=*/true);
         return;
     }
@@ -519,8 +553,8 @@ void WorkflowSupervisor::resolve_batch_item_failed(BatchItem& item, agentengine:
                                            agentengine::batch_item_status_tag(status)});
 }
 
-std::optional<workflow_status> WorkflowSupervisor::fold_batch_items(std::vector<Delivery>& next) {
-    if (batch_items_.empty()) return std::nullopt;
+task<std::optional<workflow_status>> WorkflowSupervisor::fold_batch_items(std::vector<Delivery>& next) {
+    if (batch_items_.empty()) co_return std::nullopt;
     std::vector<BatchItem> items;
     items.swap(batch_items_);
 
@@ -558,7 +592,7 @@ std::optional<workflow_status> WorkflowSupervisor::fold_batch_items(std::vector<
         record_visit(idx, rounds_ - 1, replies[i].payload);
         if (is_output_selected(idx)) state_.selected_output = replies[i].payload;
         if (merge_on_join_hook_ && graph_.executors[idx].worktree_mode == agentengine::sharing_mode::branch) {
-            agentengine::result<void> merged = merge_on_join_hook_(graph_.executors[idx].id);
+            agentengine::result<void> merged = co_await merge_on_join_hook_(graph_.executors[idx].id);
             if (!merged) {
                 state_.failed_executor = graph_.executors[idx].id;
                 push_structural_event(workflow_event_kind::merge_conflict, wp::MergeRef{graph_.executors[idx].id});
@@ -590,13 +624,13 @@ std::optional<workflow_status> WorkflowSupervisor::fold_batch_items(std::vector<
         auto const it = std::find_if(items.begin(), items.end(), [&](BatchItem const& b) { return b.job_id == job; });
         if (body->backend()->group_key() != it->group_key) continue;
         agentengine::EffectContext ctx = batch_context(idx);
-        (void)guarded([&] { return body->backend()->release(job, ctx); });
+        (void)co_await guarded_async([&] { return body->backend()->release(job, ctx); });
     }
-    return ended;
+    co_return ended;
 }
 
-void WorkflowSupervisor::cancel_abandoned_batches() {
-    if (abandoned_batches_.empty()) return;
+task<void> WorkflowSupervisor::cancel_abandoned_batches() {
+    if (abandoned_batches_.empty()) co_return;
     std::vector<AbandonedBatch> owed;
     owed.swap(abandoned_batches_);
     for (AbandonedBatch const& a : owed) {
@@ -607,9 +641,9 @@ void WorkflowSupervisor::cancel_abandoned_batches() {
             detail = "not cancelled: no backend with this job's group key is bound to the node";
         } else {
             agentengine::EffectContext ctx = batch_context(a.executor_index);
-            auto cancelled = guarded([&] { return body->backend()->cancel(a.job_id, ctx); });
+            auto cancelled = co_await guarded_async([&] { return body->backend()->cancel(a.job_id, ctx); });
             if (!cancelled) detail = cancelled.error().message;
-            (void)guarded([&] { return body->backend()->release(a.job_id, ctx); });
+            (void)co_await guarded_async([&] { return body->backend()->release(a.job_id, ctx); });
         }
         std::vector<std::string> ids;
         if (a.executor_index < graph_.executors.size()) ids.push_back(graph_.executors[a.executor_index].id);

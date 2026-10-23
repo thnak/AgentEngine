@@ -1,4 +1,4 @@
-// decisions/ADR-003-caller-aware-import-gating.md prove phase, claim B13's second half:
+// decisions/archive/ADR-003-caller-aware-import-gating.md prove phase, claim B13's second half:
 // lockdown_identity_intact()'s §3.3.4 check must actually have discriminating power against a
 // TrustedLoaderProxy built as a MUTABLE heap type (no Py_TPFLAGS_IMMUTABLETYPE) -- not merely
 // describe an accident of how the type happens to be built today. This requires a SEPARATE

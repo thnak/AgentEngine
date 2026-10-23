@@ -1,4 +1,4 @@
-// Proves 004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
+// Proves rfcs/004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
 // end to end against a REAL, LOCAL Ollama server -- the other local-server target that section's own
 // table names by name ("vLLM/llama.cpp/Ollama-style local servers"), alongside
 // tests/protocol/openai/test_llamacpp_live_e2e.cpp, which already proves the llama.cpp half. This file mirrors that
@@ -46,6 +46,7 @@
 // Ollama instance runs it -- see docs/research/2026-08-21-ollama-openai-compat-api.md's own closing
 // note.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
 
@@ -114,6 +115,7 @@ std::string g_prompt_prefix;
 // 006's real per-run tool table entry -- the exact type ChatRequest::tools already carries.
 [[nodiscard]] ToolDescriptor weather_tool() {
     ToolDescriptor t;
+    t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     t.name = "get_weather";
     t.description = "Get the current weather for a city.";
     t.args_schema_json =
@@ -405,7 +407,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = proxy.fetch(req, granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted, agentengine::sandbox::EgressCallControl{}));
         check(!resp.has_value() && resp.error().code == "net.address_blocked",
               "OL-8 (ADR-016 G1): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
               "this exact live local server is STILL refused on address policy");

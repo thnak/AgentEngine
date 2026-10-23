@@ -1,4 +1,4 @@
-// Prove-phase correctness gate for decisions/ADR-001-shellrunner-grammar-and-dispatch.md's Design
+// Prove-phase correctness gate for decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md's Design
 // A (src/backends/native_jail/{shell_grammar,shell_parser,shell_dispatch,shell_runner,
 // command_registry}.hpp). Exercises, end-to-end through the real ShellRunner (never a mock), the
 // claims ADR-001 §5 names that this pass attempts: Sh-C1 (ExecState sharing), Sh-C2 (shadowing
@@ -22,6 +22,7 @@
 #include <unistd.h>
 #endif
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/command_registry.hpp"
@@ -92,7 +93,7 @@ void test_sh_c1_execstate_sharing() {
 
     ExecState* state_addr_before = &state;
     ExecRequest req{"shell", "cd /work"};
-    auto outcome = runner.run(req, state, ctx);
+    auto outcome = agentengine::rt::block_on(runner.run(req, state, ctx));
     AE_CHECK(outcome.has_value(), "Sh-C1: cd /work succeeds");
     AE_CHECK(&state == state_addr_before, "Sh-C1: same ExecState object (identity), not a copy");
     AE_CHECK(state.cwd == "/work", "Sh-C1: state.cwd mutated in place to the canonical form");
@@ -124,9 +125,9 @@ void test_sh_c3_no_retokenize() {
     };
     for (auto const& c : cases) {
         std::string export_script = std::string("export X=\"") + c.value + "\"";
-        auto exp = runner.run(ExecRequest{"shell", export_script}, state, ctx);
+        auto exp = agentengine::rt::block_on(runner.run(ExecRequest{"shell", export_script}, state, ctx));
         AE_CHECK(exp.has_value(), std::string("Sh-C3 (") + c.name + "): export succeeds");
-        auto echoed = runner.run(ExecRequest{"shell", "echo $X"}, state, ctx);
+        auto echoed = agentengine::rt::block_on(runner.run(ExecRequest{"shell", "echo $X"}, state, ctx));
         AE_CHECK(echoed.has_value(), std::string("Sh-C3 (") + c.name + "): echo $X succeeds");
         std::string expected = c.value + "\n";
         AE_CHECK(echoed.has_value() && echoed->stdout_text == expected,
@@ -207,7 +208,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
         CapabilitySet caps; // empty
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
-        auto outcome = runner.run(ExecRequest{"shell", "py hello"}, state, ctx);
+        auto outcome = agentengine::rt::block_on(runner.run(ExecRequest{"shell", "py hello"}, state, ctx));
         AE_CHECK(!outcome.has_value() && outcome.error().code == "shell.capability_denied",
                  "Sh-G4 gate: missing RunnerCall is denied with a policy error");
         AE_CHECK(!invoked, "Sh-G4 gate: the nested Runner's invoke() never ran");
@@ -220,7 +221,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
         ctx_seen_inside_runner = nullptr;
-        auto outcome = runner.run(ExecRequest{"shell", "py hello"}, state, ctx);
+        auto outcome = agentengine::rt::block_on(runner.run(ExecRequest{"shell", "py hello"}, state, ctx));
         AE_CHECK(outcome.has_value(), "Sh-G4 construction: granted RunnerCall succeeds");
         AE_CHECK(invoked, "Sh-G4 construction: the nested Runner's invoke() ran");
         AE_CHECK(ctx_seen_inside_runner == &ctx,
@@ -263,7 +264,7 @@ void test_capability_checks_kind_only() {
         state.cwd = "/";
         EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        return runner.run(ExecRequest{"shell", std::move(script)}, state, ctx);
+        return agentengine::rt::block_on(runner.run(ExecRequest{"shell", std::move(script)}, state, ctx));
     };
 
     // export: denied without EnvWrite, then granted -> succeeds.
@@ -329,7 +330,7 @@ void test_a_c2_nothing_executes_on_parse_failure() {
     ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     std::string script = "mkdir /work/should_not_exist; if true then echo hi";
-    auto outcome = runner.run(ExecRequest{"shell", script}, state, ctx);
+    auto outcome = agentengine::rt::block_on(runner.run(ExecRequest{"shell", script}, state, ctx));
     AE_CHECK(!outcome.has_value(), "A-C2: the malformed script (missing 'fi') fails to parse");
     if (!outcome.has_value()) {
         std::cout << "    parse error code: " << outcome.error().code << "\n";
@@ -373,7 +374,7 @@ void test_sh_s1_hostile_name_corpus() {
         EffectContext ctx;
         CapabilitySet caps;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
-        auto outcome = runner.run(ExecRequest{"shell", std::string(name) + " -c hostile"}, state, ctx);
+        auto outcome = agentengine::rt::block_on(runner.run(ExecRequest{"shell", std::string(name) + " -c hostile"}, state, ctx));
         AE_CHECK(!outcome.has_value() && outcome.error().code == "shell.command_not_found",
                  std::string("end-to-end: '") + name + "' fails closed as command_not_found");
     }

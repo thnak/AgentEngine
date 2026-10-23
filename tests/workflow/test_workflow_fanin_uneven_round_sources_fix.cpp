@@ -46,11 +46,13 @@
 // state (a real, if perhaps unintended, form of partial-resume). Left as a disclosed residual, not
 // fixed here.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -101,8 +103,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 }  // namespace
@@ -136,23 +137,23 @@ int main() {
         auto slow_round = std::make_shared<int>(0);
         auto agg_calls  = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<ExecutorOutcome> { return ExecutorOutcome{in}; },
-            [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("FAST")};
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
+            [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("FAST")};
             },
-            [slow_round](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [slow_round](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 int const i = (*slow_round)++;
                 ExecutorOutcome out{};
                 out.payload = in;
                 out.routes  = {i < kSlowRounds ? "continue" : "finish"};
-                return out;
+                co_return out;
             },
-            [](Message const&, EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("SLOW-DONE")};
+            [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("SLOW-DONE")};
             },
-            [agg_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
 

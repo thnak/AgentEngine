@@ -1,4 +1,4 @@
-// Implements decisions/ADR-209-persistent-shell-sessions.md §5 (snapshot diff, caps, replay scripts) -- the
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §5 (snapshot diff, caps, replay scripts) -- the
 // non-template bodies of include/agentengine/sandbox/persistent_shell.hpp. Std only.
 
 #include "agentengine/sandbox/persistent_shell.hpp"

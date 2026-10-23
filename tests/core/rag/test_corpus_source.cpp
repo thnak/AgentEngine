@@ -1,4 +1,4 @@
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.4/§2.4b --
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.4/§2.4b --
 // `DiskCorpusSource`/`RecursiveChunker` (core/corpus_source.hpp). Proves, against real temp files on
 // disk, a small scripted mock `Embedder`, `InMemoryWorktreeObjectStore`, and
 // `rt::InMemoryAppendLogStore`:
@@ -27,7 +27,13 @@
 #include "agentengine/core/corpus_source.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -51,10 +57,6 @@ int g_failures = 0;
 // the metric §3 claim 2's disproof test compares against "the mutated file's own chunk count".
 class MockEmbedder {
 public:
-    // ADR-064 §3 Design B's required trait: this mock never awaits anything (co_return only), so
-    // driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return caps; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -172,15 +174,15 @@ int main() {
             std::as_bytes(std::span{file1_original.data(), file1_original.size()}));
         AE_CHECK(file1_blob_digest.has_value(), "(a) setup: file1's own content digest computes cleanly");
         if (file1_blob_digest.has_value()) {
-            AE_CHECK(index.contains(*file1_blob_digest),
+            AE_CHECK(sync_contains(index, *file1_blob_digest),
                      "(a) file1's chunk id (its own whole-file digest, since it's a single-chunk "
                      "file) is present in the index");
-            auto blob = object_store.get_blob(*file1_blob_digest);
+            auto blob = agentengine::rt::block_on(object_store.get_blob(*file1_blob_digest));
             AE_CHECK(blob.has_value() && std::string(reinterpret_cast<char const*>(blob->data()), blob->size()) ==
                                              file1_original,
                      "(a) the chunk TEXT itself is retrievable from the object store by that same id "
                      "(put_blob() and the precomputed chunk id agree)");
-            auto record = ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, *file1_blob_digest);
+            auto record = agentengine::rt::block_on(ae::read_corpus_chunk_record(object_store, ref_store, mount, read_cap, *file1_blob_digest));
             AE_CHECK(record.has_value() && record->source_path == "file1.txt" && record->line_start == 1 &&
                          record->line_end == 1,
                      "(a) the citation record for file1's chunk names the right source_path and a "
@@ -231,7 +233,7 @@ int main() {
         }
 
         ae::RecursiveChunker const chunker{/*chunk_size_words=*/5, /*overlap_fraction=*/0.4};
-        auto chunks = chunker.chunk(long_text);
+        auto chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(chunker.chunk(long_text));
 
         AE_CHECK(chunks.size() > 1,
                  "(d) a 20-word input with a 5-word target chunk size splits into multiple chunks");
@@ -276,12 +278,13 @@ int main() {
         // A single short input (well under the target size) yields exactly ONE chunk, no spurious
         // splitting or overlap machinery kicking in for content that never needed it.
         ae::RecursiveChunker const default_chunker{};
-        auto short_chunks = default_chunker.chunk("Just one short paragraph, nothing more.");
+        auto short_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            default_chunker.chunk("Just one short paragraph, nothing more."));
         AE_CHECK(short_chunks.size() == 1,
                  "(d) a short input (under the default ~450-word target) produces exactly 1 chunk");
 
         // An empty input produces zero chunks, not a spurious empty one.
-        auto empty_chunks = default_chunker.chunk("");
+        auto empty_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(default_chunker.chunk(""));
         AE_CHECK(empty_chunks.empty(), "(d) an empty input produces zero chunks");
     }
 
@@ -299,7 +302,8 @@ int main() {
         // split -- only the byte-cap backstop can be responsible for any splitting observed here.
         ae::RecursiveChunker const capped_chunker{/*chunk_size_words=*/50, /*overlap_fraction=*/0.0,
                                                     /*max_atom_bytes=*/64};
-        auto capped_chunks = capped_chunker.chunk(pathological_line);
+        auto capped_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            capped_chunker.chunk(pathological_line));
 
         AE_CHECK(capped_chunks.size() > 1,
                  "(e) a word-count-tiny line dominated by one huge no-whitespace run is still split "
@@ -323,7 +327,8 @@ int main() {
         // backstop is genuinely what changed behavior above, not some unrelated word-count effect.
         ae::RecursiveChunker const uncapped_chunker{/*chunk_size_words=*/50, /*overlap_fraction=*/0.0,
                                                       /*max_atom_bytes=*/0};
-        auto uncapped_chunks = uncapped_chunker.chunk(pathological_line);
+        auto uncapped_chunks = ae::test_support::run_task_sync<std::vector<ae::TextChunk>>(
+            uncapped_chunker.chunk(pathological_line));
         AE_CHECK(uncapped_chunks.size() == 1 && uncapped_chunks.front().text.size() == pathological_line.size(),
                  "(e) max_atom_bytes=0 disables the backstop entirely -- the same pathological line "
                  "again produces one unsplit, unbounded chunk, confirming the default (16384) is what "
@@ -331,7 +336,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3a --
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3a --
     // `DiskCorpusSource::mount_hybrid()`: chunks once, ingests into BOTH a dense and a sparse index,
     // and independently backfills a leg that was newly added to an already-mounted corpus WITHOUT
     // re-embedding -- found, by this exact check, to require passing EMPTY previous_file_hashes for
@@ -401,7 +406,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R3
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R3
     // (2026-09-22): a dense-leg add_batch() failure must NOT block committing chunks that only need
     // the SPARSE leg in the same pass (and vice versa) -- the two legs commit independently.
     // ============================================================================================
@@ -411,20 +416,23 @@ int main() {
         // "chunk already in the dense index" (needs_dense == false) from "chunk needs a dense
         // add_batch() call that then fails" (needs_dense == true, and that call fails).
         struct FailAfterSeedDenseIndex {
-            ae::result<void> add_batch(std::vector<std::string> const& ids,
-                                        std::vector<std::vector<float>> const&) {
+            ae::task<ae::result<void>> add_batch(std::vector<std::string> const& ids,
+                                                 std::vector<std::vector<float>> const&, ae::EffectContext&) {
                 if (fail_now) {
-                    return std::unexpected(
+                    co_return std::unexpected(
                         ae::error{ae::failure_class::transient, "scripted dense add_batch failure",
                                   "test.scripted_dense_failure"});
                 }
                 for (auto const& id : ids) seeded.insert(id);
-                return {};
+                co_return ae::result<void>{};
             }
-            ae::result<std::vector<ae::ScoredId>> search(std::span<float const>, std::size_t) const {
-                return std::vector<ae::ScoredId>{};
+            ae::task<ae::result<std::vector<ae::ScoredId>>> search(std::span<float const>, std::size_t,
+                                                                   ae::EffectContext&) const {
+                co_return std::vector<ae::ScoredId>{};
             }
-            [[nodiscard]] bool contains(std::string const& id) const { return seeded.contains(id); }
+            ae::task<ae::result<bool>> contains(std::string const& id, ae::EffectContext&) const {
+                co_return seeded.contains(id);
+            }
 
             std::unordered_set<std::string> seeded;
             bool fail_now = false;
@@ -448,7 +456,7 @@ int main() {
         // Pre-seed the dense index with chunk A's own id -- chunk A is now "already in dense" (so
         // mount_hybrid() will mark it needs_dense == false, needs_sparse == true, a sparse-only
         // commit), WITHOUT going through the (about-to-be-scripted-to-fail) add_batch() path.
-        AE_CHECK(dense_index.add_batch({*chunk_a_digest}, {{0.0f}}).has_value(),
+        AE_CHECK(sync_add_batch(dense_index, {*chunk_a_digest}, {{0.0f}}).has_value(),
                  "R3 setup: chunk A pre-seeded into the dense index directly");
         dense_index.fail_now = true;  // any FURTHER dense add_batch() call (chunk B's) now fails
 
@@ -473,7 +481,7 @@ int main() {
         AE_CHECK(!result.has_value() && result.error().code == "test.scripted_dense_failure",
                  "R3-2: the reported error is genuinely the scripted dense failure, not something else");
 
-        AE_CHECK(sparse_index.contains(*chunk_a_digest),
+        AE_CHECK(sync_contains(sparse_index, *chunk_a_digest),
                  "R3-3: chunk A (sparse-only, needs_dense==false) WAS committed to the sparse index "
                  "despite chunk B's dense-leg failure happening in the SAME pass -- the two legs "
                  "commit independently, proving the fix for finding R3");
@@ -481,11 +489,11 @@ int main() {
         auto chunk_b_digest =
             ae::compute_digest(std::as_bytes(std::span{chunk_b_text.data(), chunk_b_text.size()}));
         AE_CHECK(chunk_b_digest.has_value(), "R3 setup: chunk B's digest computes cleanly");
-        AE_CHECK(sparse_index.contains(*chunk_b_digest),
+        AE_CHECK(sync_contains(sparse_index, *chunk_b_digest),
                  "R3-4: chunk B (needed BOTH legs) was ALSO committed to sparse, even though its OWN "
                  "dense leg failed -- the sparse commit for chunk B ran regardless of the dense "
                  "outcome, since sparse_ids/sparse_texts are collected and committed independently");
-        AE_CHECK(!dense_index.contains(*chunk_b_digest),
+        AE_CHECK(!sync_contains(dense_index, *chunk_b_digest),
                  "R3-5: chunk B correctly did NOT land in the dense index -- its add_batch() call "
                  "genuinely failed, this isn't a case of the error being spurious");
 

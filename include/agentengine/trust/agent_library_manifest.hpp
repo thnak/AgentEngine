@@ -1,5 +1,5 @@
 #pragma once
-// Resolves OQ-16 (OpenQuestions.md): 026-Agent-Facing-Runtime-Surface.md §4 gives `agent.tools` a
+// Resolves OQ-16 (OpenQuestions.md): rfcs/026-Agent-Facing-Runtime-Surface.md §4 gives `agent.tools` a
 // real introspection story (docstrings, a .pyi stub, dir()/help()) but the other seven `agent.*`
 // modules (026 §5) have no equivalent, and nothing tells the model which top-level modules are even
 // present before it tries importing one.
@@ -18,7 +18,7 @@
 // simply absent from both outputs -- never listed as "present" and never explained as denied.
 //
 // KNOWN LIMITATION, stated rather than papered over: `trust/capability.hpp` now has a real
-// parameterized `Capability` (decisions/ADR-009-capability-set-enforcement-mechanism.md) that CAN
+// parameterized `Capability` (decisions/archive/ADR-009-capability-set-enforcement-mechanism.md) that CAN
 // distinguish a "/memory mount" FsRead/FsWrite from any other mount's — but this registry still
 // gates on plain `capability_kind` (`contains_kind`, kind-only), coarser than 026 §5's actual
 // "FsRead<mount> on /memory" / "FsWrite<mount> on /memory". Sharpening `ModuleDescriptor` to gate on

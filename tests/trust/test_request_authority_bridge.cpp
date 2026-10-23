@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §31/§33/§34/§35 (decisions/ADR-061-host-provided-inbound-transport.md).
+// ADR-061 prove phase, §31/§33/§34/§35 (decisions/archive/ADR-061-host-provided-inbound-transport.md).
 // Proves the falsifiable claims tables at §31.3 and §33.8 for the two pieces that section's design
 // round built: `trust::EndpointId`/`EndpointRegistry`/`mint_endpoint_id()` (endpoint_id.hpp) and
 // `rt::request_authority_from_bearer_claims()` (request_authority_bridge.hpp) -- the bridge from a
@@ -106,7 +106,7 @@ int main() {
 
         auto authority = rt::request_authority_from_bearer_claims(claims, held, wall_now, steady_now);
         check(authority.has_value(), "claim 3 setup: a well-formed, unexpired claim succeeds");
-        check(authority->expiry == steady_now + std::chrono::hours{1},
+        check(authority->expiry == agentengine::Expiry::at(steady_now + std::chrono::hours{1}),
               "claim 3: expiry is derived purely from the passed-in samples, not a real clock read");
     }
 

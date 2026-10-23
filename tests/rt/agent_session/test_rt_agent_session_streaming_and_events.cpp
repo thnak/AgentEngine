@@ -60,12 +60,15 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/response_format_leak_scan.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentResponse;
 using agentengine::rt::AgentSession;
@@ -90,8 +93,7 @@ void check(bool cond, char const* what) {
 // every chat_stream() pushes its whole scripted round synchronously before closing.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -122,12 +124,12 @@ struct EchoReply { int value = 0; };
 AE_JSON_SCHEMA(EchoReply, value)
 
 struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
-                                     agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                     agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 // ---- A tool, for L1/L3's leaked-Harmony-block promotion -------------------------------------------
@@ -139,13 +141,13 @@ AE_JSON_SCHEMA(WeatherReply, forecast)
 
 struct GetWeatherTool
     : agentengine::Tool<GetWeatherTool, agentengine::Capabilities<>,
-                         agentengine::EffectClass<agentengine::effect_class::pure>> {
+                         agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Looks up the weather for a location.";
     using Args = WeatherArgs;
     using Reply = WeatherReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
-        return Reply{"sunny in " + a.location};
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
+        co_return Reply{"sunny in " + a.location};
     }
 };
 
@@ -169,7 +171,7 @@ public:
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         if constexpr (sizeof...(ToolTs) > 0) {
-            c.tools = agentengine::ToolTable::from_tools<ToolTs...>().descriptors();
+            c.tools = agentengine::ToolTable::from(ToolTs{}...).descriptors();
         }
         co_return c;
     }
@@ -354,7 +356,7 @@ int main() {
     // ---- S1: streamed, no-tool-call response --------------------------------------------------------
     {
         PlainSession session;
-        session.initialize("s-s1", Principal{"p", ""});
+        session.initialize("s-s1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {{
             text_delta("Hello"),
@@ -401,7 +403,7 @@ int main() {
     // ---- S2: streamed tool-call round trip ------------------------------------------------------------
     {
         EchoSession session;
-        session.initialize("s-s2", Principal{"p", ""});
+        session.initialize("s-s2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {
@@ -433,7 +435,7 @@ int main() {
     // ---- S3: no usage on the terminal update -- fails closed, never silently zero-cost -----------------
     {
         PlainSession session;
-        session.initialize("s-s3", Principal{"p", ""});
+        session.initialize("s-s3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {{
             text_delta("hi", /*is_final=*/true, /*usage=*/std::nullopt),
@@ -467,7 +469,7 @@ int main() {
     {
         PlainSession session;
         session.emplace_chat_client();
-        session.initialize("s-s4", Principal{"p", ""});
+        session.initialize("s-s4", Principal{"p", ""}, ae_test::trusted_unbounded());
         check(!session.stream_model_calls(), "S4: streaming defaults false");
         session.set_stream_model_calls(true);
         check(session.stream_model_calls(), "S4: set_stream_model_calls(true) engages it");
@@ -482,7 +484,7 @@ int main() {
     // ---- L1: streaming path, scan armed -- the leaked Harmony block is promoted and invoked -----------
     {
         WeatherSession session;
-        session.initialize("s-l1", Principal{"p", ""});
+        session.initialize("s-l1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
@@ -509,7 +511,7 @@ int main() {
     // ---- L2: streaming path, scan NOT armed (default) -- the leak passes through unchanged -------------
     {
         WeatherSession session;
-        session.initialize("s-l2", Principal{"p", ""});
+        session.initialize("s-l2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.stream_rounds = {
             {text_delta(kHarmonyLeak, /*is_final=*/true, Usage{3, 4, 0, 0, 0.0})},
@@ -537,7 +539,7 @@ int main() {
     // ---- L3: non-streaming (chat()) path, scan armed via AgentSession -- proves path-agnosticism --------
     {
         WeatherSession session;
-        session.initialize("s-l3", Principal{"p", ""});
+        session.initialize("s-l3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.chat_rounds = {
             ChatResponse{text_message(kHarmonyLeak), Usage{3, 4, 0, 0, 0.0}},
@@ -579,6 +581,7 @@ int main() {
         std::vector<ToolDescriptor> real_tool_only;
         {
             ToolDescriptor d;
+            d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
             d.name = "real_tool";
             real_tool_only.push_back(d);
         }
@@ -608,7 +611,7 @@ int main() {
     // ---- OQ-M1: streaming, tool_calling declared, scan NOT armed, leak matches a live tool (D1/D5) ----
     {
         WeatherSession session;
-        session.initialize("s-oqm1", Principal{"p", ""});
+        session.initialize("s-oqm1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.stream_rounds = {
@@ -649,7 +652,7 @@ int main() {
     // ---- OQ-M2: streaming, tool_calling declared, scan ARMED -- new check does not fire/interfere (D2a) --
     {
         WeatherSession session;
-        session.initialize("s-oqm2", Principal{"p", ""});
+        session.initialize("s-oqm2", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.stream_rounds = {
@@ -678,7 +681,7 @@ int main() {
     // ---- OQ-M3: chat() path, tool_calling declared, scan NOT armed, unrecognized recipient (D3) --------
     {
         WeatherSession session;
-        session.initialize("s-oqm3", Principal{"p", ""});
+        session.initialize("s-oqm3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         std::string const decoy_leak =
@@ -703,7 +706,7 @@ int main() {
     // ---- OQ-M4: chat() path, tool_calling declared, scan NOT armed, ordinary clean content (D3) --------
     {
         WeatherSession session;
-        session.initialize("s-oqm4", Principal{"p", ""});
+        session.initialize("s-oqm4", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.caps_tool_calling = true;
         client.chat_rounds = {
@@ -729,7 +732,7 @@ int main() {
     // ---- A1: no enable_event_stream() call -- a run proceeds exactly as before, no crash --------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-no-stream", Principal{"p1", ""});
+        session.initialize("s-no-stream", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
         check(r.has_value(), "A1: a run with no event stream enabled still succeeds normally");
     }
@@ -737,7 +740,7 @@ int main() {
     // ---- A2: a successful run emits the full real success-path sequence, in order, seq 1..6 -----------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-success", Principal{"p1", ""});
+        session.initialize("s-success", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -769,7 +772,7 @@ int main() {
     // ---- count forward.                                                                              ---
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-reset", Principal{"p1", ""});
+        session.initialize("s-reset", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         (void)drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -789,7 +792,7 @@ int main() {
     // ---- A4a: a chat-call failure emits RunFailed as the terminal event, never RunFinished --------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-chat-fail", Principal{"p1", ""});
+        session.initialize("s-chat-fail", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().fail_next = true;
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
@@ -815,7 +818,7 @@ int main() {
     // ---- A4b: token-budget exceeded emits RunFailed with the budget error_code ---------------------------
     {
         AgentSession<FailableChatClient> session;
-        session.initialize("s-budget", Principal{"p1", ""}, /*token_budget=*/std::uint64_t{1});
+        session.initialize("s-budget", Principal{"p1", ""}, ae_test::trusted(/*token_budget=*/std::uint64_t{1}));
         session.emplace_chat_client().reply_tokens = 1000;  // blows a budget of 1
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
@@ -836,7 +839,7 @@ int main() {
     // ---- A4c: no chat client configured emits RunFailed, before ModelCallStarted ever fires --------------
     {
         AgentSession<NeverEngagedChatClient> session;
-        session.initialize("s-no-client", Principal{"p1", ""});
+        session.initialize("s-no-client", Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(StartRun{make_turn("m-1")}));
@@ -861,7 +864,7 @@ int main() {
         AgentSession<FailableChatClient> session;
         Principal const owner    = Principal{"p-owner", "tenant-a"};
         Principal const stranger = Principal{"p-stranger", "tenant-a"};
-        session.initialize("s-denied", owner);
+        session.initialize("s-denied", owner, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(

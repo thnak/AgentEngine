@@ -68,14 +68,14 @@ AE_JSON_SCHEMA(WeatherReply, forecast)
 // Empty capability ceiling: this tool only formats its own argument, so it needs no capability
 // grant to run, and `never_require` approval (the default, undeclared here) is the honest policy
 // for it -- 007's "declare only what the effect actually needs."
-struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct GetWeatherTool : Tool<GetWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Gets the current weather for a location.";
     using Args = WeatherArgs;
     using Reply = WeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         weather_tool_invoked() = true;
-        return Reply{"The weather in " + a.location + " is cloudy with a high of 15C."};
+        co_return Reply{"The weather in " + a.location + " is cloudy with a high of 15C."};
     }
 };
 
@@ -86,7 +86,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<GetWeatherTool>().descriptors();
+        c.tools = ToolTable::from(GetWeatherTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -167,7 +167,12 @@ T drive(agentengine::rt::task<T> t) {
 
 int main() {
     WeatherAgent session;
-    session.initialize("s-weather", Principal{"p-demo", ""});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-weather", Principal{"p-demo", ""},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     // Even an all-empty-Capabilities<> tool must be authorized against a real, explicitly granted
     // CapabilitySet (I2: no ambient authority) -- there is no "no capabilities needed" bypass.

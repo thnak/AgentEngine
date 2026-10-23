@@ -37,12 +37,15 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_call_hook.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -66,8 +69,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session_suspend_approval.cpp's own drive<T>() already documents.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -108,14 +110,14 @@ struct PlainReply { int value = 0; };
 AE_JSON_SCHEMA(PlainReply, value)
 
 struct PlainTool : agentengine::Tool<PlainTool, agentengine::Capabilities<>,
-                                       agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                       agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "plain_tool";
     static constexpr std::string_view description = "A capability-free tool that never needs approval.";
     using Args = PlainArgs;
     using Reply = PlainReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         plain_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -146,10 +148,10 @@ struct DangerousNeverRequireTool
     static constexpr std::string_view description = "Sends an email (real egress capability).";
     using Args = DangerousArgs;
     using Reply = DangerousReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         dangerous_tool_seen_account() = a.account;
         ++dangerous_tool_invoked_count();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -174,13 +176,13 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
-// -- H4c's regression fixture: decisions/ADR-070-host-configurable-responsibility-boundary.md's
+// -- H4c's regression fixture: decisions/archive/ADR-070-host-configurable-responsibility-boundary.md's
 // PolicyDecider seam, at the resolve_hook_decision() completion call site specifically -- the exact
 // call site the implementing pass's own report says had a real bug (finish_hook_processed_round()'s
 // invoke_tool() call silently dropping policy_decider_, so a PolicyDecider-auto_approved
@@ -204,9 +206,9 @@ struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabil
     static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
     using Args = PolicyGateArgs;
     using Reply = PolicyGateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         policy_gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -218,8 +220,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<PlainTool, DangerousNeverRequireTool, GatedTool,
-                                                        PolicyGatedTool>()
+        c.tools = agentengine::ToolTable::from(PlainTool{}, DangerousNeverRequireTool{}, GatedTool{}, PolicyGatedTool{})
                       .descriptors();
         co_return c;
     }
@@ -315,7 +316,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h1", Principal{"p", ""});
+        session.initialize("h1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("after-denial"), Usage{1, 1, 0, 0, 0.0}},
@@ -325,9 +326,9 @@ int main() {
 
         bool decider_called = false;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view, std::string const&) {
+            [&](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
                 decider_called = true;  // must NEVER fire -- a hook denial is already-decided
-                return true;
+                co_return true;
             });
 
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
@@ -384,7 +385,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2a", Principal{"p", ""});
+        session.initialize("h2a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -422,7 +423,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2b", Principal{"p", ""});
+        session.initialize("h2b", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -434,10 +435,10 @@ int main() {
 
         std::string seen_args;
         session.set_approval_decider(
-            [&](Principal const&, std::string_view tool_name, std::string const& args_json) {
+            [&](Principal const&, std::string_view tool_name, std::string const& args_json) -> agentengine::task<bool> {
                 check(tool_name == "send_email", "H2b: decider sees the correct tool name");
                 seen_args = args_json;
-                return false;
+                co_return false;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
@@ -462,7 +463,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h2c", Principal{"p", ""});
+        session.initialize("h2c", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"attacker-controlled"})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -472,7 +473,7 @@ int main() {
             CapabilitySet::grant_root({agentengine::cap::NetOut{{"api.example.com"}, std::nullopt, {}}});
         session.set_capabilities(&held);
         session.set_approval_decider(
-            [](Principal const&, std::string_view, std::string const&) { return true; });
+            [](Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> { co_return true; });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "send_email") {
                 hctx.rewritten_arguments = *agentengine::json::parse(R"({"account":"rewritten-by-hook"})");
@@ -506,7 +507,7 @@ int main() {
         dangerous_tool_invoked_count() = 0;
 
         Session session;
-        session.initialize("h3a", Principal{"p", ""});
+        session.initialize("h3a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "send_email", R"({"account":"legit-user"})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -533,7 +534,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h3b", Principal{"p", ""});
+        session.initialize("h3b", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -583,7 +584,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4a", Principal{"p", ""});
+        session.initialize("h4a", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":42})"), Usage{1, 1, 0, 0, 0.0}},
@@ -647,7 +648,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4b", Principal{"p", ""});
+        session.initialize("h4b", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done-after-external-denial"), Usage{1, 1, 0, 0, 0.0}},
@@ -685,7 +686,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4d", Principal{"p", ""});
+        session.initialize("h4d", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -732,7 +733,7 @@ int main() {
         plain_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4e", Principal{"p", ""});
+        session.initialize("h4e", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "plain_tool", R"({"value":8})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done-after-retry"), Usage{1, 1, 0, 0, 0.0}},
@@ -767,7 +768,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h4c", Principal{"p", ""});
+        session.initialize("h4c", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":5})"), Usage{1, 1, 0, 0, 0.0}},
@@ -779,8 +780,8 @@ int main() {
         // finish_hook_processed_round()'s invoke_tool() call, this call is misclassified as
         // needs_decider and denied with no decider present. That IS the bug this test guards.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
         session.set_tool_call_hook([](ToolCallHookContext& hctx) -> task<agentengine::result<std::monostate>> {
             if (hctx.tool_name == "policy_gated_tool") hctx.needs_external_dispatch = true;
@@ -814,7 +815,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("h5", Principal{"p", ""});
+        session.initialize("h5", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":1})"), Usage{1, 1, 0, 0, 0.0}},

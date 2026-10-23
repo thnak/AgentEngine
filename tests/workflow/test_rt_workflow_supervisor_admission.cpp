@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-169-workflow-supervisor-admission.md (GitHub issue #65): every public
+// Proof for decisions/archive/ADR-169-workflow-supervisor-admission.md (GitHub issue #65): every public
 // entry point of `agentengine::rt::WorkflowSupervisor` -- `run_workflow()`, `resume_workflow()`,
 // `continue_workflow()` -- admits its caller against the supervisor's owning `Principal` before
 // touching any run state, closing the I2/I4 gap where any holder of an `interaction_id` could resolve
@@ -44,6 +44,7 @@
 // MACHINE SAFETY (CLAUDE.md): every graph here is 2-3 nodes with `bound.max_rounds` set; no sleeps,
 // no unbounded loops, no subprocesses.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <memory_resource>
@@ -51,6 +52,7 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -85,8 +87,7 @@ void check(bool cond, char const* what) {
 // only suspension points are run_mutex_'s uncontended fast path and a nested co_await execute().
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text) {
@@ -127,8 +128,8 @@ template <class T>
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
+    return [name = std::move(name)](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + ">" + name)};
     };
 }
 

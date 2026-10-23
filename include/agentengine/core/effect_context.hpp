@@ -1,5 +1,5 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md and I4 — the mandatory attribution parameter
+// Implements rfcs/007-Capability-and-Trust-Model.md and I4 — the mandatory attribution parameter
 // carried into every effect. Never an ambient thread-local (CONVENTIONS.md "Security rules").
 
 #include <chrono>
@@ -14,9 +14,11 @@
 #include <string_view>
 #include <vector>
 
+#include "agentengine/core/authority_terms.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
+#include "agentengine/core/task.hpp"  // ADR-237 5.1 (#187): blob_sink returns task<result<BlobRef>>
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -34,8 +36,27 @@ namespace agentengine {
     return std::shared_ptr<CapabilitySet const>(&cs, [](CapabilitySet const*) noexcept {});
 }
 
+// decisions/ADR-244-required-choices-step-1b.md §2.4: which session, and which incarnation of it, this context
+// belongs to. Minted by the session only (`rt::AgentSessionCore`): `identity` is its never-reused per-object
+// counter, `epoch` moves on every initialize, clear, restore and fork. A principal (shared across sessions)
+// or a session_id string (reused by a restored copy) is not an identity; this is what a one-per-session
+// resource (the mediated Python worker) binds to. `identity == 0` means "no session minted this context".
+struct SessionNonce {
+    std::uint64_t identity = 0;
+    std::uint64_t epoch    = 0;
+
+    [[nodiscard]] constexpr bool minted() const noexcept { return identity != 0; }
+    friend constexpr bool operator==(SessionNonce, SessionNonce) noexcept = default;
+};
+
 struct EffectContext {
     Principal                             principal;
+    SessionNonce                          session_nonce;
+    // ADR-244 §2.3: written by the session in every branch of its dispatch-authority step, never by a tool or
+    // from model output. nullopt on a context no session built. A spawned child inherits the source from here.
+    std::optional<authority_mode>         authority_source;
+    // The admitted request's expiry under `per_request`; nullopt under `single_trusted_caller`.
+    std::optional<Expiry>                 authority_expires_at;
     // ADR-061 §20.3: a shared_ptr, not a raw pointer, since Tier 3 populates this per-request from a
     // RequestAuthority-owned CapabilitySet (rt/agent_session.hpp) that must outlive the coroutine
     // frame that constructed it -- a raw pointer borrowed from that frame would dangle once the
@@ -63,6 +84,15 @@ struct EffectContext {
     // -- never wall-clock-derived (001 §7: an unrecorded wall-clock read here would be exactly the
     // kind of untracked nondeterminism I5 forbids).
     std::string  run_id;
+    // ADR-241 §8.4 (S2 step 1): the id of the ROOT run this call descends from -- the run an agent.spawn
+    // child, a background job or a workflow node ultimately serves. A root run's value is its own `run_id`;
+    // every descendant carries the root's. It is the egress proxy's admission label (`EgressCallControl::
+    // admission`, sandbox/net_egress_proxy.hpp): a value that only SELECTS which bucket to debit, so it can only
+    // narrow (I2-neutral). HOST-SET ONLY (I3): every writer is host code that copies it from the session core,
+    // a `ChildSpawnRequest`, a job owner or the workflow supervisor -- nothing here is ever derived from model
+    // output, and no tool writes it. Empty means "unknown": the admission step then falls back to `run_id`, and if
+    // both are empty charges the UNATTRIBUTED bucket (it never skips a level, ADR-241 R5-1).
+    std::string  root_run_id;
     std::uint64_t turn_index = 0;
     // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): host-driven REPLAY state,
     // set by `AgentSession::resolve_interaction()`'s `codeact_ask` branch (rt/agent_session.hpp)
@@ -234,7 +264,11 @@ struct EffectContext {
     // means "no sink available" -- step 9 treats that as "cannot promote" and fails closed rather
     // than silently inlining an over-threshold result anyway, which is exactly the hazard this
     // mechanism exists to prevent (see `tool_pipeline.hpp`'s own comment on this decision).
-    std::function<result<BlobRef>(std::span<std::byte const> bytes, std::string const& media_type)>
+    //
+    // ADR-237 5.1 (#187): `task`-shaped, because its documented conformer
+    // (`WorktreeObjectStore::put_blob`) is. The sink's arguments (`bytes`) must outlive the task;
+    // every caller awaits it in the same full-expression, from a frame that owns the bytes.
+    std::function<task<result<BlobRef>>(std::span<std::byte const> bytes, std::string const& media_type)>
         blob_sink;
 
     // The session's own mediated filesystem view into its sandbox mount, if one is currently live

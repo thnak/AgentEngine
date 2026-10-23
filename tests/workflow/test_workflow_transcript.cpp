@@ -6,11 +6,13 @@
 //   T3 -- the cap: enable_transcript(3) keeps the first three visits and sets transcript_truncated.
 //   T4 -- a fresh run starts a fresh transcript (no carry-over from the previous run).
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/magentic.hpp"
 
@@ -39,8 +41,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text) {
@@ -88,21 +89,21 @@ void make(Fixture& f) {
     }
     f.graph = std::move(*built);
     f.bodies = {
-        [&f](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+        [&f](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
             int const n = f.step.fetch_add(1);
             std::vector<std::string> route = n % 3 == 0 ? std::vector<std::string>{"p1"}
                                              : n % 3 == 1 ? std::vector<std::string>{"p2"}
                                                           : std::vector<std::string>{"done"};
-            return ExecutorOutcome{text_message(text_of(in)), route};
+            co_return ExecutorOutcome{text_message(text_of(in)), route};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">p1")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">p1")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">p2")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">p2")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-            return ExecutorOutcome{in};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{in};
         },
     };
 }

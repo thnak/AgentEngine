@@ -1,4 +1,4 @@
-// Implements decisions/ADR-168-bounded-reflection-loop.md's proof obligations for
+// Implements decisions/archive/ADR-168-bounded-reflection-loop.md's proof obligations for
 // `run_with_bounded_reflection()` (rt/bounded_reflection.hpp), issue #55. Mirrors
 // examples/03_multi_turn.cpp's fake-ChatClient/drive() pattern -- this loop's whole point is
 // repeated `start_run()` calls on one session, so the test needs a ChatClient that answers
@@ -8,6 +8,7 @@
 #include <string>
 
 #include "agentengine/core/chat_client.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/bounded_reflection.hpp"
@@ -86,7 +87,7 @@ int main() {
     // --- R1: satisfied on the first try -- exactly one start_run(), iterations_used == 1 --------
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r1", principal);
+        session.initialize("s-r1", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = test_support::run_task_sync<result<ReflectionOutcome>>(run_with_bounded_reflection(
@@ -103,7 +104,7 @@ int main() {
     // --- R2: unsatisfied twice, satisfied on the third -- iterations_used == 3, three real turns -
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r2", principal);
+        session.initialize("s-r2", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         int calls = 0;
@@ -138,7 +139,7 @@ int main() {
     // --- R3: bound reached without satisfaction -- an OK outcome, not an error --------------------
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r3", principal);
+        session.initialize("s-r3", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto never_satisfied = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {
@@ -158,7 +159,7 @@ int main() {
     // --- R4: evaluator failure aborts the loop immediately, never treated as satisfied/retry -----
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r4", principal);
+        session.initialize("s-r4", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto failing_evaluator = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {
@@ -180,7 +181,7 @@ int main() {
     // --- R5: max_iterations == 0 is rejected before any start_run() at all ------------------------
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r5", principal);
+        session.initialize("s-r5", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = test_support::run_task_sync<result<ReflectionOutcome>>(
@@ -200,9 +201,9 @@ int main() {
     // top-comment claim that the two bounds are genuinely separate axes.
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r6", principal);
+        session.initialize("s-r6", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
-        session.set_max_turns(1);
+        check(session.set_max_turns(agentengine::Bound<std::uint64_t>::at_most(1)).has_value(), "R6 setup: max_turns 1");
 
         int calls = 0;
         auto evaluator = [&calls](AgentResponse const&) -> task<result<EvaluationVerdict>> {
@@ -224,7 +225,7 @@ int main() {
     // three iterations must report exactly 3*(1+1) == 6, never just the last iteration's cost or 0. --
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r7", principal);
+        session.initialize("s-r7", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         int calls = 0;
@@ -251,7 +252,7 @@ int main() {
     // 5-iteration loop, with a real, distinguishable error -- never silently truncated output. -------
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r8", principal);
+        session.initialize("s-r8", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto never_satisfied = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {
@@ -280,7 +281,7 @@ int main() {
     // none of which pass a 5th argument) is unaffected by this addition. -----------------------------
     {
         AgentSession<DraftingChatClient> session;
-        session.initialize("s-r9", principal);
+        session.initialize("s-r9", principal, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto never_satisfied = [](AgentResponse const&) -> task<result<EvaluationVerdict>> {

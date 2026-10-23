@@ -29,7 +29,7 @@ if(WIN32)
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 endif()
 
-# ---- Skills Phase 3 (decisions/ADR-024's addendum): agent-triggered, on-demand skill mounting.
+# ---- Skills Phase 3 (decisions/archive/ADR-024's addendum): agent-triggered, on-demand skill mounting.
 # Core-tier only (no native_jail/Python dependency) -- proves MountedSkillsState's own contract plus
 # the load-bearing chain: invoke_tool genuinely rejects a skill-named tool before that skill is
 # mounted, and the SAME call succeeds after, through the real SkillsProvider/scope_tools_to_mounted_

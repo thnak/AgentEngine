@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8b-8c -- proves core/skill_provider.hpp's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8b-8c -- proves core/skill_provider.hpp's
 // `SkillsProvider`: real mounting through core/worktree.hpp's real Tree/Ref/Mount machinery (never a
 // mock), the flat `/skills/<name>` path, the reject-on-collision anti-shadowing rule, the system-
 // message advertisement shape, and the resolve-once/freeze guarantee (009 §8c).
@@ -10,6 +10,7 @@
 
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -99,8 +100,8 @@ int main() {
             check(pdf_mount != nullptr, "R1: pdf-tools' own Mount record is retrievable");
             if (pdf_mount) {
                 cap::FsRead granted{"pdf-tools", "", std::nullopt};
-                auto bytes = mount_read(provider.object_store(), provider.ref_store(), *pdf_mount,
-                                         granted, "SKILL.md");
+                auto bytes = agentengine::rt::block_on(mount_read(provider.object_store(), provider.ref_store(), *pdf_mount,
+                                         granted, "SKILL.md"));
                 check(bytes.has_value(), "R1: mount_read succeeds through a real granted capability");
                 if (bytes) {
                     std::string const content(reinterpret_cast<char const*>(bytes->data()), bytes->size());

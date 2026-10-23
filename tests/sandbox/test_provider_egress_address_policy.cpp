@@ -1,4 +1,4 @@
-// Proves decisions/ADR-016-provider-egress-address-policy.md's gates G1-G4.
+// Proves decisions/archive/ADR-016-provider-egress-address-policy.md's gates G1-G4.
 //
 // ADR-016 relaxes the SSRF blocked-range table on the HOST-INITIATED provider path (004 §3) while
 // leaving it fully enforced on the WASM GUEST egress path (ADR-011 claims C4/C5). A change of that
@@ -18,6 +18,7 @@
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/net.hpp"
 
 #include <atomic>
@@ -222,7 +223,7 @@ int main() {
                   validated->port == plain->port,
               "G3: on a non-blocked literal both resolvers return the identical VerifiedEndpoint");
 
-        // CORRECTED (2026-08-29, decisions/ADR-011-first-party-egress-proxy.md §9): this check
+        // CORRECTED (2026-08-29, decisions/archive/ADR-011-first-party-egress-proxy.md §9): this check
         // originally asserted BOTH resolvers reject "0177.0.0.1" outright, on the theory that
         // `inet_pton`'s strict dotted-quad-only fast path rejecting the string (true, confirmed just
         // above, on BOTH platforms) meant the whole resolution pipeline would treat it as unparseable.
@@ -322,7 +323,7 @@ int main() {
         sandbox::HostEgressProxy proxy;  // real resolver, exactly as production constructs it
         cap::NetOut granted;
         granted.host_allowlist.push_back(host + ":" + std::to_string(server.port()) + ":http");
-        auto resp = proxy.fetch(simple_get(), granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(simple_get(), granted, sandbox::EgressCallControl{}));
         check(!resp.has_value(),
               "G1 (end to end): a WASM guest holding a cap::NetOut grant that explicitly allowlists "
               "this exact live loopback target is STILL refused -- ADR-016 relaxed the provider path "

@@ -60,14 +60,14 @@ AE_JSON_SCHEMA(WriteReply, written)
 // capability check IS the gate for this tool, not a human approval step (see 05_human_approval.cpp
 // for a tool that needs the latter instead of, or in addition to, a capability).
 struct WriteNoteTool
-    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>> {
+    : Tool<WriteNoteTool, Capabilities<cap::decl::FsWrite<"work">>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "write_note";
     static constexpr std::string_view description = "Writes a note into the work mount.";
     using Args = WriteArgs;
     using Reply = WriteReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         write_tool_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -76,7 +76,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<WriteNoteTool>().descriptors();
+        c.tools = ToolTable::from(WriteNoteTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -161,7 +161,12 @@ int main() {
         write_tool_invoked() = false;
 
         WriteAgent session;
-        session.initialize("s-no-grant", Principal{"p-demo", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-no-grant", Principal{"p-demo", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});  // deliberately empty
         session.set_capabilities(&held);
@@ -179,7 +184,12 @@ int main() {
         write_tool_invoked() = false;
 
         WriteAgent session;
-        session.initialize("s-granted", Principal{"p-demo", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-granted", Principal{"p-demo", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root(
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});

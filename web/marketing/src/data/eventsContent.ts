@@ -403,6 +403,10 @@ export const agentSessionEnableEventStreamSnippet = `// rt/agent_session.hpp:780
 export const example29Snippet = `// examples/29_agent_session_events.cpp:118-153 (trimmed)
 AgentSession<ScriptedChatClient> session;
 session.initialize("s-events-demo", Principal{"p-demo", ""});
+
+// set_capabilities() takes a POINTER, not a copy: this set must outlive every run on the session,
+// which is why it is declared here at the same scope as the session itself.
+CapabilitySet const held = CapabilitySet::grant_root({});
 session.set_capabilities(&held);
 
 // The one flag that engages the streaming turn loop (ADR-034) -- without it, run_model_call()

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-171-docker-execution-surface-isolation.md (GitHub issue #63).
+// Proof for decisions/archive/ADR-171-docker-execution-surface-isolation.md (GitHub issue #63).
 //
 // Before ADR-171, grepping docker_execution_surface.hpp for `--network`, `--memory`, `--pids-limit`
 // or `--cpus` returned NOTHING: `DockerCliBackend::create()` emitted a bare `docker run -d --rm -w
@@ -39,6 +39,7 @@
 // work -- containment is proven by READING the kernel's own limit values, which is both stronger
 // evidence and incapable of taking the machine with it.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 
 #include <cstdio>
@@ -279,21 +280,21 @@ int main() {
         tight.pids         = 32;          // silently used the defaults would fail these checks.
         DockerExecutionSurface surface("alpine:latest", tight);
 
-        auto reset = surface.reset(scratch);
+        auto reset = agentengine::rt::block_on(surface.reset(scratch));
         check(reset.has_value(), "L4 setup: the surface materializes the directory into a container");
         if (reset.has_value()) {
-            auto net = surface.run("ls /sys/class/net");
+            auto net = agentengine::rt::block_on(surface.run("ls /sys/class/net"));
             check(net.has_value() && contains(net->stdout_text, "lo") &&
                       !contains(net->stdout_text, "eth0"),
                   "L4: the surface's own container is network-denied too");
-            auto mem = surface.run("cat /sys/fs/cgroup/memory.max");
+            auto mem = agentengine::rt::block_on(surface.run("cat /sys/fs/cgroup/memory.max"));
             check(mem.has_value() && contains(mem->stdout_text, "268435456"),
                   "L4: and carries the CALLER's memory ceiling, not the type's default -- proving the "
                   "surface genuinely threads its isolation into reset()'s create() call");
-            auto pids = surface.run("cat /sys/fs/cgroup/pids.max");
+            auto pids = agentengine::rt::block_on(surface.run("cat /sys/fs/cgroup/pids.max"));
             check(pids.has_value() && contains(pids->stdout_text, "32"),
                   "L4: and the caller's pids ceiling");
-            auto seeded = surface.run("cat /workspace/hello.txt");
+            auto seeded = agentengine::rt::block_on(surface.run("cat /workspace/hello.txt"));
             check(seeded.has_value() && contains(seeded->stdout_text, "seed"),
                   "L4: while the surface's real job -- materializing the tree -- still works under "
                   "containment; this is not a test that passes by breaking the feature");

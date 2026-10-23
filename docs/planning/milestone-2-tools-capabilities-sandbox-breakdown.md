@@ -98,7 +98,7 @@ deferred, not silently dropped. See "What's explicitly deferred past M2" at the 
 
 ### Phase A — Capability enforcement plumbing (007 §3)
 
-- **A1 + A3 (done, merged — see [ADR-009](../../decisions/ADR-009-capability-set-enforcement-mechanism.md)).**
+- **A1 + A3 (done, merged — see [ADR-009](../../decisions/archive/ADR-009-capability-set-enforcement-mechanism.md)).**
   Mid-breakdown correction: A3 turned out to be exactly the invariant-touching case CLAUDE.md and
   the [sign-off workflow](v1-review-signoff-workflow.md) §3 require the full
   design→red-team→prove→judge cycle for — the pre-M2 stub's own header comment said as much
@@ -683,7 +683,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   instantiate under the `wasm` `SandboxBackend` profile, invoke, destroy. **XL**
 
   Security-critical — full design→red-team→prove→judge per CLAUDE.md, landed as
-  `decisions/ADR-010-wasm-component-host-manifest-capability-binding.md` (Judged). Real design
+  `decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md` (Judged). Real design
   finding: `wit/ae-tool.wit`'s original single `host` interface (D2) made manifest-vs-import
   verification unstatable at anything finer than all-or-nothing, since the Component Model's import
   granularity is per-*interface*; revised into `base`/`fs`/`http`/`secrets`/`clock`/`random`/
@@ -850,7 +850,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   variadic shape; documented (not enforced) as expected to hold `core::ContextProvider`-satisfying
   types once 005's real logic lands (027 §3: `MemoryProvider` is superseded by `ContextProvider`).
   `Middleware<Ms...>` needed no `ae-naming-lint` suppression — unlike its five siblings, it already has
-  a canonical-name row in `027-Vocabulary-and-Naming.md` §3. `Stateless<N>` mirrors `MaxTurns<N>`'s
+  a canonical-name row in `rfcs/027-Vocabulary-and-Naming.md` §3. `Stateless<N>` mirrors `MaxTurns<N>`'s
   shape (`N` = pool size); confirmed via 002 §9 Q3 that "off by default" means the tag's *absence*, not
   a template default, since a default the metadata compiler (E2) inferred would silently apply
   Stateless authority-adjacent semantics to an agent that never asked for it.
@@ -912,7 +912,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (needs a real bound ChatClient instance to query capabilities() against, same 004 gap as the
   credentials check).
 
-  **Resolved:** `decisions/ADR-012-sandbox-profile-template-parameter-kind.md` (M2 residual work,
+  **Resolved:** `decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md` (M2 residual work,
   post-Phase-F). `P` is any type satisfying `SandboxBackend`, or the resolution selector `Strict`
   (replacing the undefined `Profile::Strict`) -- 008 §2a's reading, not the enum NTTP.
   `SandboxProfile<P>`'s *availability* check is now real (a non-conforming `P` fails to compile at
@@ -994,7 +994,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   produces an ADR. Security-critical: host-mediated egress for every profile depends on it being
   right. **XL**
 
-  `decisions/ADR-011-first-party-egress-proxy.md`: `NetEgressBackend` (a structural concept mirroring
+  `decisions/archive/ADR-011-first-party-egress-proxy.md`: `NetEgressBackend` (a structural concept mirroring
   `SandboxBackend`, 008 §2a) + `HostEgressProxy`, its first-party default
   (`include/agentengine/sandbox/net_egress_proxy.hpp`, `src/sandbox/net_egress_proxy.cpp`). Resolves
   DNS exactly once, validates the resolved address against a real blocked-range table (loopback,
@@ -1028,7 +1028,7 @@ remains a spike, cited as such everywhere C2's writeups reference it.
   (`gcc:14`, 23/23, 1 expected skip), with `test_net_egress_proxy` additionally reconfirmed clean over
   8 (Windows) and 10 (Linux) consecutive standalone runs.
 
-  **HTTPS follow-up resolved:** `decisions/ADR-013-https-egress-tls-client.md` (M2 residual work,
+  **HTTPS follow-up resolved:** `decisions/archive/ADR-013-https-egress-tls-client.md` (M2 residual work,
   post-Phase-F). mbedTLS vendored directly behind `AGENTENGINE_WITH_HTTPS` (default off, this
   project's own exact-pinned+checksummed `FetchContent` discipline, not Quark's laxer vcpkg-floor
   path); `TlsClientSession` (`sandbox/tls_client.hpp`/`.cpp`) provides real system-CA-style

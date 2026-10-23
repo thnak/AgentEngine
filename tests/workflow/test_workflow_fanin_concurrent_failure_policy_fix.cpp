@@ -37,10 +37,12 @@
 // a single-source (non-fan_in-shared) edge, so this combination was never gate-proven despite 014 §8
 // G1's "each pattern... under injected executor failures" language until F1-F4 below.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
@@ -101,16 +103,17 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] ExecutorBody ok_body(std::string tag) {
-    return [tag](Message const&, EffectContext&) -> result<Message> { return text_message(tag); };
+    return [tag](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(tag)};
+    };
 }
 
-[[nodiscard]] result<Message> always_fails(Message const&, EffectContext&) {
-    return std::unexpected(error{failure_class::contract, "bad always fails", "probe.bad"});
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> always_fails(Message const&, EffectContext&) {
+    co_return std::unexpected(error{failure_class::contract, "bad always fails", "probe.bad"});
 }
 
 }  // namespace
@@ -145,13 +148,13 @@ int main() {
 
         auto agg_calls = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<Message> { return in; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
             ok_body("A-ok"),
             ok_body("B-ok"),
             always_fails,
-            [agg_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -196,13 +199,13 @@ int main() {
 
         auto agg_calls = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<Message> { return in; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
             always_fails,
             ok_body("A-ok"),
             ok_body("B-ok"),
-            [agg_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -244,13 +247,13 @@ int main() {
 
         auto agg_calls = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, EffectContext&) -> result<Message> { return in; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
             ok_body("A-ok"),
             ok_body("B-ok"),
             always_fails,
-            [agg_calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
             ok_body("RECOVERED"),
         };
@@ -299,13 +302,13 @@ int main() {
 
         auto agg_calls1 = std::make_shared<int>(0);
         std::vector<ExecutorBody> bodies1 = {
-            [](Message const& in, EffectContext&) -> result<Message> { return in; },
+            [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
             ok_body("A-ok"),
             ok_body("B-ok"),
             always_fails,
-            [agg_calls1](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+            [agg_calls1](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 ++*agg_calls1;
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
             ok_body("RECOVERED"),
         };
@@ -314,7 +317,10 @@ int main() {
         WorkflowSupervisor          sup1;
         sup1.initialize(wf, bodies1);
         sup1.set_checkpoint_hook(
-            [&records](std::uint32_t, RunStateRecord const& rec) { records.push_back(rec); });
+            [&records](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> {
+                records.push_back(std::move(rec));
+                co_return;
+            });
         WorkflowResult r1 = drive(sup1.run_workflow(RunWorkflow{text_message("go")}));
         check(r1.status == workflow_status::completed, "F4: the first (uninterrupted) run completes");
 
@@ -350,13 +356,13 @@ int main() {
 
             auto agg_calls2 = std::make_shared<int>(0);
             std::vector<ExecutorBody> bodies2 = {
-                [](Message const& in, EffectContext&) -> result<Message> { return in; },
+                [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> { co_return ExecutorOutcome{in}; },
                 ok_body("A-ok"),
                 ok_body("B-ok"),
                 always_fails,
-                [agg_calls2](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+                [agg_calls2](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                     ++*agg_calls2;
-                    return ExecutorOutcome{in};
+                    co_return ExecutorOutcome{in};
                 },
                 ok_body("RECOVERED"),
             };

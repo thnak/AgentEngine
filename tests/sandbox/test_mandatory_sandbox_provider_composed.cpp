@@ -23,11 +23,13 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 using namespace agentengine;
 
@@ -43,8 +45,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // A trivial ExecutionSurface stand-in -- never actually reset()/run()/drain_to()'d by this file (no
@@ -52,14 +53,14 @@ template <class T>
 // real process or Docker. Exists only to satisfy MandatorySandboxProvider<Surface>'s own template
 // constraint with something real, matching the ExecutionSurface concept exactly.
 struct FakeSurface {
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const&) {
-        return SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string) {
+        co_return SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 static_assert(ExecutionSurface<FakeSurface>);
@@ -69,12 +70,12 @@ AE_JSON_SCHEMA(LocalToolArgs, unused)
 struct LocalToolReply { bool ok = true; };
 AE_JSON_SCHEMA(LocalToolReply, ok)
 
-struct LocalTool : Tool<LocalTool> {
+struct LocalTool : Tool<LocalTool, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "local_tool";
     static constexpr std::string_view description = "The composing provider's own always-on tool.";
     using Args = LocalToolArgs;
     using Reply = LocalToolReply;
-    [[nodiscard]] static result<Reply> invoke(Args, EffectContext&) { return Reply{}; }
+    [[nodiscard]] agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{}; }
 };
 
 // Mirrors ToolDeclaringHistoryProvider's own real shape (tools/cli_chat.cpp): one local tool this
@@ -84,7 +85,7 @@ class ComposedProvider {
 public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext& ec) {
         ContextContribution contribution;
-        contribution.tools.push_back(make_tool_descriptor<LocalTool>());
+        contribution.tools.push_back(make_tool_descriptor(LocalTool{}));
 
         auto run_command_contribution = co_await run_command_provider_.on_context(sc, ec);
         if (!run_command_contribution) co_return std::unexpected(run_command_contribution.error());
@@ -160,6 +161,7 @@ int main() {
             std::filesystem::remove_all(staging, ec);
             provider.run_command_provider().bind_sandbox(ledger, std::move(*root_r), owner, staging,
                                                              *branch_quota_r, *run_quota_r, *storage_quota_r);
+            provider.run_command_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             check(provider.run_command_provider().is_bound(), "bind_sandbox() leaves the provider bound");
 
             auto contribution = drive(provider.on_context(session_ctx, ctx));
@@ -176,6 +178,12 @@ int main() {
                       "until this file)");
                 check(contribution->tools.size() == 2,
                       "exactly two tools contributed once bound: local_tool + run_command");
+                for (ToolDescriptor const& d : contribution->tools) {
+                    if (d.name == "run_command") {
+                        check(d.approval == agentengine::approval_mode::never_require,
+                              "run_command carries the mode the host set (ADR-244 slice 4a)");
+                    }
+                }
             }
         }
     }

@@ -68,9 +68,9 @@ struct SendMessageTool
     static constexpr std::string_view description = "Sends a message to a recipient.";
     using Args = SendArgs;
     using Reply = SendReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         send_tool_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -79,7 +79,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<SendMessageTool>().descriptors();
+        c.tools = ToolTable::from(SendMessageTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -159,7 +159,12 @@ T drive(agentengine::rt::task<T> t) {
 
 int main() {
     SendAgent session;
-    session.initialize("s-approval", Principal{"p-demo", ""});
+    // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+    // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+    session.initialize("s-approval", Principal{"p-demo", ""},
+                       agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded(),
+                                                   agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     CapabilitySet const held = CapabilitySet::grant_root({});
     session.set_capabilities(&held);

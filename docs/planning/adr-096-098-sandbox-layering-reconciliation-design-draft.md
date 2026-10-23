@@ -14,7 +14,7 @@ against the real code and against `ADR-080`'s own text; the architecture-fit pas
 claim false**: `MediatedPythonRunner` reaches `NativeJailBackend::create_python_worker()`/
 `exec_session()` via a direct, constructor-injected `NativeJailBackend&` (`mediated_python_runner.hpp:116,140`,
 `.cpp:20,72,90`) — **zero references to `SandboxBackendRegistry`/`resolve_strict`/`resolve_named`
-anywhere in that file.** Python never touches the registry either. Worse: `decisions/ADR-080-
+anywhere in that file.** Python never touches the registry either. Worse: `decisions/archive/ADR-080-
 sandbox-backend-registry.md` §4/§7 already states this, twice, as "Finding O" from `docs/planning/
 2026-08-22-component-role-audit-tracker.md`, written before ADR-096/098 existed: *"real Python/Shell
 execution already bypasses `SandboxBackend::create/exec/destroy` entirely via interpreter-level
@@ -30,8 +30,8 @@ Read the real, current code for every type either ADR names: `SandboxToolProvide
 (`sandbox_backend_registry.hpp`), `build_default_sandbox_registry()`
 (`src/sandbox/default_sandbox_registry.{hpp,cpp}`), `NativeJailBackend`
 (`native_jail_backend.{hpp,cpp}`), `MediatedPythonRunner` (`mediated_python_runner.{hpp,cpp}`), and
-the shared `Runner`/`ExecState` vocabulary (`sandbox/runner.hpp`) — plus `decisions/ADR-080-sandbox-
-backend-registry.md` and `decisions/ADR-030-session-scoped-codeact-wiring.md` in full, not just this
+the shared `Runner`/`ExecState` vocabulary (`sandbox/runner.hpp`) — plus `decisions/archive/ADR-080-sandbox-
+backend-registry.md` and `decisions/archive/ADR-030-session-scoped-codeact-wiring.md` in full, not just this
 document's own paraphrase of them. Three independent, adversarial red-team rounds (security/I2-I3,
 C++ correctness/scope, architecture-fit) checked Revision 1 against all of this before any of it
 became an ADR.

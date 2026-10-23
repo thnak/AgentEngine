@@ -1,5 +1,5 @@
-// Proof for decisions/ADR-153-agent-memory-codeact-bridging.md -- the two pieces GitHub issue #31's
-// own comment (and 026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` row) named as unreachable
+// Proof for decisions/archive/ADR-153-agent-memory-codeact-bridging.md -- the two pieces GitHub issue #31's
+// own comment (and rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` row) named as unreachable
 // from inside a CodeAct `execute_code` script even though the underlying capability is real:
 //
 //   1. `MemoryProvider::make_recall_tool_descriptor()` (now public) round-trips through the SAME
@@ -21,6 +21,7 @@
 
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_jail/memory_mount_materializer.hpp"
 #include "backends/native_jail/tool_bridge.hpp"
 
@@ -67,7 +68,7 @@ int main() {
     rt::InMemoryAppendLogStore ref_store;
     Principal const principal{"p-recall-test", "tenant-a"};
 
-    auto bootstrapped = ensure_memory_worktree(object_store, ref_store, principal);
+    auto bootstrapped = agentengine::rt::block_on(ensure_memory_worktree(object_store, ref_store, principal));
     check(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     Mount const mount = memory_mount(principal);
@@ -80,7 +81,7 @@ int main() {
     note.tags = {"preference"};
     note.salience = 0.8f;
     note.origin = MemoryOrigin{memory_source::user_stated, "run-0", "turn-0", principal};
-    check(write_memory_item(object_store, ref_store, mount, write_cap, note).has_value(),
+    check(agentengine::rt::block_on(write_memory_item(object_store, ref_store, mount, write_cap, note)).has_value(),
           "setup: writing the memory item to recall/materialize succeeds");
 
     // ---- Piece 1: agent.tools.recall reachable through the SAME bridge as any other tool ----------
@@ -94,23 +95,25 @@ int main() {
         req.tool_name  = "recall";
         req.call_id    = "c1";
         req.arguments  = json::Value::make_object({{"query", json::Value::make_string("timezone")}});
+        // ADR-244 §2.4: the bridge reaches at most what the caller holds, so the caller holds the read grant.
         EffectContext ctx{};
+        ctx.principal = principal;
+        ctx.capabilities = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({Capability{read_cap}}));
 
         // Negative control: no FsRead grant in the bridge config -> denied.
         {
-            ToolBridgeConfig config;
-            config.bridged_tools = ToolTable::from_descriptors({recall_descriptor});
-            config.approved      = true;
+            ToolBridgeConfig config{.bridged_tools = ToolTable::from_descriptors({recall_descriptor}),
+                                    .capabilities  = {},
+                                    .approval      = native_jail::BridgeApproval::standing_for(principal)};
             auto result = bridge_tool_call(config, req, ctx);
             check(result.is_error, "R1: recall is DENIED through a bridge config with no FsRead grant");
         }
 
         // Positive control: the SAME descriptor, now WITH the matching FsRead grant -> succeeds.
         {
-            ToolBridgeConfig config;
-            config.bridged_tools = ToolTable::from_descriptors({recall_descriptor});
-            config.capabilities  = {Capability{read_cap}};
-            config.approved      = true;
+            ToolBridgeConfig config{.bridged_tools = ToolTable::from_descriptors({recall_descriptor}),
+                                    .capabilities  = {Capability{read_cap}},
+                                    .approval      = native_jail::BridgeApproval::standing_for(principal)};
             auto result = bridge_tool_call(config, req, ctx);
             check(!result.is_error, "R1: recall SUCCEEDS through a bridge config granting the matching FsRead");
             if (!result.is_error) {
@@ -137,8 +140,8 @@ int main() {
         // R2: a normal materialization produces the real memory content on disk.
         {
             std::filesystem::path const host_root = scratch / "r2";
-            auto materialized = materialize_memory_mount(object_store, ref_store, principal, read_cap,
-                                                            "memory", host_root, {"work", "input", "out"});
+            auto materialized = agentengine::rt::block_on(materialize_memory_mount(object_store, ref_store, principal, read_cap,
+                                                            "memory", host_root, {"work", "input", "out"}));
             check(materialized.has_value(), "R2: materialize_memory_mount succeeds for a bootstrapped "
                                               "principal with a real FsRead grant");
             if (!materialized) {
@@ -164,8 +167,8 @@ int main() {
         // R3: a reserved-mount-id collision fails closed with nothing written.
         {
             std::filesystem::path const host_root = scratch / "r3";
-            auto materialized = materialize_memory_mount(object_store, ref_store, principal, read_cap,
-                                                            "memory", host_root, {"memory"});
+            auto materialized = agentengine::rt::block_on(materialize_memory_mount(object_store, ref_store, principal, read_cap,
+                                                            "memory", host_root, {"memory"}));
             check(!materialized.has_value(),
                   "R3: a reserved mount name colliding with the chosen 'memory' token is refused");
             if (!materialized) {

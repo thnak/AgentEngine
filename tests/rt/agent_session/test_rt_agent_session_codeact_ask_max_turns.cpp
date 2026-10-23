@@ -35,11 +35,14 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/capability.hpp"
 
 using agentengine::rt::AgentSession;
@@ -80,8 +83,7 @@ void check(bool cond, char const* what) {
 // test file in this suite already documents for its own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct AskArgs {
@@ -95,20 +97,19 @@ struct AskReply {
 AE_JSON_SCHEMA(AskReply, ok)
 
 // Same public shape as tools/cli_chat.cpp's real execute_code tool (name/args), so the ask-pending
-// suspend path is reached via the identical producer contract a real CodeAct script would use -- only
-// the invoke BODY is faked, via make_tool_descriptor_with_invoke below, never this dead static one.
+// suspend path is reached via the identical producer contract a real CodeAct script would use. ADR-237
+// §5.2: instance form -- the ask-pending body IS `invoke`, and the old poison static one is gone.
 struct AskPendingTool : agentengine::Tool<AskPendingTool, agentengine::Capabilities<>,
-                                            agentengine::EffectClass<agentengine::effect_class::at_most_once>> {
+                                            agentengine::EffectClass<agentengine::effect_class::at_most_once>,
+                                            agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description = "Always ask-pends -- a scripted regression fixture.";
     using Args = AskArgs;
     using Reply = AskReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "AskPendingTool::invoke() must never run directly in this test -- only through the "
-            "make_tool_descriptor_with_invoke lambda below",
-            "test.dead_static_invoke_path"});
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::contract,
+                                                      "still waiting on an answer",
+                                                      "codeact.ask_pending"});
     }
 };
 
@@ -118,12 +119,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {agentengine::make_tool_descriptor_with_invoke<AskPendingTool>(
-            [](AskArgs, EffectContext&) -> agentengine::result<AskReply> {
-                return std::unexpected(agentengine::error{agentengine::failure_class::contract,
-                                                             "still waiting on an answer",
-                                                             "codeact.ask_pending"});
-            })};
+        c.tools = {agentengine::make_tool_descriptor(AskPendingTool{})};
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -190,8 +186,7 @@ int main() {
     // (test_rt_agent_session_tool_call_loop.cpp's own R4/R5) is already held to.
     {
         Session session;
-        session.initialize("codeact-max-turns", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                             /*max_turns=*/std::uint64_t{3});
+        session.initialize("codeact-max-turns", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/std::uint64_t{3}));
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         ScriptedChatClient& client = session.emplace_chat_client();
@@ -240,7 +235,7 @@ int main() {
     // purely so this test itself terminates; the session's OWN bound is genuinely absent.
     {
         Session session;
-        session.initialize("codeact-unbounded", Principal{"p", ""});  // max_turns defaults to nullopt
+        session.initialize("codeact-unbounded", Principal{"p", ""}, ae_test::trusted_unbounded());  // max_turns defaults to nullopt
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         (void)session.emplace_chat_client();
@@ -269,7 +264,7 @@ int main() {
     // record, not silently retain it forever (the leak this file's own top comment documents).
     {
         Session session;
-        session.initialize("codeact-clear-leak", Principal{"p", ""});  // max_turns defaults to nullopt
+        session.initialize("codeact-clear-leak", Principal{"p", ""}, ae_test::trusted_unbounded());  // max_turns defaults to nullopt
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
         (void)session.emplace_chat_client();

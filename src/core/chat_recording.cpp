@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay"); ADR-207 (#120 S7).
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay"); ADR-207 (#120 S7).
 // The non-template bodies of include/agentengine/core/chat_recording.hpp, moved verbatim out of the header so they
 // are compiled once here instead of in every file that includes it. The header keeps every declaration and comment
 // and the small helpers; the format and the rules each body implements are documented at its declaration there.
@@ -22,23 +22,13 @@ result<json::Value const*> require(json::Value const& obj, std::string_view key)
 
 namespace agentengine {
 
-std::string_view failure_class_to_wire_string(failure_class k) noexcept {
-    switch (k) {
-        case failure_class::transient: return "transient";
-        case failure_class::policy: return "policy";
-        case failure_class::contract: return "contract";
-        case failure_class::resource: return "resource";
-        case failure_class::fatal: return "fatal";
-    }
-    return "fatal";
-}
+// ADR-237 D6: the recording's spelling IS core/error.hpp's one spelling (`canceled` included), so a recording
+// and the test driver's scripts can never disagree about a class name. An old recording never carries
+// `canceled` (no writer produced it before D6); a new one read by an old build fails `bad_failure_class` loudly.
+std::string_view failure_class_to_wire_string(failure_class k) noexcept { return failure_class_to_string(k); }
 
 result<failure_class> failure_class_from_wire_string(std::string_view s) {
-    if (s == "transient") return failure_class::transient;
-    if (s == "policy") return failure_class::policy;
-    if (s == "contract") return failure_class::contract;
-    if (s == "resource") return failure_class::resource;
-    if (s == "fatal") return failure_class::fatal;
+    if (std::optional<failure_class> const k = failure_class_from_string(s)) return *k;
     return std::unexpected(error{failure_class::contract, "unknown failure_class: " + std::string(s),
                                   "recording.bad_failure_class"});
 }

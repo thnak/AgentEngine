@@ -1,4 +1,4 @@
-// decisions/ADR-236-batch-recording-and-replay.md -- claims R1-R10: a batched workflow run recorded through
+// decisions/archive/ADR-236-batch-recording-and-replay.md -- claims R1-R10: a batched workflow run recorded through
 // core/batch_recording.hpp's BatchRecorder replays offline through a BatchReplayer to the same results, events
 // and time-dependent decisions, and a replay asked anything the recording does not hold diverges instead of
 // handing recorded answers to a different run.
@@ -6,6 +6,7 @@
 // testing::ScriptedBatchBackend stands in for the vendor while recording; the replay runs have no vendor at
 // all. Each negative claim was also run against a mutated replayer (ADR-236 §5).
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "agentengine/core/batch_recording.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/testing/scripted_batch_backend.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -55,8 +57,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] Message text_message(std::string text, role r = role::user) {
@@ -88,8 +89,8 @@ T drive(agentengine::rt::task<T> t) {
 }
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+    return [name = std::move(name)](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -101,12 +102,12 @@ T drive(agentengine::rt::task<T> t) {
             r.messages.push_back(text_message(name + ":" + all_text_of(in)));
             return r;
         },
-        [sync_calls](ChatRequest const& req, EffectContext&) -> result<ChatResponse> {
+        [sync_calls](ChatRequest const& req, EffectContext&) -> agentengine::task<result<ChatResponse>> {
             if (sync_calls) ++*sync_calls;
             ChatResponse resp;
             resp.message = text_message("sync(" + all_text_of(req.messages.front()) + ")", role::assistant);
             resp.usage.input_tokens = 10;
-            return resp;
+            co_return resp;
         },
         [name](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
             return ExecutorOutcome{text_message(name + "=" + all_text_of(resp.message))};
@@ -252,7 +253,7 @@ constexpr std::int64_t kStart = 1'790'987'445'123'456'789;  // past 2^53: exerci
         BatchPolicy pol;
         pol.now_ns = first.clock;
         (void)sup.enable_batch_coalescing(pol);
-        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord const& rec) { saved = rec; });
+        sup.set_checkpoint_hook([&saved](std::uint32_t, RunStateRecord rec) -> agentengine::task<void> { saved = std::move(rec); co_return; });
         cap.add(drive(sup.run_workflow(RunWorkflow{text_message("x")})));
     }
     auto decoded = rt::decode_run_state_record(rt::encode_run_state_record(saved));
@@ -286,18 +287,18 @@ public:
     [[nodiscard]] std::string group_key() const override { return inner_->group_key(); }
     [[nodiscard]] BatchLimits limits() const override { return inner_->limits(); }
     [[nodiscard]] result<std::size_t> admit(ChatRequest const& r) const override { return inner_->admit(r); }
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items, EffectContext& c) override {
         return inner_->submit(items, c);
     }
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& c) override {
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job, EffectContext& c) override {
         if (!thrown_) {
             thrown_ = true;
             throw std::runtime_error("vendor client blew up");
         }
         return inner_->poll(job, c);
     }
-    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
-    [[nodiscard]] result<void> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
+    [[nodiscard]] task<result<void>> cancel(std::string const& job, EffectContext& c) override { return inner_->cancel(job, c); }
+    [[nodiscard]] task<result<void>> release(std::string const& job, EffectContext& c) override { return inner_->release(job, c); }
 
 private:
     std::shared_ptr<ScriptedBatchBackend> inner_;
@@ -467,7 +468,7 @@ int main() {
             check(replayer->diverged() && replayer->divergence().find("ended") != std::string::npos,
                   "R6: a call past the end of the recording diverges: " + replayer->divergence());
             EffectContext ctx{};
-            auto again = rig->backend->poll("job1", ctx);
+            auto again = rt::block_on(rig->backend->poll("job1", ctx));
             check(!again && again.error().code == "batch_replay.diverged", "R6: every later call fails too");
         }
     }
@@ -600,7 +601,7 @@ int main() {
             check(admitted, "R11: the three admits replay");
             EffectContext ctx{};
             ctx.principal = Principal{"batch-infer", ""};  // the principal tools/batch_infer.cpp runs under
-            auto job = (*backend)->submit(items, ctx);
+            auto job = rt::block_on((*backend)->submit(items, ctx));
             check(job.has_value() && job->rfind("batch-", 0) == 0, "R11: the submit replays the vendor's job id");
             // The recording holds OpenRouter's real post-submit lag: the first poll answered 404 "not found".
             BatchPoll last;
@@ -608,7 +609,7 @@ int main() {
             std::size_t vendor_errors = 0;
             while (job && polls < 64 && !replayer->diverged()) {
                 ++polls;
-                auto p = (*backend)->poll(*job, ctx);
+                auto p = rt::block_on((*backend)->poll(*job, ctx));
                 if (!p) {
                     vendor_errors += p.error().code.rfind("batch_replay.", 0) == 0 ? 0 : 1;
                     continue;
@@ -628,7 +629,7 @@ int main() {
                 }
             }
             check(answers == "Paris|4|Red.|", "R11: each prompt's parsed answer comes back by custom id: " + answers);
-            check(job && (*backend)->release(*job, ctx).has_value(), "R11: the release replays");
+            check(job && rt::block_on((*backend)->release(*job, ctx)).has_value(), "R11: the release replays");
             check(replayer && !replayer->diverged() && replayer->remaining() == 0,
                   "R11: the replay matched every recorded call");
         }
@@ -677,7 +678,7 @@ int main() {
         req.messages.push_back(text_message("q"));
         EffectContext alice{};
         alice.principal = Principal{"alice", "t1"};
-        (void)wrapped->submit({BatchItemRequest{"i0", req}}, alice);
+        (void)rt::block_on(wrapped->submit({BatchItemRequest{"i0", req}}, alice));
         check(records.size() == 2 && records[1].principal_id == "alice" && records[1].tenant_id == "t1",
               "R13: the submit records whose authority it ran under");
         for (auto const& [who, tenant, label] : {std::tuple{"alice", "t1", "control: the same principal replays"},
@@ -687,7 +688,7 @@ int main() {
             if (auto rig = replay_rig(replayer, "R13")) {
                 EffectContext ctx{};
                 ctx.principal = Principal{who, tenant};
-                bool const served = rig->backend->submit({BatchItemRequest{"i0", req}}, ctx).has_value();
+                bool const served = rt::block_on(rig->backend->submit({BatchItemRequest{"i0", req}}, ctx)).has_value();
                 bool const should = std::string(label).rfind("control", 0) == 0;
                 check(served == should && replayer->diverged() == !should, std::string("R13: ") + label);
             }
@@ -704,7 +705,7 @@ int main() {
         ChatRequest req;
         req.messages.push_back(text_message("q"));
         EffectContext ctx{};
-        auto job = wrapped->submit({BatchItemRequest{"i0", req}}, ctx);
+        auto job = rt::block_on(wrapped->submit({BatchItemRequest{"i0", req}}, ctx));
         check(job.has_value() && *job == "job1", "R14: a submit the vendor accepted still returns its job id");
         check(scripted->submitted().size() == 1, "R14: and the vendor saw exactly one submit");
         check(recorder.failed(), "R14: the recorder reports the recording as incomplete");
@@ -718,7 +719,7 @@ int main() {
 
         // Control: the same submit through a backend that fails reports the failure, not success.
         scripted->fail_next_submit();
-        auto failed = wrapped->submit({BatchItemRequest{"i0", req}}, ctx);
+        auto failed = rt::block_on(wrapped->submit({BatchItemRequest{"i0", req}}, ctx));
         check(!failed.has_value(), "R14 control: a submit the vendor refused is still reported as refused");
     }
 
@@ -786,7 +787,7 @@ int main() {
             EffectContext ctx{};
             bool non_standard = false;
             try {
-                (void)rig->backend->poll("job1", ctx);
+                (void)rt::block_on(rig->backend->poll("job1", ctx));
             } catch (std::exception const&) {
                 non_standard = false;
             } catch (...) {

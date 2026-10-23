@@ -18,7 +18,7 @@ Filesystem.md` has uncommitted working-tree edits from another concurrent sessio
 writing (2026-08-06) — confirmed via `git status`, content read directly from the working tree
 below. This breakdown is written against that current text; if it moves further before Phase A
 lands, the affected section gets a fast re-check, not a silent staleness. `009-Plugin-and-
-Extension-System.md` and `029-Memory-System.md` are also mid-edit elsewhere and are out of scope
+Extension-System.md` and `rfcs/029-Memory-System.md` are also mid-edit elsewhere and are out of scope
 for M3 regardless.
 
 ## Current state (verified 2026-08-06, after M2)
@@ -412,7 +412,7 @@ for M3 regardless.
   committed (C1-C6). WIN32-gated (same real-crypto dependency as A1/B1/B2/B3/B4). Full regression:
   Windows `ctest -j4` 41/42, same pre-existing `test_native_jail_backend_windows` flake, unchanged.
   **M**
-- **C2 (done). ADR-track (decision 6) — `decisions/ADR-014-worktree-mount-path-canonicalization.md`,
+- **C2 (done). ADR-track (decision 6) — `decisions/archive/ADR-014-worktree-mount-path-canonicalization.md`,
   Judged.** New `core/worktree_mount_fs.hpp`/`.cpp` (linked into the existing
   `agentengine::worktree_store` target): `open_within_mount_root` opens a guest-relative path
   against a REAL OS directory (the not-yet-built materialization Phase C1's own header comment
@@ -511,7 +511,7 @@ for M3 regardless.
   (N/A); case handling runs the *opposite* direction (ext4 case-sensitive by default vs. NTFS
   case-insensitive) — tested explicitly (C4-8) as a documented behavioral difference, not a security
   property. ADR-014 amended with a dated addendum (§9) closing its own Linux-parity reopening
-  trigger; `decisions/README.md`'s ADR-014 entry updated to match. Windows regression unaffected (the
+  trigger; `decisions/archive/README.md`'s ADR-014 entry updated to match. Windows regression unaffected (the
   `NOT WIN32` CMake branch is inert there): `ctest -j4` 44/45, same pre-existing
   `test_native_jail_backend_windows` flake, unchanged. Linux regression (WSL2 Ubuntu, kernel
   6.6.87.2, gcc 15.2.0): full `ctest -j4` 25/25 (one unrelated, by-design skip —
@@ -780,7 +780,7 @@ for M3 regardless.
   56/57 (same pre-existing `test_native_jail_backend_windows` `-j4` timing flake tracked all
   session); default-config `build` 48/49, identical flake. **XL**
 - **E5 (done — ADR-track, decision 5).** `ShellRunner` grammar-parser fuzzing (010 §9 G8):
-  `decisions/ADR-015-shellrunner-grammar-parser-fuzzing.md` (Judged). A real libFuzzer harness
+  `decisions/archive/ADR-015-shellrunner-grammar-parser-fuzzing.md` (Judged). A real libFuzzer harness
   (`tests/fuzz/mediated_shell_parser_fuzz.cpp`) against `mediated_shell_parser::parse()`'s pure
   `bytes -> result<ScriptNode>` entry point — no fakes needed, matching that function's own
   by-construction isolation from `FileSystemAdapter`/`CommandRegistry`/`ExecState`/`EffectContext`.

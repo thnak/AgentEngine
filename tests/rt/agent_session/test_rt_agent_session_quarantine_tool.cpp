@@ -1,4 +1,4 @@
-// Proves decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own named residual
+// Proves decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md's own named residual
 // closed for real: "no production call site wires scan_and_quarantine()/
 // make_quarantine_secret_tool_descriptor() into AgentSession/assemble_context() anywhere." trust/
 // secret_quarantine.hpp's new QuarantineToolProvider (a real ContextProvider conformer wrapping
@@ -10,9 +10,12 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
 
 using agentengine::rt::AgentSession;
@@ -34,8 +37,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -111,7 +113,7 @@ int main() {
     // provider's DEFAULT audit hook (nullptr) -- the store still records every quarantine correctly
     // with no hook configured (QuarantineSecretStore::quarantine() only conditionally invokes it).
     AgentSession<ScriptedChatClient, NoSessionState, agentengine::QuarantineToolProvider> session;
-    session.initialize("quar-t1", Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+    session.initialize("quar-t1", Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
     session.emplace_chat_client();
 
     auto outcome = drive(session.start_run(StartRun{user_message("please handle this secret")}));

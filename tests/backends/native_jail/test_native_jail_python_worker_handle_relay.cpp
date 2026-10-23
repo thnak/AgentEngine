@@ -1,5 +1,5 @@
 // HandleRelay (docs/planning/jailed-python-worker-slice-2-handle-relay-design-draft.md,
-// decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md) -- the two positive/negative
+// decisions/archive/ADR-085-jailed-python-worker-slice-2-handle-relay.md) -- the two positive/negative
 // controls the design draft's own §6 named but the regression sweep against the existing suite does
 // not exercise: (1) a real, successful socket relay round trip under a genuinely granted `cap::NetOut`
 // -- nothing in the pre-existing suite ever grants NetOut and expects a live connect to succeed, every
@@ -18,6 +18,8 @@
 #include <string>
 #include <thread>
 
+#include "../../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
@@ -171,13 +173,15 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly");
 
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root(
             {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, std::nullopt, {}}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         std::string const script = "import socket\n"
@@ -195,7 +199,7 @@ int main() {
                                     "s.close()\n"
                                     "print('GOT:', data)";
         ExecRequest req{"python", script};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "SOCK-1: a script connecting to a real granted NetOut target runs successfully");
         AE_CHECK(out.has_value() && out->stdout_text.find("GOT: b'hello relay'") != std::string::npos,
@@ -215,11 +219,13 @@ int main() {
         MediatedPythonConfig cfg;
         cfg.python_home = AE_PYTHON_HOME;
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly (SOCK-DENY)");
 
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all -- irrelevant here, since these
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
                                 // methods must be denied unconditionally, not merely without a grant
 
         ExecRequest req{"python",
@@ -242,7 +248,7 @@ int main() {
                          "    finally:\n"
                          "        s.close()\n"
                          "print('RESULTS:', results)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "SOCK-DENY: setup -- the unmediated-socket-method probe script runs");
         AE_CHECK(out.has_value() &&
@@ -269,13 +275,15 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly with a real 'work' mount");
 
         ExecState state{};
         CapabilitySet caps =
             CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // `_ae_internal` is not itself a name in the guest's own __main__ globals (it lives only in
@@ -292,7 +300,7 @@ int main() {
                          "except OSError as e:\n"
                          "    print('DENIED:', e)\n"
                          "f.close()"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                  "FILE-RO-1: setup -- the direct _ae_internal.file_write probe script runs");
         AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,

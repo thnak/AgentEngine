@@ -1,4 +1,4 @@
-// Implements decisions/ADR-167-plan-execute-mode.md's proof obligations for `PlanExecuteMode`
+// Implements decisions/archive/ADR-167-plan-execute-mode.md's proof obligations for `PlanExecuteMode`
 // (core/plan_execute_mode.hpp), 002/014 gap #54. Mirrors test_todo_provider.cpp's structure: each
 // block proves one claim from the ADR's per-claim verdict table.
 
@@ -56,14 +56,14 @@ int main() {
             t.on_context(session_ctx, ctx));
         auto const* add = find_tool(*t_out, "todos_add");
         auto add_args = json::parse(R"({"title":"plan it"})");
-        auto add_result = add->invoke(*add_args, ctx);
+        auto add_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add->invoke(*add_args, ctx));
         check(add_result.has_value(), "setup: todos_add succeeds");
 
         auto m_out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             m.on_context(session_ctx, ctx));
         auto const* ready = find_tool(*m_out, "plan_ready");
         auto no_args = json::parse(R"({})");
-        auto ready_result = ready->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready->invoke(*no_args, ctx));
         check(ready_result.has_value(), "setup: plan_ready succeeds");
     };
 
@@ -87,7 +87,7 @@ int main() {
     {
         auto no_args = json::parse(R"({})");
         check(no_args.has_value(), "setup: empty-object args parse");
-        auto result = ready_tool0->invoke(*no_args, ctx);
+        auto result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready_tool0->invoke(*no_args, ctx));
         check(!result.has_value() && result.error().code == "plan_execute.no_plan",
               "R2 (I3): plan_ready refuses to open the gate with zero real planning evidence -- the "
               "structured call alone is not trusted as substance, only a prior real todos_add is");
@@ -102,11 +102,11 @@ int main() {
         auto const* add_tool = find_tool(*todo_out, "todos_add");
         check(add_tool != nullptr, "setup: todos_add found");
         auto add_args = json::parse(R"({"title":"cut release notes"})");
-        auto add_result = add_tool->invoke(*add_args, ctx);
+        auto add_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add_tool->invoke(*add_args, ctx));
         check(add_result.has_value(), "setup: todos_add succeeds");
 
         auto no_args = json::parse(R"({})");
-        auto ready_result = ready_tool0->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(ready_tool0->invoke(*no_args, ctx));
         check(ready_result.has_value(), "R3: plan_ready succeeds once a real todo exists");
         check(gate->executing, "R3: the gate is now open");
     }
@@ -141,7 +141,7 @@ int main() {
         auto const* copied_add = find_tool(*todo_ctx, "todos_add");
         check(copied_add != nullptr, "setup: copied TodoProvider's todos_add found");
         auto add_args = json::parse(R"({"title":"ship it"})");
-        check(copied_add->invoke(*add_args, ctx).has_value(),
+        check(ae::test_support::run_task_sync<ae::result<ae::json::Value>>(copied_add->invoke(*add_args, ctx)).has_value(),
               "setup: todos_add on the COPY succeeds");
 
         auto plan_ctx = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
@@ -149,7 +149,7 @@ int main() {
         auto const* copied_ready = find_tool(*plan_ctx, "plan_ready");
         check(copied_ready != nullptr, "setup: copied PlanExecuteMode's plan_ready found");
         auto no_args = json::parse(R"({})");
-        auto ready_result = copied_ready->invoke(*no_args, ctx);
+        auto ready_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(copied_ready->invoke(*no_args, ctx));
         check(ready_result.has_value(),
               "R5a: plan_ready on the COPY sees the todo the COPY's own todos_add just added -- the "
               "copy shares TodoState with its own copy, not a stale snapshot");
@@ -177,16 +177,19 @@ int main() {
         check(!gate2->executing, "setup: gate2 starts closed");
 
         auto decider = ae::make_plan_execute_policy_decider(gate2);
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R6a: a non-planning-safe, policy_driven tool is auto-denied while the gate is closed");
-        check(decider(principal, readonly_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, readonly_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R6b: a planning-safe tool falls through to require_approval (== 'no opinion, use the "
               "normal path') while the gate is closed, never auto_deny -- read-only reconnaissance "
               "stays available during planning");
 
         open_gate_for_real(todo2, mode2);
         check(gate2->executing, "setup: gate2 opened for real via todos_add + plan_ready");
-        check(decider(principal, execute_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R7: once the gate opens, the SAME tool that was auto-denied now falls through to "
               "require_approval (== behaves as if no PolicyDecider were wired at all) -- the gate "
               "never grants anything on its own, it only ever withholds");
@@ -204,17 +207,19 @@ int main() {
         auto gate3 = mode3.gate_handle();
 
         ae::PolicyDecider always_approve = [](ae::Principal const&, ae::ToolDescriptor const&,
-                                               bool) { return ae::policy_decision::auto_approve; };
+                                               bool) -> agentengine::task<agentengine::policy_decision> { co_return ae::policy_decision::auto_approve; };
         auto decider = ae::make_plan_execute_policy_decider(gate3, always_approve);
 
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R8a: the gate overrides even an inner policy that would auto_approve -- composition "
               "only ever narrows toward less authority, never widens toward more (002 §9 Q2's "
               "narrowing-only rule, applied to decider composition)");
 
         open_gate_for_real(todo3, mode3);
         check(gate3->executing, "setup: gate3 opened for real via todos_add + plan_ready");
-        check(decider(principal, execute_tool, false) == ae::policy_decision::auto_approve,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(decider(principal, execute_tool, false)) ==
+                  ae::policy_decision::auto_approve,
               "R8b: once the gate opens, control genuinely passes through to inner -- composition "
               "isn't a permanent override, only a precondition");
     }
@@ -232,13 +237,15 @@ int main() {
         auto gate4 = mode4.gate_handle();
 
         auto default_decider = ae::make_plan_execute_policy_decider(gate4);
-        check(default_decider(principal, search_tool, false) == ae::policy_decision::auto_deny,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(default_decider(principal, search_tool, false)) ==
+                  ae::policy_decision::auto_deny,
               "R9a: the default is_planning_safe bar denies an idempotent (non-pure) tool while "
               "closed");
 
         auto widened_decider = ae::make_plan_execute_policy_decider(
             gate4, {}, [](ae::ToolDescriptor const& t) { return t.name == "web_search"; });
-        check(widened_decider(principal, search_tool, false) == ae::policy_decision::require_approval,
+        check(ae::test_support::run_task_sync<ae::policy_decision>(widened_decider(principal, search_tool, false)) ==
+                  ae::policy_decision::require_approval,
               "R9b: a host-supplied is_planning_safe predicate can widen the planning-phase floor for "
               "a specific tool without waiting for the gate to open");
     }

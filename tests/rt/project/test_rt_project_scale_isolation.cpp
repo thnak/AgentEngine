@@ -1,4 +1,4 @@
-// Proof for ADR-037: 030-Project-Workspace-and-Lifecycle.md §7's promotion gate G1 ("N >= 100
+// Proof for ADR-037: rfcs/030-Project-Workspace-and-Lifecycle.md §7's promotion gate G1 ("N >= 100
 // concurrently active Projects... pausing one measurably drops its member sessions' activation
 // count to zero... with zero observable effect on the other N-1"), reproven against
 // `agentengine::rt::ProjectSupervisor`/`rt::pause_project()` -- the Quark-actor-free replacement for
@@ -31,12 +31,15 @@
 // MACHINE SAFETY (CLAUDE.md): single-threaded, deterministic, no sleeps -- 100 Projects is an object
 // count, not a thread or activation count, in rt:: land.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "agentengine/rt/project_manifest.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::InMemorySessionStore;
@@ -60,8 +63,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -122,7 +124,7 @@ int main() {
 
     for (std::size_t i = 0; i < kProjectCount; ++i) {
         sessions[i] = std::make_unique<Session>();
-        sessions[i]->initialize("s-scale-" + std::to_string(i), Principal{"p-scale", ""});
+        sessions[i]->initialize("s-scale-" + std::to_string(i), Principal{"p-scale", ""}, ae_test::trusted_unbounded());
         sessions[i]->emplace_chat_client();
         stores[i]      = std::make_unique<InMemorySessionStore>();
         supervisors[i] = std::make_unique<ProjectSupervisor>();
@@ -146,7 +148,7 @@ int main() {
     // against.
     bool none_checkpointed_yet = true;
     for (std::size_t i = 0; i < kProjectCount; ++i) {
-        if (stores[i]->exists("s-scale-" + std::to_string(i))) none_checkpointed_yet = false;
+        if (agentengine::rt::block_on(stores[i]->exists("s-scale-" + std::to_string(i)))) none_checkpointed_yet = false;
     }
     check(none_checkpointed_yet, "setup: no store has been checkpointed into yet (sanity baseline)");
 
@@ -161,7 +163,7 @@ int main() {
     auto [paused, report] = drive(pause_project(*supervisors[kPausedIndex], rec));
     check(report.all_ok(), "G1: pause_project checkpoints the target's member cleanly");
     check(paused.status == project_status::paused, "G1: pause_project marks the target Paused");
-    check(stores[kPausedIndex]->exists("s-scale-" + std::to_string(kPausedIndex)),
+    check(agentengine::rt::block_on(stores[kPausedIndex]->exists("s-scale-" + std::to_string(kPausedIndex))),
           "G1: the paused Project's member session's snapshot actually landed");
 
     // =========================================================================================
@@ -173,7 +175,7 @@ int main() {
     bool only_target_checkpointed = true;
     for (std::size_t i = 0; i < kProjectCount; ++i) {
         if (i == kPausedIndex) continue;
-        if (stores[i]->exists("s-scale-" + std::to_string(i))) only_target_checkpointed = false;
+        if (agentengine::rt::block_on(stores[i]->exists("s-scale-" + std::to_string(i)))) only_target_checkpointed = false;
     }
     check(only_target_checkpointed,
           "G1(a) -- CORE CLAIM: pause_project(#50) never wrote to any of the OTHER 99 Projects' own "

@@ -114,6 +114,15 @@ target_compile_features(agentengine_rt_file_log PRIVATE cxx_std_23)
 target_link_libraries(agentengine_rt_file_log PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_file_log)
 
+# ---- pal::usable_cpus()'s OS half (src/pal/) -- ADR-237 §9 D5 ---------------------------------------------
+# Process affinity and the cgroup CPU quota, for the default lane count (rt/runtime.hpp). Compiled here so
+# <windows.h> stays out of every header that includes the runtime; linked through agentengine::core.
+add_library(agentengine_pal_cpu STATIC src/pal/usable_cpus.cpp)
+target_include_directories(agentengine_pal_cpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(agentengine_pal_cpu PRIVATE cxx_std_23)
+target_link_libraries(agentengine_pal_cpu PRIVATE agentengine_warnings)
+target_link_libraries(agentengine_core INTERFACE agentengine_pal_cpu)
+
 # ---- Message/ContentItem <-> JSON codec (src/core/) -- ADR-202, issue #120 S3 ----------------------
 # The one codec behind core/chat_recording.hpp (recording profile) and rt/message_codec.hpp (state profile),
 # which were two drifted copies before. Both headers keep their functions as thin wrappers. Linked through
@@ -170,6 +179,56 @@ if(WIN32)
 endif()
 target_link_libraries(agentengine_core INTERFACE agentengine_rt_session)
 
+# ---- I/O reactor: pal::Reactor's standalone-Asio backend (src/backends/reactor_asio/) -- ADR-237 §6.2 ----
+# ADR-237 §9 D1: the reactor backend is the one mandatory backend dependency (core headers stay std-only;
+# no Asio type leaves reactor_asio.cpp). Standalone Asio 1.38.2 (Boost Software License 1.0), header-only,
+# fetched as the upstream tag tarball pinned by SHA256 -- the same "no host-machine-dependent build state"
+# posture as the vendored mbedTLS and CA bundle below. Research and version choice:
+# docs/research/2026-10-03-async-reactor-options.md. An offline build points AGENTENGINE_ASIO_ROOT at a local
+# copy (the directory that contains include/asio.hpp) and turns AGENTENGINE_VENDOR_ASIO off.
+option(AGENTENGINE_VENDOR_ASIO "Fetch the pinned, checksummed standalone Asio instead of using a local copy" ON)
+if(AGENTENGINE_VENDOR_ASIO)
+  include(FetchContent)
+  # SOURCE_SUBDIR names a directory that does not exist, so MakeAvailable only downloads and extracts: Asio is
+  # used as headers, not built through its own CMake.
+  FetchContent_Declare(ae_vendored_asio
+    URL "https://github.com/chriskohlhoff/asio/archive/refs/tags/asio-1-38-2.tar.gz"
+    URL_HASH SHA256=9f2648fa483e58a6bf848d970ee0ea650ca19ed7769dfa520ed4f7b8d27af1db
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR ae-headers-only-do-not-build)
+  FetchContent_MakeAvailable(ae_vendored_asio)
+  set(AE_ASIO_INCLUDE_DIR "${ae_vendored_asio_SOURCE_DIR}/include")
+else()
+  set(AGENTENGINE_ASIO_ROOT "${AGENTENGINE_ASIO_ROOT}" CACHE PATH
+    "Root of a local standalone Asio copy (must contain include/asio.hpp)")
+  if(NOT AGENTENGINE_ASIO_ROOT OR NOT EXISTS "${AGENTENGINE_ASIO_ROOT}/include/asio.hpp")
+    message(FATAL_ERROR
+      "AGENTENGINE_VENDOR_ASIO is OFF but AGENTENGINE_ASIO_ROOT ('${AGENTENGINE_ASIO_ROOT}') does not contain "
+      "include/asio.hpp. Either leave AGENTENGINE_VENDOR_ASIO=ON (the default) or pass a real path.")
+  endif()
+  set(AE_ASIO_INCLUDE_DIR "${AGENTENGINE_ASIO_ROOT}/include")
+endif()
+
+add_library(agentengine_reactor_asio STATIC src/backends/reactor_asio/reactor_asio.cpp
+  src/backends/reactor_asio/reactor_tcp_asio.cpp
+  src/backends/reactor_asio/reactor_process_asio.cpp
+  src/backends/reactor_asio/resolver_getaddrinfo.cpp)
+target_include_directories(agentengine_reactor_asio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# SYSTEM: Asio's own headers are third-party code, not answerable to this project's -Werror set.
+target_include_directories(agentengine_reactor_asio SYSTEM PRIVATE "${AE_ASIO_INCLUDE_DIR}")
+target_compile_features(agentengine_reactor_asio PRIVATE cxx_std_23)
+# ASIO_NO_DEPRECATED keeps removed-upstream spellings out; no io_uring (ADR-237 §6.2: excluded).
+target_compile_definitions(agentengine_reactor_asio PRIVATE ASIO_STANDALONE ASIO_NO_DEPRECATED)
+target_link_libraries(agentengine_reactor_asio PRIVATE agentengine_warnings)
+if(WIN32)
+  target_compile_definitions(agentengine_reactor_asio PRIVATE _WIN32_WINNT=0x0A00)
+  target_link_libraries(agentengine_reactor_asio PUBLIC ws2_32 mswsock)
+else()
+  find_package(Threads REQUIRED)
+  target_link_libraries(agentengine_reactor_asio PUBLIC Threads::Threads)
+endif()
+target_link_libraries(agentengine_core INTERFACE agentengine_reactor_asio)
+
 # ---- rt::WorkflowSupervisor (src/rt/) -- ADR-200, issue #120 S1 -----------------------------------
 # WorkflowSupervisor is not a template, but every member body lived in its header, so each of the ~46 files
 # that included it compiled and optimized the whole superstep loop again. The bodies are compiled once here
@@ -203,14 +262,15 @@ target_link_libraries(agentengine_docker_surface PRIVATE agentengine_warnings)
 target_link_libraries(agentengine_core INTERFACE agentengine_docker_surface)
 
 # ---- Egress proxy (src/sandbox/) -- Windows + Linux ---------------------------------------------
-# Implements decisions/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
+# Implements decisions/archive/ADR-011-first-party-egress-proxy.md (008 §10 Q3, M2 Phase F task F1): the
 # host-mediated mechanism NetOut (007 §3) is enforced through. Ordinary OS socket/DNS APIs
 # (getaddrinfo/inet_pton/select) plus agentengine::pal's own vendored, cross-platform socket
 # primitives (include/agentengine/pal/net.hpp, pulled in transitively via agentengine::core) -- no
 # third-party dependency at all now, so this needs no CMake option gate beyond the platform-
 # independent build itself (ws2_32 is linked directly on agentengine::core on Windows, above).
 add_library(agentengine_net_egress_proxy STATIC
-  src/sandbox/net_egress_proxy.cpp)
+  src/sandbox/net_egress_proxy.cpp
+  src/sandbox/net_egress_fetch.cpp)  # ADR-241: the async path on rt::http (the gate and pure functions are the first file)
 target_link_libraries(agentengine_net_egress_proxy PUBLIC agentengine::core)
 target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine_warnings)
 add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
@@ -220,7 +280,7 @@ add_library(agentengine::net_egress_proxy ALIAS agentengine_net_egress_proxy)
 # added near the end of this file, with the examples, so AGENTENGINE_FAST_TESTS can reach them.
 
 # ---- native_jail ShellRunner backend (src/backends/native_jail/) --------------
-# Implements decisions/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
+# Implements decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md — Design A: the
 # recursive-descent parser, the pmr-backed AST, the tree-walking evaluator, the fixed builtin
 # table, CommandRegistry, and RealFileSystemAdapter. A STATIC library (not header-only) so Sh-S1's
 # static "zero references to a process-creation primitive" check (ADR-001 §7 finding 1's fix) can
@@ -282,7 +342,7 @@ if(NOT WIN32)
   add_library(agentengine::mediated_shell_runner ALIAS agentengine_mediated_shell_runner)
 endif()
 
-# ---- Milestone 3 Phase E5 / decisions/ADR-015: libFuzzer harness for MediatedShellRunner's grammar
+# ---- Milestone 3 Phase E5 / decisions/archive/ADR-015: libFuzzer harness for MediatedShellRunner's grammar
 # parser (010 SS9 G8). Off by default (matches AGENTENGINE_WITH_WASM/AGENTENGINE_BUILD_PYTHON_
 # RUNNER's own posture for an opt-in, toolchain-specific target) -- only buildable with a real Clang
 # front end (covers both upstream clang++ and clang-cl): libFuzzer's runtime (-fsanitize=fuzzer) has
@@ -315,7 +375,7 @@ if(AGENTENGINE_BUILD_SHELL_FUZZER)
 endif()
 
 # ---- native_jail Job Object resource-limit layer (src/backends/native_jail/) -- Windows only -----
-# Implements decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (build-and-
+# Implements decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §3 steps 2-3 (build-and-
 # measure follow-up named in that ADR's §9): the Windows Job Object half of 008 §2's ResourceLimits
 # contract (memory_bytes/pids/cpu_ms, plus a host-side wall-clock watch). Pure Win32 API, no
 # third-party dependency, so unlike the PythonRunner backend below this needs no CMake option gate
@@ -369,9 +429,9 @@ endif()
 # Implements agentengine::SandboxBackend (008 §2-3) via Kata Containers -- docs/planning/microvm-
 # first-party-backend-design-draft.md Design A, narrowed per that draft's own §7 C2 finding (ONE
 # pinned runtime class -- cloud-hypervisor/`kata-clh`, not QEMU -- to bound the CVE-tracking surface
-# the way `decisions/ADR-013-...mbedtls-vendoring.md` bounds mbedTLS's). Reopen condition (i)
+# the way `decisions/archive/ADR-013-...mbedtls-vendoring.md` bounds mbedTLS's). Reopen condition (i)
 # (`native-jail`'s own 008 §9 gate reaching Judged on both platforms) was independently re-verified
-# met on 2026-08-23 before this option existed -- see `decisions/ADR-004-...md`/`ADR-083-...md`.
+# met on 2026-08-23 before this option existed -- see `decisions/archive/ADR-004-...md`/`ADR-083-...md`.
 #
 # No new C++ dependency is vendored here: this backend shells out to the `ctr` CLI already needed to
 # operate any Kata/containerd deployment at all (kata_backend.hpp's own header comment has the full
@@ -386,7 +446,9 @@ option(AGENTENGINE_BUILD_KATA_BACKEND
 
 if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
   add_library(agentengine_kata_backend STATIC
-    src/backends/kata/kata_backend.cpp)
+    src/backends/kata/kata_backend.cpp
+    src/backends/kata/egress_policy_render.cpp
+    src/backends/kata/egress_policy_host.cpp)
   target_include_directories(agentengine_kata_backend PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(agentengine_kata_backend PUBLIC agentengine::core)
@@ -404,7 +466,7 @@ elseif(WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
 endif()
 
 # ---- native_process backend (src/backends/native_process/) -- OPTIONAL, OFF by default ---------
-# Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md: real, UNSANDBOXED
+# Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md: real, UNSANDBOXED
 # host process spawning for NativeShellProvider/NativeBashProvider/NativePythonProvider/
 # NativeNodeProvider (ADR-070's "host-configurable responsibility boundary" made concrete for a new
 # capability class, not a variant of the existing native_jail sandbox). No third-party dependency
@@ -435,7 +497,7 @@ if(AGENTENGINE_WITH_NATIVE_PROCESS)
     add_library(agentengine::native_process_backend ALIAS agentengine_native_process_backend)
   else()
     message(WARNING "AGENTENGINE_WITH_NATIVE_PROCESS: no POSIX spawn implementation yet "
-      "(decisions/ADR-071-native-unsandboxed-process-execution-providers.md, design-only for "
+      "(decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md, design-only for "
       "non-Windows -- matching this project's existing 'no Linux env available to build/verify "
       "against' posture for other Milestone-3+ Linux gaps). Only native_path_scan.cpp (portable) "
       "is built; there is no native_process_spawn/native_worktree_bridge target on this platform.")
@@ -454,8 +516,8 @@ endif()
 # decision 5): wasmtime 47.0.3 as the `wasm` SandboxBackend's one CONVENTIONS.md tier-2 seam-backend
 # heavy dependency (009's plugin ABI). This block imports the dependency (tests/
 # test_wasmtime_smoke.cpp, gated the same way below) and, when this option is on, builds the real
-# `SandboxBackend` (`agentengine::wasm_backend`, D3, decisions/ADR-010-*.md) plus its tool-pipeline
-# bridge (decisions/ADR-040-wasm-tool-pipeline-bridge.md) -- each landed only after its own
+# `SandboxBackend` (`agentengine::wasm_backend`, D3, decisions/archive/ADR-010-*.md) plus its tool-pipeline
+# bridge (decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md) -- each landed only after its own
 # design->red-team->prove->judge pass per CLAUDE.md, same posture as job_object_limits.hpp/
 # cgroup_limits.hpp before ADR-004's build-and-measure pass. Off by default, matching
 # AGENTENGINE_BUILD_PYTHON_RUNNER's own posture for the other tier-2 heavy dependency this project
@@ -560,7 +622,7 @@ if(AGENTENGINE_WITH_WASM)
   # Milestone 2 Phase D task D3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
   # the first real implementation under src/backends/wasm/ -- security-critical, built through
   # design->red-team->prove->judge per CLAUDE.md and landed as
-  # decisions/ADR-010-wasm-component-host-manifest-capability-binding.md before this target existed.
+  # decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md before this target existed.
   add_library(agentengine_wasm_backend STATIC
     src/backends/wasm/wasm_backend.cpp)
   target_include_directories(agentengine_wasm_backend PUBLIC
@@ -606,7 +668,7 @@ endif()
 add_library(agentengine::default_sandbox_registry ALIAS agentengine_default_sandbox_registry)
 
 # ---- HTTPS/TLS client for the egress proxy (src/sandbox/) -- Windows + Linux -------------------
-# decisions/ADR-013-https-egress-tls-client.md (M2 residual, ADR-011 section 9's named follow-up):
+# decisions/archive/ADR-013-https-egress-tls-client.md (M2 residual, ADR-011 section 9's named follow-up):
 # mbedTLS as the egress proxy's one CONVENTIONS.md tier-2 heavy dependency for ordinary outbound
 # HTTPS (system-CA-style validation + real hostname verification -- NOT Quark's SecureTransport,
 # built for node-identity cluster mTLS, ADR-011 section 3 Design C's own rejection reasoning). Off
@@ -660,6 +722,21 @@ if(AGENTENGINE_WITH_HTTPS)
     add_subdirectory("${AGENTENGINE_MBEDTLS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/mbedtls_local" EXCLUDE_FROM_ALL)
   endif()
 
+  # ---- ADR-237 §6.3: make mbedTLS itself thread-safe (MBEDTLS_THREADING_C + this project's ALT layer) ----
+  # Without this, mbedTLS's TLS 1.3/PSA global state races between threads, which forced rt::TlsStream to
+  # serialise every mbedTLS call behind one process-wide lock while the blocking TlsClientSession -- whose
+  # BIO blocks inside mbedTLS, so it cannot share that lock -- raced it anyway. The user-config header and
+  # threading_alt.h live in src/backends/tls_mbedtls/; both are applied to the three vendored targets
+  # PUBLIC so that every target compiling any TU that includes an mbedTLS header sees the same
+  # configuration (agentengine_tls_common and the tests included) -- a TU compiled against a different
+  # config would be an ABI mismatch.
+  set(AE_MBEDTLS_THREADING_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/backends/tls_mbedtls")
+  foreach(ae_mbedtls_target mbedcrypto mbedx509 mbedtls)
+    target_include_directories(${ae_mbedtls_target} PUBLIC "${AE_MBEDTLS_THREADING_DIR}")
+    target_compile_definitions(${ae_mbedtls_target} PUBLIC
+      "MBEDTLS_USER_CONFIG_FILE=\"agentengine_mbedtls_config.h\"")
+  endforeach()
+
   # A pinned, checksummed CA root bundle (curl.se's well-known, regularly-refreshed distribution of
   # Mozilla's own root program) -- mbedTLS has no OS-trust-store integration of its own (unlike
   # OpenSSL/Schannel); vendoring one keeps this project's own "no host-machine-dependent build
@@ -697,19 +774,38 @@ if(AGENTENGINE_WITH_HTTPS)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ca_bundle_embed.cpp.in"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp" @ONLY)
 
+  # ---- ADR-013's client configuration + the embedded CA bundle, shared by both TLS clients below ----
+  # (src/backends/tls_mbedtls/mbedtls_client_config.cpp, moved verbatim out of tls_client.cpp for ADR-237 §6.3 so
+  # the blocking client and rt::TlsStream cannot drift). Layer L0 (tools/layers.toml).
+  add_library(agentengine_tls_common STATIC
+    src/backends/tls_mbedtls/mbedtls_client_config.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp")
+  target_include_directories(agentengine_tls_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(agentengine_tls_common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_compile_features(agentengine_tls_common PUBLIC cxx_std_23)
+  target_link_libraries(agentengine_tls_common PUBLIC MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+  target_link_libraries(agentengine_tls_common PRIVATE agentengine_warnings)
+
   # ---- TLS client (src/sandbox/) -- Windows + Linux ---------------------------------------------
   add_library(agentengine_tls_client STATIC
-    src/sandbox/tls_client.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/ca_bundle_embed.cpp")
+    src/sandbox/tls_client.cpp)
   target_link_libraries(agentengine_tls_client PUBLIC agentengine::core)
   target_link_libraries(agentengine_tls_client PRIVATE
-    agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+    agentengine_warnings agentengine_tls_common MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   add_library(agentengine::tls_client ALIAS agentengine_tls_client)
+
+  # ---- ADR-237 §6.3: rt::TlsStream, asynchronous TLS on the I/O reactor (include/agentengine/rt/tls.hpp) ----
+  add_library(agentengine_rt_tls STATIC src/backends/tls_mbedtls/tls_stream_mbedtls.cpp)
+  target_link_libraries(agentengine_rt_tls PUBLIC agentengine::core)
+  target_link_libraries(agentengine_rt_tls PRIVATE agentengine_warnings agentengine_tls_common)
+  add_library(agentengine::rt_tls ALIAS agentengine_rt_tls)
 
   # Extends the already-defined agentengine::net_egress_proxy target (above) rather than moving its
   # definition down here -- AGENTENGINE_WITH_HTTPS is resolved after that target already exists,
   # and CMake target_link_libraries()/target_compile_definitions() calls accumulate across a file.
   target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::tls_client)
+  # ADR-241: the egress proxy now speaks https through rt::http, i.e. rt::TlsStream (rt/http_tls.hpp).
+  target_link_libraries(agentengine_net_egress_proxy PRIVATE agentengine::rt_tls)
   target_compile_definitions(agentengine_net_egress_proxy PUBLIC AGENTENGINE_WITH_HTTPS)
 
   # ---- Milestone 5 Phase C: host-initiated provider HTTP client (src/sandbox/) -------------------
@@ -727,11 +823,14 @@ if(AGENTENGINE_WITH_HTTPS)
     src/protocol/openai/openrouter_batch.cpp
     src/protocol/anthropic/chat_client.cpp)
   target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::net_egress_proxy)
+  # ADR-237 §5.1 (step 34): the provider clients' `chat_stream` can now drive rt/http on the reactor, so the
+  # library references `rt::TlsStream` (rt/http_tls.hpp). PUBLIC so every consumer inherits it.
+  target_link_libraries(agentengine_provider_http_client PUBLIC agentengine::rt_tls)
   target_link_libraries(agentengine_provider_http_client PRIVATE agentengine_warnings)
   add_library(agentengine::provider_http_client ALIAS agentengine_provider_http_client)
 endif()
 
-# ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§2.7 -- VulkanCosineIndex,
+# ---- decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§2.7 -- VulkanCosineIndex,
 # a GPU-accelerated, exact-brute-force VectorIndex seam backend (CONVENTIONS.md Tier 2: one dependency,
 # the Vulkan LOADER, never linked unless selected). ONE generic, cross-vendor GPU conformer -- not a
 # multi-vendor GPU abstraction layer; a CUDA/Metal/ROCm-specific backend is a separate VectorIndex
@@ -798,13 +897,13 @@ endif()
 # Implements trust/hmac.hpp: trust/hmac.cpp (Milestone 7, ADR-021) extracted the shared HMAC-SHA256/
 # constant-time-compare primitive out of capability_token.cpp so a SECOND, unrelated component
 # (ADR-021's bearer-token validator) could reuse the identical audited implementation instead of a
-# second one -- see hmac.hpp's own top comment. decisions/ADR-107-hmac-sha256-linux-parity.md gave it
+# second one -- see hmac.hpp's own top comment. decisions/archive/ADR-107-hmac-sha256-linux-parity.md gave it
 # a real Linux twin (hmac_posix.cpp, a from-scratch RFC 2104 construction built on
 # worktree_digest_posix.cpp's SHA-256 primitive) after finding a THIRD, unrelated consumer --
 # trust/secret_quarantine.hpp's QuarantineSecretStore, a core turn-boundary secret-quarantine feature
 # with no connection to ADR-005/021's cross-process/bearer-token designs -- also needs hmac_sha256,
 # and having it available on Windows only broke every AGENTENGINE_WITH_HTTPS-gated Linux target that
-# touches QuarantineSecretStore (decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7).
+# touches QuarantineSecretStore (decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7).
 # Deliberately its own small library, separate from agentengine_capability_token below: that library's
 # OTHER three files (capability_token.cpp/capability_registry.cpp/bearer_token.cpp) call
 # BCryptGenRandom directly for cross-process bearer-token key generation -- a genuinely Windows-only
@@ -826,7 +925,7 @@ if(NOT WIN32)
 endif()
 
 # ---- Cross-process capability tokens (src/trust/) -- Windows only ------------------------------
-# Implements decisions/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
+# Implements decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md (resolves OQ-3): both
 # competing designs it prove-phases -- Design A (trust/capability_token.hpp, a self-verifying
 # macaroon-style bearer token) and Design B (trust/capability_registry.hpp, the status-quo
 # host-side-registry alternative it is measured against). Randomness comes from Windows CNG/BCrypt, a
@@ -846,7 +945,7 @@ if(WIN32)
 endif()
 
 # ---- Worktree content-addressed object store (src/core/) ---------------------------------------
-# Implements 025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
+# Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A1
 # (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md): SHA-256 content digests
 # for Blob/Tree objects via Windows CNG/BCrypt, a system API -- not a third-party dependency, same
 # posture as ADR-005's capability_token.cpp. The Linux SHA-256 provider (worktree_digest_posix.cpp,
@@ -885,7 +984,7 @@ if(NOT WIN32)
 endif()
 
 # ---- RealIoFileSystem's platform-specific verified I/O (src/sandbox/) --------------------------
-# Implements decisions/ADR-104-real-io-filesystem-linux-parity.md: `RealIoFileSystem::write_verified()`/
+# Implements decisions/archive/ADR-104-real-io-filesystem-linux-parity.md: `RealIoFileSystem::write_verified()`/
 # `read_verified()` (sandbox/real_io_filesystem.hpp) are the only two methods on that class that need
 # a real, verified OS handle -- split out-of-line per platform, mirroring `agentengine_worktree_store`'s
 # own WIN32/`NOT WIN32` split just above. Every other method on `RealIoFileSystem` stays inline in the
@@ -916,7 +1015,7 @@ if(WIN32)
 endif()
 
 # ---- native_jail PythonRunner backend (src/backends/native_jail/) -- OPTIONAL, OFF by default ---
-# Implements decisions/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
+# Implements decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md (prove phase): the embedded
 # CPython interpreter, Layer 0's sys.modules sweep, and the sys.meta_path allowlist finder
 # (python_lockdown.{hpp,cpp}), consumed by python_runner.hpp. CPython is a genuine heavy dependency
 # (CONVENTIONS.md tier 2 — "seam backends may take a heavy dependency... one dependency per
@@ -943,7 +1042,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   # python.org's own embedding docs point to) and numpy/pandas are pip-installed at pinned versions
   # into a vendored site-packages directory under the build tree. This is deliberately NOT the host
   # machine's Python: no build depends on what happens to be installed where, matching
-  # decisions/ADR-004-appcontainer-native-jail-windows-backend.md §3 step 1 and §5.4's finding that
+  # decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §3 step 1 and §5.4's finding that
   # ACL-granting a system-owned interpreter needs elevation a vendored, build-owned one does not.
   # Version pins match the target ADR-002/ADR-003 already proved against (CPython 3.13.5, numpy
   # 2.3.3, pandas 2.3.3) rather than floating to whatever is newest.
@@ -1024,7 +1123,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
 
   if(NOT WIN32)
     # POSIX wiring (python3-config/pkg-config --embed, .so soname handling) is NOT ATTEMPTED this
-    # pass (decisions/ADR-002-pythonrunner-embedding-and-mediation.md §8/§9) -- only the Windows
+    # pass (decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md §8/§9) -- only the Windows
     # miniconda-style include/libs layout named as this ADR's concrete embedding target is wired
     # up. Recorded here as an explicit, honest gap rather than a silently-wrong guess at flags.
     message(FATAL_ERROR
@@ -1200,8 +1299,8 @@ if(AGENTENGINE_WITH_PDF)
   endif()
 
   # ---- The sandboxed worker binary (pdf_worker_main.cpp) -- reads one PDF path (argv[1], already
-  # placed by the host into a scratch directory it granted read-only access to -- see
-  # NativeJailBackend::grant_ro_path_once()/LinuxNativeJailBackend's ordinary SandboxSpec.mounts,
+  # placed by the host into a scratch directory mounted read-only -- an ordinary SandboxSpec.mounts entry
+  # checked against the caller's grants (ADR-244 §2.4),
   # docs/planning/pdf-text-extraction-design-draft.md §3a), extracts text page-by-page via PDFium's
   # C API, and writes delimited records to stdout under its own self-queried output-byte ceiling
   # (§3a/§4 item 5) -- NEVER initializes PDFium's FormFill/V8 engine (round-1 red-team's own
@@ -1265,9 +1364,9 @@ endif()
 # Python embed (unlike agentengine_cli_chat above), so gated only on AGENTENGINE_WITH_HTTPS (real
 # network calls) -- previously ALSO WIN32-gated because this file's use of QuarantineSecretStore
 # (trust/secret_quarantine.hpp) pulls in agentengine::trust::hmac_sha256, which had no Linux
-# implementation at all (decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §4 point 3 /
+# implementation at all (decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md §4 point 3 /
 # §7's disclosed residual -- itself a correction of an even earlier, stale "SandboxToolProvider's own
-# platform scope" claim this comment used to make). decisions/ADR-107-hmac-sha256-linux-parity.md
+# platform scope" claim this comment used to make). decisions/archive/ADR-107-hmac-sha256-linux-parity.md
 # closed that gap for real (agentengine::hmac, both platforms) -- confirmed empirically that
 # hmac_sha256 was the ONLY reason this target couldn't build on Linux (every other dependency --
 # session_builder.hpp, composed_context_provider.hpp, docker_execution_surface.hpp,

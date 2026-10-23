@@ -1,4 +1,4 @@
-// Implements decisions/ADR-072-external-host-discovered-skill-sources.md -- proves
+// Implements decisions/archive/ADR-072-external-host-discovered-skill-sources.md -- proves
 // core/external_skill_discovery.hpp's `discover_external_skill_locations()` against real host
 // filesystem state: synthetic scratch directories simulating each known tool/scope convention, and
 // (D6) this session's REAL, unmodified environment, since `~/.claude/skills/*` are real NTFS
@@ -205,7 +205,7 @@ int main() {
             // -- proves DiskSkillSource's directory_iterator-based walk actually follows them, not an
             // assumption.
             DiskSkillSource source(real_claude->origin_id, real_claude->path);
-            auto loaded = source.load_skills();
+            auto loaded = test_support::run_task_sync<result<std::vector<SkillSourceResult>>>(source.load_skills());
             check(loaded.has_value(),
                   "D6: DiskSkillSource::load_skills() succeeds against the REAL, symlink-containing "
                   "~/.claude/skills directory");

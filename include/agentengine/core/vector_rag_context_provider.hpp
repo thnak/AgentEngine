@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.1/§2.1b/§2.6a/§2.6b
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.1/§2.1b/§2.6a/§2.6b
 // -- `VectorRagContextProvider<EmbedderT, IndexT, OS, RS>`, the flat/vector-similarity RAG
 // `ContextProvider` conformer (the ONLY RAG "kind" this ADR actually designs -- §2.1b: a
 // `GraphRagContextProvider` would be its own, separately-named class, never a template
@@ -20,7 +20,7 @@
 // would silently diverge from whatever a real ingestion step populated elsewhere.
 //
 // **A real, named implementation gap found while building this file, not previously listed in
-// ADR-063 §4/§7's own residual lists -- RESOLVED by decisions/ADR-064-recall-tool-sync-invoke-vs-
+// ADR-063 §4/§7's own residual lists -- RESOLVED by decisions/archive/ADR-064-recall-tool-sync-invoke-vs-
 // async-embedder.md, Design B (2026-08-19).** `ToolDescriptor::invoke` (core/tool_pipeline.hpp) is
 // `std::function<result<json::Value>(json::Value const&, EffectContext&)>` -- synchronous only (an
 // M2-era decision, never revisited). `MemoryProvider::make_recall_tool_descriptor()`'s own `invoke`
@@ -30,7 +30,7 @@
 // a genuine `ae::task<result<...>>` coroutine (a real network call for any production `Embedder`
 // conformer). ADR-064 closes this WITHOUT widening `ToolDescriptor::invoke`'s signature (rejected as
 // Design A, 25+ call sites, its own separate cross-cutting decision): `rt::drive_leaf_task()`
-// (rt/drive_leaf_task.hpp) drives `embedder_.embed_batch()` synchronously, gated by the `Embedder`
+// (rt/drive_leaf_task.hpp, deleted by #175) drove `embedder_.embed_batch()` synchronously, gated by the `Embedder`
 // concept's REQUIRED `synchronous_leaf` trait (core/embedder.hpp) -- a conformer must declare it
 // `true` (an explicit, reviewed claim that its `embed_batch()` body never awaits anything but nested
 // `task<T>`/`task<void>`) before `recall`'s `invoke` will use this path. `OpenAIEmbedder` declares
@@ -38,7 +38,7 @@
 // `failure_class::contract` error (unchanged, no regression) -- see `make_recall_tool_descriptor()`'s
 // own comment below for both paths.
 //
-// **Extended by decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1/§2.3
+// **Extended by decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1/§2.3
 // (2026-09-22).** Two changes, both additive, neither touching this file's already-Judged behavior
 // for the `VectorIndex<IndexT>` (local, synchronous) case:
 //   1. `IndexT` is now constrained by `AnyVectorIndex<IndexT>` (`VectorIndex<IndexT> ||
@@ -53,6 +53,13 @@
 //      and citation-forgery-defense code, not a second copy of it -- the identical "generalize,
 //      don't duplicate" discipline ADR-063 §2.6b already used once for
 //      `neutralize_forged_provenance_markers()`.
+//
+// **Superseded in part by decisions/archive/ADR-237 §5.1 (2026-10-14, #172).** `ToolDescriptor::invoke` is now
+// `task`-shaped (§5.2), so `recall`'s `invoke` simply `co_await`s `embed_batch()` and `search()` like
+// `on_context()` does: no `rt::drive_leaf_task()`, no `synchronous_leaf` gate on either leg, and no
+// fail-closed contract error for a conformer that genuinely suspends. `VectorIndex` and the former
+// `RemoteVectorIndex` are one `task`-shaped concept, so neither method dispatches on the index kind.
+// ADR-064 Design B and change 1 above describe the shape this replaced.
 
 #include <cstddef>
 #include <span>
@@ -68,16 +75,15 @@
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/provenance_marker.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "agentengine/rt/drive_leaf_task.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
-// New in this pass (ADR-063 §2.1), not yet added to 027-Vocabulary-and-Naming.md §2-4's
+// New in this pass (ADR-063 §2.1), not yet added to rfcs/027-Vocabulary-and-Naming.md §2-4's
 // canonical-name tables; mirrors memory_provider.hpp's own RecallArgs shape under a distinct name
 // so the two tools' JSON schemas never collide.
 // ae-naming-lint: allow RagRecallArgs
@@ -86,7 +92,7 @@ struct RagRecallArgs {
 };
 AE_JSON_SCHEMA(RagRecallArgs, query)
 
-// New in this pass (ADR-063 §2.1), not yet added to 027-Vocabulary-and-Naming.md §2-4's
+// New in this pass (ADR-063 §2.1), not yet added to rfcs/027-Vocabulary-and-Naming.md §2-4's
 // canonical-name tables; mirrors memory_provider.hpp's own RecallReply shape under a distinct name,
 // same reasoning as RagRecallArgs above.
 // ae-naming-lint: allow RagRecallReply
@@ -143,13 +149,13 @@ namespace vector_rag_detail {
 // ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private method (behavior-
 // preserving -- same body, `this->object_store_`/`this->ref_store_`/`this->mount_`/`this->read_cap_`
 // become explicit parameters) so `HybridRagContextProvider` calls this EXACT function rather than a
-// second copy. Shared by `on_context()`'s default injection path AND (ADR-064, when the driving
-// leaf(s) declare `synchronous_leaf = true`) a contributed `recall` tool's own `invoke`.
+// second copy. Shared by `on_context()`'s default injection path AND a contributed `recall` tool's own
+// `invoke`.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::string> render_scored_chunk(OS& object_store, RS& ref_store, Mount const& mount,
-                                                        cap::FsRead const& read_cap, ScoredId const& scored) {
-    auto record = read_corpus_chunk_record(object_store, ref_store, mount, read_cap, scored.id);
-    if (!record) return std::unexpected(record.error());
+[[nodiscard]] task<result<std::string>> render_scored_chunk(OS& object_store, RS& ref_store, Mount mount,
+                                                        cap::FsRead read_cap, ScoredId scored) {
+    auto record = co_await read_corpus_chunk_record(object_store, ref_store, mount, read_cap, scored.id);
+    if (!record) co_return std::unexpected(record.error());
 
     // corpus_chunk.hpp's own header comment: `scored.id` IS the chunk TEXT's own content digest
     // -- the identical id `put_blob()` returned when the chunk was written and `VectorIndex`
@@ -161,8 +167,8 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     // tenant's chunk id in the first place, see this file's own cross-tenant test), not on a
     // capability gate at the blob layer. This is the SAME mechanism corpus_chunk.hpp's own
     // header comment already designs and names, not a gap this file introduces.
-    auto chunk_bytes = object_store.get_blob(scored.id);
-    if (!chunk_bytes) return std::unexpected(chunk_bytes.error());
+    auto chunk_bytes = co_await object_store.get_blob(scored.id);
+    if (!chunk_bytes) co_return std::unexpected(chunk_bytes.error());
     std::string const chunk_text(reinterpret_cast<char const*>(chunk_bytes->data()), chunk_bytes->size());
 
     // ADR-063 §2.6b's exact shape: "citation_label = ... ; rendered text = citation_label + " "
@@ -174,7 +180,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         std::to_string(record->line_start) + "-" + std::to_string(record->line_end) +
         std::string(rag_citation_label_close());
 
-    return citation_label + " " + neutralize_forged_provenance_markers(chunk_text, rag_citation_label_open());
+    co_return citation_label + " " + neutralize_forged_provenance_markers(chunk_text, rag_citation_label_open());
 }
 
 // ADR-180 §2.3: extracted from `VectorRagContextProvider`'s own former private static method,
@@ -203,14 +209,14 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // real precedent this file mirrors rather than the ADR prose's own two-parameter illustration
 // literally -- see this file's accompanying test for the concrete instantiation.
 //
-// `IndexT` is `AnyVectorIndex` (ADR-180 §2.1), not `VectorIndex` alone -- see this file's top comment
-// for the two additive changes ADR-180 made here.
+// `IndexT` is any `VectorIndex`, local or network-backed (ADR-180 §2.1, merged into one concept by ADR-237
+// §5.1) -- see this file's top comment.
 template <class EmbedderT, class IndexT, class OS, class RS>
-    requires Embedder<EmbedderT> && AnyVectorIndex<IndexT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
+    requires Embedder<EmbedderT> && VectorIndex<IndexT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 // ae-naming-lint: allow VectorRagContextProvider
 class VectorRagContextProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 (merged from a sibling branch
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 (merged from a sibling branch
     // after this class was first written): every ContextProvider routed through
     // make_context_provider_descriptor()/ComposedContextProvider must declare a static name.
     static constexpr std::string_view name = "rag";
@@ -265,21 +271,12 @@ public:
         std::vector<float> const& query_vector = embedded->front();
         std::span<float const> const query_span(query_vector.data(), query_vector.size());
 
-        // ADR-180 §2.1 Design B: `on_context()` is already a coroutine, so the `RemoteVectorIndex`
-        // branch simply `co_await`s the index's own `task<result<...>>` -- no `synchronous_leaf`
-        // gating is needed HERE (that trait only matters for driving a task synchronously from
-        // `recall`'s synchronous `invoke` closure below, which this method is not).
-        result<std::vector<ScoredId>> scored_result;
-        if constexpr (RemoteVectorIndex<IndexT>) {
-            scored_result = co_await index_->search(query_span, max_injected_, ctx);
-        } else {
-            scored_result = index_->search(query_span, max_injected_);
-        }
+        auto scored_result = co_await index_->search(query_span, max_injected_, ctx);
         if (!scored_result) co_return std::unexpected(scored_result.error());
 
         ContextContribution contribution;
         for (ScoredId const& s : *scored_result) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) {
                 // Real, currently-undesigned lifecycle edge case (ADR-063 §7 already names the
@@ -313,22 +310,21 @@ public:
 
 private:
     // ADR-180 §2.1: builds the on-demand `recall(query)` reply from an already-scored, already-
-    // ranked result list -- shared by both branches of `make_recall_tool_descriptor()`'s `invoke`
-    // below (local-index and remote-index), so the "skip a stale entry, keep the rest" best-effort
-    // posture (matching `on_context()`'s own identical stance) is expressed exactly once.
-    [[nodiscard]] result<json::Value> reply_from_scored(std::vector<ScoredId> const& scored) const {
+    // ranked result list, with the "skip a stale entry, keep the rest" best-effort posture of
+    // `on_context()`.
+    [[nodiscard]] task<result<json::Value>> reply_from_scored(std::vector<ScoredId> const& scored) const {
         RagRecallReply reply;
         reply.results.reserve(scored.size());
         for (ScoredId const& s : scored) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) continue;
             reply.results.push_back(*rendered);
         }
-        return schema::to_json(reply);
+        co_return schema::to_json(reply);
     }
 
-    // NOT `const` -- deliberately: the `synchronous_leaf` path below calls `this->embedder_.
+    // NOT `const` -- deliberately: `recall_call()` below calls `this->embedder_.
     // embed_batch(...)`, and none of this codebase's real `Embedder` conformers declare `embed_batch`
     // `const` except `OpenAIEmbedder` (the two test mocks mutate their own call counters/scripted
     // state inside it) -- capturing `this` from a `const` method here would force `embedder_` to be
@@ -353,88 +349,41 @@ private:
         d.approval          = approval_mode::never_require;
         d.args_schema_json  = schema::json_schema_of<RagRecallArgs>();
         d.reply_schema_json = schema::json_schema_of<RagRecallReply>();
+        // ADR-153's must-fix, applied here too: `invoke` reads the corpus with `read_cap_`, a value fixed
+        // at construction, so without a ceiling the pipeline's steps 4/7 bind nothing and any caller --
+        // a CodeAct/sandbox bridge holding no FsRead on this mount included -- would read with this
+        // provider's authority. Declaring the ceiling makes the caller's own grant the gate (I2).
+        d.capability_ceiling = {Capability{read_cap_}};
+        // Captures `this`; ADR-160's scheduler and `rerun_comparable()` key off this flag.
+        d.captures_session_state = true;
 
-        // ADR-064 Design B: args are validated FIRST (reject-not-coerce, 006 §3 step 2) regardless of
-        // which branch below runs, so a malformed call always gets its own schema error rather than
-        // either branch's error masking a genuinely separate contract violation.
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
-            (void)this;  // only the `synchronous_leaf` branch below actually touches members; the
-                         // other branch's own instantiation would otherwise trip -Wunused-lambda-capture
-            auto args = schema::from_json<RagRecallArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-
-            if constexpr (EmbedderT::synchronous_leaf) {
-                // `rt::drive_leaf_task()` is sound here ONLY because `EmbedderT::synchronous_leaf ==
-                // true` is an explicit, reviewed claim (core/embedder.hpp) that `embed_batch()` never
-                // awaits anything but nested `task<T>`/`task<void>` -- see rt/drive_leaf_task.hpp's
-                // own top comment for the full contract and its double-wrapped `result<T>` shape,
-                // both layers unwrapped explicitly below (OUTER: task-level fault or a violated
-                // contract; INNER: the ordinary provider error channel -- a failed HTTP call, a bad
-                // response -- the common failure case).
-                std::vector<std::string> const query_batch{args->query};
-                auto driven = rt::drive_leaf_task(embedder_.embed_batch(query_batch, ctx));
-                if (!driven) return std::unexpected(driven.error());
-                auto& embedded = *driven;
-                if (!embedded) return std::unexpected(embedded.error());
-                if (embedded->empty()) {
-                    return std::unexpected(
-                        error{failure_class::contract,
-                              "Embedder::embed_batch returned zero vectors for a one-text query batch",
-                              "vector_rag_context_provider.embed_batch_empty_result"});
-                }
-
-                std::vector<float> const& query_vector = embedded->front();
-                std::span<float const> const query_span(query_vector.data(), query_vector.size());
-                // 10, matching MemoryProvider::make_recall_tool_descriptor()'s own on-demand
-                // max_results literal -- deliberately independent of max_injected_ (that constructor
-                // parameter sizes DEFAULT injection, a different concern from an on-demand query).
-
-                // ADR-180 §2.1: a SECOND `synchronous_leaf` gate, this one on `IndexT` itself --
-                // `recall`'s `invoke` is synchronous-only, so a `RemoteVectorIndex` conformer's own
-                // `search()` task may only be driven via `rt::drive_leaf_task()` when IT ALSO
-                // declares `synchronous_leaf = true` (extending ADR-064's exact rule to a second
-                // leaf). A local (`VectorIndex`) conformer needs no such gate -- its `search()` was
-                // never a coroutine to begin with, unchanged from before ADR-180.
-                if constexpr (RemoteVectorIndex<IndexT>) {
-                    if constexpr (IndexT::synchronous_leaf) {
-                        auto driven_idx = rt::drive_leaf_task(index_->search(query_span, /*k=*/10, ctx));
-                        if (!driven_idx) return std::unexpected(driven_idx.error());
-                        auto& scored = *driven_idx;
-                        if (!scored) return std::unexpected(scored.error());
-                        return reply_from_scored(*scored);
-                    } else {
-                        return std::unexpected(error{
-                            failure_class::contract,
-                            "recall(query) cannot be invoked: this RemoteVectorIndex conformer "
-                            "declares synchronous_leaf = false, so it is unsafe to drive its "
-                            "search() task synchronously from this tool's invoke (decisions/"
-                            "ADR-180 §2.1, extending ADR-064's identical rule to the index leg). "
-                            "Use VectorRagContextProvider::on_context()'s default injection "
-                            "instead, or compose a RemoteVectorIndex whose search() body never "
-                            "awaits anything but nested task<T>/task<void> and declares "
-                            "synchronous_leaf = true.",
-                            "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_index"});
-                    }
-                } else {
-                    auto scored = index_->search(query_span, /*k=*/10);
-                    if (!scored) return std::unexpected(scored.error());
-                    return reply_from_scored(*scored);
-                }
-            } else {
-                // Unchanged fail-closed path (no regression) for any Embedder conformer that declares
-                // `synchronous_leaf = false` -- see this file's own top-of-file comment.
-                return std::unexpected(error{
-                    failure_class::contract,
-                    "recall(query) cannot be invoked: this Embedder conformer declares "
-                    "synchronous_leaf = false, so it is unsafe to drive its embed_batch() task "
-                    "synchronously from this tool's invoke (decisions/ADR-064). Use "
-                    "VectorRagContextProvider::on_context()'s default injection instead, or compose "
-                    "an Embedder whose embed_batch() body never awaits anything but nested "
-                    "task<T>/task<void> and declares synchronous_leaf = true.",
-                    "vector_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
-            }
-        };
+        // ADR-237 §5.1/§5.2: a plain lambda handing off to a member coroutine whose frame owns the args by value
+        // (the MCP bridge's shape): `this` is the provider, which outlives every descriptor it produces (above).
+        d.invoke = [this](json::Value const& args, EffectContext& ctx) { return recall_call(args, ctx); };
         return d;
+    }
+
+    // The `recall(query)` call. Args are validated FIRST (reject-not-coerce, 006 §3 step 2), so a malformed call
+    // always gets its own schema error rather than an embedder or index error masking it.
+    [[nodiscard]] task<result<json::Value>> recall_call(json::Value args_value, EffectContext& ctx) {
+        auto args = schema::from_json<RagRecallArgs>(args_value);
+        if (!args) co_return std::unexpected(args.error());
+
+        std::vector<std::string> const query_batch{args->query};
+        auto embedded = co_await embedder_.embed_batch(query_batch, ctx);
+        if (!embedded) co_return std::unexpected(embedded.error());
+        if (embedded->empty()) {
+            co_return std::unexpected(error{failure_class::contract,
+                                            "Embedder::embed_batch returned zero vectors for a one-text query batch",
+                                            "vector_rag_context_provider.embed_batch_empty_result"});
+        }
+        std::vector<float> const& query_vector = embedded->front();
+        std::span<float const> const query_span(query_vector.data(), query_vector.size());
+        // 10, matching MemoryProvider::make_recall_tool_descriptor()'s own on-demand max_results literal --
+        // deliberately independent of max_injected_ (which sizes DEFAULT injection, a different concern).
+        auto scored = co_await index_->search(query_span, /*k=*/10, ctx);
+        if (!scored) co_return std::unexpected(scored.error());
+        co_return co_await reply_from_scored(*scored);
     }
 
     OS*          object_store_;

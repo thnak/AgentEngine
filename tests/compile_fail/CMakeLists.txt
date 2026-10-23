@@ -163,7 +163,7 @@ endif()
 # (2026-08-30): that statement no longer aliases live provider state across sessions -- `operator=`
 # refuses it as a silent no-op, proven by tests/core/context/test_session_builder.cpp's own B20.
 #
-# Portable across Windows and Linux (2026-08-29, decisions/ADR-105-sandbox-tool-provider-composed-
+# Portable across Windows and Linux (2026-08-29, decisions/archive/ADR-105-sandbox-tool-provider-composed-
 # linux-parity.md) -- previously WIN32-gated on the same stale "SandboxToolProvider's own current
 # platform scope" claim already corrected above; `agentengine_mediated_shell_runner`/
 # `agentengine_worktree_store` have both had real Linux twins since ADR-103/ADR-014 Phase C4. Both
@@ -310,3 +310,63 @@ agentengine_compile_fail_test(eval_run_trial_rejects_prewrapped_summarizer
   CONTROL compile_fail_eval_run_trial_plain_inner_positive_control
   EXPECT "SummarizerT must not already be a RecordingChatClient"
   LIBS agentengine::worktree_store)
+
+# ---- ADR-244 §2.1 / G-C1 compile-fail proof ---------------------------------------------------
+# `Bound<T>` has no default constructor: an aggregate that omits a `Bound` member does not compile, so
+# an omitted limit cannot mean "unbounded". The positive control states every member.
+# ADR-244 §2.2 (slice 4a): every Tool<> declares exactly one approval choice.
+agentengine_compile_fail_control(compile_fail_tool_approval_positive_control
+  SOURCE tool_approval_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_missing_approval
+  SOURCE tool_rejects_missing_approval.cpp
+  CONTROL compile_fail_tool_approval_positive_control
+  EXPECT "exactly one approval choice"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_rejects_two_approvals
+  SOURCE tool_rejects_two_approvals.cpp
+  CONTROL compile_fail_tool_approval_positive_control
+  EXPECT "exactly one approval choice"
+  LIBS agentengine::core)
+
+agentengine_compile_fail_control(compile_fail_bound_positive_control
+  SOURCE bound_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(bound_omitted_member
+  SOURCE bound_omitted_member.cpp
+  CONTROL compile_fail_bound_positive_control
+  # cl: "attempting to reference a deleted function"; gcc: "use of deleted function"; clang: "call to
+  # deleted constructor".
+  EXPECT "deleted"
+  LIBS agentengine::core)
+
+# ---- ADR-244 §2.2/§2.3 / G-C1 compile-fail proofs: session choices -----------------------------------
+# A session's authority source, token budget and turn cap, a request authority's expiry and a bridged session's
+# options are all stated or the code does not compile. The positive control states each, in the same shapes.
+agentengine_compile_fail_control(compile_fail_session_choices_positive_control
+  SOURCE session_choices_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(session_initialize_without_choices
+  SOURCE session_initialize_without_choices.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  # cl: "'initialize': function does not take 2 arguments"; gcc: "no matching function for call to
+  # '...::initialize(...)'"; clang: "too few arguments to function call, expected 3, have 2" (it names the
+  # function only in a note, which the regex may not see).
+  EXPECT "initialize|too few arguments to function call, expected 3"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(session_choices_omitted_member
+  SOURCE session_choices_omitted_member.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  EXPECT "deleted"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(request_authority_without_expiry
+  SOURCE request_authority_without_expiry.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  EXPECT "deleted"
+  LIBS agentengine::core)
+agentengine_compile_fail_test(agent_session_options_default
+  SOURCE agent_session_options_default.cpp
+  CONTROL compile_fail_session_choices_positive_control
+  # clang: "call to implicitly-deleted default constructor".
+  EXPECT "deleted"
+  LIBS agentengine::core)

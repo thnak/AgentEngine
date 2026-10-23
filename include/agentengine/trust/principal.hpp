@@ -1,5 +1,5 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md §2 and 018-Identity-Authorization-and-Secrets.md
+// Implements rfcs/007-Capability-and-Trust-Model.md §2 and rfcs/018-Identity-Authorization-and-Secrets.md
 // §1/§2 — the authenticated identity a run executes on behalf of, plus (Milestone 5 Phase H) the
 // two inbound-identity mechanisms decision 1 scopes as buildable now ("Embedded / in-process" and
 // "Local CLI" — the other three 018 §1 rows need 011/012/013, all M7), delegation (007 §2's

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-191-approved-lesson-delivery.md: the host-owned record of which lesson texts a human
+// Implements decisions/archive/ADR-191-approved-lesson-delivery.md: the host-owned record of which lesson texts a human
 // operator approved, verbatim, for which principal.
 //
 // A lesson is model-derived text and stays so: tainted, fenced, `content_origin::external`. What this registry adds

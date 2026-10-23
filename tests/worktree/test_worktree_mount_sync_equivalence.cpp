@@ -32,6 +32,7 @@
 
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
 #include <algorithm>
@@ -87,21 +88,21 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     auto full_segments = detail::combined_mount_segments(mount, guest_path);
     if (!full_segments) return std::unexpected(full_segments.error());
 
-    auto ref = read_ref(ref_store, mount.ref_name);
+    auto ref = agentengine::rt::block_on(read_ref(ref_store, mount.ref_name));
     if (!ref) return std::unexpected(ref.error());
     if (!ref->has_value()) {
         return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
                                       "worktree.mount_ref_missing"});
     }
 
-    auto entry = detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments);
+    auto entry = agentengine::rt::block_on(detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments));
     if (!entry) return std::unexpected(entry.error());
     if (entry->is_tree) {
         return std::unexpected(error{failure_class::contract, "the requested path names a directory, not a file",
                                       "worktree.mount_read_is_directory"});
     }
 
-    auto bytes = object_store.get_blob(entry->digest);
+    auto bytes = agentengine::rt::block_on(object_store.get_blob(entry->digest));
     if (!bytes) return std::unexpected(bytes.error());
     if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
         return std::unexpected(error{failure_class::policy,
@@ -115,7 +116,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> old_materialize_subtree(OS& object_store, RS& ref_store, Mount const& mount,
                                                     cap::FsRead const& granted, Digest const& tree_digest,
                                                     std::string const& guest_prefix, FileSystemAdapter& fs) {
-    auto tree = object_store.get_tree(tree_digest);
+    auto tree = agentengine::rt::block_on(object_store.get_tree(tree_digest));
     if (!tree) return std::unexpected(tree.error());
     for (auto const& entry : tree->entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
@@ -137,14 +138,14 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 [[nodiscard]] result<void> old_materialize_mount(OS& object_store, RS& ref_store, Mount const& mount,
                                                   cap::FsRead const& granted, FileSystemAdapter& fs) {
-    auto ref = read_ref(ref_store, mount.ref_name);
+    auto ref = agentengine::rt::block_on(read_ref(ref_store, mount.ref_name));
     if (!ref) return std::unexpected(ref.error());
     if (!ref->has_value()) {
         return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
                                       "worktree.mount_ref_missing"});
     }
     auto subtree_digest =
-        agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
+        agentengine::rt::block_on(agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path));
     if (!subtree_digest) return std::unexpected(subtree_digest.error());
     return old_materialize_subtree(object_store, ref_store, mount, granted, *subtree_digest, "", fs);
 }
@@ -166,7 +167,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         if (!bytes) return std::unexpected(bytes.error());
         auto digest = compute_digest(*bytes);
         if (!digest) return std::unexpected(digest.error());
-        auto written = mount_write(object_store, ref_store, mount, granted, guest_path, *bytes);
+        auto written = agentengine::rt::block_on(mount_write(object_store, ref_store, mount, granted, guest_path, *bytes));
         if (!written) return std::unexpected(written.error());
 
         std::string media_type = native_jail::detail::guess_media_type(entry.name);
@@ -183,14 +184,14 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // Counts read_from() -- one per read_ref().
 class CountingLogStore {
 public:
-    [[nodiscard]] result<rt::SeqNo> append(rt::LogId const& id, std::vector<std::byte> bytes) {
-        return inner_.append(id, std::move(bytes));
+    [[nodiscard]] agentengine::task<result<rt::SeqNo>> append(rt::LogId id, std::vector<std::byte> bytes) {
+        co_return co_await inner_.append(id, std::move(bytes));
     }
-    [[nodiscard]] result<std::vector<std::vector<std::byte>>> read_from(rt::LogId const& id, rt::SeqNo from) const {
+    [[nodiscard]] agentengine::task<result<std::vector<std::vector<std::byte>>>> read_from(rt::LogId id, rt::SeqNo from) const {
         ++reads;
-        return inner_.read_from(id, from);
+        co_return co_await inner_.read_from(id, from);
     }
-    [[nodiscard]] rt::SeqNo last_seq(rt::LogId const& id) const { return inner_.last_seq(id); }
+    [[nodiscard]] agentengine::task<rt::SeqNo> last_seq(rt::LogId id) const { co_return co_await inner_.last_seq(id); }
     mutable std::size_t reads = 0;
 
 private:
@@ -309,14 +310,14 @@ Built random_tree(InMemoryWorktreeObjectStore& store, std::mt19937& rng, int dep
         } else {
             std::string content(std::uniform_int_distribution<std::size_t>(0, 12)(rng), 'z');
             content += std::to_string(std::uniform_int_distribution<int>(0, 3)(rng));
-            d = *store.put_blob(bytes_of(content));
+            d = *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
         }
         auto segs = split_mount_path(name);
         if (!segs.has_value() || segs->size() != 1 || seen.contains(name)) ambiguous = true;
         seen.insert(name);
         tree.entries.push_back(TreeEntry{name, d, is_tree});
     }
-    return Built{*store.put_tree(std::move(tree)), ambiguous};
+    return Built{*agentengine::rt::block_on(store.put_tree(std::move(tree))), ambiguous};
 }
 
 [[nodiscard]] bool is_prefix(std::vector<std::string> const& shorter, std::vector<std::string> const& longer) {
@@ -330,11 +331,11 @@ int main() {
     {
         InMemoryWorktreeObjectStore store;
         CountingLogStore refs;
-        (void)commit_ref(refs, "session:flat", *store.put_tree(Tree{}));
+        (void)agentengine::rt::block_on(commit_ref(refs, "session:flat", *agentengine::rt::block_on(store.put_tree(Tree{}))));
         Mount const mount{"/work", "session:flat", ""};
         cap::FsWrite const w{"/work", "", std::nullopt, std::nullopt};
         for (int i = 0; i < 200; ++i) {
-            (void)mount_write(store, refs, mount, w, "f" + std::to_string(i) + ".txt", bytes_of("content " + std::to_string(i)));
+            (void)agentengine::rt::block_on(mount_write(store, refs, mount, w, "f" + std::to_string(i) + ".txt", bytes_of("content " + std::to_string(i))));
         }
         cap::FsRead const r{"/work", "", std::nullopt};
 
@@ -345,7 +346,7 @@ int main() {
 
         RecordingFs new_fs;
         refs.reads = 0;
-        auto new_r = native_jail::materialize_mount(store, refs, mount, r, new_fs);
+        auto new_r = agentengine::rt::block_on(native_jail::materialize_mount(store, refs, mount, r, new_fs));
         std::size_t const new_reads = refs.reads;
 
         check(old_r.has_value() && old_reads == 201,
@@ -373,7 +374,7 @@ int main() {
             InMemoryWorktreeObjectStore store;
             rt::InMemoryAppendLogStore refs;
             auto const built = random_tree(store, rng, 0);
-            (void)commit_ref(refs, "session:m3", built.digest);
+            (void)agentengine::rt::block_on(commit_ref(refs, "session:m3", built.digest));
             Mount const mount{"/work", "session:m3", subtrees[std::uniform_int_distribution<std::size_t>(0, 5)(rng)]};
             std::optional<std::uint64_t> size_cap;
             if (int const c = std::uniform_int_distribution<int>(0, 3)(rng); c > 0) size_cap = std::uint64_t(c * 5 - 5);
@@ -383,7 +384,7 @@ int main() {
             RecordingFs old_fs;
             RecordingFs new_fs;
             std::string const old_s = status_of(old_materialize_mount(store, refs, mount, granted, old_fs));
-            std::string const new_s = status_of(native_jail::materialize_mount(store, refs, mount, granted, new_fs));
+            std::string const new_s = status_of(agentengine::rt::block_on(native_jail::materialize_mount(store, refs, mount, granted, new_fs)));
             // The log records sizes, not bytes, so the files themselves are compared too: a red-team
             // mutant that corrupted one byte of every nested file passed an earlier, log-only version.
             bool const same = old_s == new_s && old_fs.log == new_fs.log && old_fs.files == new_fs.files;
@@ -459,17 +460,17 @@ int main() {
             auto run = [&](bool use_old, std::vector<ContentItem>& items, Digest& final_tree) -> std::string {
                 InMemoryWorktreeObjectStore store;
                 rt::InMemoryAppendLogStore refs;
-                (void)commit_ref(refs, "session:m4", *store.put_tree(Tree{}));
+                (void)agentengine::rt::block_on(commit_ref(refs, "session:m4", *agentengine::rt::block_on(store.put_tree(Tree{}))));
                 RecordingFs fs = host;
                 std::string status;
                 if (use_old) {
                     status = status_of(old_harvest_subtree(store, refs, mount, granted, "", fs, items));
                 } else {
-                    auto r = native_jail::harvest_mount(store, refs, mount, granted, fs);
+                    auto r = agentengine::rt::block_on(native_jail::harvest_mount(store, refs, mount, granted, fs));
                     if (r) items = std::move(*r);
                     status = r.has_value() ? "ok" : r.error().code;
                 }
-                auto ref = read_ref(refs, "session:m4");
+                auto ref = agentengine::rt::block_on(read_ref(refs, "session:m4"));
                 final_tree = (ref && ref->has_value()) ? (*ref)->tree_digest : Digest{};
                 return status;
             };

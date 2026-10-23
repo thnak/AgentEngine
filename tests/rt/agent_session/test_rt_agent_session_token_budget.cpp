@@ -23,8 +23,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
@@ -47,8 +50,7 @@ void check(bool cond, char const* what) {
 // immediately.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -123,7 +125,7 @@ int main() {
     // B1: a run whose usage is UNDER the configured budget succeeds normally.
     {
         AgentSession<ScriptedUsageChatClient> session;
-        session.initialize("s-under", Principal{"p-a", ""}, /*token_budget=*/std::uint64_t{100});
+        session.initialize("s-under", Principal{"p-a", ""}, ae_test::trusted(/*token_budget=*/std::uint64_t{100}));
         session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{scripted_turn(/*in=*/40, /*out=*/30)}));  // 70, under 100
@@ -137,7 +139,7 @@ int main() {
     // B2: no budget configured (the default std::nullopt) is unbounded.
     {
         AgentSession<ScriptedUsageChatClient> session;
-        session.initialize("s-unbounded", Principal{"p-c", ""});  // no token_budget argument -- default nullopt
+        session.initialize("s-unbounded", Principal{"p-c", ""}, ae_test::trusted_unbounded());  // no token_budget argument -- default nullopt
         session.emplace_chat_client();
 
         std::uint64_t const huge = 1'000'000'000ULL;
@@ -157,7 +159,7 @@ int main() {
         // Budget is 100; each individual run's usage (60) is under budget on its own, but the two
         // runs' usages SUMMED (120) would exceed it -- if the accumulator were session-lifetime
         // rather than per-run, the second run would wrongly fail closed.
-        session.initialize("s-reset", Principal{"p-d", ""}, /*token_budget=*/std::uint64_t{100});
+        session.initialize("s-reset", Principal{"p-d", ""}, ae_test::trusted(/*token_budget=*/std::uint64_t{100}));
         session.emplace_chat_client();
 
         auto r1 = drive(session.start_run(StartRun{scripted_turn(/*in=*/30, /*out=*/30)}));  // 60 total

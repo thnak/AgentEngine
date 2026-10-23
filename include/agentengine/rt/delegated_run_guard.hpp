@@ -1,13 +1,19 @@
 #pragma once
-// decisions/ADR-193 §9 (red team round 3, GitHub issue #113): the one rule every delegated body follows -- a body
+// decisions/archive/ADR-193 §9 (red team round 3, GitHub issue #113): the one rule every delegated body follows -- a body
 // that runs another agent or workflow charges that run's whole spend to its caller exactly once, on every exit
 // path: success (in its outcome's usage), failure (through `EffectContext::charge_delegated_usage`), and a throw
 // (through the same hook, from a guard's destructor). These are the two guards that make the throw path and the
 // cleanup path hold without a `try`/`catch`:
 //
-// - `ChargeOnUnwind` runs its charge when the guarded scope is left by an exception. It is a destructor, never a
-//   catch-and-rethrow: clang-cl's ASan build crashes in the Windows unwinder on a `throw;` from such a frame (CI,
-//   PR #110). A throw from the charge itself is swallowed, since a second exception while unwinding terminates.
+// - `ChargeOnUnwind` runs its charge when the guarded scope is left WITHOUT the normal path having marked it
+//   `completed()`: a throw, and (ADR-237 §4.5) a coroutine frame destroyed while suspended inside the guarded
+//   `co_await` (its task dropped mid-run -- no exception is in flight then, so an `uncaught_exceptions()` test, which
+//   is also per-thread and a coroutine may resume on another, would silently skip the charge). The normal path calls
+//   `completed()` right before it charges for itself, so a run is charged exactly once on every exit. It is a
+//   destructor, never a catch-and-rethrow: clang-cl's ASan build crashes in the Windows unwinder on a `throw;` from
+//   such a frame (CI, PR #110). A throw from the charge itself is swallowed, since a second exception while
+//   unwinding terminates. `charge` must outlive the guard: declare it before the guard in the same frame (locals
+//   are destroyed in reverse order).
 // - `OnScopeExit` runs its action on every exit, a throw included -- used to detach a call-scoped event tap that
 //   holds a reference into the caller's `EffectContext`, so no tap outlives the frame that owns that context.
 //
@@ -26,10 +32,12 @@ template <class F>
 class ChargeOnUnwind {
 public:
     explicit ChargeOnUnwind(F const& charge) noexcept : charge_(charge) {}
+    // The normal path calls this immediately before charging for itself (or when it has nothing to charge).
+    void completed() noexcept { completed_ = true; }
     ChargeOnUnwind(ChargeOnUnwind const&) = delete;
     ChargeOnUnwind& operator=(ChargeOnUnwind const&) = delete;
     ~ChargeOnUnwind() {
-        if (std::uncaught_exceptions() <= entry_exceptions_) return;  // left normally: the caller charges
+        if (completed_) return;  // left normally: the caller charges
         try {
             (void)charge_();
         } catch (...) {  // NOLINT(bugprone-empty-catch): a second throw while unwinding would terminate
@@ -38,7 +46,7 @@ public:
 
 private:
     F const& charge_;
-    int const entry_exceptions_ = std::uncaught_exceptions();
+    bool completed_ = false;
 };
 
 template <class F>

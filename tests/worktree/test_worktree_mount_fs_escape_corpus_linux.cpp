@@ -1,6 +1,6 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus (021 §6 G3),
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §5's OS-level path-escape corpus (021 §6 G3),
 // Linux half -- Milestone 3 Phase C4, the parity pass over
-// decisions/ADR-014-worktree-mount-path-canonicalization.md (Judged, Windows). Ordinary task per
+// decisions/archive/ADR-014-worktree-mount-path-canonicalization.md (Judged, Windows). Ordinary task per
 // the breakdown doc's decision 6 (ADR-014 already settled the design question; this carries its
 // finding forward rather than re-litigating it), mirroring
 // tests/worktree/test_worktree_mount_fs_escape_corpus.cpp's structure and numbering scheme so the two

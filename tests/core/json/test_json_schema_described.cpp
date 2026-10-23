@@ -1,4 +1,4 @@
-// Follow-up to Milestone 5 (006-Tool-and-Function-Plane.md §1): proves `Described<T, "text">`
+// Follow-up to Milestone 5 (rfcs/006-Tool-and-Function-Plane.md §1): proves `Described<T, "text">`
 // (core/json_schema.hpp) closes the gap the user found -- OpenAI's and Anthropic's own "tools" wire
 // formats carry a `description` on EVERY parameter, and this project's schema generator had no
 // channel for that until now. Covers:
@@ -139,6 +139,7 @@ int main() {
     // ---- (4) the description survives real translate_tool(), both backends -----------------------
     {
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name = "search";
         td.description = "Search for something.";
         td.args_schema_json = schema::json_schema_of<SearchArgs>();

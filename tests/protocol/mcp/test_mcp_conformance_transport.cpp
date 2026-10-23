@@ -1,4 +1,4 @@
-// Proves decisions/ADR-061-host-provided-inbound-transport.md §10b claim 4: reaching the MCP
+// Proves decisions/archive/ADR-061-host-provided-inbound-transport.md §10b claim 4: reaching the MCP
 // conformance harness (which serves on loopback) requires an EXPLICIT egress address policy --
 // `tools/mcp_conformance_client.cpp` deliberately calls `sandbox::resolve_host` (ADR-016's
 // host-initiated resolver, no blocked-range filtering) rather than `sandbox::resolve_and_validate`

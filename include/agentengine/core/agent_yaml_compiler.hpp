@@ -1,5 +1,5 @@
 #pragma once
-// Implements 015-Declarative-Agent-Format.md §2's Agent document, compiling it to
+// Implements rfcs/015-Declarative-Agent-Format.md §2's Agent document, compiling it to
 // `core/agent_registry.hpp`'s own `AgentMetadata` -- the SAME compiled-metadata type
 // `register_agent<A>()` (the C++ authoring form) produces, the actual I6 property this compiler
 // exists to serve. Milestone 7 Phase F3 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
@@ -26,13 +26,13 @@
 // on, distinct from the tools/capabilities registry gap). `output_schema_strategy_chosen` is therefore
 // also never set (it depends on `output_schema_json` existing, `agent_registry.hpp`'s own rule).
 //
-// `metadata.version`/`metadata.description` -- CLOSED (2026-08-14, decisions/ADR-044-*.md):
+// `metadata.version`/`metadata.description` -- CLOSED (2026-08-14, decisions/archive/ADR-044-*.md):
 // `AgentMetadata` gained real `agent_description`/`agent_version` fields, closing the identical gap
 // Phase D2 (Agent Card generation) and Phase F2 (the Workflow-document compiler) independently
 // recorded for their own compiled targets. Three independent compilers hitting the same gap was the
 // signal that `AgentMetadata` (002-owned) genuinely needed these fields -- it now does.
 //
-// `spec.tools` -- CLOSED for the name-keyed half (2026-08-14, decisions/ADR-054-*.md,
+// `spec.tools` -- CLOSED for the name-keyed half (2026-08-14, decisions/archive/ADR-054-*.md,
 // docs/planning/tool-capability-registry-design-draft.md): an OPTIONAL `ToolRegistry const*` param,
 // defaulting `nullptr` (the identical additive shape `register_agent<A>()`'s own `ChatClientRegistry
 // const*` parameter established, Milestone 5 Phase B6) -- every existing single-argument call site
@@ -110,7 +110,7 @@ namespace agent_yaml_compiler_detail {
 
     if (metadata) {
         if (json::Value const* id = metadata->find("id"); id && id->is_string()) meta.agent_name = id->as_string();
-        // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): AgentMetadata now has real slots for both --
+        // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): AgentMetadata now has real slots for both --
         // see that struct's own comment.
         if (json::Value const* description = metadata->find("description");
             description && description->is_string()) {
@@ -158,8 +158,12 @@ namespace agent_yaml_compiler_detail {
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.max_turns must be a whole number between 0 and 4294967295",
+                    "limits.max_turns must be a whole number between 1 and 4294967295",
                     "agent_yaml_compiler.invalid_limit"});
+            }
+            // ADR-244 §2.1 (flips test_agent_yaml_limits Y8): 0 is refused, as at every check site.
+            if (auto z = check_bound("limits.max_turns", Bound<std::uint64_t>::at_most(*bounded)); !z) {
+                return std::unexpected(z.error());
             }
             meta.max_turns = static_cast<std::uint32_t>(*bounded);
         }
@@ -168,8 +172,11 @@ namespace agent_yaml_compiler_detail {
             if (!bounded.has_value()) {
                 return std::unexpected(error{
                     failure_class::contract,
-                    "limits.token_budget must be a whole, non-negative number",
+                    "limits.token_budget must be a whole, positive number",
                     "agent_yaml_compiler.invalid_limit"});
+            }
+            if (auto z = check_bound("limits.token_budget", Bound<std::uint64_t>::at_most(*bounded)); !z) {
+                return std::unexpected(z.error());
             }
             meta.token_budget = *bounded;
         }

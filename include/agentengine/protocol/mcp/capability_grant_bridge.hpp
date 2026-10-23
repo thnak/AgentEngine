@@ -1,5 +1,5 @@
 #pragma once
-// ADR-061 §42/§43 (decisions/ADR-061-host-provided-inbound-transport.md): the recommended path from a
+// ADR-061 §42/§43 (decisions/archive/ADR-061-host-provided-inbound-transport.md): the recommended path from a
 // verified bearer credential to the `CapabilityGrant` `McpServer::dispatch()` (server.hpp) already
 // consults for per-request capability authorization. Mirrors `rt::request_authority_from_bearer_
 // claims()`'s own role and structure exactly (§31.2), built on the same shared `trust::
@@ -43,7 +43,7 @@ namespace agentengine::mcp {
     return CapabilityGrant{
         trust::principal_from_bearer_claims(claims, kind),
         std::move(capabilities),
-        *deadline,
+        Expiry::at(*deadline),
     };
 }
 

@@ -6,7 +6,7 @@ quarantine-design-draft.md` specifically. **Relationship to `context-turn-middle
 design-draft.md` is a real open question this draft itself raises (§6's last bullet), not settled
 independence** — corrected from an earlier version of this header that claimed flat independence
 from all three. This mechanism hooks into `Middleware`'s already-shipped MODEL-CALL `after_model`
-point (`decisions/ADR-033-middleware-model-call-chain.md`, real code today), which runs AFTER the
+point (`decisions/archive/ADR-033-middleware-model-call-chain.md`, real code today), which runs AFTER the
 model call, distinct from the turn-middleware draft's `TurnContext`, which runs BEFORE it — the two
 are believed non-overlapping but this has not been formally confirmed against both drafts together.
 `runtime-secret-quarantine-design-draft.md` is one possible TRIGGER source for this mechanism (§1),
@@ -23,7 +23,7 @@ This draft covers the case that draft explicitly excludes from its own scope: **
 already been produced and is about to commit to history, and only THEN does something detect it
 contains a secret (or any other content-policy violation) that should never have been said.**
 Nothing in this codebase today discards an already-produced response and retries with corrected
-input — `Retry<Policy>` (`002-Agent-Model-and-Authoring.md` §3, "The policy vocabulary" — corrected
+input — `Retry<Policy>` (`rfcs/002-Agent-Model-and-Authoring.md` §3, "The policy vocabulary" — corrected
 citation; an earlier version of this draft attributed this table to "027 §4," which is actually
 "Canonical names — workflow, trust, runtime" and contains no such table) is explicitly a
 *"Transient-failure retry shape"* — retrying because a call errored, not because a call succeeded
@@ -135,11 +135,11 @@ safety-advocate) run against all four drafts, cross-checked against real code (`
 | # | Finding | Severity | Fix |
 |---|---|---|---|
 | 1 | Replay happens inside one model-call wrapper invocation without incrementing `effect_context_.turn_index` (confirmed: `agent_session.hpp`'s turn loop only advances `turn_index` per round), so it is structurally outside `MaxTurns<N>`'s reach (002 §3, default 16). Whether `TokenBudget<N>` (002 §3, real and fail-closed per `agent_session.hpp:1137`'s own comment) accounts each replay's real backend call — versus only the final settled response's usage — is asserted nowhere in this draft, only left as its own open question. A steered model can re-trigger the violation across many different turns, each getting its own fresh per-site budget: small local bound, unbounded session-lifetime cost. | Must-fix | Cap replay attempts against a session-lifetime counter, not just a per-trigger `max_replay_attempts`, and prove — not assume — that `TokenBudget` sees every replay attempt's real backend usage (each retried call, not just the one whose response is ultimately returned) before this ships. |
-| 2 | §1 attributes the `RetryPolicy`/`BreakerConfig` "Transient-failure retry shape" table to "027 §4." The table is actually `Retry<Policy>` in `002-Agent-Model-and-Authoring.md` §3 ("The policy vocabulary," line 105); `027-Vocabulary-and-Naming.md` §4 is "Canonical names — workflow, trust, runtime" and contains no such table. | Must-fix | Correct the citation to `002-Agent-Model-and-Authoring.md` §3. |
+| 2 | §1 attributes the `RetryPolicy`/`BreakerConfig` "Transient-failure retry shape" table to "027 §4." The table is actually `Retry<Policy>` in `rfcs/002-Agent-Model-and-Authoring.md` §3 ("The policy vocabulary," line 105); `rfcs/027-Vocabulary-and-Naming.md` §4 is "Canonical names — workflow, trust, runtime" and contains no such table. | Must-fix | Correct the citation to `rfcs/002-Agent-Model-and-Authoring.md` §3. |
 | 3 | The header states this draft is "Independent of the other three drafts in this batch," but §6's own open question asks the review workflow to "Confirm these are genuinely non-overlapping" against the turn-middleware draft — a live, unresolved question the header's flat independence claim doesn't reflect. | Must-fix | Reword the header to hedge the same way §6 already does: independent of the provenance and secret-quarantine drafts specifically; relationship to the turn-middleware draft's `turn`-point mechanism is a real open question this draft itself raises in §6, not settled independence. |
 | 4 | §6 leaves streaming as an open "maybe excluded" question, even though ADR-033 already made a firm decision on the identical point (`chat_stream()` is forwarded uninterceped; needs its own design) that this draft could simply inherit rather than re-opening as unresolved. | Worth-noting (resolved: keep deferred, make it firm) | Adopt ADR-033's own precedent explicitly: this mechanism is gated to non-streaming calls only for its initial scope, full stop — not "maybe." A streaming-specific buffer-then-release design is real, valuable follow-up work, but building it now, before the non-streaming mechanism itself is proven (see finding #1), repeats the same premature-widening risk. |
 
 **Applied**: finding 1 (§3 now adds a session-lifetime replay cap and a `TokenBudget`-accounting
-proof obligation), 2 (§1 citation corrected to `002-Agent-Model-and-Authoring.md` §3), 3 (header
+proof obligation), 2 (§1 citation corrected to `rfcs/002-Agent-Model-and-Authoring.md` §3), 3 (header
 hedged to match §6's own open question about the turn-middleware draft), 4 (§6 streaming resolved
 firmly deferred) are all incorporated above.

@@ -1,4 +1,4 @@
-// Interactive CLI chat driver, built to validate 009-Plugin-and-Extension-System.md §8's skill
+// Interactive CLI chat driver, built to validate rfcs/009-Plugin-and-Extension-System.md §8's skill
 // mechanism live, by hand, against a real remote model: type a greeting, then ask the agent to use a
 // mounted skill, and watch it actually reach for the real tool the skill names AND actually execute
 // code through the real embedded CPython sandbox (src/backends/native_jail/mediated_python_runner.hpp)
@@ -75,7 +75,7 @@
 // container per call, approval-gated as described above, and `cap::RunCommand` is minted ONLY in this
 // tier. `--shell=both` offers both; `--shell=none` neither. `--help` prints the same.
 //
-// HOST PRE-MOUNTED SKILLS (decisions/ADR-224, core/skill_premount.hpp): before the first model call,
+// HOST PRE-MOUNTED SKILLS (decisions/archive/ADR-224, core/skill_premount.hpp): before the first model call,
 // this CLI mounts the built-in skill paired with each tool it offers -- `shell-pipelines` for
 // `run_shell`/`run_command`, `using-the-code-interpreter` for `execute_code` (which also makes
 // `execute_code` callable from the first turn, since that skill is what unlocks it here). That is a
@@ -415,7 +415,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 // "first caller wins" property, unchanged from this function's own pre-ADR-030 shape) -- callers
 // after the first must not assume their own `mount_roots` argument had any effect.
 [[nodiscard]] native_jail::MediatedPythonRunner& shared_python_runner(
-    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots, agentengine::SessionNonce session_nonce) {
     // Jailed-Python-worker design (008 §1b/§3, 010 §2/§6): `MediatedPythonRunner` no longer owns an
     // in-process interpreter -- it is an IPC client over `NativeJailBackend::create_python_worker()`,
     // so it needs a `NativeJailBackend&` to hand its jailed worker process's real OS-level
@@ -448,8 +448,16 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         cfg.expose_agent_ask = true;
         return native_jail::MediatedPythonRunner(std::move(cfg), backend);
     }();
-    static bool const initialized = [] {
-        auto r = runner.initialize();
+    static bool const initialized = [session_nonce] {
+        // ADR-244 §2.4: this CLI is the host, so it states the runner's authority itself -- exactly the
+        // mounts the runner lists, granted here, nothing derived inside the engine.
+        std::vector<agentengine::Capability> grants;
+        for (auto const& m : native_jail::MediatedPythonRunner::required_mounts(runner.config())) {
+            grants.push_back(m);
+        }
+        agentengine::EffectContext init_ctx;
+        init_ctx.session_nonce = session_nonce;  // the runner is created for the session that first reaches it
+        auto r = runner.initialize(agentengine::CapabilitySet::grant_root(std::move(grants)), init_ctx);
         if (!r) {
             std::cerr << "FATAL: MediatedPythonRunner failed to initialize: " << r.error().message << "\n";
         }
@@ -465,9 +473,9 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 // closed if any session OTHER than the one that bound first ever tries to reach the runner through
 // it, turning ADR-002 §5.5.6's rule into something enforced, not merely commented.
 [[nodiscard]] CodeActRunnerBinding<native_jail::MediatedPythonRunner>& shared_python_runner_binding(
-    std::vector<native_jail::MaterializedSkillMount> const& mount_roots) {
+    std::vector<native_jail::MaterializedSkillMount> const& mount_roots, agentengine::SessionNonce session_nonce) {
     static CodeActRunnerBinding<native_jail::MediatedPythonRunner> binding(
-        shared_python_runner(mount_roots));
+        shared_python_runner(mount_roots, session_nonce));
     return binding;
 }
 
@@ -486,7 +494,7 @@ struct WordCountReply {
 };
 AE_JSON_SCHEMA(WordCountReply, count)
 
-struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
+struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "word_count";
     static constexpr std::string_view description =
         "Counts whitespace-separated words in a string. A trivial, capability-free demo tool -- "
@@ -494,7 +502,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
     using Args = WordCountArgs;
     using Reply = WordCountReply;
 
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         int count = 0;
         bool in_word = false;
         for (char c : a.text) {
@@ -506,7 +514,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
                 in_word = false;
             }
         }
-        return Reply{count};
+        co_return Reply{count};
     }
 };
 
@@ -561,9 +569,17 @@ print(r.count)
     return {make_builtin_skills_source(), make_codeact_demo_skill_source()};
 }
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"work">,
-                                                              cap::decl::FsWrite<"work">>,
-                                EffectClass<effect_class::at_most_once>> {
+// ADR-237 §5.2: an instance-form `Tool<>` conformer, templated on the owning provider type so it can
+// hold it explicitly. Its `invoke()` (defined below, where `ToolDeclaringHistoryProvider` is complete)
+// calls the provider's private `real_execute_code()` through this class's own `friend` declaration.
+// `CapturesSessionState` keeps it non-backgroundable, which is what the old
+// `make_tool_descriptor_with_invoke` closure (hardcoded `captures_session_state = true`) already was;
+// the tool still declares the real `Capabilities<...>`/`EffectClass<...>` policies. The former static
+// poison `invoke()` sentinel is gone.
+template <class ProviderT>
+struct ExecuteCodeTool : Tool<ExecuteCodeTool<ProviderT>,
+                              Capabilities<cap::decl::FsRead<"work">, cap::decl::FsWrite<"work">>,
+                              EffectClass<effect_class::at_most_once>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Execute Python code in this session's real interpreter and return what it printed. State "
@@ -572,23 +588,16 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<cap::decl::FsRead<"w
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
 
-    // ADR-030: this static invoke() is now an unreachable poison sentinel, not the real
-    // implementation -- `ToolDeclaringHistoryProvider::on_context()` below builds this tool's
-    // descriptor via `make_tool_descriptor_with_invoke`, whose closure captures `this` and calls
-    // `real_execute_code()` instead. `ExecuteCodeTool` still declares the real
-    // `Capabilities<...>`/`EffectClass<...>` policies -- `make_tool_descriptor_with_invoke` still
-    // extracts those from `ToolT` at compile time (ADR-028 §4) -- only the invoke BODY moved.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "ExecuteCodeTool::invoke() must never run directly -- this "
-                                      "tool is only ever reached through "
-                                      "ToolDeclaringHistoryProvider::real_execute_code()",
-                                      "cli_chat.dead_static_invoke_path"});
-    }
+    explicit ExecuteCodeTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // ---- The on-demand mount trigger: real state, no new authority ------------------------------------
-// Skills Phase 3 (decisions/ADR-024's addendum): the agent must call this to activate a skill's
+// Skills Phase 3 (decisions/archive/ADR-024's addendum): the agent must call this to activate a skill's
 // tools/full body before they're usable -- researched from MAF's AgentSkillsProvider (three fixed
 // meta-tools, load_skill/read_skill_resource/run_skill_script) but deliberately NOT that shape: this
 // tool touches no content and no filesystem at all, it only records intent into
@@ -608,7 +617,13 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form, same shape as `ExecuteCodeTool` above -- the real logic stays in
+// `ToolDeclaringHistoryProvider::real_mount_skill()`, reached through the `friend` declaration below.
+// `pure` and `CapturesSessionState` together are the already-tested combination
+// `QuarantineSecretTool` uses: no external effect, but state that belongs to the session.
+template <class ProviderT>
+struct MountSkillTool
+    : Tool<MountSkillTool<ProviderT>, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -618,15 +633,12 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
 
-    // ADR-030: same shape as `ExecuteCodeTool::invoke()` above -- unreachable poison, real logic in
-    // `ToolDeclaringHistoryProvider::real_mount_skill()`.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- this tool "
-                                      "is only ever reached through "
-                                      "ToolDeclaringHistoryProvider::real_mount_skill()",
-                                      "cli_chat.dead_static_invoke_path"});
-    }
+    explicit MountSkillTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // ---- ContextProvider fixture: real conversation history + ONE merged skill system message ----------
@@ -662,7 +674,7 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 // closed (not silently racing) if a second session ever tried to reach the same one.
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "cli-tool-declaring-history";
 
     ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {}
@@ -747,22 +759,16 @@ public:
         // must be recomputed on the same cadence, or declared/invocable would diverge (the exact
         // cosmetic-scoping gap skill_tool_scoping.hpp's own top comment warns about).
         //
-        // ADR-030: built via `make_tool_descriptor_with_invoke`, not `ToolTable::from_tools<...>()`
-        // -- each closure captures `this`, reaching this provider's own `mounted_skills_`/
-        // `exec_state_`/`runner_binding_`/`skills_` instead of the process-global statics the
-        // pre-ADR-030 shape used. `ExecuteCodeTool`/`MountSkillTool` still supply their compile-time
-        // `Capabilities<...>`/`EffectClass<...>` declarations (ADR-028 §4) -- only the invoke BODY
-        // moved to `real_execute_code()`/`real_mount_skill()` below.
-        std::vector<ToolDescriptor> universe_descriptors = {
-            make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
-        };
-        ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));
+        // ADR-237 §5.2: `declared_universe()` builds both descriptors from live tool instances that
+        // hold THIS provider, so their invokes reach this provider's own `mounted_skills_`/
+        // `exec_state_`/`runner_binding_`/`skills_` (ADR-030's per-session state) instead of the
+        // process-global statics the pre-ADR-030 shape used. The tools still supply their compile-time
+        // `Capabilities<...>`/`EffectClass<...>` declarations; only the invoke BODY moved to
+        // `real_execute_code()`/`real_mount_skill()` below.
+        ToolTable const universe = declared_universe();
         auto const scoped = scope_tools_to_mounted_skills(
             universe, skills_.allowed_tool_names_for(mounted_skills_.all()),
-            {std::string(MountSkillTool::name)});
+            {std::string(MountSkillTool<ToolDeclaringHistoryProvider>::name)});
         contribution.tools = scoped.descriptors();
 
         // ADR-102 Phase 5: `run_command` (MandatorySandboxProvider, sandbox/mandatory_sandbox_
@@ -785,7 +791,8 @@ public:
         // (`--shell=mediated|both`), and like `run_command` a session-level tool, outside skill
         // scoping. Its descriptor's closure reaches this session's one `SessionShellSandbox`, whose
         // ExecState is what makes `cd` persist from call to call.
-        if (shell_) contribution.tools.push_back(shell_->tool_descriptor());
+        // ADR-244 slice 4a: the same base choice as run_command; `require_approval_for()` below can raise it.
+        if (shell_) contribution.tools.push_back(shell_->tool_descriptor(agentengine::approval_mode::never_require));
 
         // See `require_approval_for()`. Applied to the WHOLE contribution rather than to the
         // run_command half alone, so raising a CodeAct or skill-gated tool later needs no new code
@@ -810,9 +817,9 @@ public:
             ToolDescriptor::InvokeFn inner = std::move(td.invoke);
             std::string tool_name = td.name;
             td.invoke = [inner = std::move(inner), tool_name = std::move(tool_name)](
-                            json::Value const& args, EffectContext& ec) -> result<json::Value> {
-                result<json::Value> reply = inner(args, ec);
-                if (!reply) return reply;
+                            json::Value const& args, EffectContext& ec) -> task<result<json::Value>> {
+                result<json::Value> reply = co_await inner(args, ec);
+                if (!reply) co_return reply;
                 std::size_t withheld = 0;
                 json::Value capped = cap_strings(*reply, max_tool_output_bytes(), withheld);
                 if (withheld > 0) {
@@ -821,7 +828,7 @@ public:
                                         " bytes withheld from the model. Full reply follows.\n" +
                                         json::dump(*reply));
                 }
-                return capped;
+                co_return capped;
             };
         }
         co_return contribution;
@@ -856,7 +863,21 @@ public:
         return run_command_provider_;
     }
 
+    // ADR-237 §5.2: this provider's declared tool universe, built from live tool INSTANCES rather than
+    // `ToolTable::from_tools<...>()`'s zero-argument static shape (both tools are instance-form now).
+    // `on_context()` scopes from this same source and the startup banner reports from it, so declared
+    // and invocable cannot disagree.
+    [[nodiscard]] ToolTable declared_universe() {
+        return ToolTable::from(ExecuteCodeTool<ToolDeclaringHistoryProvider>{*this},
+                               MountSkillTool<ToolDeclaringHistoryProvider>{*this});
+    }
+
 private:
+    // ADR-237 §5.2: the instance-form tools declared above reach `real_execute_code()`/
+    // `real_mount_skill()` below through these.
+    template <class> friend struct ExecuteCodeTool;
+    template <class> friend struct MountSkillTool;
+
     std::vector<std::string> approval_required_;
 
     // The real `execute_code` implementation (ADR-030) -- was `ExecuteCodeTool::invoke()`'s body
@@ -868,9 +889,10 @@ private:
     // `shared_mounted_skills_state()`/`shared_exec_state()`), and `runner_binding_->runner()` (the
     // still-process-wide-shared interpreter, reached only if THIS session holds the claim --
     // `configure()` is what established that, at session start, not per-call).
-    [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
+    // ADR-237 §5.1 (#173): a coroutine, because the `Runner` seam is. `ExecuteCodeTool::invoke` awaits it.
+    [[nodiscard]] task<result<ExecuteCodeReply>> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
         if (session_id_.empty()) {
-            return std::unexpected(error{failure_class::fatal,
+            co_return std::unexpected(error{failure_class::fatal,
                                           "execute_code was called before configure() ran",
                                           "cli_chat.codeact_not_configured"});
         }
@@ -879,14 +901,15 @@ private:
         // lazy-static IIFE (cli_chat.cpp, near main()) runs its Py_InitializeFromConfig call the
         // first time this line executes, never before.
         if (runner_binding_ == nullptr) {
-            auto& binding = shared_python_runner_binding(mount_roots_);
+            auto& binding = shared_python_runner_binding(mount_roots_, ctx.session_nonce);
             auto  bound   = binding.bind(session_id_);
-            if (!bound) return std::unexpected(bound.error());
+            if (!bound) co_return std::unexpected(bound.error());
             runner_binding_ = &binding;
+            bridge_principal_ = ctx.principal;
         }
         auto& runner = runner_binding_->runner();
         if (!runner.ok()) {
-            return std::unexpected(error{failure_class::fatal,
+            co_return std::unexpected(error{failure_class::fatal,
                                           "the embedded Python interpreter failed to initialize",
                                           "cli_chat.python_runner_not_initialized"});
         }
@@ -900,14 +923,16 @@ private:
         // currently mounted skills, and MCP-sourced tools (none in this demo -- no MCP server is
         // connected here; see protocol/mcp/mcp_tool_bridge.hpp for that real, tested, separately
         // wired path).
-        auto const codeact_universe = ToolTable::from_tools<WordCountTool>();
+        auto const codeact_universe = ToolTable::from(WordCountTool{});
         auto const codeact_skill_tools = scope_tools_to_mounted_skills(
             codeact_universe, skills_.allowed_tool_names_for(mounted_skills_.all()));
-        auto bridged = union_codeact_tools(ToolTable::from_tools<>(), codeact_skill_tools);
-        if (!bridged) return std::unexpected(bridged.error());
-        auto refreshed = runner.refresh_agent_tools(
-            native_jail::ToolBridgeConfig{*bridged, /*capabilities=*/{}, /*approved=*/true});
-        if (!refreshed) return std::unexpected(refreshed.error());
+        auto bridged = union_codeact_tools(ToolTable::from(), codeact_skill_tools);
+        if (!bridged) co_return std::unexpected(bridged.error());
+        // ADR-244 §2.4: this CLI's one user chose the bundled approval for their own session, so it stands for
+        // the principal that bound the runner -- a call under any other principal is not approved.
+        auto refreshed = runner.refresh_agent_tools(native_jail::ToolBridgeConfig{
+            *bridged, /*capabilities=*/{}, native_jail::BridgeApproval::standing_for(bridge_principal_)});
+        if (!refreshed) co_return std::unexpected(refreshed.error());
 
         // ADR-057 §9: `ctx.codeact_preseeded_answers` is host-driven replay state, set (only) by
         // `rt::AgentSession::resolve_interaction()`'s `codeact_ask` branch immediately before
@@ -916,8 +941,8 @@ private:
         // field. Empty for every ordinary, model-issued call (the common case), so this line changes
         // nothing about this tool's existing behavior for a script that never calls `agent.ask()`.
         ExecRequest req{a.language.empty() ? "python" : a.language, a.code, ctx.codeact_preseeded_answers};
-        auto outcome = runner.run(req, exec_state_, ctx);
-        if (!outcome) return std::unexpected(outcome.error());
+        auto outcome = co_await runner.run(req, exec_state_, ctx);
+        if (!outcome) co_return std::unexpected(outcome.error());
 
         // ADR-057 §9: an ask-pending outcome is mapped to a ToolResult carrying the sentinel error
         // code `codeact.ask_pending`, with the prompt as the error's own message -- NEVER folded as
@@ -926,7 +951,7 @@ private:
         // suspend/resume cycle; this CLI's own driver (main(), above) has no such wiring, so a script
         // calling `agent.ask()` here simply surfaces as an ordinary tool failure with this code.
         if (outcome->klass == exec_outcome_class::ask_pending) {
-            return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
+            co_return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
         }
 
         ExecuteCodeReply reply;
@@ -934,7 +959,7 @@ private:
         reply.stdout_text = outcome->stdout_text;
         reply.stderr_text = outcome->stderr_text;
         reply.result_repr = outcome->result_repr;
-        return reply;
+        co_return reply;
     }
 
     // Real `mount_skill` implementation (ADR-030) -- was `MountSkillTool::invoke()`'s body; now
@@ -972,6 +997,8 @@ private:
     // lifetime), lazily resolved by `real_execute_code()`'s first call (ADR-034 correction; see that
     // function's own comment for why NOT resolved eagerly by configure()/main() anymore).
     CodeActRunnerBinding<native_jail::MediatedPythonRunner>* runner_binding_ = nullptr;
+    // The principal of the call that bound the runner; the standing bridge approval is for it alone.
+    agentengine::Principal bridge_principal_;
     // ADR-102 Phase 5: default-constructed into the real, safe "no sandbox bound yet" state -- a
     // session that never calls `run_command_provider().bind_sandbox(...)` (e.g. a future caller of
     // this class that skips it) gets zero execution capability from this provider, never a crash.
@@ -981,6 +1008,21 @@ private:
     // long as the session.
     std::unique_ptr<SessionShellSandbox> shell_;
 };
+
+// ADR-237 §5.2: out-of-line because each needs `ToolDeclaringHistoryProvider` complete to reach the
+// private `real_execute_code()`/`real_mount_skill()` it befriends.
+template <class ProviderT>
+task<result<ExecuteCodeReply>> ExecuteCodeTool<ProviderT>::invoke(ExecuteCodeArgs a,
+                                                                  EffectContext& ctx) const {
+    co_return co_await provider_->real_execute_code(std::move(a), ctx);
+}
+
+template <class ProviderT>
+task<result<MountSkillReply>> MountSkillTool<ProviderT>::invoke(MountSkillArgs a,
+                                                                EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
+}
+
 static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 
 // `Inner` is whichever real provider backend `main()` selected (`openai::OpenAIChatClient<...>` or
@@ -1031,11 +1073,11 @@ template <class Inner>
 void print_skills_banner(std::ostream& out,
                           std::vector<native_jail::MaterializedSkillMount> const& materialized,
                           SkillsProvider<>& startup_skills, MountedSkillsState const& mounted_skills,
-                          cli_chat::ToolPlan const& plan) {
+                          cli_chat::ToolPlan const& plan, ToolTable const& universe) {
     out << "Skills RESOLVED at /skills/<name> -- every one's files are unconditionally readable "
                  "from turn 1 (009 §8b, unaffected by mount state):\n";
     for (auto const& source : demo_skill_sources()) {
-        auto skills = source.load_skills();
+        auto skills = rt::block_on(source.load_skills());
         if (skills) {
             for (auto const& s : *skills) {
                 out << "  - " << s.skill.frontmatter.name << ": "
@@ -1078,9 +1120,11 @@ void print_skills_banner(std::ostream& out,
 
     out << "Tools declared+invocable right now (mount_skill is always available; others unlock "
                  "once their owning skill is mounted; shell tools per --shell): ";
-    auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+    // ADR-237 §5.2: the universe is handed in (the caller's own provider `declared_universe()`), since
+    // both tools are instance-form now and a zero-argument static table no longer exists.
     auto const scoped = scope_tools_to_mounted_skills(
-        universe, startup_skills.allowed_tool_names_for(mounted), {std::string(MountSkillTool::name)});
+        universe, startup_skills.allowed_tool_names_for(mounted),
+        {std::string(MountSkillTool<ToolDeclaringHistoryProvider>::name)});
     std::vector<std::string> names;
     for (auto const& d : scoped.descriptors()) names.push_back(d.name);
     if (plan.offer_run_shell) names.emplace_back("run_shell");
@@ -1310,9 +1354,12 @@ template <class Inner>
     // adds the dump sink on top, via `RecordingChatClient<Inner>`'s own `(Inner, RecordingSink)`
     // constructor.
     actor.emplace_chat_client(std::move(chat_client), std::move(sink));
-    // Unbounded by default now (agent_session.hpp's own initialize(), 2026-08-12 change) -- this
-    // CLI no longer caps the internal tool-call loop's own round count at all.
-    actor.initialize(session_id, Principal{"cli-user", ""});
+    // ADR-244 §2.2: this CLI's choices, stated. One local user drives the session, which holds `held` itself;
+    // the user watches every turn and can interrupt, so neither the token budget nor the tool-call loop's round
+    // count is capped.
+    actor.initialize(session_id, Principal{"cli-user", ""},
+                     SessionChoices{AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::unbounded(),
+                                    Bound<std::uint64_t>::unbounded()});
     actor.set_capabilities(&held);
     // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback not
     // applying on this path -- see set_stream_model_calls()'s own comment in agent_session.hpp. A
@@ -1377,13 +1424,15 @@ template <class Inner>
     // `cli_chat::plan_tools()`, where it is tested.
     actor.history_provider().require_approval_for(plan.approval_required);
 
-    // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 calls this synchronously, with the
-    // canonical JSON of the EXACT arguments about to execute -- so what the human sees is what runs,
-    // not a paraphrase the model supplied. Returning false denies the call; the round continues and
+    // The blocking-decider shape (006 §4): `invoke_tool()`'s step 5 `co_await`s this decider's task
+    // (ADR-237 §5.1, Phase G), with the canonical JSON of the EXACT arguments about to execute -- so
+    // what the human sees is what runs, not a paraphrase the model supplied. The body itself blocks
+    // on stdin, the one host edge this program cannot suspend on; the returned task completes without
+    // suspending. Returning false denies the call; the round continues and
     // the model is told. The alternative shape -- `set_suspend_for_approval(true)` plus
     // `resolve_interaction()` -- is for a UI that cannot block a thread on a question; a terminal can.
     actor.set_approval_decider([&](Principal const& caller, std::string_view tool_name,
-                                    std::string const& args_json) -> bool {
+                                    std::string const& args_json) -> task<bool> {
         log.write("approval REQUESTED tool=" + std::string(tool_name) + " caller=" + caller.id +
                   " args=" + args_json);
         ui_paused.store(true, std::memory_order_release);
@@ -1431,7 +1480,7 @@ template <class Inner>
         ui_paused.store(false, std::memory_order_release);
         log.write(std::string("approval ") + (approved ? "GRANTED" : "DENIED") + " tool=" +
                   std::string(tool_name) + (got ? "" : " (stdin closed -- denied unattended)"));
-        return approved;
+        co_return approved;
     });
 
     // ADR-030: hands the provider its real per-session mount-root/session-id knowledge -- must
@@ -1456,6 +1505,8 @@ template <class Inner>
         actor.history_provider().run_command_provider().bind_sandbox(
             cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
             *storage_quota);
+        // ADR-244 slice 4a: this CLI's base choice; `require_approval_for()` raises the tools a deployment names.
+        actor.history_provider().run_command_provider().set_tool_approval(agentengine::approval_mode::never_require);
     }
 
     // Issue #47: the mediated tier. Rooted at the SAME directory as `execute_code`'s "work" mount, and
@@ -1488,7 +1539,8 @@ template <class Inner>
     {
         std::ostringstream banner;
         print_skills_banner(banner, materialized, startup_skills,
-                            actor.history_provider().mounted_skills(), plan);
+                            actor.history_provider().mounted_skills(), plan,
+                            actor.history_provider().declared_universe());
         log.write("startup state --\n" + banner.str());
         if (verbose_ui()) std::cout << banner.str();
     }
@@ -1776,7 +1828,7 @@ int main(int argc, char** argv) {
     std::filesystem::path const skills_scratch =
         std::filesystem::temp_directory_path() / "agentengine_cli_chat_skills";
     auto materialized =
-        native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount});
+        agentengine::rt::block_on(native_jail::materialize_skill_mounts(startup_skills, skills_scratch, {kWorkMount}));
     if (!materialized) {
         std::cerr << "FATAL: failed to materialize skill mounts: " << materialized.error().message << "\n";
         return 1;

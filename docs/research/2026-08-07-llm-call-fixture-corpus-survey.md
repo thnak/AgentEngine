@@ -13,7 +13,7 @@ Nothing here is vendored into this repo — see "Why nothing is vendored" below.
 
 `RecordedChatClient` is a small, hand-authored, test-scoped stand-in (its header's own top comment
 is explicit about this), not an implementation of the general record/replay feature described in
-`004-Model-Provider-Plane.md` §6. Its fixture schema is narrower than any real provider payload or
+`rfcs/004-Model-Provider-Plane.md` §6. Its fixture schema is narrower than any real provider payload or
 any of the corpora below:
 
 - One fixture file = one `ChatResponse` (a single `Message` + `Usage`). No conversation history, no
@@ -54,7 +54,7 @@ response, write it by hand in the AgentEngine schema. `tests/fixtures/chat_clien
    support (see the constraint above) to be worth mining further. Revisit once `ae::stream<T>` lands.
 4. **vcrpy** (`github.com/kevin1024/vcrpy`, fetched 2026-08-07) — the record/replay library itself
    (`tests/fixtures/`), not an LLM-specific corpus. Relevant only as the *pattern* to point to if
-   `004-Model-Provider-Plane.md` §6's real record/replay feature is ever implemented — cassette
+   `rfcs/004-Model-Provider-Plane.md` §6's real record/replay feature is ever implemented — cassette
    recording of a real vendor call, not hand-authoring.
 5. **mock-llm**, **MockLLM (StacklokLabs)**, **ai-mocks** — OpenAI/Anthropic-compatible mock HTTP
    servers configured via YAML, not JSON fixture corpora; useful if this project ever wants an

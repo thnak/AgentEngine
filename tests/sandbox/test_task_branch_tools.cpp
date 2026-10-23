@@ -1,4 +1,4 @@
-// Proves the A10 promotion (decisions/ADR-114-task-branch-tools-promotion.md) --
+// Proves the A10 promotion (decisions/archive/ADR-114-task-branch-tools-promotion.md) --
 // MandatorySandboxProvider<Surface>'s four new task-branch verbs (start_task_branch/
 // run_in_task_branch/commit_task_branch/discard_task_branch, sandbox/mandatory_sandbox_provider.hpp),
 // ported from docs/planning/proofs/task_branch_tool/task_branch_sandbox.hpp -- the FIRST real
@@ -34,9 +34,11 @@
 //       proving the capability ceiling is load-bearing through the real pipeline, not merely declared.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <initializer_list>
 #include <string_view>
@@ -49,6 +51,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 using namespace agentengine;
 
@@ -67,8 +70,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -169,11 +171,11 @@ std::optional<std::string> read_entry(Ledger<>& ledger, std::string const& branc
                                          IdentityHandle owner, std::string const& entry_name) {
     auto head = ledger.head_tree_digest(branch_name, owner);
     if (!head.has_value()) return std::nullopt;
-    auto tree = ledger.get_tree_safe(*head, owner);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(*head, owner));
     if (!tree.has_value()) return std::nullopt;
     for (auto const& e : tree->entries) {
         if (e.name != entry_name) continue;
-        auto bytes = ledger.get_blob_safe(e.digest, owner);
+        auto bytes = agentengine::rt::block_on(ledger.get_blob_safe(e.digest, owner));
         if (!bytes.has_value()) return std::nullopt;
         return std::string(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     }
@@ -217,13 +219,14 @@ int main() {
 
     // [1] the opt-in gate.
     Session parent;
-    parent.initialize("parent-session", real_owner_principal);
+    parent.initialize("parent-session", real_owner_principal, ae_test::trusted_unbounded());
     {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-parent\") succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
+        parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
 
         auto before = drive(parent.history_provider().on_context(call.session_ctx, call.ctx));
         check(before.has_value() && before->tools.size() == 1 && before->tools[0].name == "run_command",
@@ -389,13 +392,14 @@ int main() {
     // [5b] every verb fails closed if bind_task_branch_tools() was never called, even when bound.
     {
         Session unenabled;
-        unenabled.initialize("unenabled-session", Principal{"unenabled-owner", ""});
+        unenabled.initialize("unenabled-session", Principal{"unenabled-owner", ""}, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-unenabled"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-unenabled\") succeeds");
         if (root_r.has_value()) {
             unenabled.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                           scratch_root / "unenabled", branch_quota,
                                                           run_quota, storage_quota);
+            unenabled.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             auto attempt = drive(unenabled.history_provider().start_task_branch(owner));
             check(!attempt.has_value() &&
                       attempt.error().code == "mandatory_sandbox_provider.task_branch_not_enabled",
@@ -415,13 +419,14 @@ int main() {
         if (tiny_merge_quota_r.has_value()) {
             auto& tiny_merge_quota = *tiny_merge_quota_r;
             Session retry_session;
-            retry_session.initialize("retry-session", real_owner_principal);
+            retry_session.initialize("retry-session", real_owner_principal, ae_test::trusted_unbounded());
             auto root_r = drive(ledger.create_root_branch(owner, "tb-retry"));
             check(root_r.has_value(), "create_root_branch(owner, \"tb-retry\") succeeds");
             if (root_r.has_value()) {
                 retry_session.history_provider().bind_sandbox(
                     ledger, std::move(*root_r), owner, scratch_root / "retry", branch_quota, run_quota,
                     storage_quota);
+                retry_session.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 retry_session.history_provider().bind_task_branch_tools(tiny_merge_quota);
 
                 auto child_x = drive(retry_session.history_provider().start_task_branch(owner));
@@ -494,13 +499,14 @@ int main() {
     //     still has an ACTIVE task branch must not silently leak its BranchCost unit.
     {
         Session rebind_leak;
-        rebind_leak.initialize("rebind-leak-session", real_owner_principal);
+        rebind_leak.initialize("rebind-leak-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root1 = drive(ledger.create_root_branch(owner, "tb-rebind-1"));
         check(root1.has_value(), "create_root_branch(owner, \"tb-rebind-1\") succeeds");
         if (root1.has_value()) {
             rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root1), owner,
                                                             scratch_root / "rebind1", branch_quota,
                                                             run_quota, storage_quota);
+            rebind_leak.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             rebind_leak.history_provider().bind_task_branch_tools(merge_quota);
 
             std::uint64_t const branch_before = branch_quota.remaining();
@@ -515,6 +521,7 @@ int main() {
                 rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root2), owner,
                                                                 scratch_root / "rebind2", branch_quota,
                                                                 run_quota, storage_quota);
+                rebind_leak.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(branch_quota.remaining() == branch_before,
                       "re-binding discards the still-active task branch and refunds its BranchCost -- "
                       "no silent leak");
@@ -527,13 +534,14 @@ int main() {
     //     new forked state, not leak it underneath the new fork's own genuine cost.
     {
         Session fork_leak_target;
-        fork_leak_target.initialize("fork-leak-target", Principal{"fork-leak-owner", ""});
+        fork_leak_target.initialize("fork-leak-target", Principal{"fork-leak-owner", ""}, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-fork-leak"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-fork-leak\") succeeds");
         if (root_r.has_value()) {
             fork_leak_target.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                                   scratch_root / "fork-leak", branch_quota,
                                                                   run_quota, storage_quota);
+            fork_leak_target.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             fork_leak_target.history_provider().bind_task_branch_tools(merge_quota);
 
             std::uint64_t const before_all = branch_quota.remaining();
@@ -556,12 +564,13 @@ int main() {
     // [6] driven through the REAL invoke_tool() pipeline: start/run/commit as three real tool calls.
     {
         Session live;
-        live.initialize("live-session", real_owner_principal);
+        live.initialize("live-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-live"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-live\") succeeds");
         if (root_r.has_value()) {
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
+            live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             live.history_provider().bind_task_branch_tools(merge_quota);
 
             ScriptedChatClient& client = live.emplace_chat_client();
@@ -624,13 +633,14 @@ int main() {
     // proving the capability ceiling is load-bearing, not merely declared and never actually checked.
     {
         Session ungranted;
-        ungranted.initialize("ungranted-session", real_owner_principal);
+        ungranted.initialize("ungranted-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "tb-ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-ungranted\") succeeds");
         if (root_r.has_value()) {
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota, run_quota,
                                                         storage_quota);
+            ungranted.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             ungranted.history_provider().bind_task_branch_tools(merge_quota);
 
             ScriptedChatClient& client = ungranted.emplace_chat_client();

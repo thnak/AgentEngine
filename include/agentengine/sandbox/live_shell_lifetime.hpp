@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §8 -- WHEN a live shell closes, shared by both live
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §8 -- WHEN a live shell closes, shared by both live
 // tiers (`LiveShellSandboxProvider`, `NativeShellSessionProvider`):
 //   - `ShellLifetime`, the developer-chosen policy, with the built-ins `lifetime::PerRun` (the default) and
 //     `lifetime::PerSession`. A policy sees plain data (`LifetimeView`), never a handle or any authority, and

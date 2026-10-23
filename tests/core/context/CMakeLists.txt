@@ -12,12 +12,12 @@ agentengine_add_test(test_history_provider LIBS agentengine::core agentengine_wa
 # oldest-first drop order, drops recorded, purity/replay across repeated runs.
 agentengine_add_test(test_context_assembly LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-066-context-provider-attribution-provenance.md's prove phase: per-contributor
+# ---- decisions/archive/ADR-066-context-provider-attribution-provenance.md's prove phase: per-contributor
 # attribution stamping on Message/ToolDescriptor, and the narrower (not blanket) content_origin::user
 # forgery check, both applied structurally at assemble_context()'s own seam.
 agentengine_add_test(test_context_provenance LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's prove phase: the turn/
+# ---- decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md's prove phase: the turn/
 # pre_model interception point (TurnContext, ToolSurfaceView, redact_subspan(), Compactor<N>), wired
 # as its own standalone, tested mechanism -- not yet threaded into rt::AgentSession::run_rounds()
 # (named residual, matching middleware.hpp's own precedent for the run/tool-call points).
@@ -34,13 +34,13 @@ agentengine_add_test(test_composed_context_provider LIBS agentengine::core agent
 # proven against a mock summarizer ChatClient (decision 8's established precedent).
 agentengine_add_test(test_history_provider_summarize LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-166-todo-provider.md, issue #53: TodoProvider, a ContextProvider conformer for
+# ---- decisions/archive/ADR-166-todo-provider.md, issue #53: TodoProvider, a ContextProvider conformer for
 # plan/execute state (005 §5). Adaptive contribution, bounded item count/title length, unknown-id
 # rejection, and composition with a second real ContextProvider through the shared assemble_context().
 # No worktree dependency (pure in-memory, no persistence) -- unlike MemoryProvider, not WIN32-gated.
 agentengine_add_test(test_todo_provider LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-167-plan-execute-mode.md, issue #54: PlanExecuteMode, a ContextProvider + a
+# ---- decisions/archive/ADR-167-plan-execute-mode.md, issue #54: PlanExecuteMode, a ContextProvider + a
 # PolicyDecider factory gating a single agent into "plan first, then execute." Depends on
 # TodoProvider's shared TodoState (todo_provider.hpp) for its plan evidence.
 agentengine_add_test(test_plan_execute_mode LIBS agentengine::core agentengine_warnings)
@@ -53,7 +53,7 @@ if(AGENTENGINE_WITH_HTTPS)
   # never instantiated -- linked against provider_http_client only because session_builder.hpp's own
   # file-wide AGENTENGINE_WITH_HTTPS guard requires the real OpenAIChatClient/AnthropicChatClient types
   # to be visible at all, same reason test_json_schema_described above needs the same link with no live
-  # network call either. Also links agentengine::hmac (decisions/ADR-107-hmac-sha256-linux-parity.md):
+  # network call either. Also links agentengine::hmac (decisions/archive/ADR-107-hmac-sha256-linux-parity.md):
   # B7 below builds a real session against QuarantineSecretStore (trust/secret_quarantine.hpp), whose
   # quarantine() ODR-uses trust::hmac_sha256 -- a real, pre-existing missing-link-dependency bug this
   # target carried on EVERY platform (not just Linux), only ever masked because nothing had linked

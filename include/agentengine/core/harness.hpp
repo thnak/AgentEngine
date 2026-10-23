@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-234-harness-composition.md (issue #60): the Harness composition point -- one
+// Implements decisions/archive/ADR-234-harness-composition.md (issue #60): the Harness composition point -- one
 // call that turns a declared agent plus the caller's client and authority into a session carrying an
 // opinionated default stack, the AgentEngine counterpart of MAF's `chatClient.AsHarnessAgent()` /
 // `create_harness_agent()` (docs/research/2026-10-01-agent-harness.md has the MAF source read for this).
@@ -326,6 +326,33 @@ public:
         return text_of(r->message);
     }
 
+    // ADR-244 §2.3 (slice 3c): the same three on a `per_request` session, each run carrying `authority` (every
+    // reflection iteration included), checked by the session.
+    [[nodiscard]] result<rt::AgentResponse> run(std::string text, rt::RequestAuthority authority) {
+        if (!reflection_evaluator_) return bundle_.run(std::move(text), std::move(authority));
+        result<rt::ReflectionOutcome> outcome = run_reflective(std::move(text), std::move(authority));
+        if (!outcome) return std::unexpected(outcome.error());
+        return std::move(outcome->response);
+    }
+    [[nodiscard]] result<std::string> ask(std::string text, rt::RequestAuthority authority) {
+        result<rt::AgentResponse> r = run(std::move(text), std::move(authority));
+        if (!r) return std::unexpected(r.error());
+        return text_of(r->message);
+    }
+    [[nodiscard]] result<rt::ReflectionOutcome> run_reflective(std::string text, rt::RequestAuthority authority) {
+        if (!reflection_evaluator_) {
+            return std::unexpected(harness_detail::harness_error(
+                "this harness session has no reflection evaluator (HarnessOptions::reflection_evaluator)",
+                "harness.reflection_disabled"));
+        }
+        Message input = quickstart::detail::user_message(std::move(text));
+        return bundle_.drive([&](SessionT& s) {
+            return rt::run_with_bounded_reflection(s, std::move(authority), std::move(input),
+                                                   reflection_max_iterations_, reflection_evaluator_,
+                                                   reflection_max_total_tokens_);
+        });
+    }
+
     // The reflection loop's whole outcome (satisfied, iterations, aggregate tokens). Refused when no
     // evaluator is configured -- reflection is off by default (ADR-234 §4).
     [[nodiscard]] result<rt::ReflectionOutcome> run_reflective(std::string text) {
@@ -529,16 +556,16 @@ template <class HistoryT, class ChatClientT>
         };
         PolicyDecider host_policy = std::move(opts.policy);
         PolicyDecider after_gate  = [gated, host_policy](Principal const& caller, ToolDescriptor const& tool,
-                                                        bool arguments_tainted) -> policy_decision {
-            if (gated->contains(tool.name)) return policy_decision::auto_approve;  // its declared never_require
-            if (host_policy) return host_policy(caller, tool, arguments_tainted);
-            return policy_decision::require_approval;  // == no decider wired (ADR-070)
+                                                        bool arguments_tainted) -> task<policy_decision> {
+            if (gated->contains(tool.name)) co_return policy_decision::auto_approve;  // its declared never_require
+            if (host_policy) co_return co_await host_policy(caller, tool, arguments_tainted);
+            co_return policy_decision::require_approval;  // == no decider wired (ADR-070)
         };
         opts.policy = make_plan_execute_policy_decider(gate, std::move(after_gate), planning_safe);
     }
 
-    std::optional<std::uint64_t> const effective_budget = opts.token_budget.has_value() ? opts.token_budget
-                                                                                        : meta.token_budget;
+    // ADR-244 §2.2: the caller's stated budget; bind() refuses one wider than the agent declares.
+    std::optional<std::uint64_t> const effective_budget = opts.choices.token_budget.limit();
 
     result<AgentBundleWith<ChatClientT, HarnessContextProvider>> bound =
         agent_bind_detail::bind<ChatClientT, HarnessContextProvider>(meta, std::move(client), std::move(opts),
@@ -609,7 +636,7 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> bind_harness_session(AgentMetadata const& meta, ChatClientT client,
-                                                                      AgentSessionOptions opts = {},
+                                                                      AgentSessionOptions opts,
                                                                       HarnessOptions hopts = {},
                                                                       ChatClientRegistry const* registry = nullptr,
                                                                       SandboxBackendRegistry const* sandbox_registry =
@@ -623,7 +650,7 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
 template <class A, class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
-[[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts = {},
+[[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts,
                                                                       HarnessOptions hopts = {},
                                                                       ChatClientRegistry const* registry = nullptr,
                                                                       SandboxBackendRegistry const* sandbox_registry =

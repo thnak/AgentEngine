@@ -29,7 +29,7 @@ target_link_libraries(test_native_jail_runner_stubs PRIVATE
 
 add_test(NAME test_native_jail_runner_stubs COMMAND test_native_jail_runner_stubs)
 
-# ---- ShellRunner prove-phase gates (decisions/ADR-001-shellrunner-grammar-and-dispatch.md) -----
+# ---- ShellRunner prove-phase gates (decisions/archive/ADR-001-shellrunner-grammar-and-dispatch.md) -----
 
 # RealFileSystemAdapter's path-escape list (§2.5.5).
 agentengine_add_test(test_real_filesystem_adapter
@@ -160,7 +160,7 @@ agentengine_add_test(test_task_scope_containment_corpus
 # the REAL agentengine_mediated_shell_runner artifact (test_shell_runner_no_process_creation.cpp
 # already covers the untouched spike). Reuses the same llvm-nm/nm discovered above.
 #
-# Portable across Windows and Linux (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's
+# Portable across Windows and Linux (2026-08-29, decisions/archive/ADR-104-real-io-filesystem-linux-parity.md's
 # own named follow-on) -- moved OUT of the surrounding `if(WIN32)` block below, same reasoning as the
 # other mediated_shell_runner tests just above. The hardcoded Windows-only hostile-symbol list
 # (CreateProcessA/W etc.) is now `#ifdef _WIN32`/`#else`-branched in the test source itself, with a
@@ -212,7 +212,7 @@ if(WIN32)
   endif()
 endif()
 
-# ---- Job Object resource-limit layer (decisions/ADR-004-appcontainer-native-jail-windows-backend.md) --
+# ---- Job Object resource-limit layer (decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md) --
 # Windows only -- see CMakeLists.txt's agentengine_job_object_limits target comment.
 if(WIN32)
   add_executable(test_job_object_limits test_job_object_limits.cpp)
@@ -311,10 +311,20 @@ if(WIN32)
   # real -j4 run surfaced this -- see the test file's own comment on hostile_child_name_lower).
   set_tests_properties(test_native_jail_teardown_cycles_windows PROPERTIES TIMEOUT 150 RUN_SERIAL TRUE)
 
-  # ---- NativeJailBackend::grant_ro_path_once() (docs/planning/pdf-text-extraction-design-draft.md
-  # Revision 6/7 -- the public entry point round-5/round-6 red-team found missing) -----------------
-  agentengine_add_test(test_native_jail_grant_ro_path_once_windows
+  # ---- Read-only mounts granted to the shared profile once (ADR-244 §2.4; replaced grant_ro_path_once()) --
+  agentengine_add_test(test_native_jail_ro_mount_dedup_windows
     LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
+    TIMEOUT 30)
+
+  # ---- Read-write mounts on a per-sandbox capability SID; deployment paths never writable (ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_rw_capability_windows
+    LIBS agentengine::core agentengine::native_jail_backend agentengine_warnings
+    TIMEOUT 120)
+
+  # ---- G-C5(e): every AppContainer grant goes through grant_spec_mounts (a source scan, ADR-244 §2.4) ----
+  agentengine_add_test(test_native_jail_grant_sites
+    LIBS agentengine_warnings
+    DEFINITIONS AE_SOURCE_ROOT="${PROJECT_SOURCE_DIR}"
     TIMEOUT 30)
 
   # ---- AppContainerProfile::grant_path()/revoke_path() ACE lifecycle (docs/planning/office-document-
@@ -438,7 +448,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_native_jail_python_worker_slice1 PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
-  # ---- HandleRelay (ADR-081 Slice 2, decisions/ADR-085-jailed-python-worker-slice-2-handle-relay.md):
+  # ---- HandleRelay (ADR-081 Slice 2, decisions/archive/ADR-085-jailed-python-worker-slice-2-handle-relay.md):
   # the two positive/negative controls the design draft's own §6 named but the pre-existing suite never
   # exercises -- a real successful socket relay round trip under a genuinely granted cap::NetOut, and a
   # kernel-level (not merely Python-wrapper-level) read-only enforcement check.
@@ -449,7 +459,7 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_native_jail_python_worker_handle_relay PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 
-  # ---- 008 SS9 G7 (session boundary) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4:
+  # ---- 008 SS9 G7 (session boundary) -- decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md SS4:
   # a real, previously-untracked gap. Two jailed worker processes, live at once, prove a canary
   # planted in one is unreachable from the other -- the kernel-enforced OS-process boundary Slice 1
   # gave this claim, exercised for real for the first time.

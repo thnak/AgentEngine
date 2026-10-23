@@ -1,4 +1,4 @@
-// Implements decisions/ADR-166-todo-provider.md's proof obligations for `TodoProvider`
+// Implements decisions/archive/ADR-166-todo-provider.md's proof obligations for `TodoProvider`
 // (core/todo_provider.hpp), 005 §5, issue #53. Mirrors test_memory_provider.cpp's structure: each
 // block proves one claim from the ADR's per-claim verdict table.
 
@@ -87,19 +87,19 @@ int main() {
     {
         auto args = json::parse(R"({"title":"write release notes"})");
         check(args.has_value(), "setup: add args parse");
-        auto reply_json = add_tool->invoke(*args, ctx);
+        auto reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add_tool->invoke(*args, ctx));
         check(reply_json.has_value(), "R4: todos_add succeeds");
         auto reply = ae::schema::from_json<ae::TodoAddReply>(*reply_json);
         check(reply.has_value() && reply->id == 0, "R4: the first item gets id 0");
 
         auto bad_complete = json::parse(R"({"id":999})");
         check(bad_complete.has_value(), "setup: bad id args parse");
-        auto complete_result = complete_tool->invoke(*bad_complete, ctx);
+        auto complete_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(complete_tool->invoke(*bad_complete, ctx));
         check(!complete_result.has_value() && complete_result.error().code == "todo.unknown_id",
               "R5 (ADR-166 finding 3): todos_complete on an unknown id fails with a real, "
               "distinguishable error code -- never a silent no-op that hides a stale/hallucinated id "
               "from the model");
-        auto remove_result = remove_tool->invoke(*bad_complete, ctx);
+        auto remove_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(remove_tool->invoke(*bad_complete, ctx));
         check(!remove_result.has_value() && remove_result.error().code == "todo.unknown_id",
               "R5: todos_remove on an unknown id fails the same way");
     }
@@ -131,7 +131,7 @@ int main() {
     {
         auto complete_args = json::parse(R"({"id":0})");
         check(complete_args.has_value(), "setup: complete args parse");
-        auto complete_reply = complete_tool->invoke(*complete_args, ctx);
+        auto complete_reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(complete_tool->invoke(*complete_args, ctx));
         check(complete_reply.has_value(), "R9: completing a real id succeeds");
         auto ok = ae::schema::from_json<ae::TodoOkReply>(*complete_reply);
         check(ok.has_value() && ok->ok, "R9: the reply reports ok=true");
@@ -147,7 +147,7 @@ int main() {
     // --- R10: todos_get_remaining / todos_get_all read the SAME live state through their own tools -
     {
         auto add_args = json::parse(R"({"title":"cut the tag"})");
-        auto add_reply_json = add_tool->invoke(*add_args, ctx);
+        auto add_reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add_tool->invoke(*add_args, ctx));
         check(add_reply_json.has_value(), "setup: second item added");
         auto add_reply = ae::schema::from_json<ae::TodoAddReply>(*add_reply_json);
         check(add_reply.has_value() && add_reply->id == 1,
@@ -157,7 +157,7 @@ int main() {
         check(no_args.has_value(), "setup: empty-object args parse (TodoNoArgs' one inert field "
                                     "defaults, so an empty object is still a valid payload)");
 
-        auto remaining_json = get_remaining_tool->invoke(*no_args, ctx);
+        auto remaining_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(get_remaining_tool->invoke(*no_args, ctx));
         check(remaining_json.has_value(), "R10: todos_get_remaining succeeds");
         auto remaining = ae::schema::from_json<ae::TodoListReply>(*remaining_json);
         check(remaining.has_value() &&
@@ -166,7 +166,7 @@ int main() {
               "R10: todos_get_remaining excludes the already-completed item and includes the pending "
               "one");
 
-        auto all_json = get_all_tool->invoke(*no_args, ctx);
+        auto all_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(get_all_tool->invoke(*no_args, ctx));
         check(all_json.has_value(), "R10: todos_get_all succeeds");
         auto all = ae::schema::from_json<ae::TodoListReply>(*all_json);
         check(all.has_value() && all->rendered.find("cut the tag") != std::string::npos &&
@@ -177,11 +177,11 @@ int main() {
     // --- R11b: todos_remove actually removes; id is never reused for a NEW item afterward ---------
     {
         auto remove_args = json::parse(R"({"id":0})");
-        auto remove_reply_json = remove_tool->invoke(*remove_args, ctx);
+        auto remove_reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(remove_tool->invoke(*remove_args, ctx));
         check(remove_reply_json.has_value(), "setup: removing id 0 succeeds");
 
         auto add_args = json::parse(R"({"title":"announce"})");
-        auto add_reply_json = add_tool->invoke(*add_args, ctx);
+        auto add_reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(add_tool->invoke(*add_args, ctx));
         auto add_reply = ae::schema::from_json<ae::TodoAddReply>(*add_reply_json);
         check(add_reply.has_value() && add_reply->id == 2,
               "R11b: after removing id 0, the NEXT new item still gets id 2 (next_id_ is monotonic, "
@@ -192,8 +192,8 @@ int main() {
     {
         auto remove1 = json::parse(R"({"id":1})");
         auto remove2 = json::parse(R"({"id":2})");
-        check(remove_tool->invoke(*remove1, ctx).has_value(), "setup: remove id 1");
-        check(remove_tool->invoke(*remove2, ctx).has_value(), "setup: remove id 2");
+        check(ae::test_support::run_task_sync<ae::result<ae::json::Value>>(remove_tool->invoke(*remove1, ctx)).has_value(), "setup: remove id 1");
+        check(ae::test_support::run_task_sync<ae::result<ae::json::Value>>(remove_tool->invoke(*remove2, ctx)).has_value(), "setup: remove id 2");
 
         auto out3 = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             provider.on_context(session_ctx, ctx));
@@ -218,22 +218,22 @@ int main() {
             fresh.on_context(session_ctx, ctx2));
         auto const* fresh_add = find_tool(*out_ctx, "todos_add");
         check(fresh_add != nullptr, "setup: fresh provider's todos_add found");
-        auto long_result = fresh_add->invoke(*long_args, ctx2);
+        auto long_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fresh_add->invoke(*long_args, ctx2));
         check(!long_result.has_value() && long_result.error().code == "todo.title_too_long",
               "R13a: a title over kMaxTitleLength is REJECTED, not silently truncated");
 
         auto empty_args = json::parse(R"({"title":""})");
-        auto empty_result = fresh_add->invoke(*empty_args, ctx2);
+        auto empty_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fresh_add->invoke(*empty_args, ctx2));
         check(!empty_result.has_value() && empty_result.error().code == "todo.empty_title",
               "R13b: an empty title is rejected");
 
         for (std::size_t i = 0; i < ae::TodoProvider::kMaxItems; ++i) {
             auto ok_args = json::parse(R"({"title":"item"})");
-            auto ok_result = fresh_add->invoke(*ok_args, ctx2);
+            auto ok_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fresh_add->invoke(*ok_args, ctx2));
             check(ok_result.has_value(), "R13c setup: filling the list up to kMaxItems succeeds");
         }
         auto overflow_args = json::parse(R"({"title":"one too many"})");
-        auto overflow_result = fresh_add->invoke(*overflow_args, ctx2);
+        auto overflow_result = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fresh_add->invoke(*overflow_args, ctx2));
         check(!overflow_result.has_value() && overflow_result.error().code == "todo.list_full",
               "R13c: the (kMaxItems + 1)th add is rejected with todo.list_full, not silently dropped "
               "and not allowed to grow unbounded");

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 013-UI-and-Streaming-Surfaces.md §2.1/§2.2 -- the projection from the internal run event
+// Implements rfcs/013-UI-and-Streaming-Surfaces.md §2.1/§2.2 -- the projection from the internal run event
 // stream (`core/run_event.hpp`, real since Milestone 7 Phase A) onto AG-UI wire events
 // (`protocol/agui/types.hpp`, Phase E1). Milestone 7 Phase E2
 // (docs/planning/milestone-7-protocol-conformance-breakdown.md).

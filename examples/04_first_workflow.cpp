@@ -5,7 +5,7 @@
 // input "Hello, World!" the workflow produces "!DLROW ,OLLEH", exactly like the MAF sample it
 // mirrors.
 //
-// AgentEngine's workflow model (014-Workflow-and-Orchestration.md) is its own thing, not a
+// AgentEngine's workflow model (rfcs/014-Workflow-and-Orchestration.md) is its own thing, not a
 // `WorkflowBuilder` fluent API: a `Workflow` is DATA (`executors`/`edges`/`start`/
 // `output_selection`/`bound`, agentengine/workflow/graph.hpp), executed round-by-round (a
 // "superstep" per round, 014 §2). ADR-037's Quark-free `agentengine::rt::WorkflowSupervisor`
@@ -30,6 +30,7 @@
 using namespace agentengine;
 using namespace agentengine::workflow;
 using agentengine::rt::ExecutorBody;
+using agentengine::rt::ExecutorOutcome;
 using agentengine::rt::RunWorkflow;
 using agentengine::rt::WorkflowResult;
 using agentengine::rt::WorkflowSupervisor;
@@ -62,17 +63,17 @@ void check(bool cond, char const* what) {
 // EffectContext&)>`, and a `Message` converts implicitly into an `ExecutorOutcome` for the common
 // "just pass a message downstream" case -- these bodies need no changes at all, only the wiring
 // around them does.
-[[nodiscard]] agentengine::result<Message> uppercase(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> uppercase(Message const& in, EffectContext&) {
     std::string text = text_of(in);
     std::transform(text.begin(), text.end(), text.begin(),
                     [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    return text_message(std::move(text));
+    co_return agentengine::rt::ExecutorOutcome{text_message(std::move(text))};
 }
 
-[[nodiscard]] agentengine::result<Message> reverse_text(Message const& in, EffectContext&) {
+[[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> reverse_text(Message const& in, EffectContext&) {
     std::string text = text_of(in);
     std::reverse(text.begin(), text.end());
-    return text_message(std::move(text));
+    co_return agentengine::rt::ExecutorOutcome{text_message(std::move(text))};
 }
 
 // Drives an agentengine::rt::task<T> to completion. Safe here: nothing in a WorkflowSupervisor

@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8, live: a real, skills-composed `AgentSession`
+// Implements rfcs/009-Plugin-and-Extension-System.md §8, live: a real, skills-composed `AgentSession`
 // (`ComposedContextProvider<BuiltinSkillsProvider, ToolDeclaringHistoryProvider>`) driven through a
 // two-turn conversation against a REAL remote model over OpenRouter -- a plain greeting, then a
 // request that only makes sense if the model actually read the mounted `using-the-code-interpreter`
@@ -36,9 +36,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/builtin_skills.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -46,6 +48,7 @@
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -80,8 +83,7 @@ void note(char const* label, std::string const& value) {
 // an ordinary synchronous call inside the coroutine body, never a real suspension point).
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
@@ -173,17 +175,17 @@ AE_JSON_SCHEMA(ExecuteCodeReply, stdout_text)
     return std::to_string(numbers[0] + numbers[1]);
 }
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Execute a snippet of code in the session's interpreter and return what it printed. This is "
         "the tool the using-the-code-interpreter skill teaches idioms for.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         execute_code_called_log() = true;
         observed_code_arg_log() = a.code;
-        return Reply{fake_execute(a.code)};
+        co_return Reply{fake_execute(a.code)};
     }
 };
 
@@ -191,14 +193,14 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
 // test_agent_session_live_multitool_e2e.cpp's FourToolHistoryProvider shape, one tool instead of four.
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
     // HasContextProviderName, needed to compose via ComposedContextProvider below.
     static constexpr std::string_view name = "skills-live-e2e-history";
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx, EffectContext&) {
         ContextContribution contribution;
         contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
-        contribution.tools = ToolTable::from_tools<ExecuteCodeTool>().descriptors();
+        contribution.tools = ToolTable::from(ExecuteCodeTool{}).descriptors();
         co_return contribution;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -210,7 +212,7 @@ static_assert(ContextProvider<ToolDeclaringHistoryProvider>);
 // duplicated here per this suite's per-file independence convention (that file's own top comment).
 class BuiltinSkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "skills-live-e2e-skills";
 
     BuiltinSkillsProvider() : inner_({make_builtin_skills_source()}) {}
@@ -285,8 +287,7 @@ int main() {
                                  /*seed=*/std::nullopt, /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false,
                                  /*session_id=*/std::string{"skills-live-e2e-session"});
-    session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize("skills-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
     // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
     // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is

@@ -1,4 +1,4 @@
-// decisions/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a host pre-mounts the
+// decisions/archive/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a host pre-mounts the
 // built-in skill paired with a tool it declares, BEFORE the first model call, and the mount is
 // attributed to the host -- in `MountedSkillsState`, and in the system text the model is shown.
 //
@@ -11,10 +11,13 @@
 //   E5     Positive control: the same session without the host pre-mount shows no body in its first
 //          request -- so E1 is caused by the pre-mount, not by something else putting it there.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_premount.hpp"
@@ -39,8 +42,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct MountSkillArgs {
@@ -54,14 +56,24 @@ struct MountSkillReply {
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
 // Same shape as tools/cli_chat.cpp's: the model-reachable mount path, reaching `MountedSkillsState::mount()`.
-struct MountSkillTool : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>> {
+// ADR-237 §5.2: instance form -- it holds the state it mutates, so the descriptor IS the real code and
+// the old poison static `invoke()` sentinel is gone.
+struct MountSkillTool
+    : ae::Tool<MountSkillTool, ae::EffectClass<ae::effect_class::pure>, ae::CapturesSessionState, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description = "Activate an advertised skill.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "unreachable", "test.unreachable"});
+
+    explicit MountSkillTool(ae::MountedSkillsState& mounted) : mounted_(&mounted) {}
+
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
+        mounted_->mount(a.skill_name);
+        co_return MountSkillReply{true, "mounted: " + a.skill_name};
     }
+
+private:
+    ae::MountedSkillsState* mounted_;
 };
 
 // A minimal cli_chat-shaped history provider: one system message = the skills advertisement plus every
@@ -72,7 +84,7 @@ public:
 
     // Host-only, configuration-time -- the cli_chat `premount_skills()` shape.
     ae::SkillPremountReport host_premount(std::vector<std::string> const& skills) {
-        (void)skills_.ensure_loaded();
+        (void)drive<ae::result<void>>(skills_.ensure_loaded());
         std::vector<std::string> resolvable;
         for (auto const& m : skills_.mounted()) resolvable.push_back(m.mount_id);
         return ae::premount_skills_by_host(mounted_, skills, resolvable);
@@ -96,11 +108,7 @@ public:
         m.content.push_back(std::move(item));
         c.messages.push_back(std::move(m));
         c.messages.insert(c.messages.end(), sc.history.begin(), sc.history.end());
-        c.tools.push_back(ae::make_tool_descriptor_with_invoke<MountSkillTool>(
-            [this](MountSkillArgs a, ae::EffectContext&) -> ae::result<MountSkillReply> {
-                mounted_.mount(a.skill_name);
-                return MountSkillReply{true, "mounted: " + a.skill_name};
-            }));
+        c.tools.push_back(ae::make_tool_descriptor(MountSkillTool{mounted_}));
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -184,7 +192,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, PremountProvider> session;
-        session.initialize("premount", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+        session.initialize("premount", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
 
@@ -222,7 +230,7 @@ int main() {
         (void)script.push(ae::testing::text_turn("done"));
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, PremountProvider> session;
-        session.initialize("no-premount", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/2);
+        session.initialize("no-premount", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/2));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
         auto outcome = drive(session.start_run(ae::rt::StartRun{user_message("hi")}));

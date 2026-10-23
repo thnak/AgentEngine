@@ -92,6 +92,7 @@
 #include <vector>
 #include <string_view>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -117,14 +118,14 @@ void check(bool cond, std::string const& what) {
 // in-tree test double already has, and the shape a future process/chroot conformer would have.
 class PlainSurface {
 public:
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<agentengine::SurfaceRunOutcome> run(std::string const&) {
-        return agentengine::SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<agentengine::SurfaceRunOutcome>> run(std::string) {
+        co_return agentengine::SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 
@@ -298,7 +299,7 @@ int main() {
               "N10: image_digest_kind() is unknown before reset() -- a kind without a digest describes "
               "nothing");
 
-        auto first = surface.reset(work);
+        auto first = agentengine::rt::block_on(surface.reset(work));
         if (!first.has_value()) {
             std::printf("[FAIL] reset() failed (is a Docker daemon reachable?): %s\n",
                         first.error().message.c_str());
@@ -376,7 +377,7 @@ int main() {
               "N12: `unknown` serializes to the EMPTY string, matching the empty-digest convention");
 
         // [N7] -- a second reset() destroys the first container and creates another.
-        auto second = surface.reset(work);
+        auto second = agentengine::rt::block_on(surface.reset(work));
         check(second.has_value(), "N7: a second reset() succeeds");
         check(well_formed_digest(surface.image_digest()),
               "N7: image_digest() survives a second reset() -- not blanked by destroy-then-create");
@@ -459,7 +460,7 @@ int main() {
         }
         {
             agentengine::DockerExecutionSurface committed(kCommittedImage);
-            auto const started = committed.reset(n14_work);
+            auto const started = agentengine::rt::block_on(committed.reset(n14_work));
             check(started.has_value(), "N14: a surface over the committed image starts");
             if (started.has_value()) {
                 check(committed.image_digest_kind() == agentengine::ImageDigestKind::manifest,
@@ -475,7 +476,7 @@ int main() {
                 // A SIBLING directory, not `n14_work / "indexed"`: the committed surface's worktree is a
                 // live bind mount, and nesting a second container's worktree inside it would have two
                 // containers sharing overlapping host state for no reason.
-                auto const indexed_started = indexed.reset(n14_work_indexed);
+                auto const indexed_started = agentengine::rt::block_on(indexed.reset(n14_work_indexed));
                 check(indexed_started.has_value(), "N14: a surface over the multi-platform image starts");
                 if (indexed_started.has_value()) {
                     check(indexed.image_digest_kind() == agentengine::ImageDigestKind::index &&
@@ -522,7 +523,7 @@ int main() {
             std::filesystem::create_directories(n16_work, n16_ec);
             {
                 agentengine::DockerExecutionSurface surface(kMovingTag);
-                auto const first = surface.reset(n16_work);
+                auto const first = agentengine::rt::block_on(surface.reset(n16_work));
                 check(first.has_value(), "N16: a surface over a tag this test owns starts");
                 if (first.has_value()) {
                     std::string const digest_before(surface.image_digest());
@@ -536,7 +537,7 @@ int main() {
                     check(point_tag_at(kCommittedImage),
                           "N16 SETUP: the tag is moved to a different image between the two resets");
 
-                    auto const second = surface.reset(n16_work);
+                    auto const second = agentengine::rt::block_on(surface.reset(n16_work));
                     check(second.has_value(), "N16: the surface resets again onto the moved tag");
                     if (second.has_value()) {
                         std::string const digest_after(surface.image_digest());

@@ -19,6 +19,7 @@
 
 #include "agentengine/tools/read_sandbox_file.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 
 namespace {
 
@@ -85,7 +86,8 @@ void test_default_is_nullptr_no_sandbox() {
     auto ctx = make_ctx(held);
     check(ctx.sandbox_fs == nullptr, "EffectContext::sandbox_fs defaults to nullptr");
 
-    auto reply = ReadSandboxFile::invoke(ReadSandboxFile::Args{"anything.txt"}, ctx);
+    auto reply = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+        ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"anything.txt"}, ctx));
     check(!reply.has_value(), "no sandbox_fs wired -> the tool fails, not a crash or silent no-op");
     if (!reply) {
         check(reply.error().code == "read_sandbox_file.no_sandbox",
@@ -99,7 +101,8 @@ void test_capability_denied_never_touches_adapter() {
     CountingFileSystemAdapter adapter;
     ctx.sandbox_fs = &adapter;
 
-    auto reply = ReadSandboxFile::invoke(ReadSandboxFile::Args{"secret.txt"}, ctx);
+    auto reply = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+        ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"secret.txt"}, ctx));
     check(!reply.has_value(), "no FsRead grant -> denied");
     if (!reply) check(reply.error().code == "tool.capability_not_held", "denial uses the standard capability error code");
     check(adapter.read_file_calls == 0, "the adapter is never touched when the capability check fails (I2)");
@@ -126,7 +129,8 @@ void test_real_adapter_reads_a_real_file() {
     auto ctx = make_ctx(held);
     ctx.sandbox_fs = &*adapter;
 
-    auto reply = ReadSandboxFile::invoke(ReadSandboxFile::Args{"hello.txt"}, ctx);
+    auto reply = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+        ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"hello.txt"}, ctx));
     check(reply.has_value(), "reading a real file through the seam succeeds");
     if (reply) check(reply->content == "hello from the sandbox mount", "content matches what's really on disk");
 
@@ -166,7 +170,8 @@ void test_size_cap_is_enforced() {
         auto ctx = make_ctx(capped);
         ctx.sandbox_fs = &*adapter;
 
-        auto over = ReadSandboxFile::invoke(ReadSandboxFile::Args{"big.txt"}, ctx);
+        auto over = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+            ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"big.txt"}, ctx));
         check(!over.has_value(), "A: a 2000-byte file under a 1000-byte FsRead cap is refused");
         if (!over) {
             check(over.error().code == "read_sandbox_file.exceeds_size_cap",
@@ -174,7 +179,8 @@ void test_size_cap_is_enforced() {
             check(over.error().klass == agentengine::failure_class::policy, "A: ... as a policy failure");
         }
 
-        auto exact = ReadSandboxFile::invoke(ReadSandboxFile::Args{"exact.txt"}, ctx);
+        auto exact = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+            ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"exact.txt"}, ctx));
         check(exact.has_value() && exact->content.size() == 1000,
               "B: a file of exactly the cap (1000) is returned in full");
     }
@@ -183,7 +189,8 @@ void test_size_cap_is_enforced() {
             agentengine::CapabilitySet::grant_root({agentengine::cap::FsRead{mount, "", std::nullopt}});
         auto ctx = make_ctx(uncapped);
         ctx.sandbox_fs = &*adapter;
-        auto big = ReadSandboxFile::invoke(ReadSandboxFile::Args{"big.txt"}, ctx);
+        auto big = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+            ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"big.txt"}, ctx));
         check(big.has_value() && big->content.size() == 2000,
               "C (control): the same 2000-byte file under an UNCAPPED grant is returned -- the cap decides A");
     }
@@ -196,7 +203,8 @@ void test_size_cap_is_enforced() {
              agentengine::cap::FsRead{mount, "elsewhere", std::uint64_t{10}}});
         auto ctx = make_ctx(two);
         ctx.sandbox_fs = &*adapter;
-        auto under = ReadSandboxFile::invoke(ReadSandboxFile::Args{"small/under.txt"}, ctx);
+        auto under = agentengine::test_support::run_task_sync<agentengine::result<ReadSandboxFile::Reply>>(
+            ReadSandboxFile{}.invoke(ReadSandboxFile::Args{"small/under.txt"}, ctx));
         check(under.has_value() && under->content.size() == 2000,
               "D: a cap on a grant whose prefix does not cover the path is not applied to it");
     }

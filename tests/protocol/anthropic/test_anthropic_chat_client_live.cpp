@@ -30,6 +30,9 @@
 #include <vector>
 
 #include "agentengine/protocol/anthropic/chat_client.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/dns.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "../../support/run_task_sync.hpp"
@@ -499,6 +502,87 @@ int main() {
                   "real TLS socket, decodes and delivers through ae::stream<T> in order with 0 loss");
             check(s.terminal() == stream_terminal::closed,
                   "chat_stream(): the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat() on the REACTOR (ADR-237 §5.1, step 35): the buffered exchange runs on rt::http -----
+    {
+        std::string const body = R"({"id":"msg_1","type":"message","role":"assistant",)"
+                                  R"("content":[{"type":"text","text":"hello from the reactor"}],)"
+                                  R"("stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4}})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+reactor: test server started");
+        if (server.ok()) {
+            rt::Runtime                     rt{rt::RuntimeConfig{.lanes = 2}};
+            anthropic::detail::ReactorOptions rops;
+            rops.runtime  = &rt;
+            rops.resolver = [](std::string const&) {
+                pal::ResolveOutcome o;
+                o.addresses.push_back(pal::IpAddress::loopback_v4());
+                return o;
+            };
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{}, store,
+                                                   "/v1", "2023-06-01", fake_resolver, leaf.cert_pem,
+                                                   /*http_referer=*/{}, /*x_title=*/{}, /*end_user_id=*/{},
+                                                   /*cache_ttl=*/{}, sandbox::ProviderTransport::tls,
+                                                   /*session_id=*/{}, rops);
+            store.set("anthropic-api-key", "sk-ant-test-value");
+
+            auto resp = rt::block_on(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(), "chat()+reactor: a real TLS round-trip on the reactor succeeds");
+            if (resp.has_value() && !resp->message.content.empty()) {
+                auto const* t = std::get_if<Text>(&resp->message.content.front().value);
+                check(t != nullptr && t->text == "hello from the reactor",
+                      "chat()+reactor: the buffered body parses over rt::http, no blocking body");
+            }
+        }
+    }
+
+    // ---- chat_stream() on the REACTOR (ADR-237 §5.1, step 34): the same NAMED-EVENT SSE response, but the
+    //      producer is an OWNED root on a rt::Runtime (rt::Runtime::spawn) instead of a detached thread ---
+    {
+        std::string const sse =
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+            "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi \"}}\n\n"
+            "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"there!\"}}\n\n"
+            "event: content_block_stop\ndata: {\"index\":0}\n\n"
+            "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n"
+            "event: message_stop\ndata: {}\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+reactor: test server started");
+        if (server.ok()) {
+            rt::Runtime                    rt{rt::RuntimeConfig{.lanes = 2}};
+            anthropic::detail::ReactorOptions rops;
+            rops.runtime  = &rt;
+            rops.resolver = [](std::string const&) {
+                pal::ResolveOutcome o;
+                o.addresses.push_back(pal::IpAddress::loopback_v4());
+                return o;
+            };
+            anthropic::AnthropicChatClient client("localhost", server.port(), "claude-sonnet-5",
+                                                   SecretRef{"anthropic-api-key"}, ChatClientCapabilities{}, store,
+                                                   "/v1", "2023-06-01", fake_resolver, leaf.cert_pem,
+                                                   /*http_referer=*/{}, /*x_title=*/{}, /*end_user_id=*/{},
+                                                   /*cache_ttl=*/{}, sandbox::ProviderTransport::tls,
+                                                   /*session_id=*/{}, rops);
+            store.set("anthropic-api-key", "sk-ant-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            std::vector<std::string>   received;
+            while (!s.done()) {
+                while (auto update = s.next()) {
+                    auto const* text = std::get_if<Text>(&update->delta.value);
+                    if (text) received.push_back(text->text);
+                }
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received.size() == 2 && received[0] == "Hi " && received[1] == "there!",
+                  "chat_stream()+reactor: the NAMED-EVENT SSE response, driven by an owned root on the "
+                  "reactor (rt::Runtime::spawn, no detached thread), decodes and delivers in order with 0 loss");
+            check(s.terminal() == stream_terminal::closed,
+                  "chat_stream()+reactor: the stream reaches the success terminal");
         }
     }
 

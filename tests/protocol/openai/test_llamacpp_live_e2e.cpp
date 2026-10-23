@@ -1,5 +1,5 @@
-// Proves decisions/ADR-016-provider-egress-address-policy.md's gate G5 -- and, through it,
-// 004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
+// Proves decisions/archive/ADR-016-provider-egress-address-policy.md's gate G5 -- and, through it,
+// rfcs/004-Model-Provider-Plane.md §3's OpenAI-compatible backend (protocol/openai/chat_client.hpp)
 // end to end against a REAL, LOCAL llama.cpp server.
 //
 // This is the endpoint class 004 §3 names explicitly ("vLLM/llama.cpp/Ollama-style local servers")
@@ -64,6 +64,7 @@
 // long chain of thought will exceed it. The default prefix is Qwen's own thinking-off directive;
 // point this at a non-Qwen model and set the variable to that model's equivalent, or to empty.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/pal/net.hpp"
 
@@ -134,6 +135,7 @@ std::string g_prompt_prefix;
 // 400, which is the point of declaring it here.
 [[nodiscard]] ToolDescriptor weather_tool() {
     ToolDescriptor t;
+    t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     t.name = "get_weather";
     t.description = "Get the current weather for a city.";
     t.args_schema_json =
@@ -462,7 +464,7 @@ int main() {
         sandbox::NetEgressRequest req;
         req.method = "GET";
         req.path = "/v1/models";
-        auto resp = proxy.fetch(req, granted);
+        auto resp = agentengine::rt::block_on(proxy.fetch(req, granted, agentengine::sandbox::EgressCallControl{}));
 
         auto const guest_view = sandbox::resolve_and_validate(host, static_cast<std::uint16_t>(port_value));
         if (!guest_view) {

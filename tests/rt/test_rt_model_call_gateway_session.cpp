@@ -38,14 +38,17 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/chat_client.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -68,8 +71,7 @@ void check(bool cond, char const* what) {
 // synchronously, never genuinely parks.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // ---- Copied verbatim from test_model_call_gateway.cpp's own fixtures (this suite's own "no shared
@@ -200,7 +202,7 @@ int main() {
     };
     session.emplace_chat_client(primary, std::make_tuple(), fast_retry_policy(), agentengine::BreakerConfig{},
                                  GatewayT::JitterSource(&no_jitter));
-    session.initialize("s-g5", agentengine::Principal{"p", ""});
+    session.initialize("s-g5", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root({});
     session.set_capabilities(&held);
 
@@ -246,7 +248,7 @@ int main() {
         };
         session2.emplace_chat_client(primary2, std::make_tuple(), fast_retry_policy(),
                                       agentengine::BreakerConfig{}, GatewayT::JitterSource(&no_jitter));
-        session2.initialize("s-g6", agentengine::Principal{"p", ""});
+        session2.initialize("s-g6", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());
         session2.set_capabilities(&held);
         session2.set_stream_model_calls(true);
 

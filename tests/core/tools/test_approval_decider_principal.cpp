@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §46 (decisions/ADR-061-host-provided-inbound-transport.md). Proves the
+// ADR-061 prove phase, §46 (decisions/archive/ADR-061-host-provided-inbound-transport.md). Proves the
 // falsifiable claims table at §46.5: `ApprovalDecider` widened to `bool(Principal const&,
 // std::string_view, std::string const&)` closes R27's `approve_` finding -- a decider can now see WHO
 // is asking, sourced from the SAME `ctx.principal` `ToolInvocationAudit` already records, at both the
@@ -12,6 +12,7 @@
 
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -46,7 +47,7 @@ struct AlwaysApproveTool
     static constexpr std::string_view description = "Approval<always_require> -- decider probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{}; }
 };
 
 struct AlwaysApproveBackgroundableTool
@@ -56,9 +57,9 @@ struct AlwaysApproveBackgroundableTool
     static constexpr std::string_view description = "Approval<always_require>, backgrounded.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -79,7 +80,7 @@ mcp::JsonRpcRequest tools_call(std::string id, std::string tool_name) {
 
 int main() {
     ae::ToolTable const table =
-        ae::ToolTable::from_tools<AlwaysApproveTool, AlwaysApproveBackgroundableTool>();
+        ae::ToolTable::from(AlwaysApproveTool{}, AlwaysApproveBackgroundableTool{});
     ae::CapabilitySet const held;  // neither tool declares Capabilities<...> -- nothing to bind
 
     // --- claim 1: a decider's Principal argument matches the SAME identity the audit record carries
@@ -90,16 +91,16 @@ int main() {
 
         ae::Principal observed_by_decider;
         ae::ApprovalDecider const capturing = [&](ae::Principal const& caller, std::string_view,
-                                                     std::string const&) {
+                                                     std::string const&) -> agentengine::task<bool> {
             observed_by_decider = caller;
-            return true;
+            co_return true;
         };
 
         ae::EffectContext ctx_a;
         ctx_a.principal = kCallerA;
         ae::ToolInvocationAudit audit_a;
-        auto result_a = invoke_tool(table, held, make_request("c1", "always_approve_tool"), ctx_a,
-                                     capturing, &audit_a);
+        auto result_a = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c1", "always_approve_tool"), ctx_a,
+                                     capturing, &audit_a));
         check(!result_a.is_error, "claim 1 setup: the call with caller A succeeds");
         check(observed_by_decider.id == "caller-a" && observed_by_decider.tenant_id == "tenant-1",
               "claim 1: the decider observed caller A's own identity");
@@ -111,8 +112,8 @@ int main() {
         ae::EffectContext ctx_b;
         ctx_b.principal = kCallerB;
         ae::ToolInvocationAudit audit_b;
-        auto result_b = invoke_tool(table, held, make_request("c2", "always_approve_tool"), ctx_b,
-                                     capturing, &audit_b);
+        auto result_b = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c2", "always_approve_tool"), ctx_b,
+                                     capturing, &audit_b));
         check(!result_b.is_error, "claim 1 control setup: the call with caller B succeeds");
         check(observed_by_decider.id == "caller-b" && observed_by_decider.tenant_id == "tenant-2" &&
                   observed_by_decider.id == audit_b.principal_id,
@@ -126,11 +127,11 @@ int main() {
     // denies one tenant and allows another on the SAME server instance -----------------------------
     {
         ae::ApprovalDecider const tenant_gated = [](ae::Principal const& caller, std::string_view,
-                                                       std::string const&) {
-            return caller.tenant_id == "trusted-tenant";
+                                                       std::string const&) -> agentengine::task<bool> {
+            co_return caller.tenant_id == "trusted-tenant";
         };
-        ae::ToolTable const sync_table = ae::ToolTable::from_tools<AlwaysApproveTool>();
-        mcp::McpServer server(sync_table, held, tenant_gated, "approval-decider-principal-test-server");
+        ae::ToolTable const sync_table = ae::ToolTable::from(AlwaysApproveTool{});
+        mcp::McpServer server(sync_table, mcp::McpAuthority::single_trusted_caller(held), tenant_gated, "approval-decider-principal-test-server");
 
         ae::Principal const kTrusted   = ae::make_local_cli_principal("caller-t", "trusted-tenant");
         ae::Principal const kUntrusted = ae::make_local_cli_principal("caller-u", "other-tenant");
@@ -164,24 +165,24 @@ int main() {
         std::thread::id const   calling_thread                   = std::this_thread::get_id();
 
         ae::ApprovalDecider const capturing = [&](ae::Principal const& caller, std::string_view,
-                                                     std::string const&) {
+                                                     std::string const&) -> agentengine::task<bool> {
             observed_by_decider              = caller;
             decider_called_on_calling_thread = (std::this_thread::get_id() == calling_thread);
-            return true;
+            co_return true;
         };
 
         ae::EffectContext ctx;
         ctx.principal = kCaller;
         bool                completed = false;
         ae::ToolInvocationAudit final_audit;
-        auto started = background_task(
+        auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(background_task(
             table, held_with_background, make_request("c3", "always_approve_backgroundable_tool"), ctx,
             capturing,
             /*current_background_count=*/0,
             [&](ae::ToolResult result, ae::ToolInvocationAudit audit) {
                 completed    = !result.is_error;
                 final_audit  = audit;
-            });
+            }));
         check(started.has_value(), "claim 4 setup: the backgrounded call starts successfully");
         check(decider_called_on_calling_thread,
               "claim 4: approve() ran on the CALLING thread, before the worker detaches -- never "

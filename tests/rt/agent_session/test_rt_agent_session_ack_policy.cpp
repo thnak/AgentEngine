@@ -1,4 +1,4 @@
-// Gap-15 fix (2026-08-14, decisions/ADR-043-*.md): proves `start_run_with_ack_policy()`'s two real
+// Gap-15 fix (2026-08-14, decisions/archive/ADR-043-*.md): proves `start_run_with_ack_policy()`'s two real
 // behaviors -- `ack_policy::at_most_once` is byte-identical to calling `session.start_run()` directly
 // (no store interaction at all, matching today's unchanged default), and `ack_policy::require_durable`
 // durably writes BOTH the turn's own history delta (via `save_turn_delta`/`load_turn_delta`, reusing
@@ -12,9 +12,12 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ack_policy;
 using agentengine::rt::AgentSession;
@@ -39,8 +42,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -91,21 +93,24 @@ class FlakyStore {
 public:
     void set_save_should_fail(bool fail) { fail_next_save_ = fail; }
 
-    [[nodiscard]] agentengine::result<void> save(agentengine::rt::SessionId const& id,
-                                                   std::vector<std::byte> bytes) {
+    [[nodiscard]] agentengine::task<agentengine::result<void>> save(agentengine::rt::SessionId id,
+                                                                      std::vector<std::byte> bytes) {
         ++save_count_;
         if (fail_next_save_) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::resource,
-                                                        "injected store failure", "test.flaky_store.save"});
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::resource,
+                                                           "injected store failure", "test.flaky_store.save"});
         }
-        return inner_.save(id, std::move(bytes));
+        co_return co_await inner_.save(std::move(id), std::move(bytes));
     }
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> load(agentengine::rt::SessionId const& id) const {
-        return inner_.load(id);
+    [[nodiscard]] agentengine::task<agentengine::result<std::vector<std::byte>>> load(
+        agentengine::rt::SessionId id) const {
+        co_return co_await inner_.load(std::move(id));
     }
-    [[nodiscard]] bool exists(agentengine::rt::SessionId const& id) const { return inner_.exists(id); }
-    [[nodiscard]] agentengine::result<void> remove(agentengine::rt::SessionId const& id) {
-        return inner_.remove(id);
+    [[nodiscard]] agentengine::task<bool> exists(agentengine::rt::SessionId id) const {
+        co_return co_await inner_.exists(std::move(id));
+    }
+    [[nodiscard]] agentengine::task<agentengine::result<void>> remove(agentengine::rt::SessionId id) {
+        co_return co_await inner_.remove(std::move(id));
     }
     [[nodiscard]] std::size_t save_count() const { return save_count_; }
 
@@ -134,7 +139,7 @@ int main() {
     // T1: at_most_once -- byte-identical to a raw start_run(), no store interaction whatsoever.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t1", Principal{"p1", ""});
+        session.initialize("ap-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("hi there");
         FlakyStore store;
 
@@ -150,7 +155,7 @@ int main() {
     // durably written before the caller sees the response, and the delta round-trips byte-correct.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t2", Principal{"p1", ""});
+        session.initialize("ap-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("durable reply");
         InMemorySessionStore store;
 
@@ -161,16 +166,16 @@ int main() {
                   std::get<Text>(outcome->message.content.front().value).text == "durable reply",
               "T2: the caller still receives the real response, not just a durability receipt");
 
-        check(store.exists("ap-t2"), "T2: the session bookkeeping record was durably written");
+        check(agentengine::rt::block_on(store.exists("ap-t2")), "T2: the session bookkeeping record was durably written");
         std::uint64_t const turn_index = session.to_record().turn_index;
-        auto delta = load_turn_delta(store, "ap-t2", turn_index == 0 ? 0 : turn_index - 1);
+        auto delta = agentengine::rt::block_on(load_turn_delta(store, "ap-t2", turn_index == 0 ? 0 : turn_index - 1));
         // turn_index has already been advanced past the completed turn by the time we read it here --
         // the delta this turn wrote is keyed under the turn_index AT THE TIME OF THE WRITE, which
         // start_run_with_ack_policy() itself captured via session.to_record().turn_index inside the
         // call -- try both the pre- and post-increment index rather than assume which this session's
         // own increment-timing lands on, to keep this test robust to that internal detail.
         if (!delta.has_value() || !delta->has_value()) {
-            delta = load_turn_delta(store, "ap-t2", turn_index);
+            delta = agentengine::rt::block_on(load_turn_delta(store, "ap-t2", turn_index));
         }
         check(delta.has_value() && delta->has_value(),
               "T2: the turn's own history delta is durably retrievable via load_turn_delta");
@@ -193,7 +198,7 @@ int main() {
     // AgentResponse ever reaches the caller.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("ap-t3", Principal{"p1", ""});
+        session.initialize("ap-t3", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_reply("should not be trusted");
         FlakyStore store;
         store.set_save_should_fail(true);

@@ -1,5 +1,5 @@
-// Proof for ADR-033 (decisions/ADR-033-middleware-model-call-chain.md), the model-call
-// interception point of 002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>`
+// Proof for ADR-033 (decisions/archive/ADR-033-middleware-model-call-chain.md), the model-call
+// interception point of rfcs/002-Agent-Model-and-Authoring.md §5's `Middleware<Ms...>`
 // (`include/agentengine/core/middleware.hpp`), reached through `MiddlewareModelCallGateway<Inner,
 // Ms...>` (`include/agentengine/core/model_call_gateway.hpp`, ADR-036).
 //

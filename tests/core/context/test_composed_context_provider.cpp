@@ -26,8 +26,10 @@
 #include <vector>
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 using ae::rt::AgentSession;
@@ -51,8 +53,7 @@ void check(bool cond, char const* what) {
 // external, so a plain "resume until done" loop is safe.
 template <class T>
 T drive(ae::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return ae::rt::block_on(std::move(t));
 }
 
 ae::Message make_msg(std::string text, std::string message_id) {
@@ -105,6 +106,7 @@ struct ToolContributingProvider {
                                                                              ae::EffectContext&) {
         ae::ContextContribution c;
         ae::ToolDescriptor      td;
+        td.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
         td.name = "provider_tool";
         c.tools.push_back(td);
         co_return c;
@@ -128,7 +130,7 @@ static_assert(std::is_default_constructible_v<ThreeWayProvider>,
 // default ctor never auto-engages regardless of Ms (see composed_context_provider.hpp's own comment
 // on why an earlier draft's "auto-engage when possible" design was tried and reverted) -- plus proof
 // that ComposedContextProvider is move-only (2026-08-22 tracker Finding B;
-// decisions/ADR-074-composed-context-provider-consolidation.md).
+// decisions/archive/ADR-074-composed-context-provider-consolidation.md).
 struct RequiredArgProvider {
     static constexpr std::string_view name = "required-arg";  // ADR-066 §3
 
@@ -278,7 +280,7 @@ int main() {
     // --- Part 2: ComposedContextProvider actually driving a real AgentSession turn -------------
     {
         ComposedSession session;
-        session.initialize("s-session", principal);
+        session.initialize("s-session", principal, ae_test::trusted_unbounded());
         // Default-constructed session.history_provider() starts UNENGAGED unconditionally now (2026-
         // 08-23: the default ctor no longer auto-engages even when every Ms is default-constructible
         // -- see composed_context_provider.hpp's own comment on why that changed), so an explicit

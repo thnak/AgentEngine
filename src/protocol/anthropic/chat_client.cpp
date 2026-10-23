@@ -1,4 +1,4 @@
-// Implements 004-Model-Provider-Plane.md §3 (the Anthropic Messages ChatClient backend); ADR-206 (#120 S6).
+// Implements rfcs/004-Model-Provider-Plane.md §3 (the Anthropic Messages ChatClient backend); ADR-206 (#120 S6).
 // The non-template bodies of include/agentengine/protocol/anthropic/chat_client.hpp, moved verbatim out of the
 // header so they are compiled once here instead of in every file that includes it. The header keeps every
 // declaration and comment, the small helpers, and the AnthropicChatClient<Store> template; the design and the
@@ -481,24 +481,50 @@ result<std::vector<ChatResponseUpdate>> parse_streaming_response_into_updates(
     return updates;
 }
 
-void run_stream_worker(std::string host, std::uint16_t port, std::string path, std::string api_key,
-                       std::string api_version, std::string model, ChatClientCapabilities caps,
-                       ChatRequest request, stream_producer<ChatResponseUpdate> producer,
-                       Resolver resolver, std::string ca_bundle_pem_override,
-                       std::string http_referer, std::string x_title, std::string end_user_id,
-                       std::string cache_ttl, sandbox::ProviderTransport transport,
-                       std::stop_token stop, std::string session_id) {
+// ADR-237 §5.1 (step 34): the reactor twin of run_stream_worker (see the OpenAI backend's identical function).
+void run_stream_worker_async(std::string host, std::uint16_t port, std::string path, std::string api_key,
+                             std::string api_version, std::string model, ChatClientCapabilities caps,
+                             ChatRequest request, stream_producer<ChatResponseUpdate> producer,
+                             ReactorOptions reactor, std::string ca_bundle_pem_override,
+                             std::string http_referer, std::string x_title, std::string end_user_id,
+                             std::string cache_ttl, sandbox::ProviderTransport transport,
+                             std::stop_token stop, std::string session_id) {
     auto body = build_request_body(request, model, caps, /*stream=*/true, end_user_id, cache_ttl);
     if (!body) {
-        // Forward the real error, the same shape `chat()`'s own non-streaming path returns.
         producer.fail(body.error());
         return;
     }
-    auto req = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title,
-                                   session_id);
-    agentengine::detail::provider_wire::pump_sse_stream<StreamingUpdateAccumulator>(
-        "anthropic", model, host, port, req, producer, resolver, ca_bundle_pem_override, transport,
+    auto eg = build_http_request(path, api_key, api_version, json::dump(*body), http_referer, x_title, session_id);
+    bool const      https = transport != sandbox::ProviderTransport::plaintext_http;
+    rt::HttpRequest req;
+    req.scheme = https ? rt::http_scheme::https : rt::http_scheme::http;
+    req.host   = std::move(host);
+    req.port   = port;
+    req.method = std::move(eg.method);
+    req.target = std::move(eg.path);
+    for (auto& h : eg.headers) req.headers.push_back(std::move(h));
+    req.body = std::move(eg.body);
+    rt::HttpContext ctx =
+        agentengine::detail::provider_wire::make_http_context(reactor, ca_bundle_pem_override, https);
+    (void)reactor.runtime->spawn(agentengine::detail::provider_wire::pump_sse_stream_async<StreamingUpdateAccumulator>(
+        "anthropic", model, std::move(ctx), std::move(req), std::move(producer), std::move(stop),
+        &reactor.runtime->offload_pool()));
+}
+
+// ADR-237 §5.1 (step 35): chat()'s reactor path (see the OpenAI backend's identical function).
+task<result<json::Value>> exchange_json_async(std::string vendor, std::string host, std::uint16_t port,
+                                              sandbox::NetEgressRequest req, ReactorOptions reactor,
+                                              std::string ca_bundle_pem_override,
+                                              sandbox::ProviderTransport transport, std::stop_token stop) {
+    auto resp = co_await agentengine::detail::provider_wire::exchange_async(
+        std::move(host), port, std::move(req), std::move(reactor), std::move(ca_bundle_pem_override), transport,
         std::move(stop));
+    if (!resp) co_return std::unexpected(resp.error());
+    if (resp->status < 200 || resp->status >= 300) {
+        co_return std::unexpected(
+            agentengine::detail::provider_wire::http_status_error(vendor, resp->status, resp->body));
+    }
+    co_return json::parse(resp->body);
 }
 
 result<std::vector<ChatResponseUpdate>> StreamingUpdateAccumulator::feed(std::string_view bytes) {

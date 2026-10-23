@@ -11,7 +11,7 @@
 // which would have coupled the native-jail worker-mediation TUs to the content model. core/base64.hpp
 // is a std-only, layer-V header with no such coupling, so that reason is gone.
 //
-// The decode rule is this wire's own and is STRICT (decisions/ADR-205-strict-relay-base64.md): only
+// The decode rule is this wire's own and is STRICT (decisions/archive/ADR-205-strict-relay-base64.md): only
 // canonical padded base64 -- exactly what `encode` produces -- is accepted; a bad length, a character
 // outside the alphabet (line breaks included), '=' anywhere but the last one or two positions, anything
 // after the padding, and non-zero leftover bits are all rejected whole. Until ADR-205 the wire stopped at

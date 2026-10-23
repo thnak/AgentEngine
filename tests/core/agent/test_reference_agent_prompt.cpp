@@ -1,4 +1,4 @@
-// Milestone 3 Phase H1 (026-Agent-Facing-Runtime-Surface.md §7's Prompt budget table, §8 G2/G3) --
+// Milestone 3 Phase H1 (rfcs/026-Agent-Facing-Runtime-Surface.md §7's Prompt budget table, §8 G2/G3) --
 // proof that `reference_agent_prompt.hpp`'s assembled prompt stays within 026 §7's per-element token
 // budget and carries ZERO architecture leakage (no capability/policy/profile/host terms), using data
 // sourced from the SAME real registries (ToolTable, trust::agent_library_registry()) other phases

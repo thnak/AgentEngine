@@ -1,7 +1,7 @@
 # SSRF and DNS-rebinding defense for a host-mediated egress proxy
 
-Dated 2026-08-05. Feeds `decisions/ADR-011-first-party-egress-proxy.md` (M2 Phase F task F1,
-`008-Sandbox-and-Isolation.md` §10 Q3). Scope: what a first-party egress proxy needs to get right to
+Dated 2026-08-05. Feeds `decisions/archive/ADR-011-first-party-egress-proxy.md` (M2 Phase F task F1,
+`rfcs/008-Sandbox-and-Isolation.md` §10 Q3). Scope: what a first-party egress proxy needs to get right to
 actually block the abuse cases 008 §7 names ("DNS-rebinding around an egress allowlist", "SSRF to
 link-local metadata endpoints") rather than merely assert it does.
 

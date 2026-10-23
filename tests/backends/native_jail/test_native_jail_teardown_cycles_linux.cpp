@@ -49,6 +49,8 @@
 //      /proc/mounts in the first place, so there is nothing to unmount from here; this loop instead
 //      proves the plain host-side mkdir/rmdir bracketing the mount setup doesn't leak.
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -167,7 +169,9 @@ int main() {
     SandboxSpec spec;
     spec.mounts.push_back(
         MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;
@@ -177,7 +181,7 @@ int main() {
     EffectContext ctx;
 
     auto run_cycle = [&](int cycle_index) {
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle.has_value()) {
             std::cerr << "cycle " << cycle_index << ": create() failed: "
                       << ::agentengine::test_support::describe(handle.error()) << "\n";
@@ -185,12 +189,12 @@ int main() {
             return;
         }
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 1")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         if (!outcome.has_value() || outcome->klass != exec_outcome_class::ok) {
             std::cerr << "cycle " << cycle_index << ": exec() did not report ok\n";
             ++g_failures;
         }
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     };
 
     // Warm-up cycles: absorb one-time costs (delegated-root controller-enable write, first lazy

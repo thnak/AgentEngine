@@ -3756,8 +3756,8 @@ engine integration) remain untouched by this pass, as scoped in §34.10.
 Per explicit project-owner direction: A3 (§11/§34.10's own "single largest remaining engineering
 unknown") is designed and proven FRESH here, on this design's own primitives, deliberately not
 designed around reusing the real, already-shipped `SandboxBackend`/`SandboxBackendRegistry`/
-`SandboxToolProvider` machinery (`decisions/ADR-080`/`ADR-096`/`ADR-098`) — reuse-vs-replace against
-those is named as an implementation-time decision for a future ADR (`decisions/ADR-099`), not
+`SandboxToolProvider` machinery (`decisions/archive/ADR-080`/`ADR-096`/`ADR-098`) — reuse-vs-replace against
+those is named as an implementation-time decision for a future ADR (`decisions/archive/ADR-099`), not
 designed here. Until this section, nothing in this design had a `run(command)`-shaped verb at all:
 `full_stack::SandboxSession` only ever drains staged writes and commits; §31's Docker integration
 proved a real container could bridge into the real `Ledger`/`RealIoFileSystem` stack, but only as an
@@ -3904,7 +3904,7 @@ section.
 
 Prompted directly by the project owner: `DockerExecutionSurface` is Docker-CLI-specific
 (`docker run`/`docker cp`/`docker exec`/`docker rm` via `_popen`), not grounded in the OCI standard the
-way this codebase's own shipped, real `KataBackend` (`decisions/ADR-084` through `ADR-093`) already is
+way this codebase's own shipped, real `KataBackend` (`decisions/archive/ADR-084` through `ADR-093`) already is
 — `ctr` (containerd's own CLI) against real OCI runtime-spec/image-spec/distribution-spec machinery,
 via `posix_spawn` with a real argv vector, never a shell string. §36.4's own residual — "whether the
 three-verb shape generalizes past Docker... unverified" — is exactly what a second, differently-built
@@ -3972,7 +3972,7 @@ design, not a merge" convention.
 
 Per explicit project-owner direction: A9 (real engine integration) is designed fresh here too, on
 this design's own primitives, not designed around reusing the real, already-shipped
-`SandboxToolProvider`/`CapabilitySet` machinery (`decisions/ADR-096`) — reuse-vs-replace against
+`SandboxToolProvider`/`CapabilitySet` machinery (`decisions/archive/ADR-096`) — reuse-vs-replace against
 that remains an implementation-time decision. This section closes the concrete mechanical question
 A9 was named for: how does §1 item 1's "every session — no exceptions, no opt-out — is bound to
 exactly one SandboxSession from the instant it exists" actually hold against the REAL
@@ -4039,7 +4039,7 @@ on, be stolen from, or grow stale — any number of forks, sequential, incidenta
 independently succeed or fail on their own merits. Child staging directories are now derived
 internally via `compute_digest()` of the child branch's own name (unique by construction, via
 `Ledger::branch_from()`'s own real `branch_seq_` counter) — the SAME digest-based per-session
-subdirectory naming precedent `decisions/ADR-096` (C8) already established and shipped, cited
+subdirectory naming precedent `decisions/archive/ADR-096` (C8) already established and shipped, cited
 correctly this time. An optional, side-effect-free `would_fork_succeed()` gives back most of
 `prepare_fork()`'s early-rejection value without any of its statefulness. The tool's citation and
 description text were corrected to name the real shipped precedent honestly.
@@ -4095,7 +4095,7 @@ named (not solved) if fork machinery were ever called reentrantly from within an
 call on the same session/thread — not reachable through `RunCommandTool` as built, and not this
 design's own established tool-invocation model, but a real structural constraint for whoever builds
 the next tool on top of this. Whether/how this composes with the real, already-shipped
-`SandboxToolProvider`/`CapabilitySet` machinery (§34.10/`decisions/ADR-096`) remains an
+`SandboxToolProvider`/`CapabilitySet` machinery (§34.10/`decisions/archive/ADR-096`) remains an
 implementation-time decision, unchanged by this section. And, the standing caveat every review round
 in this document carries forward: this is convergence for THIS pass, not exemption from whatever the
 next one finds.
@@ -4208,7 +4208,7 @@ codepoints, a materially harder problem this fix does not attempt.
 ### 38.6 ADR-014's own TOCTOU race replayed against `real_io_filesystem.hpp` — confirmed real, fixed by adopting ADR-014's accepted primitive verbatim; a second, independent bug found and fixed in that primitive itself as a byproduct
 
 **The replay.** Built `docs/planning/proofs/external_validation/probe_toctou_symlink_race.cpp`,
-reproducing ADR-014's own real C2-7 technique (`decisions/ADR-014-worktree-mount-path-
+reproducing ADR-014's own real C2-7 technique (`decisions/archive/ADR-014-worktree-mount-path-
 canonicalization.md`) — not approximated from memory, read from the ADR directly — against this
 design's own `reject_symlink_escape()`/`write()` shape: validate a real, legitimate path via
 `reject_symlink_escape()` (passes), then, by hand (a real Windows junction swap via `cmd /c mklink
@@ -4485,7 +4485,7 @@ closes it.
 
 Prompted by explicit project-owner direction to continue prove-phase work after `ADR-100` (the
 ADR-096/ADR-098 reconciliation, a separate, already-shipped-code line of work — see
-`decisions/ADR-100-adr-096-098-sandbox-layering-reconciliation.md`) closed with a candid account of
+`decisions/archive/ADR-100-adr-096-098-sandbox-layering-reconciliation.md`) closed with a candid account of
 its own first draft getting a causal claim backwards. That same session, re-reading this design's own
 residuals with fresh eyes, found two real gaps neither A8 (§34.3) nor A10 (§39) had actually closed,
 despite both looking finished on their own terms — the exact "two proven pieces, never checked

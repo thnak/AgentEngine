@@ -1,4 +1,4 @@
-// This file MUST NOT compile (025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
+// This file MUST NOT compile (rfcs/025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
 // see tests/compile_fail/CMakeLists.txt's compile-fail gate. `InMemoryWorktreeObjectStore::put_blob` (core/
 // worktree.hpp) takes ONLY the content -- `put_blob(bytes) -> digest` -- and the digest is always
 // DERIVED from that content by `compute_digest`, never accepted as a caller-supplied parameter.
@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -20,6 +21,6 @@ int main() {
     InMemoryWorktreeObjectStore store;
     std::string const forced_digest(64, '0');
     std::span<std::byte const> const bytes{};
-    auto put = store.put_blob(forced_digest, bytes);  // must not compile: no such overload exists
+    auto put = agentengine::rt::block_on(store.put_blob(forced_digest, bytes));  // must not compile: no such overload exists
     return put.has_value() ? 0 : 1;
 }

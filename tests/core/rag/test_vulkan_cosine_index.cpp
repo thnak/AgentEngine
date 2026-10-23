@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 --
 // `VulkanCosineIndex` (src/backends/vulkan_vector_index/vulkan_cosine_index.hpp): basic correctness
 // against small, hand-checkable inputs, `VectorIndex` conformance, and claim 7's own falsifiable
 // shape -- an epsilon-bounded comparison against `BruteForceCosineIndex` at dim=1536, n in {1000,
@@ -33,6 +33,11 @@
 
 #include "agentengine/core/vector_index.hpp"
 #include "backends/vulkan_vector_index/vulkan_cosine_index.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 using namespace agentengine;
 using namespace agentengine::backends::vulkan_vector_index;
@@ -147,13 +152,13 @@ int main() {
 
     // --- Small, hand-checkable correctness case (mirrors test_vector_index.cpp's own basic case) ---
     {
-        auto added = index.add_batch({"exact-match", "orthogonal", "opposite"},
+        auto added = sync_add_batch(index, {"exact-match", "orthogonal", "opposite"},
                                        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}});
         AE_CHECK(added.has_value(), "add_batch accepts 3 well-formed entries");
         AE_CHECK(index.size() == 3, "size() reflects all 3 entries");
 
         float const query[3] = {1.0f, 0.0f, 0.0f};
-        auto results = index.search(std::span<float const>(query, 3), 3);
+        auto results = sync_search(index, std::span<float const>(query, 3), 3);
         AE_CHECK(results.has_value() && results->size() == 3, "search returns all 3 entries for k=3");
         if (results.has_value() && results->size() == 3) {
             AE_CHECK((*results)[0].id == "exact-match" && (*results)[0].score > 0.99f,
@@ -162,9 +167,9 @@ int main() {
             AE_CHECK((*results)[2].id == "opposite" && (*results)[2].score < -0.99f,
                      "the opposite-direction vector ranks last with cosine ~-1.0 (GPU-computed)");
         }
-        AE_CHECK(index.contains("exact-match") && !index.contains("nonexistent"), "contains() is correct");
+        AE_CHECK(sync_contains(index, "exact-match") && !sync_contains(index, "nonexistent"), "contains() is correct");
 
-        auto top1 = index.search(std::span<float const>(query, 3), 1);
+        auto top1 = sync_search(index, std::span<float const>(query, 3), 1);
         AE_CHECK(top1.has_value() && top1->size() == 1 && (*top1)[0].id == "exact-match",
                  "k truncates the result set, not just sorts all of it");
     }
@@ -175,23 +180,23 @@ int main() {
         AE_CHECK(created2.has_value(), "setup: a second index instance is created");
         if (created2.has_value()) {
             VulkanCosineIndex idx2 = std::move(*created2);
-            auto mismatched = idx2.add_batch({"a", "b"}, {{1.0f, 0.0f}});
+            auto mismatched = sync_add_batch(idx2, {"a", "b"}, {{1.0f, 0.0f}});
             AE_CHECK(!mismatched.has_value() &&
                          mismatched.error().code == "vulkan_vector_index.add_batch_length_mismatch",
                      "add_batch rejects ids/vectors of differing length");
 
-            auto dup = idx2.add_batch({"x", "x"}, {{1.0f}, {2.0f}});
+            auto dup = sync_add_batch(idx2, {"x", "x"}, {{1.0f}, {2.0f}});
             AE_CHECK(!dup.has_value() && dup.error().code == "vulkan_vector_index.add_batch_duplicate_id",
                      "add_batch rejects a duplicate id within a single call");
 
-            AE_CHECK(idx2.add_batch({"y"}, {{1.0f, 0.0f}}).has_value(), "setup: a 2-dim vector establishes dim");
-            auto wrong_dim = idx2.add_batch({"z"}, {{1.0f}});
+            AE_CHECK(sync_add_batch(idx2, {"y"}, {{1.0f, 0.0f}}).has_value(), "setup: a 2-dim vector establishes dim");
+            auto wrong_dim = sync_add_batch(idx2, {"z"}, {{1.0f}});
             AE_CHECK(!wrong_dim.has_value() &&
                          wrong_dim.error().code == "vulkan_vector_index.add_batch_dimension_mismatch",
                      "add_batch rejects a vector whose width disagrees with the established dimensionality");
 
             float const wrong_dim_query[1] = {1.0f};
-            auto bad_search = idx2.search(std::span<float const>(wrong_dim_query, 1), 1);
+            auto bad_search = sync_search(idx2, std::span<float const>(wrong_dim_query, 1), 1);
             AE_CHECK(!bad_search.has_value() &&
                          bad_search.error().code == "vulkan_vector_index.search_dimension_mismatch",
                      "search() rejects a query vector whose width disagrees with the index's dimensionality");
@@ -201,7 +206,7 @@ int main() {
             // just within one call), mirroring BruteForceCosineIndex::add_batch() exactly -- but no
             // test had ever exercised that specific branch for the GPU conformer. "y" was already
             // committed by idx2's earlier add_batch({"y"}, ...) above.
-            auto cross_call_dup = idx2.add_batch({"y"}, {{9.0f, 9.0f}});
+            auto cross_call_dup = sync_add_batch(idx2, {"y"}, {{9.0f, 9.0f}});
             AE_CHECK(!cross_call_dup.has_value() &&
                          cross_call_dup.error().code == "vulkan_vector_index.add_batch_duplicate_id",
                      "add_batch rejects an id that was already committed by an EARLIER, separate "
@@ -220,7 +225,7 @@ int main() {
                                           "zero-dimension-vector rejection case");
         if (created_zd.has_value()) {
             VulkanCosineIndex idx_zd = std::move(*created_zd);
-            auto zero_dim_first = idx_zd.add_batch({"z0"}, {std::vector<float>{}});
+            auto zero_dim_first = sync_add_batch(idx_zd, {"z0"}, {std::vector<float>{}});
             AE_CHECK(!zero_dim_first.has_value() &&
                          zero_dim_first.error().code == "vulkan_vector_index.add_batch_zero_dimension",
                      "add_batch rejects a zero-dimensional vector when it would establish the index's "
@@ -233,9 +238,9 @@ int main() {
             // established, must fall through to the pre-existing, differently-coded dimension-
             // mismatch rejection instead -- confirms the new check does not shadow or change that
             // already-covered path.
-            AE_CHECK(idx_zd.add_batch({"real"}, {{1.0f, 2.0f}}).has_value(),
+            AE_CHECK(sync_add_batch(idx_zd, {"real"}, {{1.0f, 2.0f}}).has_value(),
                      "setup: idx_zd's dimensionality is established at 2 by a real vector");
-            auto zero_dim_after = idx_zd.add_batch({"z1"}, {std::vector<float>{}});
+            auto zero_dim_after = sync_add_batch(idx_zd, {"z1"}, {std::vector<float>{}});
             AE_CHECK(!zero_dim_after.has_value() &&
                          zero_dim_after.error().code == "vulkan_vector_index.add_batch_dimension_mismatch",
                      "a zero-dimensional vector added AFTER dimensionality is already established "
@@ -244,7 +249,7 @@ int main() {
 
             // A fully empty add_batch() call (ids=[], vectors=[]) is a legitimate no-op, distinct from
             // the zero-dimensional-VECTOR case above -- must NOT be rejected by the new check.
-            AE_CHECK(idx_zd.add_batch({}, {}).has_value(),
+            AE_CHECK(sync_add_batch(idx_zd, {}, {}).has_value(),
                      "add_batch with fully empty ids/vectors (a genuine no-op) is still accepted, not "
                      "confused with a zero-dimensional vector");
         }
@@ -261,12 +266,12 @@ int main() {
         if (created_edge.has_value()) {
             VulkanCosineIndex idx_edge = std::move(*created_edge);
 
-            AE_CHECK(idx_edge.add_batch({}, {}).has_value(),
+            AE_CHECK(sync_add_batch(idx_edge, {}, {}).has_value(),
                      "a no-op add_batch (empty ids/vectors) on a fresh, never-populated index succeeds "
                      "and establishes nothing");
             AE_CHECK(idx_edge.size() == 0, "the no-op add_batch left the index empty");
 
-            AE_CHECK(idx_edge.add_batch({"only"}, {{3.0f}}).has_value(),
+            AE_CHECK(sync_add_batch(idx_edge, {"only"}, {{3.0f}}).has_value(),
                      "add_batch accepts a single dim=1 vector, establishing an n=1 corpus");
             AE_CHECK(idx_edge.size() == 1, "size() reflects the single n=1 entry");
 
@@ -276,17 +281,17 @@ int main() {
             // still marks the GPU vectors-buffer cache dirty (an accepted, unbenched, performance-only
             // cost, not a correctness bug -- named here rather than silently exercised and ignored),
             // and the NEXT search() must still return the single, unchanged, correct entry.
-            AE_CHECK(idx_edge.add_batch({}, {}).has_value(),
+            AE_CHECK(sync_add_batch(idx_edge, {}, {}).has_value(),
                      "a second no-op add_batch, now with real data already present, also succeeds");
 
             float const q1[1] = {3.0f};
-            auto r_n1 = idx_edge.search(std::span<float const>(q1, 1), 1);
+            auto r_n1 = sync_search(idx_edge, std::span<float const>(q1, 1), 1);
             AE_CHECK(r_n1.has_value() && r_n1->size() == 1 && (*r_n1)[0].id == "only" &&
                          (*r_n1)[0].score > 0.99f,
                      "search() on an n=1/dim=1 corpus (k=1, exactly equal to corpus size) returns the "
                      "single entry, unaffected by the intervening no-op add_batch calls");
 
-            auto r_k_over_one = idx_edge.search(std::span<float const>(q1, 1), 5);
+            auto r_k_over_one = sync_search(idx_edge, std::span<float const>(q1, 1), 5);
             AE_CHECK(r_k_over_one.has_value() && r_k_over_one->size() == 1,
                      "search(k > 1) on an n=1 corpus still returns exactly the 1 entry present, not an "
                      "error and not padded");
@@ -305,27 +310,27 @@ int main() {
             VulkanCosineIndex idx3 = std::move(*created3);
 
             float const any_query[2] = {1.0f, 0.0f};
-            auto empty_search = idx3.search(std::span<float const>(any_query, 2), 5);
+            auto empty_search = sync_search(idx3, std::span<float const>(any_query, 2), 5);
             AE_CHECK(empty_search.has_value() && empty_search->empty(),
                      "search() on a never-populated (empty) index succeeds with an empty result, "
                      "not an error");
 
-            AE_CHECK(idx3.add_batch({"p", "q", "r"}, {{1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}})
+            AE_CHECK(sync_add_batch(idx3, {"p", "q", "r"}, {{1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}})
                          .has_value(),
                      "setup: idx3 populated with 3 entries");
 
-            auto k_zero = idx3.search(std::span<float const>(any_query, 2), 0);
+            auto k_zero = sync_search(idx3, std::span<float const>(any_query, 2), 0);
             AE_CHECK(k_zero.has_value() && k_zero->empty(),
                      "search(k=0) succeeds with an empty result, not an error");
 
-            auto k_over = idx3.search(std::span<float const>(any_query, 2), 100);
+            auto k_over = sync_search(idx3, std::span<float const>(any_query, 2), 100);
             AE_CHECK(k_over.has_value() && k_over->size() == 3,
                      "search(k > corpus size) returns every entry, not an error, and does not pad "
                      "with placeholders");
 
             // Red-team pass 4 (2026-09-22): k exactly equal to corpus size, distinct from both k == 0
             // and k > corpus size above -- the boundary itself, not just either side of it.
-            auto k_exact = idx3.search(std::span<float const>(any_query, 2), 3);
+            auto k_exact = sync_search(idx3, std::span<float const>(any_query, 2), 3);
             AE_CHECK(k_exact.has_value() && k_exact->size() == 3,
                      "search(k == corpus size exactly) returns every entry, the same as k > corpus "
                      "size, not truncated to fewer");
@@ -352,21 +357,21 @@ int main() {
             VulkanCosineIndex idx4 = std::move(*created4);
             float const q[2] = {1.0f, 0.0f};
 
-            AE_CHECK(idx4.add_batch({"g0"}, {{1.0f, 0.0f}}).has_value(), "growth cycle 1: add_batch");
-            auto r0 = idx4.search(std::span<float const>(q, 2), 10);
+            AE_CHECK(sync_add_batch(idx4, {"g0"}, {{1.0f, 0.0f}}).has_value(), "growth cycle 1: add_batch");
+            auto r0 = sync_search(idx4, std::span<float const>(q, 2), 10);
             AE_CHECK(r0.has_value() && r0->size() == 1,
                      "growth cycle 1: search reflects the 1 entry added so far (first cache build)");
 
-            AE_CHECK(idx4.add_batch({"g1", "g2"}, {{0.0f, 1.0f}, {-1.0f, 0.0f}}).has_value(),
+            AE_CHECK(sync_add_batch(idx4, {"g1", "g2"}, {{0.0f, 1.0f}, {-1.0f, 0.0f}}).has_value(),
                      "growth cycle 2: add_batch (triggers cache_dirty, forcing a cache REBUILD)");
-            auto r1 = idx4.search(std::span<float const>(q, 2), 10);
+            auto r1 = sync_search(idx4, std::span<float const>(q, 2), 10);
             AE_CHECK(r1.has_value() && r1->size() == 3,
                      "growth cycle 2: search reflects all 3 entries -- the rebuilt buffer is NOT a "
                      "stale snapshot from cycle 1");
 
-            AE_CHECK(idx4.add_batch({"g3"}, {{0.5f, 0.5f}}).has_value(),
+            AE_CHECK(sync_add_batch(idx4, {"g3"}, {{0.5f, 0.5f}}).has_value(),
                      "growth cycle 3: add_batch (a SECOND cache rebuild on the same instance)");
-            auto r2 = idx4.search(std::span<float const>(q, 2), 10);
+            auto r2 = sync_search(idx4, std::span<float const>(q, 2), 10);
             AE_CHECK(r2.has_value() && r2->size() == 4,
                      "growth cycle 3: search reflects all 4 entries after a second consecutive "
                      "cache-rebuild cycle on the same instance");
@@ -397,12 +402,12 @@ int main() {
             std::vector<std::string> const ids{"big-exact", "ordinary", "tiny-exact", "zero"};
             std::vector<std::vector<float>> const vecs{
                 {1e20f, 1e20f}, {1.0f, 0.2f}, {1e-25f, 1e-25f}, {0.0f, 0.0f}};
-            AE_CHECK(gpu.add_batch(ids, vecs).has_value() && cpu.add_batch(ids, vecs).has_value(),
+            AE_CHECK(sync_add_batch(gpu, ids, vecs).has_value() && sync_add_batch(cpu, ids, vecs).has_value(),
                      "setup: both indices accept finite large/tiny/zero-norm components");
             for (float const scale : {1.0f, 1e20f, 1e-25f}) {
                 float const q[2] = {scale, scale};
-                auto g = gpu.search(std::span<float const>(q, 2), 4);
-                auto c = cpu.search(std::span<float const>(q, 2), 4);
+                auto g = sync_search(gpu, std::span<float const>(q, 2), 4);
+                auto c = sync_search(cpu, std::span<float const>(q, 2), 4);
                 bool agree = g.has_value() && c.has_value() && g->size() == 4 && c->size() == 4;
                 if (agree) {
                     std::unordered_map<std::string, float> cpu_scores;
@@ -432,17 +437,17 @@ int main() {
             float const nan = std::numeric_limits<float>::quiet_NaN();
             float const inf = std::numeric_limits<float>::infinity();
             for (float const bad : {nan, inf, -inf}) {
-                auto r = idx.add_batch({"ok", "bad"}, {{1.0f, 0.0f}, {bad, 1.0f}});
+                auto r = sync_add_batch(idx, {"ok", "bad"}, {{1.0f, 0.0f}, {bad, 1.0f}});
                 AE_CHECK(!r.has_value() && r.error().code == "vulkan_vector_index.add_batch_non_finite" &&
                              r.error().klass == failure_class::contract,
                          "add_batch rejects a vector with a non-finite component (" + std::to_string(bad) +
                              ") as a contract violation");
             }
-            AE_CHECK(idx.size() == 0 && !idx.contains("ok"),
+            AE_CHECK(idx.size() == 0 && !sync_contains(idx, "ok"),
                      "a rejected non-finite batch commits NOTHING -- not even its finite members");
-            AE_CHECK(idx.add_batch({"ok"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
+            AE_CHECK(sync_add_batch(idx, {"ok"}, {{1.0f, 0.0f}}).has_value(), "setup: one finite vector");
             float const bad_query[2] = {nan, 1.0f};
-            auto s = idx.search(std::span<float const>(bad_query, 2), 1);
+            auto s = sync_search(idx, std::span<float const>(bad_query, 2), 1);
             AE_CHECK(!s.has_value() && s.error().code == "vulkan_vector_index.search_non_finite",
                      "search rejects a query with a non-finite component");
         }
@@ -455,20 +460,20 @@ int main() {
         AE_CHECK(created_mv.has_value(), "setup: an index instance for the moved-from case");
         if (created_mv.has_value()) {
             VulkanCosineIndex source = std::move(*created_mv);
-            AE_CHECK(source.add_batch({"x"}, {{1.0f, 0.0f}}).has_value(), "setup: populate before moving");
+            AE_CHECK(sync_add_batch(source, {"x"}, {{1.0f, 0.0f}}).has_value(), "setup: populate before moving");
             VulkanCosineIndex target = std::move(source);
             float const q[2] = {1.0f, 0.0f};
             // NOLINTBEGIN(bugprone-use-after-move) -- the moved-from contract IS the thing under test.
-            AE_CHECK(source.size() == 0 && !source.contains("x"), "moved-from size()/contains() are 0/false");
-            auto s = source.search(std::span<float const>(q, 2), 1);
+            AE_CHECK(source.size() == 0 && !sync_contains(source, "x"), "moved-from size()/contains() are 0/false");
+            auto s = sync_search(source, std::span<float const>(q, 2), 1);
             AE_CHECK(!s.has_value() && s.error().code == "vulkan_vector_index.moved_from",
                      "moved-from search() returns a typed error, not a crash");
-            auto a = source.add_batch({"y"}, {{1.0f, 0.0f}});
+            auto a = sync_add_batch(source, {"y"}, {{1.0f, 0.0f}});
             AE_CHECK(!a.has_value() && a.error().code == "vulkan_vector_index.moved_from",
                      "moved-from add_batch() returns a typed error, not a crash");
             source = std::move(target);  // move-assign back INTO the moved-from object
             // NOLINTEND(bugprone-use-after-move)
-            auto back = source.search(std::span<float const>(q, 2), 1);
+            auto back = sync_search(source, std::span<float const>(q, 2), 1);
             AE_CHECK(back.has_value() && back->size() == 1 && (*back)[0].id == "x",
                      "a moved-from object is a valid move-assignment target and works again afterwards");
         }
@@ -504,10 +509,10 @@ int main() {
                     vecs.push_back(std::move(v));
                 }
                 total += batch;
-                AE_CHECK(cpu_index.add_batch(ids, vecs).has_value() && gpu_index.add_batch(ids, vecs).has_value(),
+                AE_CHECK(sync_add_batch(cpu_index, ids, vecs).has_value() && sync_add_batch(gpu_index, ids, vecs).has_value(),
                          "layout test: add_batch succeeds on both, n=" + std::to_string(total));
-                auto cpu_full = cpu_index.search(query_span, total);
-                auto gpu_full = gpu_index.search(query_span, total);
+                auto cpu_full = sync_search(cpu_index, query_span, total);
+                auto gpu_full = sync_search(gpu_index, query_span, total);
                 bool ok = cpu_full.has_value() && gpu_full.has_value() && gpu_full->size() == total &&
                           cpu_full->size() == total;
                 float max_abs_diff = 0.0f;
@@ -523,8 +528,8 @@ int main() {
                 AE_CHECK(ok && max_abs_diff < 1e-5f,
                          "layout test: every candidate's GPU score matches CPU within 1e-5 after growing to n=" +
                              std::to_string(total) + " (max diff " + std::to_string(max_abs_diff) + ")");
-                auto gpu_top = gpu_index.search(query_span, 3);
-                auto cpu_top = cpu_index.search(query_span, 3);
+                auto gpu_top = sync_search(gpu_index, query_span, 3);
+                auto cpu_top = sync_search(cpu_index, query_span, 3);
                 AE_CHECK(gpu_top.has_value() && cpu_top.has_value() && gpu_top->size() == 3 &&
                              (*gpu_top)[0].id == (*cpu_top)[0].id,
                          "layout test: top-k selection returns exactly k, same winner as CPU, n=" +
@@ -557,8 +562,8 @@ int main() {
             for (auto& f : v) f = dist(rng);
             vecs.push_back(std::move(v));
         }
-        AE_CHECK(cpu_index.add_batch(ids, vecs).has_value(), "CPU add_batch succeeds, n=" + std::to_string(n));
-        AE_CHECK(gpu_index.add_batch(ids, vecs).has_value(), "GPU add_batch succeeds, n=" + std::to_string(n));
+        AE_CHECK(sync_add_batch(cpu_index, ids, vecs).has_value(), "CPU add_batch succeeds, n=" + std::to_string(n));
+        AE_CHECK(sync_add_batch(gpu_index, ids, vecs).has_value(), "GPU add_batch succeeds, n=" + std::to_string(n));
 
         std::vector<float> query(kDim);
         for (auto& f : query) f = dist(rng);
@@ -567,14 +572,14 @@ int main() {
         // One "cold" call each first (pays any one-time GPU buffer setup), matching the realistic
         // "index once, query many times" pattern -- see this file's own top comment for why a naive
         // "re-upload the whole corpus every call" design measured ~10x slower than CPU.
-        auto cpu_result = cpu_index.search(query_span, 5);
-        auto gpu_result = gpu_index.search(query_span, 5);
+        auto cpu_result = sync_search(cpu_index, query_span, 5);
+        auto gpu_result = sync_search(gpu_index, query_span, 5);
 
         constexpr int kWarmRuns = 10;
         auto t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < kWarmRuns; ++i) cpu_result = cpu_index.search(query_span, 5);
+        for (int i = 0; i < kWarmRuns; ++i) cpu_result = sync_search(cpu_index, query_span, 5);
         auto t1 = std::chrono::steady_clock::now();
-        for (int i = 0; i < kWarmRuns; ++i) gpu_result = gpu_index.search(query_span, 5);
+        for (int i = 0; i < kWarmRuns; ++i) gpu_result = sync_search(gpu_index, query_span, 5);
         auto t2 = std::chrono::steady_clock::now();
         double const cpu_us = std::chrono::duration<double, std::micro>(t1 - t0).count() / kWarmRuns;
         double const gpu_us = std::chrono::duration<double, std::micro>(t2 - t1).count() / kWarmRuns;
@@ -585,8 +590,8 @@ int main() {
         if (cpu_result.has_value() && gpu_result.has_value()) {
             AE_CHECK(cpu_result->size() == gpu_result->size(), "same result count, n=" + std::to_string(n));
 
-            auto cpu_full = cpu_index.search(query_span, n);
-            auto gpu_full = gpu_index.search(query_span, n);
+            auto cpu_full = sync_search(cpu_index, query_span, n);
+            auto gpu_full = sync_search(gpu_index, query_span, n);
             AE_CHECK(cpu_full.has_value() && gpu_full.has_value() && cpu_full->size() == gpu_full->size(),
                      "full-n rescore succeeds on both sides, n=" + std::to_string(n));
             if (cpu_full.has_value() && gpu_full.has_value()) {

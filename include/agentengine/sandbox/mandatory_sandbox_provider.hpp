@@ -119,10 +119,18 @@ AE_JSON_SCHEMA(RunCommandReply, ok, exit_code, stdout_text, tree_digest, turn_in
 // ADR-119: now declares a real `Capabilities<cap::decl::RunCommand>` ceiling -- see this file's own
 // top comment for the double-gate shape this creates (the identity/quota model is unchanged and
 // still does the real bounding; this ceiling is a separate, static membership/audit gate on top).
-// `invoke()`'s body is an unreachable sentinel -- real dispatch is entirely through the
-// `make_tool_descriptor_with_invoke()` closure `MandatorySandboxProvider::on_context()` installs below.
+//
+// ADR-237 §5.2: an instance-form `Tool<>` conformer, templated on the owning provider type so it can
+// hold it explicitly. Its `invoke()` (defined below, where `MandatorySandboxProvider` is complete)
+// calls the provider's private `dispatch_run_command()` through this class's own `friend`
+// declaration; `CapturesSessionState` keeps it non-backgroundable and non-rerun-comparable, exactly
+// as the old `make_tool_descriptor_with_invoke()` closure (which hardcoded
+// `captures_session_state = true`) was. The former static poison `invoke()` sentinel is gone.
+template <class ProviderT>
 struct RunCommandTool
-    : agentengine::Tool<RunCommandTool, agentengine::Capabilities<agentengine::cap::decl::RunCommand>> {
+    : agentengine::Tool<RunCommandTool<ProviderT>,
+                        agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_command";
     static constexpr std::string_view description =
         "Run a shell command in this session's own isolated sandbox, backed by a real, independent "
@@ -130,13 +138,12 @@ struct RunCommandTool
     using Args = RunCommandArgs;
     using Reply = RunCommandReply;
 
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "RunCommandTool::invoke() must never run directly -- real dispatch goes through the "
-            "session-capturing closure make_tool_descriptor_with_invoke() installs.",
-            "mandatory_sandbox_provider.invoke_unreachable"});
-    }
+    explicit RunCommandTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // A10 promotion (identity-native sandbox/worktree design, ADR-099 §7's own real-world-use-case
@@ -246,8 +253,12 @@ AE_JSON_SCHEMA(TaskBranchDiscardReply, ok)
 // grant both tags; every other section calls the plain provider methods directly
 // (`start_task_branch()` etc.), bypassing `Tool<>`/`invoke_tool()` entirely, so gate 2 has no effect
 // on those and needed no change.
+// ADR-237 §5.2: instance form, templated on the owning provider (see `RunCommandTool` above).
+template <class ProviderT>
 struct StartTaskBranchTool
-    : agentengine::Tool<StartTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
+    : agentengine::Tool<StartTaskBranchTool<ProviderT>,
+                        agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "start_task_branch";
     static constexpr std::string_view description =
         "Start a new, isolated task branch forked from this session's current sandbox state. Run "
@@ -255,36 +266,43 @@ struct StartTaskBranchTool
         "into the main branch, or discard_task_branch to throw it away with no lasting effect.";
     using Args = TaskBranchStartArgs;
     using Reply = TaskBranchStartReply;
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "StartTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
-            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
-            "mandatory_sandbox_provider.invoke_unreachable"});
-    }
+
+    explicit StartTaskBranchTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
+// ADR-237 §5.2: instance form, templated on the owning provider (see `RunCommandTool` above).
+template <class ProviderT>
 struct RunInTaskBranchTool
-    : agentengine::Tool<RunInTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
+    : agentengine::Tool<RunInTaskBranchTool<ProviderT>,
+                        agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "run_in_task_branch";
     static constexpr std::string_view description =
         "Run a shell command inside a task branch previously created by start_task_branch. Never "
         "touches the session's main branch.";
     using Args = TaskBranchRunArgs;
     using Reply = TaskBranchRunReply;
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "RunInTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
-            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
-            "mandatory_sandbox_provider.invoke_unreachable"});
-    }
+
+    explicit RunInTaskBranchTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
+// ADR-237 §5.2: instance form, templated on the owning provider (see `RunCommandTool` above).
+template <class ProviderT>
 struct CommitTaskBranchTool
-    : agentengine::Tool<CommitTaskBranchTool,
+    : agentengine::Tool<CommitTaskBranchTool<ProviderT>,
                          agentengine::Capabilities<agentengine::cap::decl::TaskBranch,
-                                                    agentengine::cap::decl::TaskBranchCommit>> {
+                                                    agentengine::cap::decl::TaskBranchCommit>,
+                         agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "commit_task_branch";
     static constexpr std::string_view description =
         "Fold a task branch's accumulated work into the session's main branch as a new checkpoint. "
@@ -292,29 +310,33 @@ struct CommitTaskBranchTool
         "or a discard -- the work is never silently lost.";
     using Args = TaskBranchCommitArgs;
     using Reply = TaskBranchCommitReply;
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "CommitTaskBranchTool::invoke() must never run directly -- real dispatch goes through the "
-            "session-capturing closure MandatorySandboxProvider::on_context() installs.",
-            "mandatory_sandbox_provider.invoke_unreachable"});
-    }
+
+    explicit CommitTaskBranchTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
+// ADR-237 §5.2: instance form, templated on the owning provider (see `RunCommandTool` above).
+template <class ProviderT>
 struct DiscardTaskBranchTool
-    : agentengine::Tool<DiscardTaskBranchTool, agentengine::Capabilities<agentengine::cap::decl::TaskBranch>> {
+    : agentengine::Tool<DiscardTaskBranchTool<ProviderT>,
+                        agentengine::Capabilities<agentengine::cap::decl::TaskBranch>,
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "discard_task_branch";
     static constexpr std::string_view description =
         "Throw away a task branch and everything it did, with no lasting effect on the main branch.";
     using Args = TaskBranchDiscardArgs;
     using Reply = TaskBranchDiscardReply;
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "DiscardTaskBranchTool::invoke() must never run directly -- real dispatch goes through "
-            "the session-capturing closure MandatorySandboxProvider::on_context() installs.",
-            "mandatory_sandbox_provider.invoke_unreachable"});
-    }
+
+    explicit DiscardTaskBranchTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 // REAL FINDING an independent red-team pass caught (2026-08-28), EMPIRICALLY PROVED against the real,
@@ -423,8 +445,8 @@ private:
     // ADR-176 §14 -- where a tool reply's image provenance comes from, so that no tool body has to
     // remember. PRIVATE: these were briefly public by accident of where they were written, which would
     // have made `provider.stamp_image_provenance(anything)` part of this class's API for no reason.
-    // They sit here, mid-class, rather than in the private section at the bottom, because `on_context()`
-    // below calls `with_image_provenance()` and its return type is deduced.
+    // They sit here, mid-class, rather than in the private section at the bottom, because the
+    // `dispatch_*()` bodies below call `with_image_provenance()` and its return type is deduced.
     //
     // `with_image_provenance()` applies the stamp to every tool this provider contributes, after the
     // body returns. That closes §6's "nothing proves a future caller goes through `bound_image()`"
@@ -495,6 +517,99 @@ private:
             if (reply.has_value()) this->stamp_image_provenance(*reply);
             return reply;
         };
+    }
+
+    // ADR-237 §5.2: the five instance-form `Tool<>` conformers declared above hold this provider
+    // explicitly and reach the dispatch bodies below through these `friend` declarations. Each body is
+    // the one the old `on_context()` closure held, moved here verbatim and still wrapped in
+    // `with_image_provenance()` (ADR-176 §14) -- so the stamp lands after the body in exactly the same
+    // place, in the same order, as it did before. The wrapper's parameters are named `request`/
+    // `context` rather than `args`/`ctx` so the inner body's own `args`/`ctx` do not shadow an outer
+    // parameter (a level-4 warning under this project's `/WX`).
+    template <class> friend struct RunCommandTool;
+    template <class> friend struct StartTaskBranchTool;
+    template <class> friend struct RunInTaskBranchTool;
+    template <class> friend struct CommitTaskBranchTool;
+    template <class> friend struct DiscardTaskBranchTool;
+
+    [[nodiscard]] agentengine::result<RunCommandReply> dispatch_run_command(
+        RunCommandArgs request, agentengine::EffectContext& context) {
+        return with_image_provenance([this](RunCommandArgs args, agentengine::EffectContext& ctx)
+                                         -> agentengine::result<RunCommandReply> {
+            agentengine::IdentityHandle caller =
+                agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+            std::optional<agentengine::SurfaceRunOutcome> executed;
+            auto outcome = agentengine::rt::block_on(runtime_->run(
+                *surface_, args.command, caller, *run_quota_, *storage_quota_, &executed));
+            if (!outcome.has_value()) {
+                return std::unexpected(with_executed_output(outcome.error(), executed));
+            }
+            // ADR-176 §14: the three image fields are left default-empty HERE and filled by
+            // `with_image_provenance()` after this body returns -- same value, same ordering as the
+            // hand-written `bound_image()` call this replaced, but no longer this body's job to
+            // remember. The fields set below are the ones only this body can know.
+            //
+            // Member-by-member rather than the braced aggregate this replaced, and that is forced: a
+            // braced initializer listing five of eight members is a -Wmissing-field-initializers error
+            // under this project's -Werror, and the two ways to silence it -- spelling out three `{}`
+            // or re-listing the image fields -- would each put the thing this section removed back into
+            // the body.
+            RunCommandReply reply;
+            reply.ok = true;
+            reply.exit_code = outcome->exec.exit_code;
+            reply.stdout_text = std::move(outcome->exec.stdout_text);
+            reply.tree_digest = outcome->checkpoint.tree;
+            reply.turn_index = outcome->checkpoint.turn_index;
+            reply.skipped_symlinks = std::move(outcome->skipped_symlinks);
+            return reply;
+        })(std::move(request), context);
+    }
+
+    [[nodiscard]] agentengine::result<TaskBranchStartReply> dispatch_start_task_branch(
+        TaskBranchStartArgs, agentengine::EffectContext& context) {
+        return with_image_provenance([this](TaskBranchStartArgs, agentengine::EffectContext& ctx)
+                                         -> agentengine::result<TaskBranchStartReply> {
+            agentengine::IdentityHandle caller =
+                agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+            auto outcome = agentengine::rt::block_on(start_task_branch(caller));
+            if (!outcome.has_value()) return std::unexpected(outcome.error());
+            return *outcome;
+        })(TaskBranchStartArgs{}, context);
+    }
+
+    [[nodiscard]] agentengine::result<TaskBranchRunReply> dispatch_run_in_task_branch(
+        TaskBranchRunArgs request, agentengine::EffectContext& context) {
+        return with_image_provenance([this](TaskBranchRunArgs args, agentengine::EffectContext& ctx)
+                                         -> agentengine::result<TaskBranchRunReply> {
+            agentengine::IdentityHandle caller =
+                agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+            auto outcome = agentengine::rt::block_on(
+                run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller));
+            if (!outcome.has_value()) return std::unexpected(outcome.error());
+            return *outcome;
+        })(std::move(request), context);
+    }
+
+    [[nodiscard]] agentengine::result<TaskBranchCommitReply> dispatch_commit_task_branch(
+        TaskBranchCommitArgs request, agentengine::EffectContext& context) {
+        return with_image_provenance([this](TaskBranchCommitArgs args, agentengine::EffectContext& ctx)
+                                         -> agentengine::result<TaskBranchCommitReply> {
+            agentengine::IdentityHandle caller =
+                agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
+            auto outcome = agentengine::rt::block_on(commit_task_branch(std::move(args.handle_id), caller));
+            if (!outcome.has_value()) return std::unexpected(outcome.error());
+            return *outcome;
+        })(std::move(request), context);
+    }
+
+    [[nodiscard]] agentengine::result<TaskBranchDiscardReply> dispatch_discard_task_branch(
+        TaskBranchDiscardArgs request, agentengine::EffectContext& context) {
+        return with_image_provenance([this](TaskBranchDiscardArgs args, agentengine::EffectContext&)
+                                         -> agentengine::result<TaskBranchDiscardReply> {
+            auto outcome = agentengine::rt::block_on(discard_task_branch(std::move(args.handle_id)));
+            if (!outcome.has_value()) return std::unexpected(outcome.error());
+            return *outcome;
+        })(std::move(request), context);
     }
 
 public:
@@ -692,6 +807,11 @@ public:
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
 
+    // ADR-244 §2.2 (slice 4a): whether a call to `run_command` and the four task-branch tools needs approval is the
+    // host's choice; the engine makes none. Unset, their descriptors carry no mode and the session refuses the turn
+    // (`choice.missing.tool.approval`). Configuration, not binding: a re-bind keeps it and a copy carries it.
+    void set_tool_approval(agentengine::approval_mode mode) noexcept { tool_approval_ = mode; }
+
     // OPTIONAL, side-effect-free advisory pre-check: does this session currently look like it could
     // fork right now? Never authoritative -- state can change between this call and the actual
     // `fork_from()` -- but lets a caller (e.g. a future `agent.spawn` tool body) reject an obviously-
@@ -733,6 +853,7 @@ public:
         // *this* was previously bound to, independent of `other`), refunding into the quota that
         // actually granted them. See that method's own comment.
         discard_all_active_task_branches_and_refund();
+        tool_approval_ = other.tool_approval_;
         if (!other.runtime_.has_value()) {
             ledger_ = nullptr;
             owner_.reset();
@@ -798,79 +919,23 @@ public:
     [[nodiscard]] agentengine::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext&, agentengine::EffectContext&) {
         agentengine::ContextContribution contribution;
+        // Every tool here is ApprovalChosenByHost: its mode is the one the host set, or none (refused).
+        auto offer = [&](agentengine::ToolDescriptor d) {
+            d.approval = tool_approval_;
+            contribution.tools.push_back(std::move(d));
+        };
         if (runtime_.has_value()) {
-            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<RunCommandTool>(
-                with_image_provenance([this](RunCommandArgs args, agentengine::EffectContext& ctx)
-                                          -> agentengine::result<RunCommandReply> {
-                    agentengine::IdentityHandle caller =
-                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
-                    std::optional<agentengine::SurfaceRunOutcome> executed;
-                    auto outcome = agentengine::rt::block_on(runtime_->run(
-                        *surface_, args.command, caller, *run_quota_, *storage_quota_, &executed));
-                    if (!outcome.has_value()) {
-                        return std::unexpected(with_executed_output(outcome.error(), executed));
-                    }
-                    // ADR-176 §14: the three image fields are left default-empty HERE and filled by
-                    // `with_image_provenance()` after this body returns -- same value, same ordering as
-                    // the hand-written `bound_image()` call this replaced, but no longer this body's job
-                    // to remember. The fields set below are the ones only this body can know.
-                    //
-                    // Member-by-member rather than the braced aggregate this replaced, and that is
-                    // forced: a braced initializer listing five of eight members is a
-                    // -Wmissing-field-initializers error under this project's -Werror, and the two ways
-                    // to silence it -- spelling out three `{}` or re-listing the image fields -- would
-                    // each put the thing this section removed back into the body.
-                    RunCommandReply reply;
-                    reply.ok = true;
-                    reply.exit_code = outcome->exec.exit_code;
-                    reply.stdout_text = std::move(outcome->exec.stdout_text);
-                    reply.tree_digest = outcome->checkpoint.tree;
-                    reply.turn_index = outcome->checkpoint.turn_index;
-                    reply.skipped_symlinks = std::move(outcome->skipped_symlinks);
-                    return reply;
-                })));
+            offer(agentengine::make_tool_descriptor(RunCommandTool<MandatorySandboxProvider>{*this}));
         }
         // Second, deliberately separate gate (`bind_task_branch_tools()`'s own comment) -- these four
         // tools are contributed only once BOTH `runtime_` is bound AND a host has opted in with a
-        // real `MergeCost` quota. Every closure re-derives its own `caller` from `ctx.principal`, the
-        // same "never assume owner_" discipline `run_command`'s own closure already established.
+        // real `MergeCost` quota. Every tool re-derives its own `caller` from `ctx.principal`, the
+        // same "never assume owner_" discipline `run_command`'s own tool already established.
         if (runtime_.has_value() && merge_quota_ != nullptr) {
-            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<StartTaskBranchTool>(
-                with_image_provenance([this](TaskBranchStartArgs, agentengine::EffectContext& ctx)
-                    -> agentengine::result<TaskBranchStartReply> {
-                    agentengine::IdentityHandle caller =
-                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
-                    auto outcome = agentengine::rt::block_on(start_task_branch(caller));
-                    if (!outcome.has_value()) return std::unexpected(outcome.error());
-                    return *outcome;
-                })));
-            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<RunInTaskBranchTool>(
-                with_image_provenance([this](TaskBranchRunArgs args, agentengine::EffectContext& ctx)
-                    -> agentengine::result<TaskBranchRunReply> {
-                    agentengine::IdentityHandle caller =
-                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
-                    auto outcome = agentengine::rt::block_on(
-                        run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller));
-                    if (!outcome.has_value()) return std::unexpected(outcome.error());
-                    return *outcome;
-                })));
-            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<CommitTaskBranchTool>(
-                with_image_provenance([this](TaskBranchCommitArgs args, agentengine::EffectContext& ctx)
-                    -> agentengine::result<TaskBranchCommitReply> {
-                    agentengine::IdentityHandle caller =
-                        agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
-                    auto outcome =
-                        agentengine::rt::block_on(commit_task_branch(std::move(args.handle_id), caller));
-                    if (!outcome.has_value()) return std::unexpected(outcome.error());
-                    return *outcome;
-                })));
-            contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<DiscardTaskBranchTool>(
-                with_image_provenance([this](TaskBranchDiscardArgs args, agentengine::EffectContext&)
-                    -> agentengine::result<TaskBranchDiscardReply> {
-                    auto outcome = agentengine::rt::block_on(discard_task_branch(std::move(args.handle_id)));
-                    if (!outcome.has_value()) return std::unexpected(outcome.error());
-                    return *outcome;
-                })));
+            offer(agentengine::make_tool_descriptor(StartTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(RunInTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(CommitTaskBranchTool<MandatorySandboxProvider>{*this}));
+            offer(agentengine::make_tool_descriptor(DiscardTaskBranchTool<MandatorySandboxProvider>{*this}));
         }
         co_return contribution;
     }
@@ -1085,8 +1150,41 @@ private:
     // `bind_task_branch_tools()` is the only thing that ever sets it, and every task-branch method
     // checks it alongside `runtime_.has_value()` before doing anything.
     agentengine::rt::AsyncQuota<agentengine::MergeCost>* merge_quota_ = nullptr;
+    std::optional<agentengine::approval_mode> tool_approval_;  // ADR-244 slice 4a: the host's, see set_tool_approval()
     std::map<std::string, SandboxRuntime<Store>> task_branches_;
     std::unique_ptr<agentengine::rt::AsyncMutex> task_branch_mutex_;
 };
+
+// ADR-237 §5.2: out-of-line because each needs `MandatorySandboxProvider` complete to reach the
+// private `dispatch_*()` it befriends.
+template <class ProviderT>
+agentengine::task<agentengine::result<RunCommandReply>> RunCommandTool<ProviderT>::invoke(
+    RunCommandArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_run_command(std::move(args), ctx);
+}
+
+template <class ProviderT>
+agentengine::task<agentengine::result<TaskBranchStartReply>> StartTaskBranchTool<ProviderT>::invoke(
+    TaskBranchStartArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_start_task_branch(std::move(args), ctx);
+}
+
+template <class ProviderT>
+agentengine::task<agentengine::result<TaskBranchRunReply>> RunInTaskBranchTool<ProviderT>::invoke(
+    TaskBranchRunArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_run_in_task_branch(std::move(args), ctx);
+}
+
+template <class ProviderT>
+agentengine::task<agentengine::result<TaskBranchCommitReply>> CommitTaskBranchTool<ProviderT>::invoke(
+    TaskBranchCommitArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_commit_task_branch(std::move(args), ctx);
+}
+
+template <class ProviderT>
+agentengine::task<agentengine::result<TaskBranchDiscardReply>> DiscardTaskBranchTool<ProviderT>::invoke(
+    TaskBranchDiscardArgs args, agentengine::EffectContext& ctx) const {
+    co_return provider_->dispatch_discard_task_branch(std::move(args), ctx);
+}
 
 }  // namespace agentengine

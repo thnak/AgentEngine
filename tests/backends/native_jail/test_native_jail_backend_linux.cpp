@@ -14,6 +14,8 @@
 // Real child processes are spawned under real namespace + cgroup + seccomp isolation -- bounded by
 // this test's own generous-but-finite wall_ms values (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -54,7 +56,9 @@ int main() {
 
     SandboxSpec spec;
     spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+    ae_test::grant_listed_mounts(spec);
     spec.limits.wall_ms = 2000;
     spec.limits.memory_bytes = 32ull * 1024 * 1024;  // 32 MB
     spec.limits.pids = 4;
@@ -63,7 +67,7 @@ int main() {
     LinuxNativeJailBackend backend;
     EffectContext ctx;
 
-    auto handle = backend.create(spec, ctx);
+    auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     AE_CHECK(handle.has_value(), "C2-Linux: create() succeeds given a real mount and ResourceLimits");
     if (!handle.has_value()) {
         std::cerr << "create() failed, aborting remaining checks: "
@@ -73,7 +77,7 @@ int main() {
 
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 50")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value(), "C2-Linux: exec() of a well-behaved child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::ok, "C2-Linux: a well-behaved exec reports ok");
@@ -84,14 +88,14 @@ int main() {
 
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("spin")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::timeout,
                   "C2-Linux: a CPU-spinning exec is killed by wall_ms and reports timeout");
     }
 
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("fail 7")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value(), "C2-Linux: exec() of a failing child returns a result");
         if (outcome.has_value()) {
             AE_CHECK(outcome->klass == exec_outcome_class::crash,
@@ -114,24 +118,71 @@ int main() {
         // safety margin over the observed 2-7.9s range, not a tight bound.
         SandboxSpec oom_spec = spec;
         oom_spec.limits.wall_ms = 25000;
-        auto oom_handle = backend.create(oom_spec, ctx);
+        auto oom_handle = agentengine::rt::block_on(backend.create(oom_spec, ctx));
         AE_CHECK(oom_handle.has_value(), "C2-Linux: create() succeeds for the oom-case handle");
         if (oom_handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("alloc 512")};  // 512 MB >> 32 MB cap
-            auto outcome = backend.exec(*oom_handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*oom_handle, req, ctx));
             AE_CHECK(outcome.has_value() && outcome->klass == exec_outcome_class::oom,
                       "C2-Linux: exceeding memory_bytes reports oom (real cgroups v2 OOM-kill signal, "
                       "not the peak-usage heuristic the Windows side needs)");
-            backend.destroy(*oom_handle);
+            agentengine::rt::block_on(backend.destroy(*oom_handle));
         }
     }
 
-    backend.destroy(*handle);
+    agentengine::rt::block_on(backend.destroy(*handle));
 
     {
         ExecRequest req{.language = "native", .source = hostile_child_cmd("sleep 10")};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(!outcome.has_value(), "C2-Linux: exec() on a destroyed SandboxHandle fails closed");
+    }
+
+    // ADR-244 §2.4: mounts are bound in order onto the jail's tmpfs root, so a mount whose guest path sits
+    // inside (or contains) another's would mask it. Overlapping guest paths are refused before anything is
+    // bound, whatever the grants say; disjoint ones are not (positive control).
+    {
+        std::filesystem::path const inner = work_dir / "inner";
+        std::filesystem::create_directories(inner, ec);
+        SandboxSpec overlap;
+        overlap.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        overlap.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work/inner", .read_write = false});
+        ae_test::grant_listed_mounts(overlap);
+        auto refused = agentengine::rt::block_on(backend.create(overlap, ctx));
+        AE_CHECK(!refused.has_value() && refused.error().code == "sandbox.mount_overlap",
+                 "ADR-244: a mount nested inside another mount's guest path is refused (sandbox.mount_overlap)");
+        if (refused.has_value()) agentengine::rt::block_on(backend.destroy(*refused));
+
+        SandboxSpec disjoint;
+        disjoint.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        disjoint.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/workshop", .read_write = false});
+        ae_test::grant_listed_mounts(disjoint);
+        disjoint.limits.wall_ms = 2000;
+        auto ok = agentengine::rt::block_on(backend.create(disjoint, ctx));
+        AE_CHECK(ok.has_value(),
+                 "ADR-244 (positive control): guest paths that only share a string prefix (/work, /workshop) "
+                 "are not an overlap");
+        if (ok.has_value()) agentengine::rt::block_on(backend.destroy(*ok));
+
+        // One spelling per guest path: `//work` binds onto `/work` but would not compare equal to it, a relative
+        // path would be created beside the jail root, and `/` is the root itself.
+        for (char const* bad : {"//work", "work", "/", "", "/work/", "/a/../work", "/a/./b"}) {
+            SandboxSpec s;
+            s.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = bad, .read_write = false});
+            ae_test::grant_listed_mounts(s);
+            auto r = agentengine::rt::block_on(backend.create(s, ctx));
+            AE_CHECK(!r.has_value() && r.error().code == "sandbox.guest_path_invalid",
+                     (std::string("ADR-244: guest path '") + bad + "' is refused (sandbox.guest_path_invalid)").c_str());
+            if (r.has_value()) agentengine::rt::block_on(backend.destroy(*r));
+        }
+        SandboxSpec twice;
+        twice.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        twice.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work", .read_write = false});
+        ae_test::grant_listed_mounts(twice);
+        auto dup = agentengine::rt::block_on(backend.create(twice, ctx));
+        AE_CHECK(!dup.has_value() && dup.error().code == "sandbox.mount_overlap",
+                 "ADR-244: two mounts at the same guest path are refused (sandbox.mount_overlap)");
+        if (dup.has_value()) agentengine::rt::block_on(backend.destroy(*dup));
     }
 
     std::filesystem::remove_all(work_dir, ec);

@@ -1,7 +1,7 @@
-// Milestone 5 Phase I1 (018-Identity-Authorization-and-Secrets.md §6: "Tenant is a first-class
+// Milestone 5 Phase I1 (rfcs/018-Identity-Authorization-and-Secrets.md §6: "Tenant is a first-class
 // dimension of principal, session, memory scope, sandbox, quota, and audit -- not a filter applied
 // at query time... Cross-tenant access is denied at the actor boundary; a cross-tenant leak is a
-// release-blocking defect class"; 029-Memory-System.md §9 G4/G5). This file proves a REAL bug this
+// release-blocking defect class"; rfcs/029-Memory-System.md §9 G4/G5). This file proves a REAL bug this
 // phase found and fixed: through Milestone 4, `memory_ref_name()`/`memory_mount_id()`
 // (core/memory.hpp) derived their output from `principal.id` ALONE -- `tenant_id` played no role.
 // Two principals in DIFFERENT tenants sharing the same `id` (not a contrived scenario: tenant-scoped
@@ -21,6 +21,7 @@
 
 #include "agentengine/core/memory.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -60,9 +61,9 @@ int main() {
              "isolation, not just distinct strings that happen to still collide downstream");
 
     // --- End-to-end: each tenant's "admin" gets a genuinely separate, non-colliding worktree -----
-    auto ref_a = ae::ensure_memory_worktree(object_store, ref_store, tenant_a_admin);
+    auto ref_a = agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, tenant_a_admin));
     AE_CHECK(ref_a.has_value(), "setup: tenant-a's admin worktree bootstraps");
-    auto ref_b = ae::ensure_memory_worktree(object_store, ref_store, tenant_b_admin);
+    auto ref_b = agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, tenant_b_admin));
     AE_CHECK(ref_b.has_value(), "setup: tenant-b's admin worktree bootstraps independently");
 
     ae::Mount const mount_a = ae::memory_mount(tenant_a_admin);
@@ -75,24 +76,24 @@ int main() {
     secret.kind    = ae::memory_kind::episodic;
     secret.content = "tenant-a's admin confidential note";
     secret.origin  = ae::MemoryOrigin{ae::memory_source::user_stated, "run-1", "turn-1", tenant_a_admin};
-    auto written = ae::write_memory_item(object_store, ref_store, mount_a, write_a, secret);
+    auto written = agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount_a, write_a, secret));
     AE_CHECK(written.has_value(), "setup: tenant-a's admin writes a memory item");
 
     // Tenant B's "admin", holding a capability minted for tenant B's OWN mount, can never even
     // reach tenant A's mount -- the capability-mismatch check (worktree.hpp) rejects it before any
     // store access, the same "never reaches the store at all" property test_memory_worktree.cpp
     // proves for the same-tenant case.
-    auto crossed = ae::list_memory_items(object_store, ref_store, mount_a, read_b);
+    auto crossed = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount_a, read_b));
     AE_CHECK(!crossed.has_value() && crossed.error().code == "worktree.mount_capability_mismatch",
              "I1-R4: tenant-b's admin capability is rejected outright against tenant-a's mount -- "
              "cross-tenant access denied at the capability-matching boundary, before any store read");
 
-    auto b_listed = ae::list_memory_items(object_store, ref_store, mount_b, read_b);
+    auto b_listed = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount_b, read_b));
     AE_CHECK(b_listed.has_value() && b_listed->empty(),
              "I1-R5: tenant-b's admin worktree has NONE of tenant-a's items -- genuinely separate "
              "storage, not merely a rejected read against a worktree that secretly holds them");
 
-    auto a_listed = ae::list_memory_items(object_store, ref_store, mount_a, read_a);
+    auto a_listed = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount_a, read_a));
     AE_CHECK(a_listed.has_value() && a_listed->size() == 1,
              "I1-R6: tenant-a's own admin can still read its own item normally -- the fix closes "
              "the cross-tenant leak without breaking legitimate same-tenant access");

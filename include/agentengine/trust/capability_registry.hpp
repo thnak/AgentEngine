@@ -1,5 +1,5 @@
 #pragma once
-// Design B of decisions/ADR-005-capability-bearer-tokens-cross-process.md: the status-quo
+// Design B of decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md: the status-quo
 // alternative to capability_token.hpp's self-verifying bearer token. No cryptographic token crosses
 // the process boundary at all -- only an opaque reference id does. All authority state and every
 // check stays host-side, so a remote party must call back and ask "is this still valid" instead of

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-170-sandbox-exec-events.md (GitHub issue #64): `run_event_kind::
+// Proof for decisions/archive/ADR-170-sandbox-exec-events.md (GitHub issue #64): `run_event_kind::
 // sandbox_exec_started`/`sandbox_exec_finished` -- declared in `core/run_event.hpp`, listed
 // normatively in 013 §1, and already projected to AG-UI `ActivitySnapshot`
 // (`protocol/agui/projection.hpp`) -- had **no producer anywhere in the tree**. The only construction
@@ -47,13 +47,17 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../support/run_task_sync.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -74,8 +78,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 template <class Pred>
@@ -127,39 +130,39 @@ AE_JSON_SCHEMA(ExecReply, ok)
 
 // Stands in for any tool whose invoke() reaches a sandbox: it brackets a (fictional) exec exactly the
 // way the real PDF-worker and mediated-shell producers do.
-struct SandboxingTool : agentengine::Tool<SandboxingTool> {
+struct SandboxingTool : agentengine::Tool<SandboxingTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "sandboxing_tool";
     static constexpr std::string_view description = "Brackets a sandbox exec during invoke().";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         SandboxExecScope scope(ctx, "exec-1", "test-backend", "exec");
         scope.succeeded();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
 // The positive control (S5): never touches the sink.
-struct SilentTool : agentengine::Tool<SilentTool> {
+struct SilentTool : agentengine::Tool<SilentTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "silent_tool";
     static constexpr std::string_view description = "Never opens a SandboxExecScope.";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 // S7's fixture: Backgroundable AND brackets an exec, so the scope runs on background_task()'s own
 // detached std::thread.
 struct BackgroundableSandboxingTool
-    : agentengine::Tool<BackgroundableSandboxingTool, agentengine::Backgroundable> {
+    : agentengine::Tool<BackgroundableSandboxingTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_sandboxing_tool";
     static constexpr std::string_view description = "Backgroundable; also opens a SandboxExecScope.";
     using Args  = ExecArgs;
     using Reply = ExecReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         SandboxExecScope scope(ctx, "exec-bg", "test-backend", "exec");
         scope.succeeded();
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -169,7 +172,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<SandboxingTool, SilentTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(SandboxingTool{}, SilentTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {
@@ -321,7 +324,7 @@ int main() {
     // ---- S4: end to end through a real AgentSession and its own event stream ---------------------
     {
         Session session;
-        session.initialize("s4", Principal{"p", ""});
+        session.initialize("s4", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response({{"c1", "sandboxing_tool"}}), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -358,7 +361,7 @@ int main() {
     // ---- S5: positive control -- a silent tool emits nothing -------------------------------------
     {
         Session session;
-        session.initialize("s5", Principal{"p", ""});
+        session.initialize("s5", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response({{"c1", "silent_tool"}}), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -385,7 +388,7 @@ int main() {
     // ---- S6: the per-call bracket leaks nothing across calls or rounds ---------------------------
     {
         Session session;
-        session.initialize("s6", Principal{"p", ""});
+        session.initialize("s6", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             // Round 1: two calls in ONE round, both sandboxing.
             {tool_call_response({{"c1", "sandboxing_tool"}, {"c2", "sandboxing_tool"}}),
@@ -426,16 +429,16 @@ int main() {
         CapabilitySet const held = CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableSandboxingTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableSandboxingTool{});
         agentengine::ToolCallRequest const req{"call-bg", "bg_sandboxing_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 
         std::atomic<bool> completed{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed](agentengine::ToolResult, agentengine::ToolInvocationAudit) {
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "S7 setup: the Backgroundable tool call is accepted");
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),
               "S7 setup: the detached thread actually finishes");
@@ -516,7 +519,7 @@ int main() {
         auto sandbox = SessionShellSandbox::create(scratch);
         check(sandbox.has_value(), "S9 setup: SessionShellSandbox::create succeeds");
         if (sandbox.has_value()) {
-            auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor()});
+            auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
             // The same real grants test_session_shell_wiring.cpp's own positive case uses -- run_shell
             // is genuinely capability-gated (I2), so an empty set makes this a policy refusal that
             // never reaches the producer at all, which would prove nothing about the events.
@@ -535,7 +538,7 @@ int main() {
             ToolCallRequest const req{"call-shell", "run_shell", *json::parse(R"({"source":"pwd"})"),
                                        false};
             agentengine::ToolInvocationAudit audit;
-            agentengine::ToolResult const result = invoke_tool(table, held, req, ctx, nullptr, &audit);
+            agentengine::ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr, &audit));
             check(!result.is_error, "S9 setup: the real run_shell call succeeds");
 
             check(rec.events.size() == 2,
@@ -562,7 +565,7 @@ int main() {
             ToolCallRequest const req2{"call-shell-2", "run_shell",
                                         *json::parse(R"({"source":"pwd"})"), false};
             agentengine::ToolInvocationAudit audit2;
-            (void)invoke_tool(table, held, req2, ctx, nullptr, &audit2);
+            (void)agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req2, ctx, nullptr, &audit2));
             check(rec.events.size() == 2 && rec.events[0].second.exec_id != "shell_1",
                   "S9: a second call mints its own exec_id -- two shell runs never splice into one "
                   "activity in a consumer that correlates by it");

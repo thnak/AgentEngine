@@ -11,6 +11,7 @@
 #include <string>
 
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_jail/skill_mount_materializer.hpp"
 
 using namespace agentengine;
@@ -70,7 +71,7 @@ int main() {
         std::filesystem::path const host_root = scratch / "r1";
 
         auto materialized =
-            native_jail::materialize_skill_mounts(provider, host_root, {"work", "input", "out"});
+            agentengine::rt::block_on(native_jail::materialize_skill_mounts(provider, host_root, {"work", "input", "out"}));
         check(materialized.has_value(), "R1: materialize_skill_mounts succeeds for two non-colliding skills");
         if (materialized) {
             check(materialized->size() == 2, "R1: exactly two (mount_id, host_dir) pairs returned");
@@ -100,7 +101,7 @@ int main() {
         SkillsProvider<> provider(std::move(sources));
         std::filesystem::path const host_root = scratch / "r2";
 
-        auto materialized = native_jail::materialize_skill_mounts(provider, host_root, {"work"});
+        auto materialized = agentengine::rt::block_on(native_jail::materialize_skill_mounts(provider, host_root, {"work"}));
         check(!materialized.has_value(),
               "R2: a skill named 'work' collides with the reserved sandbox mount id and is refused");
         if (!materialized) {

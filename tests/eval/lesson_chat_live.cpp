@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/json_value.hpp"
@@ -43,6 +44,8 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 namespace ev = agentengine::eval;
@@ -57,8 +60,7 @@ namespace {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 json::Value str(std::string s) { return json::Value::make_string(std::move(s)); }
@@ -219,7 +221,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
     fs::create_directories(dir / "outbox");
     auto log = std::make_shared<ActionLog>(dir / "actions.jsonl");
 
-    auto store_result = ev::EvalStore::make("chat", dir.filename().string());
+    auto store_result = agentengine::rt::block_on(ev::EvalStore::make("chat", dir.filename().string()));
     if (!store_result) {
         std::fprintf(stderr, "lesson_chat_live: %s\n", store_result.error().message.c_str());
         return 2;
@@ -237,7 +239,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
         MemoryItem item = std::move(*rendered);
         item.origin = MemoryOrigin{memory_source::model_inferred, "chat-lesson", "0", store.principal()};
         lesson_text = item.content;
-        if (auto w = write_memory_item(store.object_store(), store.ref_store(), store.mount(), store.write_cap(), item); !w) {
+        if (auto w = agentengine::rt::block_on(write_memory_item(store.object_store(), store.ref_store(), store.mount(), store.write_cap(), item)); !w) {
             std::fprintf(stderr, "lesson_chat_live: %s\n", w.error().message.c_str());
             return 2;
         }
@@ -268,7 +270,7 @@ int serve(fs::path const& dir, std::string const& arm, ev::LessonCandidate const
     using MemProvider = MemoryProvider<NoneSummarizer, InMemoryWorktreeObjectStore, rt::InMemoryAppendLogStore>;
     using Composed = ComposedContextProvider<HistoryProvider<Window<0>>, MemProvider, ev::EvalStubToolProvider>;
     rt::AgentSession<Client, rt::NoSessionState, Composed> session;
-    session.initialize("lesson-chat", store.principal(), std::nullopt, /*max_turns=*/8);
+    session.initialize("lesson-chat", store.principal(), ae_test::trusted(std::nullopt, /*max_turns=*/8));
     session.set_capabilities(&held);
     if (arm == "approved") session.set_approved_lessons(&registry);
     MemProvider memory{store.object_store(), store.ref_store(), store.mount(), store.read_cap(), store.write_cap(),

@@ -38,9 +38,11 @@
 //         agent_ids, spawned by a caller with different live depth for each, produces two
 //         independently tightened entries -- neither borrows the other's headroom (§9 I2-4).
 
+#include <utility>
 #include <cstdio>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/rt/spawn_cost_budget.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
@@ -81,8 +83,7 @@ void check(bool cond, char const* what) {
 // call resolves it fully.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // §2's own ordering, composed locally: depth first (pure/local), cost second (mutates shared state)

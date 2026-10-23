@@ -1,7 +1,7 @@
 # Embedding-provider landscape — OpenRouter and Anthropic, source-grounded
 
 **Date:** 2026-08-19 · **Sources:** cited inline. Fetched via web search, not asserted from memory
-(CLAUDE.md's own rule this file exists to satisfy — an earlier draft of `decisions/ADR-063-
+(CLAUDE.md's own rule this file exists to satisfy — an earlier draft of `decisions/archive/ADR-063-
 retrieval-augmented-context-provider-shape.md` §2.5 stated these claims inline without this file;
 corrected here, ADR updated to cite this instead).
 

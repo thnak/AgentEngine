@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-181-durable-cancellable-background-jobs.md, phase 1: the in-memory
+// Proof for decisions/archive/ADR-181-durable-cancellable-background-jobs.md, phase 1: the in-memory
 // rt::BackgroundJobRunner (include/agentengine/rt/background_job_runner.hpp).
 //
 //   R1  -- submit() refuses what background_task() refuses (not Backgroundable, state-capturing, no
@@ -114,13 +114,19 @@ ae::Principal principal(std::string id, std::string tenant = "t1") {
     return p;
 }
 
-ae::ToolDescriptor tool(std::string name, ae::ToolDescriptor::InvokeFn fn,
+// ADR-237 §5.2: the descriptor's `invoke` is async; this helper wraps the synchronous body the call
+// sites author into the async seam directly (no `make_sync_invoke`).
+using SyncInvoke = std::function<ae::result<ae::json::Value>(ae::json::Value const&, ae::EffectContext&)>;
+
+ae::ToolDescriptor tool(std::string name, SyncInvoke fn,
                         ae::effect_class cls = ae::effect_class::idempotent) {
     ae::ToolDescriptor d;
+    d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
     d.name           = std::move(name);
     d.backgroundable = true;
     d.effect_class   = cls;
-    d.invoke         = std::move(fn);
+    d.invoke         = [fn = std::move(fn)](ae::json::Value const& args, ae::EffectContext& ctx)
+        -> ae::task<ae::result<ae::json::Value>> { co_return fn(args, ctx); };
     return d;
 }
 
@@ -146,7 +152,7 @@ ae::result<ae::json::Value> canceled_no_effect() {
 }
 
 // A cooperative loop: counts until canceled, then reports "no effect left half-done".
-ae::ToolDescriptor::InvokeFn counting_loop(std::shared_ptr<std::atomic<int>> counter) {
+SyncInvoke counting_loop(std::shared_ptr<std::atomic<int>> counter) {
     return [counter](ae::json::Value const&, ae::EffectContext& ctx) -> ae::result<ae::json::Value> {
         for (int i = 0; i < 5000; ++i) {  // bounded: 5000 * 1ms at most
             if (ctx.cancellation.stop_requested()) return canceled_no_effect();
@@ -158,7 +164,7 @@ ae::ToolDescriptor::InvokeFn counting_loop(std::shared_ptr<std::atomic<int>> cou
 }
 
 // Ignores cancellation; returns `result` once the gate opens.
-ae::ToolDescriptor::InvokeFn blocking_until(std::shared_ptr<Gate> gate, std::shared_ptr<std::atomic<bool>> entered,
+SyncInvoke blocking_until(std::shared_ptr<Gate> gate, std::shared_ptr<std::atomic<bool>> entered,
                                             bool succeed = true) {
     return [gate, entered, succeed](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
         entered->store(true);
@@ -237,6 +243,8 @@ int main() {
         s.cascade_from = dead_run.get_token();
         r = runner.submit(s);
         check(!r && r.error().code == "background_job.parent_canceled", "R1: a job for an already-canceled run is refused");
+        check(!r && r.error().klass == ae::failure_class::canceled,
+              "R1 (ADR-237 D6): and the refusal is class canceled -- the parent was stopped, nothing was denied");
     }
 
     // ---- R2: cancel stops a cooperative running tool ---------------------------------------------
@@ -381,7 +389,7 @@ int main() {
         auto run_case = [&](ae::effect_class cls, bool no_effect_code, bool succeed) {
             auto gate    = std::make_shared<Gate>();
             auto entered = std::make_shared<std::atomic<bool>>(false);
-            ae::ToolDescriptor::InvokeFn fn = [gate, entered, no_effect_code, succeed](
+            SyncInvoke fn = [gate, entered, no_effect_code, succeed](
                                                   auto const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
                 entered->store(true);
                 gate->wait();
@@ -429,6 +437,7 @@ int main() {
             bool no_sandbox = false;
             bool no_blob_sink = false;
             std::string run_id;
+            std::string root_run_id;
             std::optional<ae::BoundCapability> stashed;
         };
         auto seen = std::make_shared<Seen>();
@@ -445,12 +454,14 @@ int main() {
             seen->no_sandbox       = ctx.sandbox_fs == nullptr;
             seen->no_blob_sink     = !ctx.blob_sink;
             seen->run_id           = ctx.run_id;
+            seen->root_run_id      = ctx.root_run_id;
             if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) seen->stashed = ctx.bound_capabilities->front();
             return ok_value();
         });
         t.capability_ceiling = {ae::cap::FsRead{"docs", "", std::nullopt}};
         auto s = spec(t);
         s.capabilities = ae::CapabilitySet::grant_root({ae::cap::Background{2}, ae::cap::FsRead{"docs", "", std::nullopt}});
+        s.owner.root_run_id = "root-9";  // ADR-241 §8.4: the owner's root run reaches the job's context
         auto id = runner.submit(s);
         check(id && reaches(runner, *id, background_job_state::succeeded), "R9 setup: the inspecting job succeeds");
         if (id) {
@@ -473,6 +484,8 @@ int main() {
             check(seen->deadline_default && seen->no_sandbox && seen->no_blob_sink,
                   "R11: no deadline, sandbox_fs or blob_sink reaches a job (allowlist)");
             check(seen->run_id == "run-1", "R11: run id is carried");
+            check(seen->root_run_id == "root-9",
+                  "ADR-241 §8.4: the job's EffectContext::root_run_id is the owner's root run id (host-set, from the spec)");
             check(seen->stashed.has_value() && !seen->stashed->use().has_value(),
                   "R13: a bound capability copied out by the tool is revoked once the job ends");
         }
@@ -538,6 +551,14 @@ int main() {
             auto st = runner.status(*id);
             bool code_ok = st && st->result && st->result->is_error;
             check(code_ok, "R14: the failure is delivered as an error result");
+            // #175: the throw reaches the runner's own catch (fatal, `background_job.tool_threw`), carrying the
+            // tool's message -- not `rt::drive_leaf_task`'s transient "leaf task faulted".
+            std::string msg;
+            if (code_ok && !st->result->content.empty()) {
+                if (auto const* e = std::get_if<ae::Error>(&st->result->content.front().value)) msg = e->message;
+            }
+            check(msg.find("background job tool threw: kaboom") != std::string::npos,
+                  "R14 (#175): the failure carries the tool's own exception message");
         }
         check(wait_until([&] { return reentrant_ok.load() >= 2; }), "R15: a sink calling back into the runner does not deadlock");
 

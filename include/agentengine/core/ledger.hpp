@@ -63,6 +63,7 @@
 // helpers are in src/core/ledger.cpp too. Declarations and comments stay here.
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -78,6 +79,7 @@
 
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/worktree_types.hpp"
+#include "agentengine/rt/async_mutex.hpp"
 #include "agentengine/rt/async_quota.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/trust/identity_authority.hpp"
@@ -134,6 +136,29 @@ namespace ledger_detail {
 // equivalence against a verbatim copy of the old loop on generated trees.
 [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> find_case_folding_collision(
     agentengine::Tree const& tree);
+
+// An error a store returned becomes this phase's `fatal` error with its own code, but a fault `guarded()` already
+// classified keeps `ledger.store_faulted` so the caller can tell a throw from a refusal.
+[[nodiscard]] inline agentengine::error store_failure(agentengine::error const& e, char const* code) {
+    if (e.code == "ledger.store_faulted") return e;
+    return agentengine::error{agentengine::failure_class::fatal, e.message, code};
+}
+
+// ADR-238 §3.9: a store call that throws becomes the same `fatal` error a store that returns one does, with the code
+// `ledger.store_faulted`, so a fault in phase B never skips phase C's bookkeeping or leaks a held lock/quota.
+template <class T>
+[[nodiscard]] agentengine::rt::task<agentengine::result<T>> guarded(agentengine::rt::task<agentengine::result<T>> t) {
+    try {
+        co_return co_await std::move(t);
+    } catch (std::exception const& e) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::fatal, e.what(),
+                                                         "ledger.store_faulted"});
+    } catch (...) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::fatal,
+                                                         "object store threw a non-standard exception",
+                                                         "ledger.store_faulted"});
+    }
+}
 }  // namespace ledger_detail
 
 [[nodiscard]] LedgerMergeResult merge_trees(agentengine::Tree const& base, agentengine::Tree const& ours,
@@ -287,12 +312,15 @@ public:
     [[nodiscard]] agentengine::result<void> mark_digest_shared(agentengine::Digest digest, bool is_tree,
                                                                    agentengine::IdentityHandle requested_by);
 
-    [[nodiscard]] agentengine::result<agentengine::Digest> put_blob_safe(std::span<std::byte const> bytes,
-                                                                             agentengine::IdentityHandle writer) {
-        std::lock_guard<std::mutex> g(mutex_);
-        auto d = put_blob_locked(bytes, writer);
-        if (d.has_value()) persist_snapshot_locked();
-        return d;
+    // ADR-238: `bytes` must stay alive until the returned task completes (the store write suspends).
+    [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Digest>> put_blob_safe(
+            std::span<std::byte const> bytes, agentengine::IdentityHandle writer) {
+        auto d = co_await put_blob_phases(bytes, writer);
+        if (d.has_value()) {
+            std::lock_guard<std::mutex> g(mutex_);
+            persist_snapshot_locked();
+        }
+        co_return d;
     }
 
     // Several blobs written as one drain. `put()` is `put_blob_safe()` minus its snapshot write: the
@@ -316,25 +344,26 @@ public:
         BlobWriteBatch& operator=(BlobWriteBatch const&) = delete;
         ~BlobWriteBatch() { finish(); }
 
-        [[nodiscard]] agentengine::result<agentengine::Digest> put(std::span<std::byte const> bytes) {
-            std::lock_guard<std::mutex> g(ledger_->mutex_);
-            auto d = ledger_->put_blob_locked(bytes, writer_);
-            if (d.has_value()) unpersisted_ = true;
-            return d;
+        // `bytes` must stay alive until the returned task completes. One `put()` at a time per batch.
+        [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Digest>> put(
+                std::span<std::byte const> bytes) {
+            auto d = co_await ledger_->put_blob_phases(bytes, writer_);
+            if (d.has_value()) unpersisted_.store(true, std::memory_order_release);
+            co_return d;
         }
 
         // Writes the snapshot iff a `put()` succeeded since the last write. Idempotent.
         void finish() {
-            if (!unpersisted_) return;
+            if (!unpersisted_.load(std::memory_order_acquire)) return;
             std::lock_guard<std::mutex> g(ledger_->mutex_);
             ledger_->persist_snapshot_locked();
-            unpersisted_ = false;
+            unpersisted_.store(false, std::memory_order_release);
         }
 
     private:
         Ledger* ledger_;
         agentengine::IdentityHandle writer_;
-        bool unpersisted_ = false;
+        std::atomic<bool> unpersisted_{false};
     };
 
     // How many times the durable snapshot has been written by this Ledger (0 without `durable_dir`).
@@ -343,10 +372,10 @@ public:
         std::lock_guard<std::mutex> g(mutex_);
         return snapshot_writes_;
     }
-    [[nodiscard]] agentengine::result<std::vector<std::byte>> get_blob_safe(
-            agentengine::Digest const& digest, agentengine::IdentityHandle caller);
-    [[nodiscard]] agentengine::result<agentengine::Tree> get_tree_safe(agentengine::Digest const& digest,
-                                                                           agentengine::IdentityHandle caller);
+    [[nodiscard]] agentengine::rt::task<agentengine::result<std::vector<std::byte>>> get_blob_safe(
+            agentengine::Digest digest, agentengine::IdentityHandle caller);
+    [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Tree>> get_tree_safe(
+            agentengine::Digest digest, agentengine::IdentityHandle caller);
     [[nodiscard]] std::size_t blob_count_safe() {
         std::lock_guard<std::mutex> g(mutex_);
         return store_.blob_count();
@@ -390,7 +419,7 @@ public:
     // `target_turn_index`'s own tree -- possession of the real `BranchHandle` (a caller cannot call
     // this at all without one) is the entire authorization boundary here, the same discipline
     // `abandon()`/`discard()`-shaped methods already rely on elsewhere in this design. Already named
-    // explicitly at the design level (`decisions/ADR-099-identity-native-sandbox-worktree-capability-
+    // explicitly at the design level (`decisions/archive/ADR-099-identity-native-sandbox-worktree-capability-
     // model.md` §7/§8, the `SandboxRuntime::reset_to_turn()` composition's own comment) -- brought
     // inline here, matching this class's own `mark_digest_shared()` disclosure-in-code convention,
     // after an independent red-team pass on this port asked why the two residuals weren't disclosed
@@ -517,7 +546,7 @@ public:
     // reclaim_orphaned_branch() (see that method's own MUST-FIX comment: this used to share its now-
     // fixed digest-ACL-based check, and the same fix applies here for the identical reason).
     [[nodiscard]] agentengine::rt::task<agentengine::result<void>> abandon_orphaned_branch(
-            std::string const& branch_name, agentengine::IdentityHandle requested_by);
+            std::string branch_name, agentengine::IdentityHandle requested_by);
 
 private:
     friend class BranchHandle<Store>;
@@ -526,10 +555,10 @@ private:
         pending_abandons_.push_back(name);
     }
 
-    // The store write and bounded ACL insertion shared by `put_blob_safe()` and `BlobWriteBatch::put()`.
-    // Must be called with mutex_ already held. Does not persist.
-    [[nodiscard]] agentengine::result<agentengine::Digest> put_blob_locked(std::span<std::byte const> bytes,
-                                                                               agentengine::IdentityHandle const& writer);
+    // The store write and bounded ACL insertion shared by `put_blob_safe()` and `BlobWriteBatch::put()`. Does not persist.
+    // ADR-238: phase B (the store write, no lock held) then phase C (the bounded ACL insertion, under `mutex_`).
+    [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::Digest>> put_blob_phases(
+            std::span<std::byte const> bytes, agentengine::IdentityHandle writer);
 
     // True iff `requested_by` is `state`'s own recorded creator, or an ancestor of that creator (the
     // same ancestor-inclusion `authorized_for()` already extends for content-digest ACLs) -- i.e.
@@ -588,45 +617,65 @@ private:
         child.resolved_ = true;
     }
 
-    // merge() step 1/4. Must be called with mutex_ already held. Validates both branches exist and
-    // `requested_by` is authorized for the child's head tree digest; returns the three digests
-    // `perform_three_way_merge_locked()` needs plus a stable pointer to the parent's own BranchState
-    // (unordered_map references/pointers to existing elements survive later insertions into OTHER
-    // buckets/maps within the same locked critical section, per the container's own guarantee).
-    struct MergeParticipants {
-        BranchState* parent_state = nullptr;
+    // merge() phase A (ADR-238 §3.6). Must be called with mutex_ already held. Validates both branches exist and
+    // `requested_by` is authorized for the child's head tree digest, and copies out the three digests the unlocked
+    // phase B needs. Nothing that points into `branches_` leaves this function.
+    struct MergeDigests {
         agentengine::Digest theirs_digest;
         agentengine::Digest ours_digest;
         agentengine::Digest base_digest;
     };
-    [[nodiscard]] agentengine::result<MergeParticipants> load_merge_participants_locked(
-            BranchHandle<Store>& child, BranchHandle<Store> const& parent,
-            agentengine::IdentityHandle requested_by);
+    [[nodiscard]] agentengine::result<MergeDigests> load_merge_digests_locked(
+            BranchHandle<Store>& child, std::string const& parent_name, agentengine::IdentityHandle requested_by);
 
-    // merge() step 2/4. Must be called with mutex_ already held. Loads base/ours/theirs from the
-    // object store and runs the real three-way `merge_trees()` above; a real conflict fails closed
-    // (`ledger.merge_conflict`) rather than silently picking a side.
-    [[nodiscard]] agentengine::result<LedgerMergeResult> perform_three_way_merge_locked(
-            agentengine::Digest const& base_digest, agentengine::Digest const& ours_digest,
-            agentengine::Digest const& theirs_digest, BranchHandle<Store>& child);
+    // merge() phase A2. Must be called with mutex_ already held. Validates every merged entry is authorized for
+    // `requested_by` (the same per-entry rule commit() requires) and returns the entries to grant the parent's
+    // owner, empty when the requester owns the parent.
+    [[nodiscard]] agentengine::result<std::vector<TreeEntry>> authorize_merge_result_locked(
+            LedgerMergeResult const& merged, std::string const& parent_name,
+            agentengine::IdentityHandle requested_by, BranchHandle<Store>& child);
 
-    // merge() step 3/4. Must be called with mutex_ already held. Validates every merged entry is
-    // authorized for `requested_by`, writes the merged tree, and grants `requested_by` the tree-level
-    // ACL root -- the same per-entry authorization commit() itself already requires.
-    struct CommittedMergeTree {
-        agentengine::Digest merged_tree_digest;
-        // ADR-112: a snapshot of the merged entries, taken ONLY when the parent owner grant in
-        // `grant_parent_owner_access_locked()` below will actually run, since `merged.merged` is
-        // moved-from immediately after this point -- needed for the per-entry content-level grants
-        // that close this method's own long-disclosed "structural, not content-wise" scope limit.
-        // Cheap relative to everything else this step already does per call (a handful of small
-        // {name, digest, bool} structs, not blob/tree content itself). Empty when the parent already
-        // owns the branch (`parent_state.created_by_id == requested_by.id()`).
-        std::vector<TreeEntry> entries_for_owner_grant;
+    // merge() phase C. Must be called with mutex_ already held. Re-finds both branches BY NAME (they may have moved
+    // or vanished while phase B was suspended), grants the ACL roots and lands the merge.
+    [[nodiscard]] agentengine::result<Checkpoint> apply_merge_locked(
+            BranchHandle<Store>& child, std::string const& parent_name, agentengine::IdentityHandle requested_by,
+            agentengine::Digest const& merged_tree_digest, std::vector<TreeEntry> const& entries_for_owner_grant);
+
+    [[nodiscard]] agentengine::rt::task<agentengine::result<Checkpoint>> commit_phases(
+            std::string branch_name, agentengine::Tree tree, agentengine::IdentityHandle authored_by);
+    [[nodiscard]] agentengine::rt::task<agentengine::result<Checkpoint>> merge_phases(
+            BranchHandle<Store>& child, std::string parent_name, agentengine::IdentityHandle requested_by);
+
+    // The body of abandon(), with `op_mutex_` already held by the caller (ADR-238 §3.5: never nest a locker).
+    void abandon_op_locked(BranchHandle<Store>& child);
+
+    [[nodiscard]] static agentengine::error op_lock_refused_error() {
+        return agentengine::error{agentengine::failure_class::policy,
+                                  "the ledger operation lock is held by this call's own ancestor",
+                                  "ledger.op_lock_refused"};
+    }
+
+    // ADR-238 §3.7: armed for the life of a merge(). If the merge frame is destroyed while parked (the caller dropped
+    // the task), the by-value `child` would otherwise queue a REAL abandon; this registers it as a reclaimable orphan
+    // instead, which is what every failed merge already does.
+    class InFlightChild {
+    public:
+        InFlightChild(Ledger& ledger, BranchHandle<Store>& child) : ledger_(&ledger), child_(&child) {}
+        InFlightChild(InFlightChild const&) = delete;
+        InFlightChild& operator=(InFlightChild const&) = delete;
+        ~InFlightChild() {
+            if (!armed_) return;
+            try {
+                std::lock_guard<std::mutex> g(ledger_->mutex_);
+                ledger_->orphan_child_locked(*child_);
+            } catch (...) {}
+        }
+        void disarm() noexcept { armed_ = false; }
+    private:
+        Ledger* ledger_;
+        BranchHandle<Store>* child_;
+        bool armed_ = true;
     };
-    [[nodiscard]] agentengine::result<CommittedMergeTree> commit_merged_tree_locked(
-            LedgerMergeResult merged, agentengine::IdentityHandle requested_by,
-            BranchState const& parent_state, BranchHandle<Store>& child);
 
     // merge() step 4/4. Must be called with mutex_ already held.
     //
@@ -666,7 +715,10 @@ private:
 
     void load_durable_state();
 
+    // ADR-238: `mutex_` is the state lock and is never held across a `co_await`. `op_mutex_` serializes the
+    // head-moving/deleting operations across their store I/O.
     mutable std::mutex mutex_;
+    agentengine::rt::AsyncMutex op_mutex_;
     std::unordered_map<std::string, BranchState> branches_;
     std::vector<std::string> pending_abandons_;
     std::set<std::string> orphaned_from_restart_;   // branch names restored by load_durable_state()

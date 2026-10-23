@@ -38,11 +38,13 @@
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 using namespace agentengine;
 
@@ -58,8 +60,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string_view s) {
@@ -73,14 +74,14 @@ template <class T>
 // step [1]), so a FakeSurface stand-in is enough to satisfy MandatorySandboxProvider<Surface, Store>'s
 // own template constraint.
 struct FakeSurface {
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const&) {
-        return SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string) {
+        co_return SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 static_assert(ExecutionSurface<FakeSurface>);
@@ -130,7 +131,7 @@ int main() {
         check(root_r.has_value(), "[1] create_root_branch() on a durable, file-backed Ledger succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
 
-        auto root_blob_r = durable_ledger.put_blob_safe(to_bytes(kRootContent), owner);
+        auto root_blob_r = agentengine::rt::block_on(durable_ledger.put_blob_safe(to_bytes(kRootContent), owner));
         check(root_blob_r.has_value(), "[1] put_blob_safe() writes real content to real disk");
         if (!root_blob_r.has_value()) return EXIT_FAILURE;
         root_blob_digest = *root_blob_r;
@@ -185,6 +186,7 @@ int main() {
         auto bound = provider.bind_root_branch(reopened_ledger, owner, scratch_root / "phase-b",
                                                  *branch_quota_r, *run_quota_r, *storage_quota_r,
                                                  "content-integration");
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         provider.bind_task_branch_tools(*merge_quota_r);
         check(bound.has_value(), "[4] bind_root_branch() succeeds after a simulated crash, with NO "
                                   "manual reclaim call anywhere in this test");
@@ -207,7 +209,7 @@ int main() {
 
         // [6] the REAL content committed in Phase A is still readable, byte-exact, through the
         // ACL-gated production read path, after the full crash-recovery-and-merge cycle.
-        auto readback_r = reopened_ledger.get_blob_safe(root_blob_digest, owner);
+        auto readback_r = agentengine::rt::block_on(reopened_ledger.get_blob_safe(root_blob_digest, owner));
         check(readback_r.has_value(), "[6] the root's own real content is still readable via "
                                        "get_blob_safe() after the full crash-recovery-and-merge cycle");
         if (readback_r.has_value()) {

@@ -19,6 +19,7 @@
 #include "agentengine/core/builtin_skills.hpp"
 #include "agentengine/core/skill.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -68,7 +69,7 @@ public:
     [[nodiscard]] std::filesystem::path const& root() const { return root_; }
 
     Run run(std::string const& source, ae::CapabilitySet const& held) {
-        auto const table = ae::ToolTable::from_descriptors({sandbox_->tool_descriptor()});
+        auto const table = ae::ToolTable::from_descriptors({sandbox_->tool_descriptor(ae::approval_mode::never_require)});
         ae::EffectContext ctx;
         ctx.principal = ae::Principal{"skill-grammar", ""};
         ctx.capabilities = ae::borrow_capabilities(held);
@@ -76,7 +77,7 @@ public:
                                       json::Value::make_object({{"source", json::Value::make_string(source)}}),
                                       false};
         ae::ToolInvocationAudit audit;
-        ae::ToolResult const r = ae::invoke_tool(table, held, req, ctx, nullptr, &audit);
+        ae::ToolResult const r = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, req, ctx, nullptr, &audit));
         Run out;
         if (r.is_error) {
             out.tool_error = true;

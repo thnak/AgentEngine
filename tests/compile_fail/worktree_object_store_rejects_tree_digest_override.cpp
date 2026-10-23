@@ -1,4 +1,4 @@
-// This file MUST NOT compile (025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
+// This file MUST NOT compile (rfcs/025-Worktree-and-Virtual-Filesystem.md §2, Milestone 3 Phase A3) --
 // see tests/compile_fail/CMakeLists.txt's compile-fail gate. Same claim as the companion
 // worktree_object_store_rejects_blob_digest_override.cpp, proven independently for `put_tree`
 // rather than assumed to follow from `put_blob`'s own proof: `InMemoryWorktreeObjectStore::
@@ -11,6 +11,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -18,6 +19,6 @@ int main() {
     InMemoryWorktreeObjectStore store;
     std::string const forced_digest(64, '0');
     Tree const tree{};
-    auto put = store.put_tree(forced_digest, tree);  // must not compile: no such overload exists
+    auto put = agentengine::rt::block_on(store.put_tree(forced_digest, tree));  // must not compile: no such overload exists
     return put.has_value() ? 0 : 1;
 }

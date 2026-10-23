@@ -76,11 +76,13 @@
 
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 
 using namespace agentengine;
 
@@ -96,22 +98,21 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Mirrors tests/sandbox/test_mandatory_sandbox_provider_composed.cpp's own fixture exactly -- never actually
 // reset()/run()/drain_to()'d here (this file never calls run_in_task_branch()), so it never touches a
 // real process or Docker.
 struct FakeSurface {
-    [[nodiscard]] agentengine::result<void> reset(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> reset(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
-    [[nodiscard]] agentengine::result<SurfaceRunOutcome> run(std::string const&) {
-        return SurfaceRunOutcome{0, ""};
+    [[nodiscard]] agentengine::task<agentengine::result<SurfaceRunOutcome>> run(std::string) {
+        co_return SurfaceRunOutcome{0, ""};
     }
-    [[nodiscard]] agentengine::result<void> drain_to(std::filesystem::path const&) {
-        return agentengine::result<void>{};
+    [[nodiscard]] agentengine::task<agentengine::result<void>> drain_to(std::filesystem::path) {
+        co_return agentengine::result<void>{};
     }
 };
 static_assert(ExecutionSurface<FakeSurface>);

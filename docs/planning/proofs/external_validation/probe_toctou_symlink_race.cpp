@@ -1,5 +1,5 @@
 // EXTERNAL-VALIDATION PROBE: replays ADR-014's own real, deterministic TOCTOU exploit technique
-// (this same codebase, `decisions/ADR-014-worktree-mount-path-canonicalization.md`, §5 C2-7)
+// (this same codebase, `decisions/archive/ADR-014-worktree-mount-path-canonicalization.md`, §5 C2-7)
 // against `RealIoFileSystem`'s real `reject_symlink_escape()`/`write()` code, instead of leaving
 // that file's own "HONEST RESIDUAL... check-then-use gap (TOCTOU)" comment as a purely theoretical
 // disclosure.

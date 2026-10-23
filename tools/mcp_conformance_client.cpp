@@ -1,4 +1,4 @@
-// Implements ADR-061 §10 Tier 1 (decisions/ADR-061-host-provided-inbound-transport.md): the MCP
+// Implements ADR-061 §10 Tier 1 (decisions/archive/ADR-061-host-provided-inbound-transport.md): the MCP
 // CLIENT role driven by the official `@modelcontextprotocol/conformance` harness, which is 011 §10
 // G2's gate.
 //
@@ -38,6 +38,7 @@
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/mcp/client.hpp"
 #include "agentengine/protocol/mcp/json_rpc.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
 
 namespace {
@@ -190,10 +191,13 @@ int main(int argc, char** argv) {
     std::string const host_header =
         parsed->host + ":" + std::to_string(static_cast<unsigned>(parsed->port));
 
+    // ADR-237 §5.1: the sender is a `task` producer now. Its body does blocking HTTP (this is a
+    // conformance binary whose `main` is synchronous), so it never parks -- it is a coroutine only
+    // because the seam is; the calls below drive it with `rt::block_on` at the program's outer edge.
     mcp::RequestSenderWithHeaders sender =
         [&](mcp::JsonRpcRequest const& req,
             std::vector<std::pair<std::string, std::string>> const& extra_headers)
-        -> mcp::JsonRpcResponse {
+        -> ae::task<mcp::JsonRpcResponse> {
         json::Value const body_json = mcp::to_json(req);
         std::string const body      = json::dump(body_json);
 
@@ -227,7 +231,7 @@ int main(int argc, char** argv) {
         auto http_resp = sb::perform_http_exchange(*endpoint, host_header, http_req,
                                                     /*byte_cap=*/std::nullopt);
         if (!http_resp) {
-            return mcp::JsonRpcResponse::make_error(
+            co_return mcp::JsonRpcResponse::make_error(
                 req.id, mcp::JsonRpcError{mcp::kRpcInternalError,
                                            "transport failure: " + http_resp.error().message,
                                            json::Value{}});
@@ -236,7 +240,7 @@ int main(int argc, char** argv) {
             // Carry the body into the message: a conformance run's whole value is the server telling
             // us precisely what it objected to, and swallowing that turns a diagnosable failure into
             // a bare status code.
-            return mcp::JsonRpcResponse::make_error(
+            co_return mcp::JsonRpcResponse::make_error(
                 req.id,
                 mcp::JsonRpcError{mcp::kRpcInternalError,
                                    "HTTP " + std::to_string(static_cast<unsigned>(http_resp->status)) +
@@ -270,7 +274,7 @@ int main(int argc, char** argv) {
                     if (same) ctype = v;
                 }
             }
-            return mcp::JsonRpcResponse::make_error(
+            co_return mcp::JsonRpcResponse::make_error(
                 req.id, mcp::JsonRpcError{mcp::kRpcInternalError,
                                            "response body is not JSON: " + parsed_json.error().message +
                                                " content-type=" + ctype +
@@ -279,12 +283,12 @@ int main(int argc, char** argv) {
         }
         auto response = mcp::parse_response(*parsed_json);
         if (!response) {
-            return mcp::JsonRpcResponse::make_error(
+            co_return mcp::JsonRpcResponse::make_error(
                 req.id, mcp::JsonRpcError{mcp::kRpcInternalError,
                                            "not a JSON-RPC response: " + response.error().message,
                                            json::Value{}});
         }
-        return *response;
+        co_return *response;
     };
 
     mcp::McpClient client(sender, "agentengine-conformance");
@@ -295,7 +299,7 @@ int main(int argc, char** argv) {
     // content of the answer. `McpClient` itself never answers on its own; this is the injected host
     // decision the engine deliberately refuses to make for anyone (I3).
     client.set_input_request_handler(
-        [](std::string const&, json::Value const& request) -> ae::result<json::Value> {
+        [](std::string const&, json::Value const& request) -> ae::task<ae::result<json::Value>> {
             json::Value const* method = request.find("method");
             std::string const  m      = method && method->is_string() ? method->as_string() : "";
             if (m == "elicitation/create") {
@@ -315,18 +319,18 @@ int main(int argc, char** argv) {
                         else if (t == "string")  filled.emplace_back(key, json::Value::make_string("ok"));
                     }
                 }
-                return json::Value::make_object(
+                co_return json::Value::make_object(
                     {{"action", json::Value::make_string("accept")},
                      {"content", json::Value::make_object(std::move(filled))}});
             }
             // Anything else is declined rather than guessed at -- an unrecognised request type is
             // exactly what the spec's "under-answer earns another InputRequiredResult" path is for.
-            return std::unexpected(ae::error{ae::failure_class::policy,
+            co_return std::unexpected(ae::error{ae::failure_class::policy,
                                               "unsupported input request method: " + m,
                                               "mcp.unsupported_input_request"});
         });
 
-    auto tools = client.list_tools();
+    auto tools = ae::rt::block_on(client.list_tools());
     if (!tools) {
         std::fprintf(stderr, "FAIL: tools/list -- %s (%s)\n", tools.error().message.c_str(),
                       tools.error().code.c_str());
@@ -426,7 +430,7 @@ int main(int argc, char** argv) {
                 args = json::Value::make_object(std::move(filled));
             }
 
-            auto outcome = client.call_tool(t.name, args);
+            auto outcome = ae::rt::block_on(client.call_tool(t.name, args));
             if (!outcome) {
                 std::fprintf(stderr, "FAIL: tools/call %s [%s] -- %s (%s)\n", t.name.c_str(),
                               variant.label, outcome.error().message.c_str(),

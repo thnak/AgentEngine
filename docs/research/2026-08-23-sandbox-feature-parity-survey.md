@@ -4,7 +4,7 @@ Compiled: 2026-08-23. Companion to `docs/research/2026-08-23-microvm-sandbox-bac
 (which covers isolation-*technology* pluggability — E2B/Firecracker, Modal/gVisor, etc.). This file
 is orthogonal: it surveys sandbox *feature surface* (what capabilities a caller gets, regardless of
 which isolation tech is underneath) across production platforms, then cross-checks each area against
-`008-Sandbox-and-Isolation.md`, `010-Python-Code-Interpreter.md`, and `025-Worktree-and-Virtual-
+`rfcs/008-Sandbox-and-Isolation.md`, `rfcs/010-Python-Code-Interpreter.md`, and `025-Worktree-and-Virtual-
 Filesystem.md` to separate: **(a) already specced and built**, **(b) specced but explicitly
 deferred/scoped-out** (a deliberate decision, cited), or **(c) not mentioned in any of the three RFCs
 at all** — a genuine blind spot, not a deferred decision. Feeds the same future ADR track as the
@@ -94,7 +94,7 @@ Northflank: "GPU sandboxes," "Top AI sandbox platforms," "Best platforms for hig
 environments" (northflank.com, fetched 2026-08-23, incl. the ComputeSDK 2026 Scale Invitational
 concurrency benchmark). Replit: searched, no primary architecture doc found — excluded from the
 matrix, third-party commentary only (modal.com/resources, augmentcode.com, fetched 2026-08-23).
-Internal: `008-Sandbox-and-Isolation.md`, `010-Python-Code-Interpreter.md`,
-`025-Worktree-and-Virtual-Filesystem.md` (repo root, current on-disk text, read 2026-08-23);
+Internal: `rfcs/008-Sandbox-and-Isolation.md`, `rfcs/010-Python-Code-Interpreter.md`,
+`rfcs/025-Worktree-and-Virtual-Filesystem.md` (repo root, current on-disk text, read 2026-08-23);
 `docs/research/2026-08-23-microvm-sandbox-backend-landscape.md` and
 `docs/planning/2026-08-22-component-role-audit-tracker.md` (cross-referenced, not re-derived).

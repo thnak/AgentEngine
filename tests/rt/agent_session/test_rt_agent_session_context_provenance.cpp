@@ -1,4 +1,4 @@
-// Proves decisions/ADR-066-context-provider-attribution-provenance.md's stamping mechanism actually
+// Proves decisions/archive/ADR-066-context-provider-attribution-provenance.md's stamping mechanism actually
 // reaches a real rt::AgentSession round's outbound ChatRequest -- not just the standalone
 // assemble_context() unit tests (tests/core/context/test_context_provenance.cpp). AgentSession itself calls
 // history_provider_.on_context() directly, never assemble_context() -- so attribution is only real
@@ -10,12 +10,15 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <tuple>
 #include <vector>
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -36,8 +39,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -98,6 +100,7 @@ struct SkillLikeProvider {
         c.messages.push_back(std::move(advertisement));
 
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name        = "skill_tool";
         td.description = "a tool this provider contributes";
         c.tools.push_back(std::move(td));
@@ -126,7 +129,7 @@ int main() {
                                                SkillLikeProvider>;
 
     AgentSession<RecordingChatClient, NoSessionState, ComposedProvider> session;
-    session.initialize("prov-t1", Principal{"p1", ""});
+    session.initialize("prov-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
     // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
     // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
     // default-constructible -- see composed_context_provider.hpp's own comment on why).

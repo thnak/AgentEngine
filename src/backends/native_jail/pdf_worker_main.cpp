@@ -6,9 +6,8 @@
 // session's CapabilitySet/BoundCapability state).
 //
 // argv[1] is the mode ("text", "toc", "images", or "meta"); argv[2] is a path to a PDF file already
-// placed by the host into a scratch directory it granted this process read access to (NativeJailBackend::
-// grant_ro_path_once() on Windows; an ordinary SandboxSpec.mounts read-only bind on Linux -- S3a(ii)
-// explains why the two platforms differ here). This binary trusts nothing about the PDF's CONTENTS
+// placed by the host into a scratch directory mounted read-only (an ordinary SandboxSpec.mounts entry on
+// both platforms, checked against the caller's grants -- ADR-244 §2.4). This binary trusts nothing about the PDF's CONTENTS
 // (untrusted input, PDFium's own job to parse safely) but the PATH itself is host-controlled, never
 // derived from anything guest/model-supplied directly (I2 -- the host already ran its own capability
 // check before writing the scratch file).

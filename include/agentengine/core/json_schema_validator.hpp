@@ -1,8 +1,8 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md §8 G2 ("a negative suite including a schema violation
-// produces a structured ToolResult{is_error}") and 015-Declarative-Agent-Format.md §7 G2 ("a
+// Implements rfcs/006-Tool-and-Function-Plane.md §8 G2 ("a negative suite including a schema violation
+// produces a structured ToolResult{is_error}") and rfcs/015-Declarative-Agent-Format.md §7 G2 ("a
 // negative corpus including cyclic $ref is rejected with precise diagnostics") -- gap-3 fix
-// (2026-08-14, decisions/ADR-045-*.md). `core/json_schema.hpp`'s existing `AE_JSON_SCHEMA` machinery
+// (2026-08-14, decisions/archive/ADR-045-*.md). `core/json_schema.hpp`'s existing `AE_JSON_SCHEMA` machinery
 // only ever generates a schema FROM a known C++ type, one direction; this file is the missing other
 // direction, a real instance-against-a-schema-DOCUMENT check that works for any `json::Value` schema,
 // not just ones this codebase generated itself.
@@ -148,7 +148,7 @@ namespace detail {
 
 }  // namespace detail
 
-// decisions/ADR-212-deterministic-tool-output-declaration.md §3.2 defines a `Deterministic` tool's
+// decisions/archive/ADR-212-deterministic-tool-output-declaration.md §3.2 defines a `Deterministic` tool's
 // "same reply" as this equality, so a host comparing two replies needs it outside `detail`.
 using detail::json_value_equal;
 

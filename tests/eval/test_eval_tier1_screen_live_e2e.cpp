@@ -60,6 +60,8 @@
 #include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 namespace ev = agentengine::eval;
@@ -86,8 +88,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 json::Value str(std::string s) { return json::Value::make_string(std::move(s)); }
@@ -251,14 +252,14 @@ constexpr char const* kTaskValue = "ok";
 // Success iff the LAST call to `tool` set `arg` to `value` -- the ticket's final state. (The stock grader succeeds if
 // the value was EVER sent, which a later overriding call cannot undo.)
 ev::GraderFn final_value_grader(std::string tool, std::string arg, std::string value) {
-    return [tool, arg, value](ev::TrialResult const& trial) {
+    return [tool, arg, value](ev::TrialResult const& trial) -> task<ev::grade_outcome> {
         std::optional<std::string> last;
         for (ev::CapturedCall const& call : trial.tool_calls) {
             if (call.tool_name != tool) continue;
             json::Value const* v = call.arguments.find(arg);
             last = (v != nullptr && v->is_string()) ? v->as_string() : std::string{};
         }
-        return last == value ? ev::grade_outcome::success : ev::grade_outcome::failure;
+        co_return last == value ? ev::grade_outcome::success : ev::grade_outcome::failure;
     };
 }
 
@@ -460,7 +461,7 @@ int analyze(fs::path const& dir) {
     // The attempt log on disk, read back through a fresh store.
     rt::FileAppendLogStore store(dir / "attempt-log");
     ev::Tier1AttemptLog<rt::FileAppendLogStore> log(store);
-    auto history = log.lineage_attempts(lineage);
+    auto history = agentengine::rt::block_on(log.lineage_attempts(lineage));
     check(history.has_value(), "attempt log: the lineage's log reads back from disk");
     if (!history) return g_failures - failures_before;
 

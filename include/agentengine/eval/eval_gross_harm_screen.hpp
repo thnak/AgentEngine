@@ -33,7 +33,7 @@
 // hiding a harm. Exactly one analysis runs per screen (ITT when valid, harm-favouring when not), so
 // the false-flag bound for valid runs is unchanged; invalid runs can only be flagged MORE often.
 //
-// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/ADR-195-evaluation-harness.md
+// Explicitly OUT OF SCOPE (named, not silently dropped -- decisions/archive/ADR-195-evaluation-harness.md
 // §8's "Still unbuilt" list is the authoritative one): the baseline canary; per-task variance and the task-level CI (Tier 2,
 // §3.6); task generators; arm S / SlotTable (§3.7); the kill switch and promotion-write digest
 // re-check (§3.0 item 5); EvalSuite/EvalRun/PromotionEvidence, the look ledger, family/shard
@@ -370,7 +370,7 @@ template <class InnerFactory, class SummarizerFactory>
         detail::AttemptedTrial attempted =
             co_await detail::run_trial_with_retry(make_inner, make_summarizer, slot, std::move(trial_spec), retries_left);
         TrialResult trial_result = std::move(attempted.result);
-        grade_outcome const grade = detail::grade_trial(task_def.grader, trial_result);
+        grade_outcome const grade = co_await detail::grade_trial(task_def.grader, trial_result);
         bool const faulted = detail::was_faulted(attempted.attempts, grade);
         detail::drop_transcripts_unless_retained(trial_result, spec.retain_recordings);
         if (attempted.first_attempt.has_value()) {

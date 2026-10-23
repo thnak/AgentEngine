@@ -1,14 +1,28 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1 --
-// `RemoteVectorIndex`/`AnyVectorIndex` (core/remote_vector_index.hpp), and closes ADR-180 §4
-// red-team findings R1 (`VectorIndex`/`RemoteVectorIndex` were not structurally disjoint) and R2
-// (the entire `RemoteVectorIndex` dispatch path in `VectorRagContextProvider`/
-// `HybridRagContextProvider`/`DiskCorpusSource::mount_hybrid()` was uninstantiated by any committed
-// test -- a typo or logic error in any `if constexpr (RemoteVectorIndex<IndexT>)` branch would not
-// have been caught by `ctest` at all until a real conformer like `QdrantVectorIndex` was built).
-// This file is that missing instantiation: a mock `RemoteVectorIndex` conformer, driven through
-// every dispatch site this ADR added, with REAL assertions on the results, not just "it compiles."
+// decisions/archive/ADR-237 §5.1 (#172): ONE `task`-shaped index seam. `VectorIndex` and `SparseIndex` take an
+// `EffectContext&` and return `task<result<...>>`, absorbing the former `RemoteVectorIndex` (ADR-180 §2.1),
+// and both RAG providers' `recall` tools await the embedder and the indexes like `on_context()` does.
+//
+// This file proves the property that change exists for: conformers whose calls GENUINELY SUSPEND -- here,
+// each one parks on a real reactor timer (`rt::sleep_for`) before answering, as a network-backed index or
+// embedder would -- work through EVERY caller, with every call driven ON A RUNTIME LANE (`Runtime::run`),
+// where a session's calls run once callers move onto the runtime (#179). A lane refuses `rt::block_on`
+// (`rt.block_on_on_lane`, ADR-237 §4.3), so only a caller that AWAITS passes here; the pre-#172 `recall`,
+// which drove its embedder and index through `rt::drive_leaf_task()` (= `block_on`), fails S2/S3 with
+// `rt.leaf_task_faulted`.
+//
+// S1  VectorRagContextProvider::on_context() retrieves and renders through a suspending embedder + index.
+// S2  its `recall(query)` tool does too. Before #172 `recall` drove the embedder and index synchronously --
+//     refused outright for a conformer declaring `synchronous_leaf = false`, and a `block_on` (refused on a
+//     lane) for the rest.
+// S3  HybridRagContextProvider::on_context() and `recall` with a suspending dense AND sparse leg.
+// S4  DiskCorpusSource::mount() and mount_hybrid() ingest through suspending indexes.
+//
+// Every check also asserts the mock actually suspended (`parks` > 0), so a mock that silently completed
+// inline could not make these pass. (The file keeps its historical name: it was the RemoteVectorIndex
+// dispatch test, and a remote index is the conformer that suspends.)
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -23,13 +37,14 @@
 #include "agentengine/core/corpus_scope.hpp"
 #include "agentengine/core/corpus_source.hpp"
 #include "agentengine/core/hybrid_rag_context_provider.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/vector_rag_context_provider.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "../../support/run_task_sync.hpp"
+#include "agentengine/rt/runtime.hpp"
+#include "agentengine/rt/sleep.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -45,23 +60,34 @@ int g_failures = 0;
         }                                                                                          \
     } while (0)
 
-// A real, in-memory (never actually touches a network), scripted `RemoteVectorIndex` conformer --
-// stands in for `QdrantVectorIndex` (ADR-180 §8 step 7, not yet built) for the purpose of proving
-// the DISPATCH machinery around it is correct, independent of any real network transport.
-class MockRemoteIndex {
+using namespace std::chrono_literals;
+
+// Parks the calling coroutine on the runtime's reactor for a moment -- a real suspension, resumed later from
+// the reactor, the way a network round-trip would be.
+struct Parker {
+    ae::pal::Reactor* reactor = nullptr;
+    std::size_t       parks   = 0;
+    ae::task<void> park() {
+        ++parks;
+        (void)co_await ae::rt::sleep_for(*reactor, 1ms);
+    }
+};
+
+class SuspendingDenseIndex {
 public:
-    static constexpr bool synchronous_leaf = true;
+    explicit SuspendingDenseIndex(Parker& p) : parker_(&p) {}
 
     ae::task<ae::result<void>> add_batch(std::vector<std::string> const& ids,
-                                          std::vector<std::vector<float>> const& vecs,
-                                          ae::EffectContext&) {
+                                         std::vector<std::vector<float>> const& vecs, ae::EffectContext&) {
+        co_await parker_->park();
         ++add_batch_calls;
         for (std::size_t i = 0; i < ids.size(); ++i) entries[ids[i]] = vecs[i];
         co_return ae::result<void>{};
     }
 
     ae::task<ae::result<std::vector<ae::ScoredId>>> search(std::span<float const> query, std::size_t k,
-                                                              ae::EffectContext&) {
+                                                           ae::EffectContext&) {
+        co_await parker_->park();
         ++search_calls;
         std::vector<ae::ScoredId> out;
         for (auto const& [id, vec] : entries) {
@@ -78,54 +104,55 @@ public:
     }
 
     ae::task<ae::result<bool>> contains(std::string const& id, ae::EffectContext&) {
-        ++contains_calls;
+        co_await parker_->park();
         co_return entries.contains(id);
     }
 
     std::unordered_map<std::string, std::vector<float>> entries;
     std::size_t add_batch_calls = 0;
     std::size_t search_calls    = 0;
-    std::size_t contains_calls  = 0;
+
+private:
+    Parker* parker_;
 };
-static_assert(ae::RemoteVectorIndex<MockRemoteIndex>);
+static_assert(ae::VectorIndex<SuspendingDenseIndex>);
 
-// R1's own disproof scenario: a type offering BOTH a synchronous VectorIndex-shaped overload set
-// AND an async RemoteVectorIndex-shaped one -- before the fix, this satisfied BOTH concepts at once.
-class DualShapedIndex {
+// A BM25 index behind a suspending front: same answers as the real local index, after a real park.
+class SuspendingSparseIndex {
 public:
-    // Present for RemoteVectorIndex's own `{ T::synchronous_leaf } -> convertible_to<bool>` clause
-    // to find (never actually READ here -- the concept short-circuits to false via `!VectorIndex<T>`
-    // before that clause is even evaluated, since this type also satisfies VectorIndex below).
-    [[maybe_unused]] static constexpr bool synchronous_leaf = true;
+    explicit SuspendingSparseIndex(Parker& p) : parker_(&p) {}
 
-    // VectorIndex-shaped (2-arg add_batch, 2-arg search, 1-arg contains, all synchronous).
-    ae::result<void> add_batch(std::vector<std::string> const&, std::vector<std::vector<float>> const&) {
-        return {};
+    ae::task<ae::result<void>> add_batch(std::vector<std::string> const& ids, std::vector<std::string> const& texts,
+                                         ae::EffectContext& ctx) {
+        co_await parker_->park();
+        co_return co_await inner_.add_batch(ids, texts, ctx);
     }
-    ae::result<std::vector<ae::ScoredId>> search(std::span<float const>, std::size_t) const {
-        return std::vector<ae::ScoredId>{};
+    ae::task<ae::result<std::vector<ae::ScoredId>>> search(std::string const& query, std::size_t k,
+                                                           ae::EffectContext& ctx) {
+        co_await parker_->park();
+        ++search_calls;
+        co_return co_await inner_.search(query, k, ctx);
     }
-    bool contains(std::string const&) const { return false; }
+    ae::task<ae::result<bool>> contains(std::string const& id, ae::EffectContext& ctx) {
+        co_await parker_->park();
+        co_return co_await inner_.contains(id, ctx);
+    }
 
-    // RemoteVectorIndex-shaped (3-arg/2-arg, EffectContext-threaded, async) -- an overload, not a
-    // replacement, distinguishable by arg count alone.
-    ae::task<ae::result<void>> add_batch(std::vector<std::string> const&, std::vector<std::vector<float>> const&,
-                                          ae::EffectContext&) {
-        co_return ae::result<void>{};
-    }
-    ae::task<ae::result<std::vector<ae::ScoredId>>> search(std::span<float const>, std::size_t,
-                                                              ae::EffectContext&) {
-        co_return std::vector<ae::ScoredId>{};
-    }
-    ae::task<ae::result<bool>> contains(std::string const&, ae::EffectContext&) { co_return false; }
+    std::size_t search_calls = 0;
+
+private:
+    Parker*       parker_;
+    ae::BM25Index inner_;
 };
+static_assert(ae::SparseIndex<SuspendingSparseIndex>);
 
-class MockEmbedder {
+class SuspendingEmbedder {
 public:
-    static constexpr bool synchronous_leaf = true;
+    explicit SuspendingEmbedder(Parker& p) : parker_(&p) {}
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {2, 100}; }
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
-                                                                         ae::EffectContext&) {
+                                                                     ae::EffectContext&) {
+        co_await parker_->park();
         std::vector<std::vector<float>> out;
         for (auto const& t : texts) {
             auto it = vectors.find(t);
@@ -134,12 +161,19 @@ public:
         co_return out;
     }
     std::unordered_map<std::string, std::vector<float>> vectors;
-};
-static_assert(ae::Embedder<MockEmbedder>);
 
-using RemoteProvider = ae::VectorRagContextProvider<MockEmbedder, MockRemoteIndex, ae::InMemoryWorktreeObjectStore,
-                                                     ae::rt::InMemoryAppendLogStore>;
-static_assert(ae::ContextProvider<RemoteProvider>);
+private:
+    Parker* parker_;
+};
+static_assert(ae::Embedder<SuspendingEmbedder>);
+
+using VectorProvider = ae::VectorRagContextProvider<SuspendingEmbedder, SuspendingDenseIndex,
+                                                    ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
+static_assert(ae::ContextProvider<VectorProvider>);
+using HybridProvider =
+    ae::HybridRagContextProvider<SuspendingEmbedder, SuspendingDenseIndex, SuspendingSparseIndex,
+                                 ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
+static_assert(ae::ContextProvider<HybridProvider>);
 
 ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
     ae::ContentItem item{};
@@ -153,181 +187,170 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 }
 
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
-                                                ae::rt::InMemoryAppendLogStore& ref_store,
-                                                ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+                                              ae::rt::InMemoryAppendLogStore& ref_store, ae::Mount const& mount) {
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
+}
+
+ae::rt::Runtime* g_runtime = nullptr;
+
+// Runs `t` as a root on a runtime lane and waits for it from this (main) thread.
+template <class T>
+T run(ae::task<T> t) {
+    return g_runtime->run(std::move(t));
+}
+
+[[nodiscard]] std::size_t result_count(ae::result<ae::json::Value> const& invoked) {
+    if (!invoked) return 0;
+    auto const* results = invoked->find("results");
+    return results != nullptr && results->is_array() ? results->as_array().size() : 0;
 }
 
 }  // namespace
 
 int main() {
-    // --- R1: VectorIndex and RemoteVectorIndex are now structurally disjoint -----------------------
-    static_assert(ae::VectorIndex<DualShapedIndex>,
-                  "R1 setup: a dual-shaped conformer still satisfies VectorIndex (its 2-arg "
-                  "synchronous overloads)");
-    static_assert(!ae::RemoteVectorIndex<DualShapedIndex>,
-                  "R1: a type that ALSO satisfies VectorIndex is excluded from RemoteVectorIndex by "
-                  "construction -- the two concepts are mutually exclusive, so AnyVectorIndex's "
-                  "if-constexpr dispatch is never ambiguous about which branch a given IndexT takes");
-    static_assert(ae::AnyVectorIndex<DualShapedIndex>,
-                  "R1: the dual-shaped conformer is still a valid AnyVectorIndex overall -- just "
-                  "deterministically classified as the local/synchronous kind, not both at once");
-    AE_CHECK(true, "R1: VectorIndex/RemoteVectorIndex disjointness (compile-time, see static_asserts above)");
+    ae::rt::Runtime runtime{ae::rt::RuntimeConfig{.lanes = 1}};
+    g_runtime = &runtime;
+    Parker parker{&runtime.reactor()};
 
-    // --- R2: VectorRagContextProvider's on_context()/recall dispatch, REAL instantiation, REAL
-    // assertions, against a working RemoteVectorIndex conformer (not merely "it compiles") ----------
+    // --- S1/S2: VectorRagContextProvider -------------------------------------------------------------
     {
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore  ref_store;
-        ae::Principal const principal{"p-remote", "tenant-1"};
+        ae::Principal const principal{"p-suspend", "tenant-1"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
-
         ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
 
-        MockRemoteIndex remote_index;
+        SuspendingDenseIndex index{parker};
         std::string const text = "Dark mode lives in Settings.";
-        auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+        auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
-        AE_CHECK(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record).has_value(),
+        AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),
                  "setup: chunk record written");
 
-        MockEmbedder embedder;
+        SuspendingEmbedder embedder{parker};
         embedder.vectors["dark mode"] = {1.0f, 0.0f};
 
         ae::EffectContext ctx{};
         ctx.principal = principal;
-        // Seed the remote index directly (mirrors on_context() would trigger add_batch() itself in
-        // a real ingestion path, not yet built for RemoteVectorIndex -- test setup only).
-        auto seeded = ae::test_support::run_task_sync<ae::result<void>>(
-            remote_index.add_batch({*digest}, {{1.0f, 0.0f}}, ctx));
-        AE_CHECK(seeded.has_value(), "setup: remote index seeded via its own (real) add_batch()");
-        AE_CHECK(remote_index.add_batch_calls == 1, "setup: add_batch was genuinely called once");
+        AE_CHECK(run(index.add_batch({*digest}, {{1.0f, 0.0f}}, ctx)).has_value(), "setup: index seeded");
 
-        RemoteProvider provider{object_store, ref_store, mount, read_cap, embedder, remote_index,
-                                 /*max_injected=*/1};
+        VectorProvider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/1};
         std::vector<ae::Message> history{make_msg(ae::role::user, "dark mode", "m-1")};
-        ae::SessionContext session_ctx{"s-remote", principal, history};
+        ae::SessionContext session_ctx{"s-suspend", principal, history};
 
-        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
-            provider.on_context(session_ctx, ctx));
-        AE_CHECK(out.has_value(), "R2-1: on_context() succeeds through the RemoteVectorIndex "
-                                    "co_await branch (VectorRagContextProvider::on_context() is "
-                                    "already a coroutine, no synchronous_leaf gate needed here)");
-        AE_CHECK(out.has_value() && out->messages.size() == 1 &&
-                     out->messages.front().message_id == "rag:" + *digest,
-                 "R2-2: the remote-index-backed provider actually retrieves and renders the real "
-                 "chunk, not a stub/empty result");
-        AE_CHECK(remote_index.search_calls == 1,
-                 "R2-3: MockRemoteIndex::search() was genuinely invoked through the co_await path");
+        std::size_t parks_before = parker.parks;
+        auto out = run(provider.on_context(session_ctx, ctx));
+        AE_CHECK(out.has_value() && out->messages.size() == 1 && out->messages.front().message_id == "rag:" + *digest,
+                 "S1: on_context() retrieves and renders the chunk through a suspending embedder + index");
+        AE_CHECK(parker.parks >= parks_before + 2, "S1: both the embedder and the index really suspended");
 
-        // recall(query) -- synchronous_leaf = true on BOTH the embedder and the remote index, so
-        // this must take the rt::drive_leaf_task() path for the INDEX leg too, not just the
-        // embedder leg (ADR-064's mechanism, reused a second time by ADR-180 §2.1).
         AE_CHECK(out.has_value() && out->tools.size() == 1 && out->tools.front().name == "recall",
-                 "R2-4: setup: recall tool is contributed");
+                 "S2 setup: the recall tool is contributed");
         if (out.has_value() && !out->tools.empty()) {
-            ae::json::Value args =
-                ae::json::Value::make_object({{"query", ae::json::Value::make_string("dark mode")}});
-            std::size_t const search_calls_before = remote_index.search_calls;
-            auto invoked = out->tools.front().invoke(args, ctx);
+            ae::json::Value args = ae::json::Value::make_object({{"query", ae::json::Value::make_string("dark mode")}});
+            std::size_t const search_before = index.search_calls;
+            parks_before = parker.parks;
+            auto invoked = run(out->tools.front().invoke(args, ctx));
             AE_CHECK(invoked.has_value(),
-                     "R2-5: recall(query) succeeds SYNCHRONOUSLY against a synchronous_leaf=true "
-                     "RemoteVectorIndex -- rt::drive_leaf_task() correctly drives the index leg's "
-                     "own search() task, not just the embedder's");
-            AE_CHECK(remote_index.search_calls == search_calls_before + 1,
-                     "R2-6: recall's invoke genuinely called the remote index's search() once more "
-                     "(via drive_leaf_task, not skipped)");
-            if (invoked.has_value()) {
-                auto const* results = invoked->find("results");
-                AE_CHECK(results != nullptr && results->is_array() && !results->as_array().empty(),
-                         "R2-7: recall(query) returns a non-empty result list");
-            }
+                     "S2: recall(query), run on a lane, awaits conformers that genuinely suspend" +
+                         (invoked ? std::string{} : " -- got " + invoked.error().code));
+            AE_CHECK(result_count(invoked) == 1, "S2: recall returns the one indexed chunk");
+            AE_CHECK(index.search_calls == search_before + 1 && parker.parks >= parks_before + 2,
+                     "S2: recall awaited the suspending embedder and index");
         }
     }
 
-    // --- R2: HybridRagContextProvider's dense leg as a RemoteVectorIndex, same dispatch reused ----
+    // --- S3: HybridRagContextProvider, both legs suspending ------------------------------------------
     {
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore  ref_store;
-        ae::Principal const principal{"p-remote-hybrid", "tenant-1"};
+        ae::Principal const principal{"p-suspend-hybrid", "tenant-1"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
-
         ae::cap::FsRead const  read_cap{mount.mount_id, "", std::nullopt};
         ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
 
-        MockRemoteIndex dense;
-        ae::BM25Index   sparse;
+        SuspendingDenseIndex  dense{parker};
+        SuspendingSparseIndex sparse{parker};
         std::string const text = "Dark mode lives in Settings, under Appearance.";
-        auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+        auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
         AE_CHECK(digest.has_value(), "setup: chunk blob written");
         ae::CorpusChunkRecord record{*digest, "docs/settings.md", 1, 1, "hash"};
-        AE_CHECK(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record).has_value(),
+        AE_CHECK(agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record)).has_value(),
                  "setup: chunk record written");
 
-        MockEmbedder embedder;
+        SuspendingEmbedder embedder{parker};
         embedder.vectors["dark mode"] = {1.0f, 0.0f};
         ae::EffectContext ctx{};
         ctx.principal = principal;
-        auto seeded =
-            ae::test_support::run_task_sync<ae::result<void>>(dense.add_batch({*digest}, {{1.0f, 0.0f}}, ctx));
-        AE_CHECK(seeded.has_value(), "setup: dense (remote) index seeded");
-        AE_CHECK(sparse.add_batch({*digest}, {text}).has_value(), "setup: sparse index seeded");
+        AE_CHECK(run(dense.add_batch({*digest}, {{1.0f, 0.0f}}, ctx)).has_value(), "setup: dense leg seeded");
+        AE_CHECK(run(sparse.add_batch({*digest}, {text}, ctx)).has_value(), "setup: sparse leg seeded");
 
-        using HybridRemoteProvider =
-            ae::HybridRagContextProvider<MockEmbedder, MockRemoteIndex, ae::BM25Index,
-                                          ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
-        static_assert(ae::ContextProvider<HybridRemoteProvider>);
-
-        HybridRemoteProvider provider{object_store, ref_store, mount, read_cap, embedder, dense, sparse,
-                                       /*max_injected=*/1};
+        HybridProvider provider{object_store, ref_store, mount, read_cap, embedder, dense, sparse, /*max_injected=*/1};
         std::vector<ae::Message> history{make_msg(ae::role::user, "dark mode", "m-1")};
-        ae::SessionContext session_ctx{"s-remote-hybrid", principal, history};
+        ae::SessionContext session_ctx{"s-suspend-hybrid", principal, history};
 
-        auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
-            provider.on_context(session_ctx, ctx));
+        auto out = run(provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 1,
-                 "R2-8: HybridRagContextProvider::on_context() works with a RemoteVectorIndex dense "
-                 "leg fused against a local BM25 sparse leg");
+                 "S3: hybrid on_context() fuses a suspending dense leg with a suspending sparse leg");
+        AE_CHECK(dense.search_calls == 1 && sparse.search_calls == 1, "S3: both legs were searched");
+        if (out.has_value() && !out->tools.empty()) {
+            ae::json::Value args = ae::json::Value::make_object({{"query", ae::json::Value::make_string("dark mode")}});
+            auto invoked = run(out->tools.front().invoke(args, ctx));
+            AE_CHECK(invoked.has_value() && result_count(invoked) == 1,
+                     "S3: hybrid recall(query) succeeds against suspending legs" +
+                         (invoked ? std::string{} : " -- got " + invoked.error().code));
+            AE_CHECK(dense.search_calls == 2 && sparse.search_calls == 2, "S3: recall searched both legs again");
+        }
     }
 
-    // --- R2: DiskCorpusSource::mount_hybrid() with a RemoteVectorIndex dense leg -------------------
+    // --- S4: DiskCorpusSource ingestion through suspending indexes -----------------------------------
     {
-        std::filesystem::path const root = std::filesystem::temp_directory_path() / "ae_test_remote_mount_hybrid";
+        std::filesystem::path const root = std::filesystem::temp_directory_path() / "ae_test_suspending_index_mount";
         std::filesystem::remove_all(root);
         std::filesystem::create_directories(root);
-        { std::ofstream f(root / "doc.txt", std::ios::binary); f << "hello world remote index test\n"; }
+        { std::ofstream f(root / "doc.txt", std::ios::binary); f << "hello world suspending index test\n"; }
 
-        ae::InMemoryWorktreeObjectStore object_store;
-        ae::rt::InMemoryAppendLogStore  ref_store;
-        MockRemoteIndex dense;
-        ae::BM25Index   sparse;
-        MockEmbedder    embedder;
-        embedder.vectors.clear();  // default {0,0} vectors are fine for this compile/run-only check
-
-        ae::Principal const principal{"p-remote-mount", "tenant-1"};
+        ae::Principal const principal{"p-suspend-mount", "tenant-1"};
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         ae::cap::FsWrite const write_cap{mount.mount_id, "", std::nullopt, std::nullopt};
         ae::DiskCorpusSource source{root};
         ae::EffectContext ctx{};
         ctx.principal = principal;
 
-        auto result = ae::test_support::run_task_sync<
-            ae::result<ae::DiskCorpusSource::DiskCorpusHybridMountResult>>(
-            source.mount_hybrid<MockEmbedder, MockRemoteIndex, ae::BM25Index, ae::InMemoryWorktreeObjectStore,
-                                 ae::rt::InMemoryAppendLogStore>(object_store, ref_store, mount, write_cap,
-                                                                    embedder, dense, sparse, ctx, {}));
-        AE_CHECK(result.has_value(), "R2-9: mount_hybrid() works with a RemoteVectorIndex dense leg "
-                                       "(co_await add_batch()/contains() branches, not the local "
-                                       "synchronous ones)");
-        AE_CHECK(result.has_value() && result->chunks_embedded > 0 && dense.add_batch_calls > 0,
-                 "R2-10: the remote dense index's own add_batch() was genuinely invoked by mount_hybrid()");
-
+        {
+            ae::InMemoryWorktreeObjectStore object_store;
+            ae::rt::InMemoryAppendLogStore  ref_store;
+            AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
+            SuspendingDenseIndex index{parker};
+            SuspendingEmbedder   embedder{parker};
+            auto mounted = run(source.mount<SuspendingEmbedder, SuspendingDenseIndex, ae::InMemoryWorktreeObjectStore,
+                                            ae::rt::InMemoryAppendLogStore>(object_store, ref_store, mount, write_cap,
+                                                                            embedder, index, ctx, {}));
+            AE_CHECK(mounted.has_value() && mounted->chunks_embedded > 0 && index.add_batch_calls > 0,
+                     "S4: mount() ingests into a suspending index" +
+                         (mounted ? std::string{} : " -- got " + mounted.error().code));
+        }
+        {
+            ae::InMemoryWorktreeObjectStore object_store;
+            ae::rt::InMemoryAppendLogStore  ref_store;
+            AE_CHECK(bootstrap_corpus_worktree(object_store, ref_store, mount).has_value(), "setup: bootstrap");
+            SuspendingDenseIndex  dense{parker};
+            SuspendingSparseIndex sparse{parker};
+            SuspendingEmbedder    embedder{parker};
+            auto mounted = run(source.mount_hybrid<SuspendingEmbedder, SuspendingDenseIndex, SuspendingSparseIndex,
+                                                   ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>(
+                object_store, ref_store, mount, write_cap, embedder, dense, sparse, ctx, {}));
+            AE_CHECK(mounted.has_value() && mounted->chunks_embedded > 0 && mounted->chunks_sparse_indexed > 0 &&
+                         dense.add_batch_calls > 0,
+                     "S4: mount_hybrid() ingests into suspending dense and sparse indexes" +
+                         (mounted ? std::string{} : " -- got " + mounted.error().code));
+        }
         std::filesystem::remove_all(root);
     }
 

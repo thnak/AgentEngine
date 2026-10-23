@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §4 (Reliability) -- Milestone 5 Phase F1+F2
+// Implements rfcs/004-Model-Provider-Plane.md §4 (Reliability) -- Milestone 5 Phase F1+F2
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, Phase F's "Design decisions
 // (2026-08-07, before implementation, IN PROGRESS)" block).
 //

@@ -1,13 +1,13 @@
 #pragma once
 // Implements agentengine::SandboxBackend (sandbox/sandbox.hpp) for the `native-jail` profile,
-// Linux half (008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2's own
+// Linux half (rfcs/008-Sandbox-and-Isolation.md §1b, §2, §3) -- Milestone 2 Phase C task C2's own
 // follow-up (021 §2 sequencing: Windows first, Linux once Windows reached a stable state, which
 // C2's Windows half now has). Namespaces (PID/net/mount/UTS/IPC via `clone()`, atomically -- not
 // `unshare()` from the host process, which would move the CALLING thread's own namespaces and
 // leak across this backend's other calls) + cgroups v2 (`cgroup_limits.hpp`, already built) +
 // seccomp-BPF (`seccomp_filter.hpp`, already built) + `no_new_privs`.
 //
-// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/ADR-087-
+// docs/planning/sandbox-spec-capability-enforcement-design-draft.md (2026-08-24, decisions/archive/ADR-087-
 // sandbox-spec-capability-enforcement.md): `create()` now calls `agentengine::authorize_spec()`
 // (sandbox/sandbox.hpp) first -- a real, opt-in check that `spec.mounts`/`spec.net` are covered by
 // `spec.capabilities`' `cap::SandboxMount`/`cap::SandboxNetOut` grants, a no-op for every caller that
@@ -21,7 +21,7 @@
 // header's own scope note first, most of it applies here unchanged:
 //   - `ExecRequest::source` is, for M2 only, a shell command line (`/bin/sh -c <source>`) the
 //     CALLER is trusted to have already resolved and mediated -- the Linux analogue of the Windows
-//     side treating `source` as a Win32 command line. 008-Sandbox-and-Isolation.md §2's
+//     side treating `source` as a Win32 command line. rfcs/008-Sandbox-and-Isolation.md §2's
 //     "`ExecRequest` mediation is the caller's responsibility, not the backend's" clause is the
 //     canonical statement of this contract (docs/planning/sandbox-exec-request-capability-mediation-
 //     design-draft.md investigated and confirmed this is correct-by-design, not unfinished).
@@ -41,7 +41,7 @@
 //     command needing a toolchain beyond its explicit grants needs its own explicit `MountSpec`,
 //     same as the Windows side's vendored-interpreter-tree precedent (ADR-004 §3 step 1). Proven
 //     against real Linux namespaces + cgroups v2 in `test_native_jail_fs_containment_linux.cpp` --
-//     `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` is the closing ADR; design
+//     `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md` is the closing ADR; design
 //     and self-red-team record in
 //     `docs/planning/linux-native-jail-pivot-root-containment-design-draft.md`.
 //
@@ -95,9 +95,24 @@ public:
     LinuxNativeJailBackend(LinuxNativeJailBackend&&) = delete;
     LinuxNativeJailBackend& operator=(LinuxNativeJailBackend&&) = delete;
 
-    result<SandboxHandle> create(SandboxSpec const& spec, EffectContext& ctx);
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
-    void destroy(SandboxHandle& handle);
+    // The `SandboxBackend` seam (ADR-237 §5.1, #173): coroutines over the `*_blocking` bodies below, completing
+    // without suspending -- the bodies still block (moving process spawn onto `rt::` is #180's). `handle` and
+    // `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<SandboxHandle>> create(SandboxSpec spec, EffectContext& ctx) {
+        co_return create_blocking(spec, ctx);
+    }
+    [[nodiscard]] task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest request, EffectContext& ctx) {
+        co_return exec_blocking(handle, request, ctx);
+    }
+    [[nodiscard]] task<void> destroy(SandboxHandle& handle) {
+        destroy_blocking(handle);
+        co_return;
+    }
+
+    // The synchronous bodies. Called directly only where the caller cannot suspend (a destructor).
+    result<SandboxHandle> create_blocking(SandboxSpec const& spec, EffectContext& ctx);
+    result<ExecOutcome> exec_blocking(SandboxHandle& handle, ExecRequest const& request, EffectContext& ctx);
+    void destroy_blocking(SandboxHandle& handle);
 
 private:
     struct Instance {

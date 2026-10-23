@@ -1,4 +1,4 @@
-// D3 proof fixture (decisions/ADR-010-wasm-component-host-manifest-capability-binding.md §7.2),
+// D3 proof fixture (decisions/archive/ADR-010-wasm-component-host-manifest-capability-binding.md §7.2),
 // extended by D5 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md) -- a minimal,
 // real `ae:tool` component used to prove the manifest-vs-import verification and capability-handle
 // binding mechanism against a genuinely compiled component, not a hand-crafted stub. "echo" needs no
@@ -78,6 +78,14 @@ impl Guest for Component {
             ToolDescriptor {
                 name: "fetch".to_string(),
                 description: "Calls ae:tool/http.http-request -- D5's per-callback kind-check probe."
+                    .to_string(),
+                args_schema_json: "{\"type\":\"object\"}".to_string(),
+                result_schema_json: "{\"type\":\"string\"}".to_string(),
+                parallelizable: false,
+            },
+            ToolDescriptor {
+                name: "fetch-with".to_string(),
+                description: "ADR-241 follow-up: http-request with args_json \"METHOD SIZE\" (body of SIZE bytes) -- G7/G17 WASM-edge rows."
                     .to_string(),
                 args_schema_json: "{\"type\":\"object\"}".to_string(),
                 result_schema_json: "{\"type\":\"string\"}".to_string(),
@@ -171,7 +179,25 @@ impl Guest for Component {
                 };
                 match http::http_request(cap, &req) {
                     Ok(_) => text_result("fetch: unexpectedly succeeded".to_string()),
-                    Err(_) => text_result("fetch: http-error returned".to_string()),
+                    Err(e) => text_result(format!("fetch: http-error returned: {:?}", e)),
+                }
+            }
+            "fetch-with" => {
+                let Some(cap) = request.capabilities.first() else {
+                    return no_capability_error("fetch-with");
+                };
+                let mut parts = request.args_json.split(' ');
+                let method = parts.next().unwrap_or("GET").to_string();
+                let size: usize = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let req = http::HttpRequestData {
+                    method,
+                    path: "/probe".to_string(),
+                    headers: vec![],
+                    body: if size > 0 { Some(vec![0u8; size]) } else { None },
+                };
+                match http::http_request(cap, &req) {
+                    Ok(_) => text_result("fetch-with: unexpectedly succeeded".to_string()),
+                    Err(e) => text_result(format!("fetch-with: http-error returned: {:?}", e)),
                 }
             }
             "get-secret" => {

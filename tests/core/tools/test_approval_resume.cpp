@@ -1,6 +1,6 @@
-// Implements the proofs for decisions/ADR-196-per-call-approval-decisions.md (issues #104, #107, #108), ADR-198
-// (issue #106), and the round-3 red-team fixes to ADR-191/192 (decisions/ADR-191-approved-lesson-delivery.md §8,
-// decisions/ADR-192-unattended-mode.md §9) that live in the session's resume paths and the lesson registry.
+// Implements the proofs for decisions/archive/ADR-196-per-call-approval-decisions.md (issues #104, #107, #108), ADR-198
+// (issue #106), and the round-3 red-team fixes to ADR-191/192 (decisions/archive/ADR-191-approved-lesson-delivery.md §8,
+// decisions/archive/ADR-192-unattended-mode.md §9) that live in the session's resume paths and the lesson registry.
 //
 //   U1   A tool the host's turn middleware hid from a round is never dispatched when that round resumes after a
 //        tool-call hook decision -- with unattended approvals on (round 3 MAJOR 1). Control: the same hidden tool,
@@ -47,6 +47,7 @@
 //
 // Positive controls: each MAJOR fix was reverted by hand and the matching check was seen to fail (recorded in
 // ADR-196 §6 / ADR-192 §9).
+#include <utility>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -54,6 +55,8 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/approved_lessons.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
@@ -85,8 +88,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message text_msg(ae::role r, std::string text) {
@@ -128,10 +130,10 @@ struct CountingTool : ae::Tool<Derived, ae::Capabilities<>, ae::EffectClass<ae::
                                ae::Approval<Mode>> {
     using Args  = ValArgs;
     using Reply = ValReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++runs()[std::string(Derived::name)];
         values()[std::string(Derived::name)].push_back(a.value);
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 struct HiddenTool : CountingTool<HiddenTool, ae::approval_mode::always_require> {
@@ -161,7 +163,7 @@ public:
                                                                             ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<HiddenTool, OtherTool, GatedTool, PolicyTool, OldTool>().descriptors();
+        c.tools = ae::ToolTable::from(HiddenTool{}, OtherTool{}, GatedTool{}, PolicyTool{}, OldTool{}).descriptors();
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -264,7 +266,7 @@ ae::CapabilitySet const& no_caps() {
 int u1_hidden_runs(bool hide) {
     runs().clear();
     Session s;
-    s.initialize("s-u1", ae::Principal{"p1", ""});
+    s.initialize("s-u1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg({{"c1", "other_tool"}, {"c2", "hidden_tool"}}),
                                         text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
@@ -300,35 +302,34 @@ struct AskReply {
     bool ok = false;
 };
 AE_JSON_SCHEMA(AskReply, ok)
-struct AskTool : ae::Tool<AskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
-                          ae::Approval<ae::approval_mode::always_require>> {
-    static constexpr std::string_view name        = "execute_code";
-    static constexpr std::string_view description = "Asks once, then completes.";
-    using Args  = AskArgs;
-    using Reply = AskReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "dead path", "test.dead_static_invoke_path"});
-    }
-};
 int& ask_invocations() {
     static int n = 0;
     return n;
 }
+// ADR-237 §5.2: instance form -- the real body IS the instance invoke, and the old poison static
+// `invoke()` sentinel is gone. `CapturesSessionState` preserves what the old
+// `make_tool_descriptor_with_invoke` closure set, so this fixture's descriptor is unchanged.
+struct AskTool : ae::Tool<AskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
+                          ae::Approval<ae::approval_mode::always_require>, ae::CapturesSessionState> {
+    static constexpr std::string_view name        = "execute_code";
+    static constexpr std::string_view description = "Asks once, then completes.";
+    using Args  = AskArgs;
+    using Reply = AskReply;
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
+        ++ask_invocations();
+        if (ctx.codeact_preseeded_answers.empty()) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "proceed?", "codeact.ask_pending"});
+        }
+        co_return AskReply{true};
+    }
+};
 class AskProvider {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
                                                                             ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {ae::make_tool_descriptor_with_invoke<AskTool>(
-            [](AskArgs, ae::EffectContext& ctx) -> ae::result<AskReply> {
-                ++ask_invocations();
-                if (ctx.codeact_preseeded_answers.empty()) {
-                    return std::unexpected(
-                        ae::error{ae::failure_class::contract, "proceed?", "codeact.ask_pending"});
-                }
-                return AskReply{true};
-            })};
+        c.tools = {ae::make_tool_descriptor(AskTool{})};
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -356,20 +357,29 @@ bool& two_ask_context_fails() {
     static bool b = false;
     return b;
 }
-struct FreeAskTool : ae::Tool<FreeAskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
-                              ae::Approval<ae::approval_mode::never_require>> {
-    static constexpr std::string_view name        = "execute_code";
-    static constexpr std::string_view description = "Asks two questions, then acts.";
-    using Args  = AskArgs;
-    using Reply = AskReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::fatal, "dead path", "test.dead_static_invoke_path"});
-    }
-};
 std::vector<std::string>& two_ask_acted_with() {
     static std::vector<std::string> v;
     return v;
 }
+// ADR-237 §5.2: instance form (see `AskTool` above).
+struct FreeAskTool : ae::Tool<FreeAskTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::at_most_once>,
+                              ae::Approval<ae::approval_mode::never_require>, ae::CapturesSessionState> {
+    static constexpr std::string_view name        = "execute_code";
+    static constexpr std::string_view description = "Asks two questions, then acts.";
+    using Args  = AskArgs;
+    using Reply = AskReply;
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const {
+        auto const& a = ctx.codeact_preseeded_answers;
+        if (a.empty()) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "Q1", "codeact.ask_pending"});
+        }
+        if (a.size() == 1) {
+            co_return std::unexpected(ae::error{ae::failure_class::contract, "Q2", "codeact.ask_pending"});
+        }
+        two_ask_acted_with() = a;
+        co_return AskReply{true};
+    }
+};
 class TwoAskProvider {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc,
@@ -379,18 +389,7 @@ public:
         }
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = {ae::make_tool_descriptor_with_invoke<FreeAskTool>(
-            [](AskArgs, ae::EffectContext& ctx) -> ae::result<AskReply> {
-                auto const& a = ctx.codeact_preseeded_answers;
-                if (a.empty()) {
-                    return std::unexpected(ae::error{ae::failure_class::contract, "Q1", "codeact.ask_pending"});
-                }
-                if (a.size() == 1) {
-                    return std::unexpected(ae::error{ae::failure_class::contract, "Q2", "codeact.ask_pending"});
-                }
-                two_ask_acted_with() = a;
-                return AskReply{true};
-            })};
+        c.tools = {ae::make_tool_descriptor(FreeAskTool{})};
         co_return c;
     }
     ae::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -405,7 +404,7 @@ std::pair<std::size_t, int> a10_tightened(bool tighten) {
     reset_runs();
     Session s;
     Events ev;
-    s.initialize("s-a10", ae::Principal{"p1", ""});
+    s.initialize("s-a10", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 9}}), text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
     s.set_suspend_for_approval(true);
@@ -434,7 +433,7 @@ std::pair<std::size_t, int> a10_tightened(bool tighten) {
 int u2_replays(bool clear_before_answer) {
     ask_invocations() = 0;
     AskSession s;
-    s.initialize("s-u2", ae::Principal{"p1", ""});
+    s.initialize("s-u2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     ae::Message call_msg;
     call_msg.role = ae::role::assistant;
     ae::ContentItem item;
@@ -462,13 +461,13 @@ int u2_replays(bool clear_before_answer) {
 int a1_policy_tool_runs(ae::policy_decision verdict) {
     runs().clear();
     Session s;
-    s.initialize("s-a1", ae::Principal{"p1", ""});
+    s.initialize("s-a1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}, {"c2", "policy_tool"}}),
                                         text_msg(ae::role::assistant, "done")});
     s.set_capabilities(&no_caps());
     s.set_suspend_for_approval(true);
-    s.set_policy_decider([verdict](ae::Principal const&, ae::ToolDescriptor const& td, bool) {
-        return td.name == "policy_tool" ? verdict : ae::policy_decision::require_approval;
+    s.set_policy_decider([verdict](ae::Principal const&, ae::ToolDescriptor const& td, bool) -> agentengine::task<agentengine::policy_decision> {
+        co_return td.name == "policy_tool" ? verdict : ae::policy_decision::require_approval;
     });
     (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "go")}));
     if (!s.has_open_interactions()) return -1;
@@ -526,7 +525,7 @@ std::pair<std::size_t, bool> l6_deliver(std::string screened, bool automatic, bo
         (void)reg.approve("p1", kLessonText, ae::LessonApproval{"alice", "t", "", false, false, std::move(screened)});
     }
     LessonSession s;
-    s.initialize("s-l6", ae::Principal{"p1", ""});
+    s.initialize("s-l6", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
     CaptureClient& client = s.emplace_chat_client();
     s.set_capabilities(&no_caps());
     if (instructions) {
@@ -571,7 +570,7 @@ int main() {
         runs().clear();
         Session s;
         Events ev;
-        s.initialize("s-a2", ae::Principal{"p1", ""});
+        s.initialize("s-a2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}, {"c2", "other_tool"}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -618,7 +617,7 @@ int main() {
         runs().clear();
         Session s;
         Events ev;
-        s.initialize("s-a3", ae::Principal{"p1", ""});
+        s.initialize("s-a3", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}}), text_msg(ae::role::assistant, "ok")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
@@ -633,7 +632,7 @@ int main() {
     {
         runs().clear();
         Session s;
-        s.initialize("s-s1", ae::Principal{"p1", ""});
+        s.initialize("s-s1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         // Round 1 (discarded by the fork): old_tool, held for an external hook decision.
         s.emplace_chat_client().set_script({calls_msg({{"c-old", "old_tool"}}), calls_msg({{"c-new", "gated_tool"}}),
                                             text_msg(ae::role::assistant, "done")});
@@ -646,7 +645,7 @@ int main() {
         (void)drive(s.start_run(StartRun{text_msg(ae::role::user, "first")}));
         std::string const old_id = s.has_open_interactions() ? s.open_interactions().front().interaction_id : "";
         Session fresh;
-        fresh.initialize("s-s1", ae::Principal{"p1", ""});
+        fresh.initialize("s-s1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.fork_from(fresh, "s-s1");
         s.set_capabilities(&no_caps());
         // Round 2 is not hook-touched, so nothing overwrites the discarded round's stored state under the reused id.
@@ -663,7 +662,7 @@ int main() {
     // ---- S2 --------------------------------------------------------------------------------------------------
     {
         Session s;
-        s.initialize("s-s2", ae::Principal{"p1", ""});
+        s.initialize("s-s2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg({{"c1", "gated_tool"}}), text_msg(ae::role::assistant, "ok")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
@@ -674,7 +673,11 @@ int main() {
         restored.interaction_id = "s-s2:interaction:7";
         restored.reason         = ae::interaction_reason::input;
         rec.open_interactions.push_back(restored);
-        s.restore_from_record(rec);
+        // ADR-244 §2.3: a hand-built record states the choices it ran under, like one to_record() wrote.
+        rec.choices = ae::rt::RecordedChoices{ae::authority_mode::single_trusted_caller,
+                                              ae::Bound<std::uint64_t>::unbounded(),
+                                              ae::Bound<std::uint64_t>::unbounded()};
+        check(s.restore_from_record(rec).has_value(), "S2 setup: the hand-built record restores");
         s.set_capabilities(&no_caps());
         auto refused = drive(s.resolve_interaction(ResolveInteraction{"s-s2:interaction:7", true}));
         check(!refused && refused.error().code == "session.resolve_interaction.unsupported_reason",
@@ -691,7 +694,7 @@ int main() {
     {
         Session s;
         Events ev;
-        s.initialize("s-f1", ae::Principal{"p1", ""});
+        s.initialize("s-f1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script(
             {std::unexpected(ae::error{ae::failure_class::transient, "overloaded", "provider.overloaded"})});
         s.set_capabilities(&no_caps());
@@ -744,7 +747,7 @@ int main() {
               "L4: blank / control-character ids and the reserved prefix anywhere in a human approver id are refused");
 
         Session s;
-        s.initialize("s-l4", ae::Principal{"p1", ""});
+        s.initialize("s-l4", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         check(!s.set_unattended_approvals(" ") && !s.disable_system_channel_fence("ops\nroot") &&
                   !s.enable_unattended_mode("\t") && !s.unattended_approvals() && s.system_channel_fence_enabled(),
               "L4: blank / multi-line operator ids are refused by every unattended opt-in");
@@ -790,7 +793,7 @@ int main() {
     {
         runs().clear();
         Session s;
-        s.initialize("s-m1", ae::Principal{"p1", ""});
+        s.initialize("s-m1", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         ae::Message bad = calls_msg({{"c1", "gated_tool"}});
         std::get<ae::ToolCall>(bad.content[0].value).arguments_json = "{not json";
         s.emplace_chat_client().set_script({bad, text_msg(ae::role::assistant, "done")});
@@ -809,7 +812,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a7", ae::Principal{"p1", ""});
+        s.initialize("s-a7", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
                                             calls_msg_v({{"c2", "gated_tool", 666}}),
                                             text_msg(ae::role::assistant, "done")});
@@ -822,7 +825,7 @@ int main() {
         (void)drive(s.resolve_interaction(ResolveInteraction{first_id, false}));  // denied; round 2 suspends on 666
         check(s.has_open_interactions() && ev.requested.size() == 2 && ev.requested[1].arguments_json == "{\"value\":666}",
               "A7 setup: the first round was denied and the second suspended on gated_tool{value:666}");
-        s.restore_from_record(checkpoint);  // roll back onto the same, live object -- history_ still ends in round 2
+        check(s.restore_from_record(checkpoint).has_value(), "A7 setup: the checkpoint restores");  // roll back onto the same, live object -- history_ still ends in round 2
         s.set_capabilities(&no_caps());
         ResolveInteraction approve{first_id, true};
         approve.approver_id = "alice";
@@ -838,7 +841,7 @@ int main() {
         // Control: the live round-2 interaction, on a session that was not restored, does resolve and run.
         reset_runs();
         Session live;
-        live.initialize("s-a7c", ae::Principal{"p1", ""});
+        live.initialize("s-a7c", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         live.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}}),
                                                calls_msg_v({{"c2", "gated_tool", 666}}),
                                                text_msg(ae::role::assistant, "done")});
@@ -856,7 +859,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a8", ae::Principal{"p1", ""});
+        s.initialize("s-a8", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "gated_tool", 666}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -890,7 +893,7 @@ int main() {
     {
         reset_runs();
         Session s;
-        s.initialize("s-a9", ae::Principal{"p1", ""});
+        s.initialize("s-a9", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 1}, {"c1", "other_tool", 5}}),
                                             text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
@@ -914,16 +917,17 @@ int main() {
         reset_runs();
         int wrapped = 0;
         Session s;
-        s.initialize("s-a10w", ae::Principal{"p1", ""});
+        s.initialize("s-a10w", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "gated_tool", 42}}), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         s.set_suspend_for_approval(true);
         s.set_turn_middleware_hook([&wrapped](ae::TurnContext& ctx) -> ae::task<ae::result<std::monostate>> {
             for (ae::ToolDescriptor& d : ctx.assembled.combined.tools) {
                 if (d.name != "gated_tool") continue;
-                d.invoke = [&wrapped](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
+                d.invoke = [&wrapped](ae::json::Value const&, ae::EffectContext&)
+                    -> ae::task<ae::result<ae::json::Value>> {
                     ++wrapped;  // e.g. a dry-run variant for this turn
-                    return ae::json::Value::make_object({{"value", ae::json::Value::make_number(0)}});
+                    co_return ae::json::Value::make_object({{"value", ae::json::Value::make_number(0)}});
                 };
             }
             co_return std::monostate{};
@@ -939,7 +943,7 @@ int main() {
         reset_runs();
         Session s;
         Events ev;
-        s.initialize("s-a11", ae::Principal{"p1", ""});
+        s.initialize("s-a11", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({calls_msg_v({{"c1", "other_tool", 3}}), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         tap(s, ev);
@@ -975,7 +979,7 @@ int main() {
 
         TwoAskSession a;
         Events aev;
-        a.initialize("s-a11c", ae::Principal{"p1", ""});
+        a.initialize("s-a11c", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         a.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
         a.set_capabilities(&no_caps());
         tap(a, aev);
@@ -1007,7 +1011,7 @@ int main() {
         two_ask_context_fails() = false;
         TwoAskSession s;
         Events ev;
-        s.initialize("s-a12", ae::Principal{"p1", ""});
+        s.initialize("s-a12", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({execute_code_call("k1"), text_msg(ae::role::assistant, "done")});
         s.set_capabilities(&no_caps());
         int asks = 0;
@@ -1043,7 +1047,7 @@ int main() {
     {
         Session s;
         Events ev;
-        s.initialize("s-f2", ae::Principal{"p1", ""});
+        s.initialize("s-f2", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         s.emplace_chat_client().set_script({text_msg(ae::role::assistant, "never reached")});
         s.set_capabilities(&no_caps());
         tap(s, ev);

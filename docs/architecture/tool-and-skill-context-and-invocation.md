@@ -3,7 +3,7 @@
 **Compiled:** 2026-08-10 · **Status:** as-built trace, not a spec — cites the RFC/file each box comes
 from; when this disagrees with the code, the code (and the RFC it cites) wins, fix this doc.
 
-**Correction (2026-08-11):** `decisions/ADR-027-agent-session-tool-call-loop.md` (Judged) put a real
+**Correction (2026-08-11):** `decisions/archive/ADR-027-agent-session-tool-call-loop.md` (Judged) put a real
 tool-call loop inside `AgentSession::handle()` itself, the day after this doc was compiled. Path 1
 below described that loop as not existing ("`*** NO tool-call loop exists yet ***`") — that framing
 is now wrong; see the correction inline at Path 1 and the updated §4 verdict. Everything else in this
@@ -17,7 +17,7 @@ path. Details below.
 
 ---
 
-## 1. Two extension-point shapes (027-Vocabulary-and-Naming.md)
+## 1. Two extension-point shapes (rfcs/027-Vocabulary-and-Naming.md)
 
 | Shape | Term | What it does | Where |
 |---|---|---|---|
@@ -60,7 +60,7 @@ populate `.tools`, computed fresh every turn:
 
 ```cpp
 // cli_chat.cpp on_context(), every turn:
-auto const universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+auto const universe = ToolTable::from(ExecuteCodeTool{provider}, MountSkillTool{provider});
 auto const scoped = scope_tools_to_mounted_skills(
     universe, skills_.allowed_tool_names_for(shared_mounted_skills_state().all()),
     {std::string(MountSkillTool::name)});
@@ -99,7 +99,7 @@ flowchart TB
 
 ### Path 1 — `AgentSession`'s real production turn loop
 **(Corrected 2026-08-11 — was accurate on 2026-08-10, no longer is.)** As of
-`decisions/ADR-027-agent-session-tool-call-loop.md` (Judged), one `StartRun` ask resolves a whole
+`decisions/archive/ADR-027-agent-session-tool-call-loop.md` (Judged), one `StartRun` ask resolves a whole
 multi-round tool conversation inside `AgentSession::handle()` itself: it declares `contribution.tools`
 into the `ChatRequest` exactly as before, but a returned `ToolCall` is now extracted, capability/
 approval-checked, and invoked for real via `invoke_tool(ToolTable::from_descriptors(contribution
@@ -133,7 +133,7 @@ Phase E's exit criterion for **statically declared** native tools — no `Skills
 // "Recomputed fresh EVERY round from the SAME live shared_mounted_skills_state() that
 //  ToolDeclaringHistoryProvider::on_context() just used to build what was declared to the
 //  model THIS round ... Never a differently-scoped table than what was just declared."
-auto const round_universe = ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>();
+auto const round_universe = ToolTable::from(ExecuteCodeTool{provider}, MountSkillTool{provider});
 auto const scoped_tools = scope_tools_to_mounted_skills(
     round_universe, startup_skills.allowed_tool_names_for(shared_mounted_skills_state().all()),
     {std::string(MountSkillTool::name)});
@@ -142,7 +142,7 @@ ToolResult r = invoke_tool(scoped_tools, held, req, exec_ctx, nullptr);   // lin
 ```
 This is the one path that actually satisfies `skill_tool_scoping.hpp`'s own warning: declaration
 (`on_context()`, §2 above) and invocation (`main()`'s loop) call `scope_tools_to_mounted_skills` with
-the *same inputs* (`ToolTable::from_tools<ExecuteCodeTool, MountSkillTool>()`, the same
+the *same inputs* (`ToolTable::from(ExecuteCodeTool{provider}, MountSkillTool{provider})`, the same
 `shared_mounted_skills_state().all()`) on the *same cadence* (once per turn / once per round). Neither
 side caches a table across a round boundary. This is why it stays in sync — by hand-written
 construction in `cli_chat.cpp`, not by any shared library guarantee.

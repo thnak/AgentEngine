@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 4 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
+// Proves ADR-102 Phase 4 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
 // roadmap) -- MandatorySandboxProvider<Surface>/RunCommandTool (sandbox/mandatory_sandbox_provider.hpp)
 // composed as a REAL, production agentengine::rt::AgentSession<ChatClientT, StateT, HistoryProviderT>'s
 // actual HistoryProviderT, ported from docs/planning/proofs/mandatory_sandbox/
@@ -31,9 +31,11 @@
 //       never touches the real filesystem.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include "../support/image_provenance_shape.hpp"
 
@@ -43,7 +45,9 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 
 namespace {
@@ -61,8 +65,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -164,11 +167,11 @@ std::optional<std::string> read_entry(Ledger<>& ledger, std::string const& branc
                                          IdentityHandle owner, std::string const& entry_name) {
     auto head = ledger.head_tree_digest(branch_name, owner);
     if (!head.has_value()) return std::nullopt;
-    auto tree = ledger.get_tree_safe(*head, owner);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(*head, owner));
     if (!tree.has_value()) return std::nullopt;
     for (auto const& e : tree->entries) {
         if (e.name != entry_name) continue;
-        auto bytes = ledger.get_blob_safe(e.digest, owner);
+        auto bytes = agentengine::rt::block_on(ledger.get_blob_safe(e.digest, owner));
         if (!bytes.has_value()) return std::nullopt;
         return std::string(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     }
@@ -205,7 +208,7 @@ int main() {
     // [1] a freshly-default-constructed REAL AgentSession has NO execution capability.
     {
         Session bare;
-        bare.initialize("bare-session", Principal{"bare-owner", ""});
+        bare.initialize("bare-session", Principal{"bare-owner", ""}, ae_test::trusted_unbounded());
         auto contribution = drive(bare.history_provider().on_context(call.session_ctx, call.ctx));
         check(!bare.history_provider().is_bound(), "a bare session's provider reports unbound");
         check(contribution.has_value(), "on_context() on an unbound provider still succeeds");
@@ -216,13 +219,14 @@ int main() {
 
     // [2] bind_sandbox() establishes a real sandbox; a direct on_context()+invoke() genuinely executes.
     Session parent;
-    parent.initialize("parent-session", Principal{"parent-owner", ""});
+    parent.initialize("parent-session", Principal{"parent-owner", ""}, ae_test::trusted_unbounded());
     {
         auto root_r = drive(ledger.create_root_branch(owner, "parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"parent\") succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
+        parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         check(parent.history_provider().is_bound(), "bind_sandbox() leaves the provider bound");
 
         auto contribution = drive(parent.history_provider().on_context(call.session_ctx, call.ctx));
@@ -243,7 +247,7 @@ int main() {
             auto args = json::Value::make_object(
                 {{"command", json::Value::make_string(
                                  "echo -n 'from parent, direct call' > parent.txt && cat parent.txt")}});
-            auto reply = contribution->tools[0].invoke(args, call.ctx);
+            auto reply = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args, call.ctx));
             check(reply.has_value(), "a direct run_command invoke() succeeds");
             if (reply.has_value()) {
                 std::string const reply_json = json::dump(*reply);
@@ -307,12 +311,13 @@ int main() {
         // unauthorized_spender) -- confirmed the hard way: an earlier version of this test initialized
         // `live` with an unrelated Principal{"live-owner", ""} and this exact check failed for that
         // real reason, not a defect in MandatorySandboxProvider itself.
-        live.initialize("live-session", real_owner_principal);
+        live.initialize("live-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "live"));
         check(root_r.has_value(), "create_root_branch(owner, \"live\") succeeds");
         if (root_r.has_value()) {
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
+            live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
 
             ScriptedChatClient& client = live.emplace_chat_client();
             std::string const args_json = json::dump(json::Value::make_object(
@@ -355,12 +360,12 @@ int main() {
     // [4] two sequential children forked from the SAME bound parent are mutually isolated.
     {
         Session sibling_a;
-        sibling_a.initialize("sibling-a", Principal{"sibling-a-owner", ""});
+        sibling_a.initialize("sibling-a", Principal{"sibling-a-owner", ""}, ae_test::trusted_unbounded());
         sibling_a.fork_from(parent, "sibling-a-session");
         check(sibling_a.history_provider().is_bound(), "sibling_a's fork_from() leaves it bound");
 
         Session sibling_b;
-        sibling_b.initialize("sibling-b", Principal{"sibling-b-owner", ""});
+        sibling_b.initialize("sibling-b", Principal{"sibling-b-owner", ""}, ae_test::trusted_unbounded());
         sibling_b.fork_from(parent, "sibling-b-session");
         check(sibling_b.history_provider().is_bound(), "sibling_b's fork_from() leaves it bound");
 
@@ -373,14 +378,14 @@ int main() {
             auto args_a = json::Value::make_object(
                 {{"command", json::Value::make_string("echo -n 'sibling A only' > sibling_a_only.txt")}});
             check(contribution_a.has_value() && !contribution_a->tools.empty() &&
-                      contribution_a->tools[0].invoke(args_a, call.ctx).has_value(),
+                      test_support::run_task_sync<result<json::Value>>(contribution_a->tools[0].invoke(args_a, call.ctx)).has_value(),
                   "sibling_a's own real command succeeds");
 
             auto contribution_b = drive(sibling_b.history_provider().on_context(call.session_ctx, call.ctx));
             auto args_b = json::Value::make_object(
                 {{"command", json::Value::make_string("echo -n 'sibling B only' > sibling_b_only.txt")}});
             check(contribution_b.has_value() && !contribution_b->tools.empty() &&
-                      contribution_b->tools[0].invoke(args_b, call.ctx).has_value(),
+                      test_support::run_task_sync<result<json::Value>>(contribution_b->tools[0].invoke(args_b, call.ctx)).has_value(),
                   "sibling_b's own real command succeeds");
 
             check(!read_entry(ledger, branch_a, owner, "sibling_b_only.txt").has_value(),
@@ -397,7 +402,7 @@ int main() {
     // [5] clear_in_process_state() relinquishes the branch and leaves the session re-bindable.
     {
         Session child;
-        child.initialize("child-to-clear", Principal{"child-owner", ""});
+        child.initialize("child-to-clear", Principal{"child-owner", ""}, ae_test::trusted_unbounded());
         child.fork_from(parent, "child-to-clear-session");
         check(child.history_provider().is_bound(), "child forked from parent starts bound");
         if (child.history_provider().is_bound()) {
@@ -412,6 +417,7 @@ int main() {
                 child.history_provider().bind_sandbox(ledger, std::move(*new_root), owner,
                                                           scratch_root / "child-reused", branch_quota,
                                                           run_quota, storage_quota);
+                child.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(child.history_provider().is_bound(), "the cleared session re-binds successfully");
                 check(child.history_provider().runtime()->branch_name() != old_branch_name,
                       "the re-bound branch is genuinely new, not the relinquished one");
@@ -425,7 +431,7 @@ int main() {
         check(tiny_branch_quota_r.has_value(), "mint_root(BranchCost, 1) succeeds");
         if (tiny_branch_quota_r.has_value()) {
             Session temp_parent;
-            temp_parent.initialize("temp-parent-would-fork", Principal{"temp-parent-owner", ""});
+            temp_parent.initialize("temp-parent-would-fork", Principal{"temp-parent-owner", ""}, ae_test::trusted_unbounded());
             auto temp_root = drive(ledger.create_root_branch(owner, "temp-parent-would-fork"));
             check(temp_root.has_value(), "create_root_branch(owner, \"temp-parent-would-fork\") succeeds");
             if (temp_root.has_value()) {
@@ -433,11 +439,12 @@ int main() {
                                                                  scratch_root / "temp-parent",
                                                                  *tiny_branch_quota_r, run_quota,
                                                                  storage_quota);
+                temp_parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
                 check(temp_parent.history_provider().would_fork_succeed().has_value(),
                       "would_fork_succeed() reports success while quota remains");
 
                 Session temp_child;
-                temp_child.initialize("temp-child-would-fork", Principal{"temp-child-owner", ""});
+                temp_child.initialize("temp-child-would-fork", Principal{"temp-child-owner", ""}, ae_test::trusted_unbounded());
                 temp_child.fork_from(temp_parent, "temp-child-would-fork-session");
                 check(temp_child.history_provider().is_bound(),
                       "the real fork_from() that spends the last unit of quota still succeeds");
@@ -460,13 +467,14 @@ int main() {
     // task-branch tools.
     {
         Session ungranted;
-        ungranted.initialize("ungranted-session", real_owner_principal);
+        ungranted.initialize("ungranted-session", real_owner_principal, ae_test::trusted_unbounded());
         auto root_r = drive(ledger.create_root_branch(owner, "ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"ungranted\") succeeds");
         if (root_r.has_value()) {
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota,
                                                         run_quota, storage_quota);
+            ungranted.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
             check(ungranted.history_provider().is_bound(),
                   "bind_sandbox() alone leaves the provider bound (the identity/quota gate)");
 

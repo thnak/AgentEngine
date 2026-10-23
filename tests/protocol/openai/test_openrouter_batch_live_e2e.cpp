@@ -1,4 +1,4 @@
-// decisions/ADR-235-batch-inference-coalescing.md claim C15, live: a real two-node fan-out round sent to
+// decisions/archive/ADR-235-batch-inference-coalescing.md claim C15, live: a real two-node fan-out round sent to
 // OpenRouter's Batch API as ONE job, polled to completion through WorkflowSupervisor::poll_batches(), and folded
 // into a completed run -- the whole engine path against the real vendor, nothing scripted.
 //
@@ -31,6 +31,8 @@
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 using agentengine::rt::BatchableModelCall;
@@ -61,8 +63,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::string env_or(char const* name, std::string fallback) {
@@ -105,24 +106,24 @@ public:
     [[nodiscard]] std::string group_key() const override { return inner_->group_key(); }
     [[nodiscard]] BatchLimits limits() const override { return inner_->limits(); }
     [[nodiscard]] result<std::size_t> admit(ChatRequest const& r) const override { return log("admit", inner_->admit(r)); }
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
-        return log("submit", inner_->submit(items, ctx));
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
+        co_return log("submit", co_await inner_->submit(items, ctx));
     }
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job, EffectContext& ctx) override {
-        auto p = log("poll", inner_->poll(job, ctx));
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job, EffectContext& ctx) override {
+        auto p = log("poll", co_await inner_->poll(job, ctx));
         if (p) {
             for (auto const& item : p->items) {
                 std::fprintf(stderr, "  item %s: %s %s\n", item.custom_id.c_str(),
                              batch_item_status_tag(item.status), item.detail.c_str());
             }
         }
-        return p;
+        co_return p;
     }
-    [[nodiscard]] result<void> cancel(std::string const& job, EffectContext& ctx) override {
-        return log("cancel", inner_->cancel(job, ctx));
+    [[nodiscard]] task<result<void>> cancel(std::string const& job, EffectContext& ctx) override {
+        co_return log("cancel", co_await inner_->cancel(job, ctx));
     }
-    [[nodiscard]] result<void> release(std::string const& job, EffectContext& ctx) override {
-        return log("release", inner_->release(job, ctx));
+    [[nodiscard]] task<result<void>> release(std::string const& job, EffectContext& ctx) override {
+        co_return log("release", co_await inner_->release(job, ctx));
     }
 
 private:
@@ -166,13 +167,11 @@ int main() {
                 r.messages.push_back(user_text(question + " Answer in at most five words."));
                 return r;
             },
-            [sync_client, sync_calls](ChatRequest const& req, EffectContext& ctx) -> result<ChatResponse> {
+            [sync_client, sync_calls](ChatRequest const& req, EffectContext& ctx) -> agentengine::task<result<ChatResponse>> {
                 ++*sync_calls;
-                auto t = sync_client->chat(req, ctx);
-                while (!t.done()) t.resume();
-                auto resp = t.take_value();
+                auto resp = co_await sync_client->chat(req, ctx);
                 if (!resp) std::fprintf(stderr, "  sync call failed: %s\n", resp.error().message.c_str());
-                return resp;
+                co_return resp;
             },
             [](Message const&, ChatResponse const& resp) -> result<ExecutorOutcome> {
                 return ExecutorOutcome{resp.message};
@@ -191,8 +190,8 @@ int main() {
     wf.output_selection.push_back("join");
     wf.bound.max_rounds = 8;
 
-    ExecutorBody passthrough = [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    ExecutorBody passthrough = [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
     WorkflowSupervisor sup;
     sup.initialize(wf,

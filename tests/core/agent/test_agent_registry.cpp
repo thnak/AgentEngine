@@ -42,26 +42,26 @@ struct EchoReply {
 };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
 // A second tool sharing EchoTool's own name -- the tool-name-collision negative case's only job.
-struct DuplicateNameTool : agentengine::Tool<DuplicateNameTool> {
+struct DuplicateNameTool : agentengine::Tool<DuplicateNameTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";  // deliberately collides with EchoTool::name
     static constexpr std::string_view description = "Also named 'echo'.";
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{args.message};
     }
 };
 

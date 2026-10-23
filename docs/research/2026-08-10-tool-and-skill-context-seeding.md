@@ -6,7 +6,7 @@ Question: for a given inference call, how do tool definitions and skill content 
 the model's context — request shape, ordering relative to system prompt/history, and how large
 tool/skill catalogs avoid blowing the context window? Two independent surveys (Anthropic/Claude
 side, Microsoft Agent Framework side), synthesized here with a short note on relevance to
-AgentEngine's own **009-Plugin-and-Extension-System.md §8** (Skills) and the
+AgentEngine's own **rfcs/009-Plugin-and-Extension-System.md §8** (Skills) and the
 `HistoryAndSkillsProvider`/ADR-024 code already in the tree.
 
 ---
@@ -125,7 +125,7 @@ Both systems converge on the same shape despite unrelated implementations:
 
 ## 4. Relevance to AgentEngine
 
-`009-Plugin-and-Extension-System.md` §8 already lands on the same interchange format both
+`rfcs/009-Plugin-and-Extension-System.md` §8 already lands on the same interchange format both
 surveyed systems converged on independently: **§8a fixes `SKILL.md` (agentskills.io)** as the
 format, and **§8b ("Progressive disclosure comes free from the worktree")** is the same
 advertise-then-lazy-load shape as MAF's four-stage model and Claude's frontmatter/body split — this

@@ -10,7 +10,7 @@ found no functional bug. Round 7 (§0i) then gave finding 7 its own dedicated ro
 a real bug — NOT in this facade, but in the `AgentSession` mechanism it wires into:
 `resolve_codeact_ask()`'s ask-pending branch never advanced `turn_index`, so `.max_turns()`/
 `.token_budget()` were completely bypassed by a non-converging CodeAct ask loop (finding 13, fixed at
-the root in `rt/agent_session.hpp`, also recorded in `decisions/ADR-057-agent-ask-suspend-without-
+the root in `rt/agent_session.hpp`, also recorded in `decisions/archive/ADR-057-agent-ask-suspend-without-
 deadlock.md` §8). **Round 8 (§0j) then gave findings 11 and 13 their own dedicated re-examination
 round: finding 11 held up clean, but a NEW bug (finding 15, MEDIUM) was found in the SAME class —
 `LazyComposedContextProvider::engage()` was not exception-safe, letting a throw-then-retry duplicate a
@@ -415,7 +415,7 @@ function up already increment once per call regardless of approved/denied. Regre
 `tests/rt/agent_session/test_rt_agent_session_codeact_ask_max_turns.cpp` (R1/R2, no real `MediatedPythonRunner` needed —
 any tool returning `error_code == "codeact.ask_pending"` reaches the same path) — verified to actually
 have teeth by reverting the fix and confirming the test fails exactly the way the red-team's own probe
-did. Also recorded as an addendum to `decisions/ADR-057-agent-ask-suspend-without-deadlock.md` §8, since
+did. Also recorded as an addendum to `decisions/archive/ADR-057-agent-ask-suspend-without-deadlock.md` §8, since
 the mechanism the gap lived inside is that ADR's own (still Proposed, not yet Judged).
 
 **Finding 14 (MEDIUM, documentation gap, not fixed with code) — the finding-7 disclosure never named
@@ -496,7 +496,7 @@ first surfaced them), and both fixed:
   unreachable in practice" — WRONG. `restore_from_record()` restores `open_interactions_` (which can
   contain a `codeact_ask`-reason `Interaction`) but `PendingCodeActAsk` is deliberately NOT included in
   `AgentSessionRecord` at all (`PendingCodeActAsk`'s own comment already discloses this durability gap,
-  directly related to §8's "Expiry" residual in `decisions/ADR-057-agent-ask-suspend-without-deadlock.
+  directly related to §8's "Expiry" residual in `decisions/archive/ADR-057-agent-ask-suspend-without-deadlock.
   md`) — so resolving a codeact_ask interaction that survived a session restore genuinely reaches this
   branch. It used to return `fatal` WITHOUT erasing the interaction from `open_interactions_`, leaving
   it stuck open forever with no cancel path (every future resolve attempt hit the same branch again).
@@ -542,7 +542,7 @@ directly — for a deterministic fake (`JokerChatClient`...) or a test double") 
 These are NOT the same feature, and only one of them resolves what two other files in this codebase
 independently say `.raw_client_only()`'s absence blocks: `tests/core/context/test_session_builder.cpp`'s own comment
 on B14-B17 ("it has no `.raw_client_only()` escape hatch... to substitute a scripted client without real
-network") and `decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md:1218`'s identical
+network") and `decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md:1218`'s identical
 framing. Reading (a) alone does NOT close that gap — a bare `Primary` is still a real OpenAI/Anthropic
 backend that still does real HTTP the instant `.ask()` is called. Only reading (b) does.
 
@@ -712,7 +712,7 @@ a `ContentReplayTrigger`) the builder cannot default sensibly.
 **Composition order is builder-owned, not caller-owned.** `.with_middleware(...)` and
 `.with_content_replay(...)` may be called in any order the host finds natural; `build()` always nests
 them `ContentReplayGateway<MiddlewareModelCallGateway<ModelCallGateway<...>, Ms...>>` — outer-to-inner
-fixed, per `002-Agent-Model-and-Authoring.md:191-196`'s own stated reasoning for why this nesting order
+fixed, per `rfcs/002-Agent-Model-and-Authoring.md:191-196`'s own stated reasoning for why this nesting order
 is correct (review the final, post-retry outcome once, not once per retry attempt). A host calling
 these methods in the "wrong" order gets the *correct* object graph anyway — the one property a facade
 must guarantee, or it isn't saving the host from a real mistake class.

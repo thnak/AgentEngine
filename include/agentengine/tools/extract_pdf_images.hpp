@@ -1,5 +1,5 @@
 #pragma once
-// A third candidate in 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
+// A third candidate in rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row --
 // PDF embedded-image METADATA listing (position/dimensions/format, NOT bytes), reusing the exact
 // same sandboxed `agentengine_pdf_worker` process `extract_pdf_text.hpp`/`extract_pdf_toc.hpp`
 // already spawn (its own `images` mode, `pdf_worker_main.cpp`), the same url/path sourcing, and the
@@ -158,30 +158,31 @@ struct ExtractPdfImages
     using Args = ExtractPdfImagesArgs;
     using Reply = ExtractPdfImagesReply;
 
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
-        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+    // ADR-237 §5.2 instance form: a coroutine, because the egress seam it reaches is (§5.1, #173).
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
+        co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     template <sandbox::NetEgressBackend Proxy>
-    [[nodiscard]] static result<Reply> invoke_via(Args const& args, EffectContext& ctx,
+    [[nodiscard]] static task<result<Reply>> invoke_via(Args const& args, EffectContext& ctx,
                                                     Proxy const& proxy) {
         bool const has_url = args.url.has_value();
         bool const has_path = args.path.has_value();
         if (has_url == has_path) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "extract_pdf_images requires exactly one of 'url' or 'path'",
                                           "extract_pdf_images.ambiguous_source"});
         }
 
-        auto bytes = has_url ? extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
-                              : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
-        if (!bytes) return std::unexpected(bytes.error());
+        result<std::string> bytes = has_url ? co_await extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
+                                             : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         std::filesystem::path const dir = extract_pdf_text_detail::scratch_dir();
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         if (ec) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "failed to create the pdf scratch directory: " + ec.message(),
                                           "extract_pdf_images.scratch_dir_failed"});
         }
@@ -189,24 +190,24 @@ struct ExtractPdfImages
         {
             std::ofstream out(file, std::ios::binary | std::ios::trunc);
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to open the pdf scratch file for writing",
                                               "extract_pdf_images.scratch_write_failed"});
             }
             out.write(bytes->data(), static_cast<std::streamsize>(bytes->size()));
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to write the pdf scratch file",
                                               "extract_pdf_images.scratch_write_failed"});
             }
         }
 
-        auto raw_output = extract_pdf_text_detail::invoke_worker("images", file, ctx);
+        auto raw_output = co_await extract_pdf_text_detail::invoke_worker("images", file, ctx);
         std::filesystem::remove(file, ec);
 
-        if (!raw_output) return std::unexpected(raw_output.error());
+        if (!raw_output) co_return std::unexpected(raw_output.error());
 
-        return extract_pdf_images_detail::parse_worker_output(*raw_output);
+        co_return extract_pdf_images_detail::parse_worker_output(*raw_output);
     }
 };
 

@@ -2,12 +2,12 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "sandbox" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- Egress proxy (M2 Phase F task F1, decisions/ADR-011-first-party-egress-proxy.md) ----------
+# ---- Egress proxy (M2 Phase F task F1, decisions/archive/ADR-011-first-party-egress-proxy.md) ----------
 # Header-only claims (is_blocked_address, reject_crlf) plus real loopback-socket claims via a
 # TestHttpServer double, agentengine::net_egress_proxy (src/sandbox/net_egress_proxy.cpp).
 agentengine_add_test(test_net_egress_proxy LIBS agentengine::net_egress_proxy agentengine_warnings)
 
-# ---- HTTPS egress TLS client proof (decisions/ADR-013-https-egress-tls-client.md) --------------
+# ---- HTTPS egress TLS client proof (decisions/archive/ADR-013-https-egress-tls-client.md) --------------
 # Only built when AGENTENGINE_WITH_HTTPS is explicitly turned ON (root CMakeLists.txt) -- links
 # directly against mbedTLS (test-only in-memory certificate generation, a loopback TLS test server)
 # in addition to agentengine::tls_client itself.
@@ -44,7 +44,7 @@ agentengine_add_test(test_sandbox_exec_events
   LIBS agentengine::core agentengine::mediated_shell_runner agentengine::worktree_store
     agentengine_warnings)
 
-# ---- SandboxProfile<P>'s template-parameter kind (decisions/ADR-012-sandbox-profile-template-parameter-kind.md) --
+# ---- SandboxProfile<P>'s template-parameter kind (decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md) --
 # Header-only (core/agent_registry.hpp, sandbox/sandbox.hpp), core-tier.
 agentengine_add_test(test_sandbox_profile_kind LIBS agentengine::core agentengine_warnings)
 
@@ -198,3 +198,27 @@ agentengine_add_test(test_mandatory_sandbox_provider_composed
 # durability (ADR-130), and the Store-genericity fix that lets them compose (ADR-132) all together.
 agentengine_add_test(test_task_branch_content_durability_integration
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
+# decisions/archive/ADR-237 §5.1 Phase D (#173): the execution and sandbox seams are task-shaped -- each caller driven ON
+# A RUNTIME LANE against a conformer that genuinely parks on the reactor. NO daemon.
+agentengine_add_test(test_execution_seams_on_lane
+  LIBS agentengine::core agentengine::net_egress_proxy agentengine::mediated_shell_runner
+    agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
+# ---- ADR-241 S2: egress admission (G13 e/h/h3/i/j/k), host-Runtime and when_all cancellation (G7), first use (G13 b/d/f) --
+agentengine_add_test(test_net_egress_admission LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 300)
+# ---- ADR-241 G11: TLS on the egress boundary through BOTH entry points (wrong name, broken CA, IP-literal entry) --
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_net_egress_tls
+    LIBS agentengine::net_egress_proxy agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
+# ---- ADR-241 R12: the 64 x 16 MiB over 2 lanes MEASUREMENT. Manual, never a CI gate: DISABLED so ctest (and CI's
+# `ctest -LE live-network`) skips it; run build/tests/bench_net_egress_r12 <N> [body_mib] directly, once per N.
+agentengine_add_test(bench_net_egress_r12 LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 300
+  LABELS "bench;manual")
+set_tests_properties(bench_net_egress_r12 PROPERTIES DISABLED TRUE)
+agentengine_add_test(test_net_egress_first_use LIBS agentengine::net_egress_proxy agentengine_warnings TIMEOUT 120)
+# The context is a leaked singleton, so each first-use mode needs its own fresh process.
+add_test(NAME test_net_egress_first_use_inject COMMAND test_net_egress_first_use inject)
+set_tests_properties(test_net_egress_first_use_inject PROPERTIES TIMEOUT 120)

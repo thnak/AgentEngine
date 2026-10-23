@@ -77,7 +77,7 @@ whether a ceiling exists. Same structural fix as the Budget finding closes both 
 mandatory pre-dispatch ceiling doesn't care where the count came from.
 
 **Residual, decided now rather than left open — worktree/sandbox scoping default.** The gap doc's open
-question 1 left this unresolved. `ADR-032` (`decisions/ADR-032-workflow-executor-worktree-scoping.md`
+question 1 left this unresolved. `ADR-032` (`decisions/archive/ADR-032-workflow-executor-worktree-scoping.md`
 §4) already resolved the structurally analogous question for static graph nodes: default `worktree_mode`
 is `branch` (isolated sub-worktree) **unconditionally**, explicitly rejecting "default to shared,"
 because cycles/dynamic routing make it unsound to statically prove two nodes never co-occur in a round.

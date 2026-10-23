@@ -18,7 +18,7 @@ if(WIN32)
 
   agentengine_add_test(test_vector_index_benchmark LIBS agentengine::core agentengine_warnings)
 
-  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
+  # decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2/§3 claim 3 --
   # `BM25Index` (core/sparse_index.hpp): hand-computed formula correctness, contract rejection,
   # deterministic tie-break.
   agentengine_add_test(test_sparse_index LIBS agentengine::core agentengine_warnings)
@@ -51,22 +51,21 @@ if(WIN32)
   agentengine_add_test(test_vector_rag_context_provider
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 
-  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8 --
+  # decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8 --
   # `HybridRagContextProvider` (core/hybrid_rag_context_provider.hpp): RRF fusion end-to-end,
   # citation rendering/forgery-defense reuse, recall tool.
   agentengine_add_test(test_hybrid_rag_context_provider
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 
-  # decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.1, §4 findings R1/R2 --
-  # `RemoteVectorIndex`/`AnyVectorIndex` (core/remote_vector_index.hpp): concept disjointness, and
-  # real (not merely mock-compiles) instantiation of every RemoteVectorIndex dispatch branch in
-  # VectorRagContextProvider, HybridRagContextProvider, and DiskCorpusSource::mount_hybrid().
+  # decisions/archive/ADR-237 §5.1 (#172): the one task-shaped VectorIndex/SparseIndex seam, driven through every
+  # caller (both RAG providers' on_context() and recall, mount(), mount_hybrid()) by conformers that
+  # genuinely suspend on the reactor. Historical name: this was ADR-180's RemoteVectorIndex dispatch test.
   agentengine_add_test(test_remote_vector_index
     LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 endif()
 
 if(AGENTENGINE_WITH_HTTPS)
-  # ---- decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6:
+  # ---- decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.5/§3 claim 6:
   # QdrantVectorIndex (protocol/qdrant/vector_index.hpp) -- offline-provable surface: point-id
   # derivation, request/response construction, error-envelope parsing. No server, runs
   # unconditionally, mirrors test_openai_embedder.cpp's own offline split. The live-network half
@@ -80,9 +79,15 @@ if(AGENTENGINE_WITH_HTTPS)
     LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
       MbedTLS::mbedx509 MbedTLS::mbedcrypto)
   set_tests_properties(test_qdrant_vector_index_live_e2e PROPERTIES LABELS "live-network" TIMEOUT 300)
+
+  # ---- decisions/archive/ADR-237 §5.1 (#172, Phase C slice 2): QdrantVectorIndex and OpenAIEmbedder on rt::http --
+  # the wire, status mapping, cancellation and host-supplied reactor options, against a loopback server.
+  agentengine_add_test(test_rag_backends_on_reactor
+    LIBS agentengine::core agentengine::provider_http_client agentengine_warnings MbedTLS::mbedtls
+      MbedTLS::mbedx509 MbedTLS::mbedcrypto)
 endif()
 
-# decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex
+# decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.6/§3 claim 7 -- VulkanCosineIndex
 # (src/backends/vulkan_vector_index/): basic correctness, VectorIndex conformance, and the
 # epsilon-bounded GPU-vs-CPU score comparison at dim=1536, n in {1000, 5000}. Only built when
 # AGENTENGINE_WITH_VULKAN is explicitly turned ON (root CMakeLists.txt) -- the test binary itself

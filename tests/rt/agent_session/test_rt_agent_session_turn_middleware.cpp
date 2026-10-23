@@ -1,4 +1,4 @@
-// Proves decisions/ADR-067-middleware-turn-point-pre-model-enforcement.md's mechanism actually wired
+// Proves decisions/archive/ADR-067-middleware-turn-point-pre-model-enforcement.md's mechanism actually wired
 // into a real rt::AgentSession round, not just proven standalone (tests/core/context/test_turn_middleware.cpp).
 // AgentSession::set_turn_middleware_hook() (agent_session.hpp) is the real seam this file exercises:
 // a TurnMiddlewareHook runs once per round, after context assembly (including the dynamically-
@@ -7,10 +7,13 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <tuple>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -31,8 +34,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -91,6 +93,7 @@ struct FixedProvider {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         ToolDescriptor td;
+        td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         td.name        = "provider_tool";
         td.description = "a real tool contributed by the fan-out provider, not by the turn middleware";
         c.tools.push_back(std::move(td));
@@ -137,7 +140,7 @@ int main() {
     // T1: a redacting turn middleware's decision actually reaches the real outbound ChatRequest.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t1", Principal{"p1", ""});
+        session.initialize("tm-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         std::tuple<RedactingMiddleware> chain{};
@@ -159,7 +162,7 @@ int main() {
     // T2: a denying turn middleware fails the round BEFORE the model is ever called.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t2", Principal{"p1", ""});
+        session.initialize("tm-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         std::tuple<DenyingMiddleware> chain{};
@@ -182,7 +185,7 @@ int main() {
     // dominant, existing case every OTHER AgentSession test in this tree already exercises.
     {
         AgentSession<RecordingChatClient, NoSessionState, FixedProvider> session;
-        session.initialize("tm-t3", Principal{"p1", ""});
+        session.initialize("tm-t3", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));

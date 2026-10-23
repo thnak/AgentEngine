@@ -1,4 +1,4 @@
-// Implements decisions/ADR-195-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
+// Implements decisions/archive/ADR-195-evaluation-harness.md §3.2 / E21's PRECONDITION: is a seeded lesson still
 // among the items MemoryProvider injects after `on_turn_end` has written more episodic items?
 //
 // Recall is a top-`max_injected` ranking (default 3) by salience x recency x keyword (memory_provider.hpp
@@ -28,6 +28,7 @@
 
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 namespace {
 
@@ -54,7 +55,7 @@ bool lesson_survives(float lesson_salience, int later, std::string const& query,
     ae::InMemoryWorktreeObjectStore object_store;
     ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-recall", ""};
-    if (!ae::ensure_memory_worktree(object_store, ref_store, principal)) return false;
+    if (!agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal))) return false;
     ae::Mount const mount = ae::memory_mount(principal);
     ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
     ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
@@ -64,7 +65,7 @@ bool lesson_survives(float lesson_salience, int later, std::string const& query,
     lesson.content  = kLesson;
     lesson.salience = lesson_salience;
     lesson.origin   = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-lesson", "0", principal};
-    if (!ae::write_memory_item(object_store, ref_store, mount, write_cap, lesson)) return false;
+    if (!agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, lesson))) return false;
 
     for (int i = 0; i < later; ++i) {
         ae::MemoryItem ep{};
@@ -72,10 +73,10 @@ bool lesson_survives(float lesson_salience, int later, std::string const& query,
         ep.content = later_text(i);
         ep.origin  = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-" + std::to_string(i),
                                        std::to_string(i), principal};
-        if (!ae::write_memory_item(object_store, ref_store, mount, write_cap, ep)) return false;
+        if (!agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, ep))) return false;
     }
 
-    auto ranked = ae::rank_memory_items(object_store, ref_store, mount, read_cap, query, max_results);
+    auto ranked = agentengine::rt::block_on(ae::rank_memory_items(object_store, ref_store, mount, read_cap, query, max_results));
     if (!ranked) return false;
     return std::any_of(ranked->begin(), ranked->end(),
                        [](ae::MemoryItem const& it) { return it.content == kLesson; });
@@ -137,23 +138,23 @@ int main() {
             ae::InMemoryWorktreeObjectStore object_store;
             ae::rt::InMemoryAppendLogStore ref_store;
             ae::Principal const principal{"p-recall-r5", ""};
-            (void)ae::ensure_memory_worktree(object_store, ref_store, principal);
+            (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
             ae::Mount const mount = ae::memory_mount(principal);
             ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
             ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
             ae::MemoryItem lesson{};
             lesson.kind = ae::memory_kind::procedural; lesson.content = kLesson; lesson.salience = lesson_sal;
             lesson.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-l", "0", principal};
-            (void)ae::write_memory_item(object_store, ref_store, mount, wc, lesson);
+            (void)agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, wc, lesson));
             for (int i = 0; i < facts; ++i) {
                 ae::MemoryItem f{};
                 f.kind = ae::memory_kind::semantic;
                 f.content = "Fact " + std::to_string(i) + " about: " + q;
                 f.salience = fact_sal;
                 f.origin = ae::MemoryOrigin{ae::memory_source::user_stated, "run-f", std::to_string(i), principal};
-                (void)ae::write_memory_item(object_store, ref_store, mount, wc, f);
+                (void)agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, wc, f));
             }
-            auto ranked = ae::rank_memory_items(object_store, ref_store, mount, rc, q, 3);
+            auto ranked = agentengine::rt::block_on(ae::rank_memory_items(object_store, ref_store, mount, rc, q, 3));
             return ranked && std::any_of(ranked->begin(), ranked->end(),
                                           [](ae::MemoryItem const& it) { return it.content == kLesson; });
         };
@@ -172,7 +173,7 @@ int main() {
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore ref_store;
         ae::Principal const principal{"p-recall-r7", ""};
-        (void)ae::ensure_memory_worktree(object_store, ref_store, principal);
+        (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
         ae::Mount const mount = ae::memory_mount(principal);
         ae::cap::FsRead const rc{ae::memory_mount_id(principal), "", std::nullopt};
         ae::cap::FsWrite const wc{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
@@ -181,9 +182,9 @@ int main() {
             l.kind = ae::memory_kind::procedural; l.content = "Lesson number " + std::to_string(i);
             l.salience = 1.0f;
             l.origin = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-l", std::to_string(i), principal};
-            (void)ae::write_memory_item(object_store, ref_store, mount, wc, l);
+            (void)agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, wc, l));
         }
-        auto ranked = ae::rank_memory_items(object_store, ref_store, mount, rc, "unrelated question", 3);
+        auto ranked = agentengine::rt::block_on(ae::rank_memory_items(object_store, ref_store, mount, rc, "unrelated question", 3));
         bool oldest_two_gone = ranked.has_value() && ranked->size() == 3;
         if (ranked) {
             for (auto const& it : *ranked) {

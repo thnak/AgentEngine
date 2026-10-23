@@ -1,4 +1,4 @@
-// Correctness claims for decisions/ADR-005-capability-bearer-tokens-cross-process.md Design A
+// Correctness claims for decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md Design A
 // (trust/capability_token.hpp). T-C5 is a positive control (022 §5): it deliberately supplies the
 // wrong key so this test file can prove to itself that AE_CHECK actually catches a failure, not
 // just that every real case happens to pass.

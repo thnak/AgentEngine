@@ -28,7 +28,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+#include "agentengine/rt/block_on.hpp"
 using namespace agentengine;
 namespace fs = std::filesystem;
 
@@ -49,8 +52,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kMarker = "MARKER-145: the command really ran";
@@ -59,18 +61,18 @@ constexpr char const* kMarker = "MARKER-145: the command really ran";
 // the "never attempted" shape `ExecutionSurface::run()` documents. `drain_to()` always leaves a 4 KiB file,
 // so the commit has something to charge `StorageBytes` for.
 struct PrintingSurface {
-    [[nodiscard]] result<void> reset(fs::path const&) { return {}; }
-    [[nodiscard]] result<SurfaceRunOutcome> run(std::string const& command) {
+    [[nodiscard]] task<result<void>> reset(fs::path) { co_return result<void>{}; }
+    [[nodiscard]] task<result<SurfaceRunOutcome>> run(std::string command) {
         if (command == "refuse") {
-            return std::unexpected(error{failure_class::policy, "the surface refused the command", "test.refused"});
+            co_return std::unexpected(error{failure_class::policy, "the surface refused the command", "test.refused"});
         }
-        return SurfaceRunOutcome{3, kMarker};
+        co_return SurfaceRunOutcome{3, kMarker};
     }
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         std::ofstream(host_dir / "out.bin", std::ios::binary) << std::string(4096, 'x');
-        return {};
+        co_return result<void>{};
     }
 };
 static_assert(ExecutionSurface<PrintingSurface>);
@@ -133,6 +135,7 @@ int main() {
         MandatorySandboxProvider<PrintingSurface> provider;
         provider.bind_sandbox(ledger, std::move(*root), owner, fresh("ae_test_145_" + label), *branch_quota,
                               *run_quota, storage_quota);
+        provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         std::vector<Message> history;
         SessionContext session_ctx{label, principal, history};
         EffectContext ctx;
@@ -145,7 +148,7 @@ int main() {
         if (contribution) {
             for (auto const& tool : contribution->tools) {
                 if (tool.name != "run_command") continue;
-                out = tool.invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx);
+                out = test_support::run_task_sync<result<json::Value>>(tool.invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx));
             }
         }
         return out;

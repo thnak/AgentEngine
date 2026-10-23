@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8 + decisions/ADR-024-skill-scoped-tool-and-mount-
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 + decisions/archive/ADR-024-skill-scoped-tool-and-mount-
 // wiring.md's Phase 3 addendum, live: a real, self-contained `ContextProvider` (`FarmAdvisoryProvider`
 // below -- its own `SkillsProvider<>` plus its own `MountedSkillsState`, the same shape
 // tools/cli_chat.cpp's `ToolDeclaringHistoryProvider` uses, minus that file's Python/native_jail
@@ -37,9 +37,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -49,6 +51,7 @@
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -82,8 +85,7 @@ void note(char const* label, std::string const& value) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kDefaultModel = "~deepseek/deepseek-v4-flash-latest";
@@ -179,7 +181,7 @@ judge it against what they see in the sky themselves.
     // matching builtin_skills.hpp's own make_builtin_skills_source() convention.
     SkillSourceDescriptor d;
     d.origin_id = "farm-advisory-test";
-    d.load_skills = [resolved]() { return resolved; };
+    d.load_skills = [resolved]() -> task<result<std::vector<SkillSourceResult>>> { co_return resolved; };
     return d;
 }
 
@@ -197,17 +199,17 @@ struct FieldWeatherReply {
 AE_JSON_SCHEMA(FieldWeatherReply, forecast, advice)
 
 struct CheckFieldWeatherTool
-    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_field_weather";
     static constexpr std::string_view description =
         "Gets today's local weather forecast for a named field, for deciding whether to irrigate or "
         "spray it.";
     using Args = FieldWeatherArgs;
     using Reply = FieldWeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         check_weather_called_log() = true;
         observed_field_name_log() = a.field_name;
-        return Reply{"Rain expected this afternoon, 80% chance, ~24mm.",
+        co_return Reply{"Rain expected this afternoon, 80% chance, ~24mm.",
                      "Do not spray today -- rain would wash it off before it takes effect. Hold off "
                      "on irrigation too; the expected rainfall should cover the field's needs."};
     }
@@ -230,7 +232,12 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `real_mount_skill` through
+// the `friend` declaration below; `invoke` is defined out-of-line, where the provider is complete.
+class FarmAdvisoryProvider;
+
+struct MountSkillTool
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -239,14 +246,13 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
         "tools, then wait for your next turn to use them.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmAdvisoryProvider::real_mount_skill(),
-    // reached via make_tool_descriptor_with_invoke() below.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- reached "
-                                      "only through FarmAdvisoryProvider::real_mount_skill()",
-                                      "farm_advisory.dead_static_invoke_path"});
-    }
+
+    explicit MountSkillTool(FarmAdvisoryProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmAdvisoryProvider* provider_;
 };
 
 // ---- The ContextProvider: its own SkillsProvider<> (for the advertisement + allowed-tools lookup)
@@ -256,7 +262,7 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
 // same reason: this provider already owns the whole skill-related system prompt). -------------------
 class FarmAdvisoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "farm-advisory-live-test";
 
     FarmAdvisoryProvider() : skills_({make_farm_skill_source()}) {}
@@ -298,9 +304,8 @@ public:
         // AgentSession::run_rounds() rebuilds its ToolTable from THIS SAME on_context() result every
         // turn (agent_session.hpp), so that invariant holds here structurally, not by discipline.
         std::vector<ToolDescriptor> universe_descriptors = {
-            make_tool_descriptor<CheckFieldWeatherTool>(),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
+            make_tool_descriptor(CheckFieldWeatherTool{}),
+            make_tool_descriptor(MountSkillTool{*this}),
         };
         ToolTable const universe = ToolTable::from_descriptors(std::move(universe_descriptors));
         auto const scoped = scope_tools_to_mounted_skills(
@@ -312,6 +317,9 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form MountSkillTool above reaches this.
+    friend struct MountSkillTool;
+
     [[nodiscard]] result<MountSkillReply> real_mount_skill(MountSkillArgs a, EffectContext&) {
         if (a.skill_name != kSkillName) {
             return std::unexpected(
@@ -346,6 +354,11 @@ static_assert(std::is_default_constructible_v<FarmAdvisoryLiveSession>);
         if (std::holds_alternative<Text>(item.value)) return true;
     }
     return false;
+}
+
+// ADR-237 §5.2: out-of-line -- needs `FarmAdvisoryProvider` complete.
+task<result<MountSkillReply>> MountSkillTool::invoke(MountSkillArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
 }
 
 }  // namespace
@@ -386,9 +399,7 @@ int main() {
                                  /*seed=*/std::nullopt, /*transport=*/sandbox::ProviderTransport::tls,
                                  /*scan_response_format_leaks=*/false,
                                  /*session_id=*/std::string{"farm-advisory-live-e2e-session"});
-    session.initialize("farm-advisory-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt,
-                        /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds));
+    session.initialize("farm-advisory-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/static_cast<std::uint64_t>(kMaxRounds)));
     session.set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================

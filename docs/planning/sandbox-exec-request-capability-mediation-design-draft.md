@@ -4,11 +4,11 @@
 (`kata_backend.hpp`'s "Still NOT done" list: "`ExecRequest::source` is... not yet Runner-mediated"),
 generalized on inspection to all three `SandboxBackend` implementations — see §1 for why a Kata-only
 fix would repeat the exact per-backend-divergence mistake
-`decisions/ADR-087-sandbox-spec-capability-enforcement.md` already corrected once for `mounts`/`net`.
+`decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md` already corrected once for `mounts`/`net`.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §1b (the "sandbox is the whole execution environment"
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §1b (the "sandbox is the whole execution environment"
 layering), §2 (`SandboxSpec`'s "empty-by-default authority" contract), §4 (the capability-enforcement
-table), `010-Python-Code-Interpreter.md` §1a (`Runner`), CLAUDE.md's locked decision ("the embedded
+table), `rfcs/010-Python-Code-Interpreter.md` §1a (`Runner`), CLAUDE.md's locked decision ("the embedded
 native CPython interpreter is the one mediated code-interpreter path, permanently... never a second
 interpreter for `execute_code`").
 
@@ -63,7 +63,7 @@ and if the answer is no, what — if anything — is still worth fixing?*
    earlier version of this finding claimed `cap::Exec` was scoped to *nested* exec only (008 §4's
    "`Exec` (nested)" table row) and therefore said nothing about top-level `SandboxBackend::create()`/
    `exec()` authorization. An independent red-team pass (`Agent` tool, this same design cycle) checked
-   the actual authoritative source and found that claim wrong: `007-Capability-and-Trust-Model.md:59`
+   the actual authoritative source and found that claim wrong: `rfcs/007-Capability-and-Trust-Model.md:59`
    —
    > `Exec<profile>` | Create a sandbox of a profile | profile, resource limits
    —
@@ -119,7 +119,7 @@ one invariant, silently.
 
 **C. (Recommended, fresh design rather than a patch onto either of the above) Promote the contract
 to the actual spec, once, and have all three backends point to it instead of re-describing it.**
-**Corrected placement, per red-team:** an earlier draft proposed a new `008-Sandbox-and-Isolation.md`
+**Corrected placement, per red-team:** an earlier draft proposed a new `rfcs/008-Sandbox-and-Isolation.md`
 §1b subsection; red-team correctly flagged that §1b (129-181) is scoped narrowly to native-jail's own
 composed mediation stack (Worktree/ShellRunner/PythonRunner/import-allowlist), not backend-agnostic
 contract language, while **§2** ("The contract," 182-230) already IS the backend-agnostic
@@ -163,7 +163,7 @@ hardcode a string per backend type (`"kata"`, `"native_jail"`), thread the regis
 through every `create()` call site, or something else — without it being settled whether backend-*type*
 or backend-registration-*name* is the right granularity for this capability to gate. Shipping a check
 against a guessed answer would be exactly the kind of decorative-not-real containment this project's
-"no vacuous claims" posture already rejects once this session (`decisions/ADR-088-...md`'s rejected
+"no vacuous claims" posture already rejects once this session (`decisions/archive/ADR-088-...md`'s rejected
 OOM heuristic). **Decision: disclose Finding 2 explicitly as a real, open gap — not close it as
 "investigated, not a real gap" (that would be false), and not implement a guessed mechanism either.**
 This is recorded as its own follow-on item, not folded into Finding 1's close-out.
@@ -220,7 +220,7 @@ compilation) plus a manual read of all three edited header comments to confirm e
 residual bullet survived the consolidation intact and only the duplicated general claim was replaced.
 
 **Finding 2 (deferred, not implemented this pass):** Write up as a short "investigated and deferred"
-ADR, matching this session's own `decisions/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md`
-/ `decisions/ADR-092-kata-backend-disk-net-bytes-investigated-and-deferred.md` precedent — the real
+ADR, matching this session's own `decisions/archive/ADR-090-kata-backend-pids-limit-investigated-and-deferred.md`
+/ `decisions/archive/ADR-092-kata-backend-disk-net-bytes-investigated-and-deferred.md` precedent — the real
 finding (a currently-unenforced, purpose-built capability gate) and the real open question (§7 items
 4-5) recorded for whoever resolves it next, not silently dropped.

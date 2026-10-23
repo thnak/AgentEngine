@@ -22,14 +22,18 @@
 //         WorkflowSupervisor::run_workflow() call on the OUTER graph -- the actual headline use case,
 //         proven composable, not just unit-tested in isolation.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
+#include <coroutine>
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
 #include "agentengine/workflow/graph.hpp"
 
@@ -63,8 +67,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -110,14 +113,59 @@ using agentengine::role;
 
 [[nodiscard]] std::vector<ExecutorBody> two_step_inner_bodies() {
     return {
-        [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">greet")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">greet")};
         },
-        [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-            return ExecutorOutcome{text_message(text_of(in) + ">shout")};
+        [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in) + ">shout")};
         },
     };
 }
+
+
+// ADR-193 §9 / issue #196: a one-node inner workflow whose node spends 100 + 40 tokens, so the charge is visible.
+struct Spend100Inner {
+    Workflow wf;
+    std::vector<ExecutorBody> bodies;
+    WorkflowSupervisor sup;
+    Spend100Inner() {
+        wf.id        = "inner-spend";
+        wf.executors = {node_desc("spend")};
+        wf.start     = "spend";
+        wf.output_selection.push_back("spend");
+        wf.bound.max_rounds = 4;
+        bodies.push_back([](Message const& in, agentengine::EffectContext&)
+                             -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            ExecutorOutcome o{text_message(text_of(in) + ">spent")};
+            o.usage.input_tokens  = 100;
+            o.usage.output_tokens = 40;
+            co_return o;
+        });
+        sup.initialize(wf, bodies);
+    }
+};
+
+struct ChargeLog {
+    int charges = 0;
+    agentengine::Usage total{};
+    [[nodiscard]] agentengine::EffectContext context() {
+        agentengine::EffectContext ctx;
+        ctx.charge_delegated_usage = [this](agentengine::Usage const& u, std::uint64_t) {
+            ++charges;
+            total.input_tokens += u.input_tokens;
+            total.output_tokens += u.output_tokens;
+        };
+        return ctx;
+    }
+};
+
+bool g_hook_parked = false;
+bool g_park_hook   = false;
+struct NeverResumed {
+    bool await_ready() const noexcept { return false; }
+    void await_suspend(std::coroutine_handle<>) const noexcept { g_hook_parked = true; }
+    void await_resume() const noexcept {}
+};
 
 }  // namespace
 
@@ -133,7 +181,7 @@ int main() {
         check(wrapped.has_value(), "W1: construction succeeds for a request_port-free graph");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("in"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(out.has_value(), "W1: the wrapped call succeeds");
             if (out) {
                 check(text_of(out->payload) == "in>greet>shout",
@@ -153,8 +201,8 @@ int main() {
         check(wrapped.has_value(), "W2 setup: construction succeeds");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> first  = (*wrapped)(text_message("call"), ctx);
-            result<ExecutorOutcome> second = (*wrapped)(text_message("call"), ctx);
+            result<ExecutorOutcome> first  = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
+            result<ExecutorOutcome> second = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
             check(first.has_value() && second.has_value(), "W2: both calls succeed");
             if (first && second) {
                 check(text_of(first->payload) == text_of(second->payload),
@@ -208,11 +256,11 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             // Succeeds, but names a label NO declared edge carries -> routing_failed, not a crash.
-            [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message("x"), {"unknown"}};
+            [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message("x"), {"unknown"}};
             },
-            [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -221,7 +269,7 @@ int main() {
         check(wrapped.has_value(), "W4 setup: construction succeeds (no request_port here)");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("in"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(!out.has_value(), "W4: a routing_failed inner run fails closed, not a default value");
             if (!out) {
                 check(out.error().code ==
@@ -242,10 +290,10 @@ int main() {
 
         auto call_count = std::make_shared<std::atomic<int>>(0);
         std::vector<ExecutorBody> inner_bodies = {
-            [call_count](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
+            [call_count](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 call_count->fetch_add(1, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(15));  // widen the race window
-                return ExecutorOutcome{in};
+                co_return ExecutorOutcome{in};
             },
         };
 
@@ -272,14 +320,14 @@ int main() {
             outer_wf.bound.max_rounds = 10;
 
             std::vector<ExecutorBody> outer_bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{in};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{in};
                 },
-                [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message("fromA")};
+                [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message("fromA")};
                 },
-                [](Message const&, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message("fromB")};
+                [](Message const&, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message("fromB")};
                 },
                 *wrapped,
             };
@@ -311,7 +359,7 @@ int main() {
         check(wrapped.has_value(), "W6: the factory returns successfully");
         if (wrapped) {
             agentengine::EffectContext ctx;
-            result<ExecutorOutcome> out = (*wrapped)(text_message("factory"), ctx);
+            result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("factory"), ctx));
             check(out.has_value() && text_of(out->payload) == "factory>greet>shout",
                   "W6: the body still works correctly after its local WorkflowSupervisor's own "
                   "variable went out of scope -- the shared_ptr overload owns a real keep-alive, no "
@@ -338,8 +386,8 @@ int main() {
             check(validate_workflow(outer_wf).has_value(), "W7: the outer graph validates");
 
             std::vector<ExecutorBody> outer_bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message(text_of(in) + ">prep")};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message(text_of(in) + ">prep")};
                 },
                 *wrapped,  // the whole inner Workflow, reused as an ORDINARY outer participant
             };
@@ -354,6 +402,125 @@ int main() {
                   "workflow's own two-step processing -- genuinely composable end to end, not just "
                   "unit-tested in isolation");
         }
+    }
+
+    // ---- C1-C5 (issue #196, ADR-193 section 9): the inner run is charged to the caller exactly once on every exit
+    {
+        // C1: the inner run spends, then a round-boundary hook throws out of run_workflow -- charged once.
+        Spend100Inner inner;
+        inner.sup.set_checkpoint_hook([](std::uint32_t, agentengine::rt::RunStateRecord) -> agentengine::task<void> {
+            throw std::runtime_error("host hook failed");
+            co_return;
+        });
+        result<ExecutorBody> wrapped = workflow_as_executor_body(inner.sup);
+        ChargeLog log;
+        agentengine::EffectContext ctx = log.context();
+        Message const input = text_message("in");
+        bool threw = false;
+        try {
+            (void)agentengine::rt::block_on((*wrapped)(input, ctx));
+        } catch (std::runtime_error const&) {
+            threw = true;
+        }
+        check(threw && log.charges == 1 && log.total.input_tokens == 100 && log.total.output_tokens == 40,
+              "C1: an inner run that throws after spending is charged to the caller exactly once (100 in, 40 out)");
+    }
+    {
+        // C2: the inner run parks after spending and the outer task is destroyed while suspended.
+        Spend100Inner inner;
+        inner.sup.set_checkpoint_hook([](std::uint32_t, agentengine::rt::RunStateRecord) -> agentengine::task<void> {
+            co_await NeverResumed{};
+        });
+        result<ExecutorBody> wrapped = workflow_as_executor_body(inner.sup);
+        ChargeLog log;
+        agentengine::EffectContext ctx = log.context();
+        g_hook_parked = false;
+        {
+            Message const input = text_message("in");  // named: the body is lazy and takes a const&
+            auto t = (*wrapped)(input, ctx);
+            // #178: deliberate step-driving (observes a suspended state: hook parked, task not done)
+            t.resume();
+            check(g_hook_parked && !t.done() && log.charges == 0,
+                  "C2: setup -- the inner run is parked after spending and nothing is charged yet");
+        }
+        check(log.charges == 1 && log.total.input_tokens == 100 && log.total.output_tokens == 40,
+              "C2: an inner run dropped while suspended is charged to the caller exactly once (100 in, 40 out)");
+    }
+    {
+        // C3: a PREVIOUS completed run left usage() nonzero; the next call is dropped before it ever runs.
+        Spend100Inner inner;
+        result<ExecutorBody> wrapped = workflow_as_executor_body(inner.sup);
+        ChargeLog first;
+        agentengine::EffectContext ctx1 = first.context();
+        Message const input = text_message("in");
+        result<ExecutorOutcome> done = agentengine::rt::block_on((*wrapped)(input, ctx1));
+        check(done.has_value() && inner.sup.usage().input_tokens == 100 && first.charges == 0,
+              "C3: setup -- a completed run left usage() at 100 input tokens (its outcome carries them)");
+        ChargeLog log;
+        agentengine::EffectContext ctx = log.context();
+        {
+            auto t = (*wrapped)(input, ctx);  // created, never resumed
+        }
+        check(log.charges == 0, "C3: dropped before the call began, the previous run's usage is NOT charged");
+    }
+    {
+        // C3b: the call is inside run_once, parked on the inner supervisor's run mutex (another driver's run holds
+        // it), so ITS run_workflow has not started; usage() holds the other run's partial spend and must not be charged.
+        Spend100Inner inner;
+        inner.sup.set_checkpoint_hook([](std::uint32_t, agentengine::rt::RunStateRecord) -> agentengine::task<void> {
+            if (g_park_hook) co_await NeverResumed{};
+        });
+        result<ExecutorBody> wrapped = workflow_as_executor_body(inner.sup);
+        ChargeLog log;
+        agentengine::EffectContext ctx = log.context();
+        Message const input = text_message("in");
+        g_park_hook = false;
+        result<ExecutorOutcome> done = agentengine::rt::block_on((*wrapped)(input, ctx));
+        check(done.has_value(), "C3b: setup -- a first run completed");
+        g_park_hook   = true;
+        g_hook_parked = false;
+        auto other = inner.sup.run_workflow(RunWorkflow{input});  // a direct driver's run, parked holding the mutex
+        // #178: deliberate step-driving (parks a run holding the supervisor mutex so the next call observes busy)
+        other.resume();
+        check(g_hook_parked && inner.sup.usage().input_tokens == 100,
+              "C3b: setup -- another run holds the supervisor and has spent 100 input tokens");
+        ChargeLog log2;
+        agentengine::EffectContext ctx2 = log2.context();
+        {
+            auto t = (*wrapped)(input, ctx2);
+            // #178: deliberate step-driving (observes a suspended state: parked on the busy supervisor)
+            t.resume();  // inside run_once, parked on run_mutex_
+            check(!t.done(), "C3b: setup -- the second call is parked on the busy supervisor");
+        }
+        check(log2.charges == 0, "C3b: dropped before its own inner run started, another run's spend is NOT charged");
+    }
+    {
+        // C4/C5: no double charge on a normal completion (the outcome carries it) or a normal failure (the hook, once).
+        Spend100Inner inner;
+        result<ExecutorBody> wrapped = workflow_as_executor_body(inner.sup);
+        ChargeLog log;
+        agentengine::EffectContext ctx = log.context();
+        Message const input = text_message("in");
+        result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(input, ctx));
+        check(out.has_value() && log.charges == 0 && out->usage.input_tokens == 100 && out->usage.output_tokens == 40,
+              "C4: a normal completion is charged through its outcome, never also through the hook");
+
+        Spend100Inner failing;
+        failing.wf.executors.push_back(node_desc("tail"));
+        failing.wf.edges.push_back(Edge{"spend", "tail", edge_kind::direct, {}});
+        failing.wf.output_selection = {"tail"};
+        failing.wf.bound.max_rounds = 1;
+        failing.bodies.push_back([](Message const& in, agentengine::EffectContext&)
+                                     -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in))};
+        });
+        failing.sup.initialize(failing.wf, failing.bodies);
+        result<ExecutorBody> failing_wrapped = workflow_as_executor_body(failing.sup);
+        ChargeLog flog;
+        agentengine::EffectContext fctx = flog.context();
+        result<ExecutorOutcome> fout = agentengine::rt::block_on((*failing_wrapped)(input, fctx));
+        check(!fout.has_value() && flog.charges == 1 && flog.total.input_tokens == 100 && flog.total.output_tokens == 40,
+              "C5: a normal failure (bound_max_rounds) is charged through the hook exactly once (100 in, 40 out)");
     }
 
     if (g_failures == 0) {

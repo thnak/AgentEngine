@@ -1,4 +1,4 @@
-// Implements decisions/ADR-069-content-triggered-model-response-replay.md's own prove phase -- the
+// Implements decisions/archive/ADR-069-content-triggered-model-response-replay.md's own prove phase -- the
 // first executed evidence against that ADR's §3 falsifiable claims (all previously INCONCLUSIVE, no
 // code existed). See content_replay_gateway.hpp's own top comment for a real, mid-implementation
 // finding this test file also covers: the amended retry request must never re-include the discarded

@@ -31,11 +31,14 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <thread>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
@@ -67,14 +70,13 @@ template <class Pred>
 // same rule test_rt_agent_session.cpp's own drive<T>() documents.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // task<void> has no take_value() (see rt/task.hpp's void specialization) -- a separate helper rather
 // than trying to make drive<T>() above generic over T=void.
 void drive_void(agentengine::rt::task<void> t) {
-    while (!t.done()) t.resume();
+    agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -126,23 +128,23 @@ AE_JSON_SCHEMA(SlowReply, ok)
 
 // Sleeps 150ms then succeeds -- same fixture shape as the Quark original's own test, so B2/G7's
 // "did start_background_task() actually detach" timing claim is comparable across both files.
-struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agentengine::Backgroundable> {
+struct SlowBackgroundableTool : agentengine::Tool<SlowBackgroundableTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "slow_backgroundable";
     static constexpr std::string_view description = "Sleeps 150ms, then succeeds.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
-struct ForegroundOnlyTool : agentengine::Tool<ForegroundOnlyTool> {
+struct ForegroundOnlyTool : agentengine::Tool<ForegroundOnlyTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "foreground_only";
     static constexpr std::string_view description = "Never declared Backgroundable.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 }  // namespace
@@ -152,7 +154,7 @@ int main() {
     using agentengine::Principal;
 
     AgentSession<OneShotChatClient> session;
-    session.initialize("s-bg", Principal{"p-owner", ""});
+    session.initialize("s-bg", Principal{"p-owner", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client();
 
     agentengine::CapabilitySet const held =
@@ -161,7 +163,7 @@ int main() {
 
     auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
-    auto const table = agentengine::ToolTable::from_tools<SlowBackgroundableTool, ForegroundOnlyTool>();
+    auto const table = agentengine::ToolTable::from(SlowBackgroundableTool{}, ForegroundOnlyTool{});
 
     auto started = drive(session.start_run(StartRun{user_message("hi")}));
     check(started.has_value(), "setup: a real start_run() succeeds before any background_task call");

@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-182 P2 (decisions/ADR-182-agent-test-driver-mcp.md) and 022 §2's "mock provider
+// Implements ADR-182 P2 (decisions/archive/ADR-182-agent-test-driver-mcp.md) and 022 §2's "mock provider
 // with scripted tool calls": one shared, STRICT scripted `ChatClient` for tests and for the ADR-182
 // test driver.
 //

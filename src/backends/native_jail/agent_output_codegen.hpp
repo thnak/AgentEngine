@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-154-agent-output-codeact-module.md -- 026-Agent-Facing-Runtime-Surface.md
+// Implements decisions/archive/ADR-154-agent-output-codeact-module.md -- rfcs/026-Agent-Facing-Runtime-Surface.md
 // §5's `agent.output` ("Emit structured output conforming to the run's schema", zero capability,
 // `trust/agent_library_manifest.hpp`'s `{"output", ...}` row). Same "pure C++, Python-free,
 // unit-testable without an embedded interpreter" separation `agent_tools_codegen.hpp`/

@@ -1,5 +1,5 @@
 // Milestone 2 Phase C, task C4 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
-// 008-Sandbox-and-Isolation.md §9 G1 -- "one hostile test corpus runs against every available
+// rfcs/008-Sandbox-and-Isolation.md §9 G1 -- "one hostile test corpus runs against every available
 // backend on every platform in the current target set and produces the same outcome
 // classification for every case." This is the Windows half; tests/backends/native_jail/test_native_jail_parity_linux.cpp
 // is the Linux half, both consuming the SAME table (tests/helpers/abuse_case_corpus.hpp) verbatim.
@@ -7,6 +7,8 @@
 // Real child processes under real AppContainer + Job Object isolation -- bounded by this test's
 // own generous-but-finite wall_ms (CLAUDE.md Machine Safety).
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include <windows.h>
 
 #include <cassert>
@@ -67,17 +69,18 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;  // generous: classification parity, not tightest-bound timing
         spec.limits.memory_bytes = c.memory_bytes;
         spec.limits.pids = c.pids;
         spec.limits.output_bytes = c.output_bytes;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), std::string("G1 parity [") + c.name + "]: create() succeeds");
         if (!handle.has_value()) continue;
 
         ExecRequest req{.language = "native", .source = hostile_child_cmd(c.probe_args)};
-        auto outcome = backend.exec(*handle, req, ctx);
+        auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
         AE_CHECK(outcome.has_value(), std::string("G1 parity [") + c.name + "]: exec() returns a result");
         if (outcome.has_value()) {
             std::cout << "  measured: [" << c.name << "] got " << to_string(outcome->klass)
@@ -86,7 +89,7 @@ int main() {
                       std::string("G1 parity [") + c.name + "]: outcome classification is " +
                           to_string(c.expected));
         }
-        backend.destroy(*handle);
+        agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     std::filesystem::remove_all(work_dir, ec);

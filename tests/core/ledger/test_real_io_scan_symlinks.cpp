@@ -18,9 +18,11 @@
 // Needs permission to create symbolic links. Where that is missing (Windows without Developer Mode) it
 // prints SKIP and proves nothing; the WSL/Linux build is where it runs for real. No daemon, no network.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
 
+#include <utility>
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -48,8 +50,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string const& s) {

@@ -1,6 +1,6 @@
 #pragma once
-// Implements decisions/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31,
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.progress` ("Report progress on long work → run
+// Implements decisions/archive/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31,
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.progress` ("Report progress on long work → run
 // event stream", zero capability). Same "pure C++, Python-free, unit-testable without an embedded
 // interpreter" separation `agent_tools_codegen.hpp`/`agent_ask_codegen.hpp`/`agent_output_codegen.hpp`
 // already establish: the generated Python source is ordinary string building here; the `PyRun_String`

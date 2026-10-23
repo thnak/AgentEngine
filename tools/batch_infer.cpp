@@ -1,5 +1,5 @@
 // Standalone, non-interactive batch-inference CLI: sends N independent single-shot prompts to OpenRouter's Batch
-// API as one job, polls it to the end, and prints each answer. decisions/ADR-235 §7 / ADR-236 §4: it drives the
+// API as one job, polls it to the end, and prints each answer. decisions/archive/ADR-235 §7 / ADR-236 §4: it drives the
 // engine's own `openai::OpenRouterBatchBackend` (GA `/api/v1/batches`), so the tool and a batched workflow round
 // speak the vendor through ONE wire translation -- the tool is a manual live probe of exactly the code the engine
 // runs, not a second client that could drift from it.
@@ -46,6 +46,7 @@
 #include "agentengine/pal/console.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/protocol/openai/openrouter_batch_backend.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -175,7 +176,7 @@ int main(int argc, char** argv) {
         items.push_back(BatchItemRequest{"i" + std::to_string(i), std::move(req)});
     }
 
-    auto job = backend->submit(items, ctx);
+    auto job = agentengine::rt::block_on(backend->submit(items, ctx));
     if (!job) {
         std::fprintf(stderr, "submit failed: %s (%s)\n", job.error().message.c_str(), job.error().code.c_str());
         return 1;
@@ -189,7 +190,7 @@ int main(int argc, char** argv) {
     for (;;) {
         std::this_thread::sleep_for(backoff);
         backoff = std::min(backoff * 2, std::chrono::seconds{30});
-        auto poll = backend->poll(*job, ctx);
+        auto poll = agentengine::rt::block_on(backend->poll(*job, ctx));
         if (!poll) {
             bool const young   = std::chrono::steady_clock::now() - submitted_at < kPollErrorGrace;
             bool const counted = !young && poll.error().klass != failure_class::transient;
@@ -205,7 +206,7 @@ int main(int argc, char** argv) {
         } else if (poll->ended) {
             std::fprintf(stderr, "job ended%s%s\n", poll->detail.empty() ? "" : ": ", poll->detail.c_str());
             print_poll(*poll, items);
-            if (auto released = backend->release(*job, ctx); !released) {
+            if (auto released = agentengine::rt::block_on(backend->release(*job, ctx)); !released) {
                 std::fprintf(stderr, "  release failed (the vendor keeps the job's data): %s\n",
                              released.error().message.c_str());
             }

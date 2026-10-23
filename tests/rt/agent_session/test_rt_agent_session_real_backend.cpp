@@ -1,5 +1,5 @@
 // ADR-037 Phase 2: porting the real behavioral claims from the OLD, Quark-actor-based
-// test_agent_session_real_backend.cpp (decisions/ADR-018) and test_agent_session_skills_real_backend.cpp
+// test_agent_session_real_backend.cpp (decisions/archive/ADR-018) and test_agent_session_skills_real_backend.cpp
 // (009 §8 + ADR-018) onto agentengine::rt::AgentSession (rt/agent_session.hpp) directly. Both old files
 // share the identical "canned local HTTP server, real OpenAIChatClient, real socket" shape -- fully
 // portable and CI-safe (no live network egress, no live API key), just no longer wired through
@@ -47,6 +47,9 @@
 #ifdef AGENTENGINE_WITH_HTTPS
 
 #include "agentengine/pal/net.hpp"
+#include "../../support/session_choices.hpp"
+
+#include "agentengine/rt/block_on.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -87,8 +90,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr std::uint32_t kLoopbackHostOrder = (127u << 24) | 1u;
@@ -234,17 +236,17 @@ struct OneWeatherToolReply {
 };
 AE_JSON_SCHEMA(OneWeatherToolReply, condition)
 
-struct OneWeatherTool : agentengine::Tool<OneWeatherTool> {
+struct OneWeatherTool : agentengine::Tool<OneWeatherTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "get_weather";
     static constexpr std::string_view description = "Get the current weather for a city.";
     using Args = OneWeatherToolArgs;
     using Reply = OneWeatherToolReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{"sunny"}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{"sunny"}; }
 };
 
 class ToolDeclaringHistoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: required to satisfy
     // HasContextProviderName, needed to compose via HistoryAndSkillsProvider below.
     static constexpr std::string_view name = "real-backend-history";
 
@@ -252,7 +254,7 @@ public:
         agentengine::SessionContext& session_ctx, agentengine::EffectContext&) {
         agentengine::ContextContribution contribution;
         contribution.messages.assign(session_ctx.history.begin(), session_ctx.history.end());
-        contribution.tools = agentengine::ToolTable::from_tools<OneWeatherTool>().descriptors();
+        contribution.tools = agentengine::ToolTable::from(OneWeatherTool{}).descriptors();
         co_return contribution;
     }
     agentengine::task<std::monostate> on_turn_end(agentengine::TurnView, agentengine::EffectContext&) {
@@ -269,7 +271,7 @@ static_assert(agentengine::ContextProvider<ToolDeclaringHistoryProvider>,
 // `ContextProvider` conformer).
 class BuiltinSkillsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "real-backend-skills";
 
     BuiltinSkillsProvider() : inner_({agentengine::make_builtin_skills_source()}) {}
@@ -353,7 +355,7 @@ int main() {
 
             agentengine::CapabilitySet held = agentengine::CapabilitySet::grant_root(
                 {agentengine::Capability{agentengine::cap::Secret{"provider-key", std::chrono::seconds{0}}}});
-            session.initialize("session-real-backend", agentengine::Principal{"owner", "tenant-a"});
+            session.initialize("session-real-backend", agentengine::Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
             session.set_capabilities(&held);
 
             // ---- J1-R3: ONE REAL TURN through the real turn loop ---------------------------------------
@@ -415,7 +417,7 @@ int main() {
             // ---- J1-R7: fail-closed when a non-default-constructible client was never emplaced --------
             {
                 Session bare;
-                bare.initialize("session-no-client", agentengine::Principal{"owner", "tenant-a"});
+                bare.initialize("session-no-client", agentengine::Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
                 check(!bare.has_chat_client(), "J1-R7: this session has no client emplaced");
                 agentengine::result<agentengine::rt::AgentResponse> r3 =
                     drive(bare.start_run(StartRun{user_turn("hi")}));
@@ -432,7 +434,7 @@ int main() {
                     caps, store, "/v1", agentengine::sandbox::resolve_host, /*ca_bundle=*/std::string{},
                     /*http_referer=*/std::string{}, /*x_title=*/std::string{},
                     /*end_user_id=*/std::string{}, /*seed=*/std::nullopt, ProviderTransport::plaintext_http);
-                tool_session.initialize("session-with-tools", agentengine::Principal{"owner", "tenant-a"});
+                tool_session.initialize("session-with-tools", agentengine::Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
                 tool_session.set_capabilities(&held);
 
                 agentengine::result<agentengine::rt::AgentResponse> r4 =
@@ -470,7 +472,7 @@ int main() {
                 store, "/v1", agentengine::sandbox::resolve_host, /*ca_bundle=*/std::string{},
                 /*http_referer=*/std::string{}, /*x_title=*/std::string{}, /*end_user_id=*/std::string{},
                 /*seed=*/std::nullopt, ProviderTransport::plaintext_http);
-            session.initialize("session-with-skills", agentengine::Principal{"owner", "tenant-a"});
+            session.initialize("session-with-skills", agentengine::Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
             session.set_capabilities(&held);
             // Default-constructed history_provider() starts UNENGAGED unconditionally (2026-08-23:
             // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is

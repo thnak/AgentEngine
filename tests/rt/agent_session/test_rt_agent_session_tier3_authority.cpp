@@ -19,21 +19,27 @@
 //         `held.bind()` actually consults, not a fallback to session state. This is the exact
 //         mechanism (§19.4/§20.6's "held" sites) every prior design-only iteration claimed fixed;
 //         this is the first time it's checked against a real compiled build.
-//   T7 -- fork_from() carries require_authority_ forward (§21a Finding 1's own regression test --
+//   T7 -- fork_from() carries the per_request choice forward (§21a Finding 1's own regression test --
 //         a fork of a Tier-3 session must stay Tier-3, not silently downgrade).
-//   T8 -- AgentSessionRecord round-trips require_authority through to_record()/restore_from_record().
-//   T9 -- make_tombstone_record() sets require_authority explicitly (§24.1).
-//   T10 -- backward compatibility: a non-Tier-3 (require_authority_ == false, the default) session's
-//          caller-only admission is byte-for-byte unchanged from before this mechanism existed.
+//   T8 -- AgentSessionRecord round-trips the authority mode through to_record()/restore_from_record().
+//   T9 -- make_tombstone_record() records no choices (§24.1).
+//   T10 -- a single_trusted_caller session's caller-only admission is unchanged from before this
+//          mechanism existed.
+//
+// ADR-244 §2.3 replaced `set_require_authority(true)` with `SessionChoices::authority = per_request(...)`;
+// "a require_authority_ session" below reads as "a per_request session".
 
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::RequestAuthority;
@@ -57,8 +63,7 @@ void check(bool cond, char const* what) {
 // synchronous under the hood (chat()/tool invoke() never suspend on anything external).
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -120,7 +125,7 @@ Message text_response(std::string text) {
     return t != nullptr ? t->text : std::string{"<non-text reply>"};
 }
 
-// -- The gated tool: declares Capabilities<cap::decl::Entropy> so make_tool_descriptor<ToolT>()
+// -- The gated tool: declares Capabilities<cap::decl::Entropy> so make_tool_descriptor(ToolT{})
 // -- populates a REAL capability_ceiling, exercised through tool_pipeline.hpp's ordinary held.bind()
 // -- mechanism (not the session-scoped-stateful make_tool_descriptor_with_invoke path) -- also stamps
 // -- the observed EffectContext::principal.id into a shared slot, so T4 can check per-request identity
@@ -132,26 +137,26 @@ AE_JSON_SCHEMA(GatedReply, unused)
 
 std::string g_last_observed_principal_id;
 
-struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         g_last_observed_principal_id = ctx.principal.id;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
 // -- ContextProvider offering GatedTool every turn, via the ordinary (not session-scoped-stateful)
-// -- make_tool_descriptor<ToolT>() path.
+// -- make_tool_descriptor(ToolT{}) path.
 class GatedToolProvider {
 public:
     [[nodiscard]] task<agentengine::result<ContextContribution>> on_context(SessionContext& sc,
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor<GatedTool>());
+        c.tools.push_back(agentengine::make_tool_descriptor(GatedTool{}));
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {
@@ -210,15 +215,15 @@ static_assert(agentengine::ChatClient<CannedChatClient>);
 int main() {
     using Clock = std::chrono::steady_clock;
     Clock::time_point const now = Clock::now();
-    Clock::time_point const far_future = now + std::chrono::hours(1);
-    Clock::time_point const in_the_past = now - std::chrono::seconds(1);
+    // ADR-244 §2.3: an expiry is Expiry::at(t) or Expiry::never(), never a defaulted time_point.
+    agentengine::Expiry const far_future = agentengine::Expiry::at(now + std::chrono::hours(1));
+    agentengine::Expiry const in_the_past = agentengine::Expiry::at(now - std::chrono::seconds(1));
 
     // T1: require_authority_ session rejects caller-only (no authority) -- closes X3.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t1", Principal{"owner", "tenant-a"});
+        session.initialize("t1", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
 
         StartRun req{user_message("hi")};
         req.caller = SessionCaller{"owner", "tenant-a"};  // admitted under the OLD rule -- irrelevant
@@ -235,9 +240,8 @@ int main() {
     // T2: require_authority_ session rejects a request with neither caller nor authority.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t2", Principal{"owner", "tenant-a"});
+        session.initialize("t2", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
 
         auto res = drive(session.start_run(StartRun{user_message("hi")}, now));
         check(!res.has_value(), "T2: a require_authority_ session denies a bare request");
@@ -249,9 +253,8 @@ int main() {
     // T3: require_authority_ session rejects a non-admitted authority principal.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t3", Principal{"owner", "tenant-a"});
+        session.initialize("t3", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
 
         StartRun req{user_message("hi")};
         req.authority = RequestAuthority{Principal{"attacker", "tenant-b"}, nullptr, far_future};
@@ -267,9 +270,8 @@ int main() {
     // T4: a live, admitted authority is accepted; EffectContext carries the PER-REQUEST principal.
     {
         AgentSession<ScriptedGatedChatClient, agentengine::rt::NoSessionState, GatedToolProvider> session;
-        session.initialize("t4", Principal{"session-owner", "tenant-a"});
+        session.initialize("t4", Principal{"session-owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
         CapabilitySet const per_request_caps =
             CapabilitySet::grant_root({agentengine::cap::Entropy{}});
 
@@ -295,9 +297,8 @@ int main() {
     // T5: expired authority is rejected, live() genuinely checked against the caller-supplied `now`.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t5", Principal{"owner", "tenant-a"});
+        session.initialize("t5", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
 
         StartRun req{user_message("hi")};
         req.authority = RequestAuthority{Principal{"owner", "tenant-a"}, nullptr, in_the_past};
@@ -313,9 +314,8 @@ int main() {
     // tool call is NOT silently falling back to session state.
     {
         AgentSession<ScriptedGatedChatClient, agentengine::rt::NoSessionState, GatedToolProvider> session;
-        session.initialize("t6a", Principal{"owner", "tenant-a"});
+        session.initialize("t6a", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
         // Deliberately NO session.set_capabilities() call -- session-level grant is nothing.
         CapabilitySet const grants_entropy = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
 
@@ -333,9 +333,8 @@ int main() {
     // session-level check.
     {
         AgentSession<ScriptedGatedChatClient, agentengine::rt::NoSessionState, GatedToolProvider> session;
-        session.initialize("t6b", Principal{"owner", "tenant-a"});
+        session.initialize("t6b", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
         CapabilitySet const session_level_grants_entropy =
             CapabilitySet::grant_root({agentengine::cap::Entropy{}});
         session.set_capabilities(&session_level_grants_entropy);  // session-level DOES grant it
@@ -355,16 +354,16 @@ int main() {
     // T7: fork_from() carries require_authority_ forward (fail-closed direction).
     {
         AgentSession<CannedChatClient> source;
-        source.initialize("t7-source", Principal{"owner", "tenant-a"});
+        source.initialize("t7-source", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         source.emplace_chat_client();
-        source.set_require_authority(true);
 
         AgentSession<CannedChatClient> fork;
         fork.emplace_chat_client();
         fork.fork_from(source, "t7-fork");
-        check(fork.require_authority(),
-              "T7: a fork of a Tier-3 session stays Tier-3 -- require_authority_ carried forward, "
-              "not silently reset to the unsafe default (§21a Finding 1)");
+        check(fork.choices().has_value() &&
+                  fork.choices()->authority.mode() == agentengine::authority_mode::per_request,
+              "T7: a fork of a Tier-3 session stays Tier-3 -- its per_request choice carried forward, "
+              "not silently reset to an unsafe default (§21a Finding 1, ADR-244 §2.3)");
 
         // And the forked session genuinely enforces it -- not just a flag that reads true but isn't
         // wired to the real admission check.
@@ -376,26 +375,28 @@ int main() {
     // T8: AgentSessionRecord round-trips require_authority.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t8", Principal{"owner", "tenant-a"});
+        session.initialize("t8", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         session.emplace_chat_client();
-        session.set_require_authority(true);
 
         auto const rec = session.to_record();
-        check(rec.require_authority, "T8: to_record() carries require_authority == true");
+        check(rec.choices.has_value() && rec.choices->authority == agentengine::authority_mode::per_request,
+              "T8: to_record() carries the per_request authority mode");
 
+        // ADR-244 §2.3: a record restores into a session that restates its choices (the ceiling is never recorded).
         AgentSession<CannedChatClient> restored;
+        restored.initialize("t8-restored", Principal{"owner", "tenant-a"}, ae_test::per_request_no_ceiling());
         restored.emplace_chat_client();
-        restored.restore_from_record(rec);
-        check(restored.require_authority(),
-              "T8: restore_from_record() restores require_authority == true");
+        check(restored.restore_from_record(rec).has_value(), "T8: restore into a per_request session succeeds");
+        check(restored.choices()->authority.mode() == agentengine::authority_mode::per_request,
+              "T8: the restored session runs per_request");
 
         // JSON codec round-trip too -- the wire-schema change §22.1 made deliberately breaking.
         auto const json_val = agentengine::rt::agent_session_record_to_json(rec);
         auto const decoded = agentengine::rt::agent_session_record_from_json(json_val);
-        check(decoded.has_value(), "T8: the JSON codec round-trips a record with require_authority set");
+        check(decoded.has_value(), "T8: the JSON codec round-trips a record with choices set");
         if (decoded.has_value()) {
-            check(decoded->require_authority,
-                  "T8: the decoded record's require_authority survives the JSON round-trip");
+            check(decoded->choices.has_value() && decoded->choices->authority == agentengine::authority_mode::per_request,
+                  "T8: the decoded record's authority mode survives the JSON round-trip");
         }
     }
 
@@ -404,16 +405,14 @@ int main() {
         auto const tomb = agentengine::rt::make_tombstone_record("t9-session");
         check(tomb.session_id == "t9-session", "T9: the tombstone carries the real session_id");
         check(tomb.deleted, "T9: the tombstone is marked deleted");
-        check(!tomb.require_authority,
-              "T9: the tombstone's require_authority is an explicit false, not a defaulted omission");
+        check(!tomb.choices.has_value(), "T9: a tombstone records no choices (nothing restores from it)");
     }
 
     // T10: backward compatibility -- a non-Tier-3 session's caller-only admission is unchanged.
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("t10", Principal{"owner", "tenant-a"});
+        session.initialize("t10", Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
-        // require_authority_ left at its default (false).
 
         StartRun mismatched{user_message("hi")};
         mismatched.caller = SessionCaller{"someone-else", "tenant-a"};

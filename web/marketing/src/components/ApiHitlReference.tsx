@@ -2,6 +2,7 @@ import {
   agentAskHitlSnippet,
   approvalExampleSnippet,
   gh,
+  suspendCodesSnippet,
   toolCallHookExampleSnippet,
   workflowChatClientHitlSnippet,
   a2aStreamProjectorInterruptSnippet,
@@ -21,9 +22,19 @@ import {
 import { useLang } from "../i18n/LanguageContext";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const HITL_HEADERS = [
+  "agentengine/core/interaction.hpp",
+  "agentengine/core/tool_call_hook.hpp",
+  "agentengine/rt/agent_session.hpp",
+  "agentengine/rt/agent_session_core.hpp",
+  "agentengine/rt/block_on.hpp",
+];
 
 function Cite({ path, label }: { path: string; label?: string }) {
   return (
@@ -42,6 +53,16 @@ function Cite({ path, label }: { path: string; label?: string }) {
 const copy = {
   en: {
     eyebrow: "One Interaction record, six real surfaces",
+    includesNote: (
+      <>
+        Five headers. <code>core/interaction.hpp</code> is the one correlation record behind every
+        kind of waiting; <code>core/tool_call_hook.hpp</code> is the third decision seam, with the{" "}
+        <code>arguments</code> field the two deciders do not have;{" "}
+        <code>rt/agent_session.hpp</code> and <code>rt/agent_session_core.hpp</code> are the session
+        and its vocabulary (<code>ResolveInteraction</code>, <code>SessionCaller</code>, the
+        suspend sentinels); <code>rt/block_on.hpp</code> drives a run from synchronous code.
+      </>
+    ),
     headingPrefix: "Human-in-the-loop:",
     headingHighlight: "one primitive, six places it shows up",
     intro: (
@@ -87,6 +108,20 @@ const copy = {
       </>
     ),
     approvalNote: <>I4 — every effect stays attributable to the run that produced it</>,
+    suspendCodesEyebrow: "rt/agent_session_core.hpp — the two shapes every call site needs",
+    suspendCodesHeading: "What a suspend looks like, and what answering it takes",
+    suspendCodesBody: (
+      <>
+        The snippet above uses two things it does not define: the code you branch on, and the struct
+        you answer with. Both matter more than they look. The suspend codes are strings, not
+        identifiers — a handler written against <code>kSuspendedForApproval</code> alone has nothing
+        to compare against at runtime — and a suspended run is deliberately <em>not</em> a failure
+        (its class is <code>contract</code>), so a handler that treats "no value" as an error gets
+        this wrong in the safe-looking direction. <code>ResolveInteraction</code> is nine fields, of
+        which the first three carry almost every call site; the rest are reason-specific and
+        defaulted, which is what makes the positional braces above safe to copy.
+      </>
+    ),
 
     hookEyebrow: "OQ-21 — a different question, the same shape",
     hookHeading: "ToolCallHook: should an external process decide before a human ever sees it?",
@@ -99,6 +134,44 @@ const copy = {
         distinct reason, <code>interaction_reason::hook_decision</code> — so an external process's
         dispatch answer can never stand in for a human's approval decision. Resolving one
         re-checks approval need against the real deciders for every remaining call.
+      </>
+    ),
+
+    seamsHeading: "Three seams decide about a call — and only one can do both things",
+    seamsBody: (
+      <>
+        If your decision depends on the call's <em>argument values</em> — "refund anything above 500"
+        — the three seams are not interchangeable. This is the whole answer, each row verified
+        against the header that declares it.
+      </>
+    ),
+    seamsColumns: ["Seam", "Sees argument values", "Can decide what"],
+    seamsRows: [
+      [
+        "ToolCallHook",
+        "Yes — hctx.arguments, as json::Value",
+        "Pass through, deny (denial), rewrite the arguments (rewritten_arguments), or set needs_external_dispatch — which SUSPENDS the round as a hook_decision interaction. Runs first, strictly before the approval gate.",
+      ],
+      [
+        "PolicyDecider",
+        "No — (caller, tool, arguments_tainted)",
+        "auto_approve → proceed; auto_deny → deny; require_approval → falls through to the approval gate, which suspends when no ApprovalDecider answers it. It can force a suspension, but it cannot see an amount.",
+      ],
+      [
+        "ApprovalDecider",
+        "Yes — (caller, tool_name, canonical_args_json)",
+        "A single bool: approve → proceed, refuse → in-process denial. It RESOLVES the pending decision, so wiring one is exactly what stops a policy_driven call from suspending.",
+      ],
+    ],
+    seamsNote: (
+      <>
+        So "refund above 500 needs a human" has two homes and neither is a decider: the{" "}
+        <code>ToolCallHook</code> — which reads the amount and sets{" "}
+        <code>needs_external_dispatch</code> — or host code around the suspend.{" "}
+        <code>PolicyDecider</code> can force a suspension but is blind to values;{" "}
+        <code>ApprovalDecider</code> can read values but can only allow or deny in-process. Note the
+        ordering too: the hook runs <em>first</em>, and a rewrite it makes is not trusted — the engine
+        diffs the bytes and downgrades the trust class rather than taking the hook's word for it.
       </>
     ),
 
@@ -204,13 +277,22 @@ const copy = {
     durabilityHeading: "None of the above assumes the process stays up",
     durabilityBody: (
       <>
-        Every open <code>Interaction</code> is checkpoint content. A suspended run — approval,{" "}
+        Every open <code>Interaction</code> is checkpoint content, so a suspended run — approval,{" "}
         <code>codeact_ask</code>, <code>hook_decision</code>, or a workflow's own{" "}
-        <code>request_port</code> — can be resumed after a genuine process restart, not just later
-        in the same process. One disclosed gap: <code>pending_codeact_asks_</code>, the stored
-        script an <code>agent.ask()</code> replay needs, is not durably checkpointed today.
-        Resolving a <code>codeact_ask</code> interaction that survived a restart fails closed with
-        a named error code rather than silently guessing.
+        <code>request_port</code> — comes back from a genuine process restart still listed as open,
+        and still attributed to the principal that opened it. What does <strong>not</strong> come
+        back is the ability to answer it: an <code>AgentSessionRecord</code> carries the interactions
+        but not the round each one suspended on, so <code>resolve_interaction()</code> on a restored
+        session fails closed with <code>session.resolve_interaction.round_not_recorded</code> and
+        closes the interaction with nothing run (ADR-196 §7, issue #111 A1; ADR-029 named the
+        residual first). That is deliberate — the older fallback resolved against "every call in the
+        last history message", which after a restore onto a live session was a{" "}
+        <em>different</em> round, so a human could approve one call and another would run, attributed
+        to them. A session restart therefore tells you what is still owed rather than letting you
+        finish it. One further disclosed gap: <code>pending_codeact_asks_</code>, the stored script
+        an <code>agent.ask()</code> replay needs, is not durably checkpointed today, so resolving a{" "}
+        <code>codeact_ask</code> that survived a restart fails closed with a named code rather than
+        silently guessing. See the Durability page for the persistence half of this story.
       </>
     ),
     durabilityNote: <>019 §1</>,
@@ -288,6 +370,16 @@ const copy = {
   },
   vi: {
     eyebrow: "Một bản ghi Interaction, sáu bề mặt thật",
+    includesNote: (
+      <>
+        Năm header. <code>core/interaction.hpp</code> là bản ghi tương quan duy nhất đứng sau mọi
+        kiểu chờ đợi; <code>core/tool_call_hook.hpp</code> là seam quyết định thứ ba, với trường{" "}
+        <code>arguments</code> mà hai decider kia không có;{" "}
+        <code>rt/agent_session.hpp</code> và <code>rt/agent_session_core.hpp</code> là session cùng
+        từ vựng của nó (<code>ResolveInteraction</code>, <code>SessionCaller</code>, các sentinel
+        tạm dừng); <code>rt/block_on.hpp</code> chạy một run từ code đồng bộ.
+      </>
+    ),
     headingPrefix: "Human-in-the-loop:",
     headingHighlight: "một nguyên thủy, sáu nơi nó xuất hiện",
     intro: (
@@ -335,6 +427,20 @@ const copy = {
       </>
     ),
     approvalNote: <>I4 — mọi hiệu ứng luôn có thể quy về run đã tạo ra nó</>,
+    suspendCodesEyebrow: "rt/agent_session_core.hpp — hai hình dạng mà mọi chỗ gọi đều cần",
+    suspendCodesHeading: "Một lần tạm dừng trông như thế nào, và cần gì để trả lời nó",
+    suspendCodesBody: (
+      <>
+        Đoạn mã ở trên dùng hai thứ mà nó không định nghĩa: mã để bạn rẽ nhánh, và struct để bạn trả
+        lời. Cả hai quan trọng hơn vẻ ngoài của chúng. Các mã tạm dừng là chuỗi, không phải định
+        danh — một hàm xử lý chỉ viết dựa trên <code>kSuspendedForApproval</code> thì không có gì để
+        so sánh lúc chạy — và một run bị tạm dừng cố ý <em>không</em> phải một thất bại (lớp của nó
+        là <code>contract</code>), nên một hàm xử lý coi "không có giá trị" là lỗi sẽ sai theo hướng
+        trông có vẻ an toàn. <code>ResolveInteraction</code> có chín trường, trong đó ba trường đầu
+        mang gần như toàn bộ các chỗ gọi; phần còn lại đặc thù theo lý do và có giá trị mặc định, và
+        đó là điều khiến các dấu ngoặc theo vị trí ở trên an toàn để sao chép.
+      </>
+    ),
 
     hookEyebrow: "OQ-21 — một câu hỏi khác, cùng hình dạng",
     hookHeading: "ToolCallHook: nên để một tiến trình bên ngoài quyết định, trước cả khi con người thấy nó?",
@@ -348,6 +454,45 @@ const copy = {
         một tiến trình bên ngoài không bao giờ có thể thay thế cho quyết định phê duyệt của con
         người. Giải quyết nó kiểm tra lại nhu cầu approval trước các decider thật cho mọi lệnh gọi
         còn lại.
+      </>
+    ),
+
+    seamsHeading: "Ba seam quyết định về một lệnh gọi — và chỉ một làm được cả hai việc",
+    seamsBody: (
+      <>
+        Nếu quyết định của bạn phụ thuộc vào <em>giá trị tham số</em> của lệnh gọi — "hoàn tiền mọi
+        khoản trên 500" — thì ba seam này không thể thay thế cho nhau. Đây là toàn bộ câu trả lời,
+        mỗi dòng đã được đối chiếu với header khai báo nó.
+      </>
+    ),
+    seamsColumns: ["Seam", "Thấy giá trị tham số", "Có thể quyết định điều gì"],
+    seamsRows: [
+      [
+        "ToolCallHook",
+        "Có — hctx.arguments, kiểu json::Value",
+        "Cho đi tiếp, từ chối (denial), viết lại tham số (rewritten_arguments), hoặc đặt needs_external_dispatch — điều này TẠM DỪNG vòng chạy dưới dạng một interaction hook_decision. Chạy trước tiên, đúng trước cổng approval.",
+      ],
+      [
+        "PolicyDecider",
+        "Không — (caller, tool, arguments_tainted)",
+        "auto_approve → đi tiếp; auto_deny → từ chối; require_approval → rơi xuống cổng approval, và cổng đó sẽ tạm dừng khi không có ApprovalDecider nào trả lời. Nó có thể buộc tạm dừng, nhưng không thấy được số tiền.",
+      ],
+      [
+        "ApprovalDecider",
+        "Có — (caller, tool_name, canonical_args_json)",
+        "Một bool duy nhất: chấp thuận → đi tiếp, từ chối → từ chối ngay trong tiến trình. Nó GIẢI QUYẾT quyết định đang chờ, nên cấu hình một decider như vậy chính là thứ khiến một lệnh gọi policy_driven không còn tạm dừng.",
+      ],
+    ],
+    seamsNote: (
+      <>
+        Vì vậy "hoàn tiền trên 500 cần con người" có đúng hai chỗ, và không chỗ nào là một decider:{" "}
+        <code>ToolCallHook</code> — thứ đọc được số tiền và đặt{" "}
+        <code>needs_external_dispatch</code> — hoặc code host bao quanh lúc tạm dừng.{" "}
+        <code>PolicyDecider</code> có thể buộc tạm dừng nhưng không thấy giá trị;{" "}
+        <code>ApprovalDecider</code> đọc được giá trị nhưng chỉ có thể cho phép hoặc từ chối ngay
+        trong tiến trình. Cũng hãy lưu ý thứ tự: hook chạy <em>trước tiên</em>, và phần viết lại mà
+        nó thực hiện không được tin tuyệt đối — engine tự so sánh byte và hạ cấp lớp tin cậy thay vì
+        tin vào lời của hook.
       </>
     ),
 
@@ -453,14 +598,25 @@ const copy = {
     durabilityHeading: "Không cái nào ở trên giả định tiến trình luôn chạy",
     durabilityBody: (
       <>
-        Mọi <code>Interaction</code> đang mở đều là nội dung checkpoint. Một run bị đình chỉ —
+        Mọi <code>Interaction</code> đang mở đều là nội dung checkpoint, nên một run bị đình chỉ —
         approval, <code>codeact_ask</code>, <code>hook_decision</code>, hoặc{" "}
-        <code>request_port</code> của chính một workflow — có thể được tiếp tục sau một lần khởi
-        động lại tiến trình thật sự, không chỉ sau đó trong cùng tiến trình. Một khoảng trống đã
-        công bố: <code>pending_codeact_asks_</code>, script đã lưu mà một lần phát lại{" "}
-        <code>agent.ask()</code> cần, không được checkpoint bền vững hôm nay. Giải quyết một
-        interaction <code>codeact_ask</code> đã sống sót qua một lần khởi động lại sẽ thất bại một
-        cách rõ ràng với một mã lỗi được đặt tên, thay vì âm thầm đoán.
+        <code>request_port</code> của chính một workflow — quay trở lại sau một lần khởi động lại
+        tiến trình thật sự và vẫn được liệt kê là đang mở, vẫn thuộc về principal đã mở nó. Thứ{" "}
+        <strong>không</strong> quay trở lại là khả năng trả lời nó: một{" "}
+        <code>AgentSessionRecord</code> mang theo các interaction nhưng không mang theo vòng mà mỗi
+        interaction đã tạm dừng, nên <code>resolve_interaction()</code> trên một session đã khôi
+        phục sẽ thất bại theo kiểu fail-closed với{" "}
+        <code>session.resolve_interaction.round_not_recorded</code> và đóng interaction đó mà không
+        chạy gì cả (ADR-196 §7, issue #111 A1; ADR-029 đã nêu tên phần dư này trước đó). Đó là chủ
+        đích — cách dự phòng cũ phân giải dựa trên "mọi lệnh gọi trong message lịch sử cuối cùng",
+        mà sau khi khôi phục lên một session đang sống thì đó là một vòng <em>khác</em>, nên một
+        người có thể phê duyệt lệnh gọi này và một lệnh gọi khác lại chạy, gán cho họ. Vì vậy việc
+        khởi động lại một session cho bạn biết còn nợ điều gì, chứ không cho bạn hoàn tất nó. Một
+        khoảng trống nữa đã công bố: <code>pending_codeact_asks_</code>, script đã lưu mà một lần
+        phát lại <code>agent.ask()</code> cần, không được checkpoint bền vững hôm nay, nên giải
+        quyết một <code>codeact_ask</code> đã sống sót qua một lần khởi động lại sẽ thất bại một
+        cách rõ ràng với một mã lỗi được đặt tên, thay vì âm thầm đoán. Xem trang Durability cho
+        nửa còn lại của câu chuyện này.
       </>
     ),
     durabilityNote: <>019 §1</>,
@@ -559,6 +715,12 @@ export function ApiHitlReference() {
 
         <RevealGroup>
           <RevealItem>
+            <ApiIncludes headers={HITL_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
+
+        <RevealGroup>
+          <RevealItem>
             <CodePanel filename="core/interaction.hpp">{highlightCpp(interactionRecordSnippet)}</CodePanel>
           </RevealItem>
         </RevealGroup>
@@ -601,6 +763,14 @@ export function ApiHitlReference() {
             <CodePanel filename="examples/05_human_approval.cpp">{highlightCpp(approvalExampleSnippet)}</CodePanel>
           </RevealItem>
           <RevealItem>
+            <div style={{ marginTop: 32, marginBottom: 12 }}>
+              <span className="eyebrow">{t.suspendCodesEyebrow}</span>
+              <h4 style={{ fontSize: "1.05rem", margin: "8px 0" }}>{t.suspendCodesHeading}</h4>
+              <p style={{ color: "var(--text-dim)", lineHeight: 1.65 }}>{t.suspendCodesBody}</p>
+            </div>
+            <CodePanel filename="rt/agent_session_core.hpp">{highlightCpp(suspendCodesSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/runtime.html#suspend-for-approval`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>
               AgentSession &amp; ChatClient — Pausing a whole run for a real human →
             </a>
@@ -618,6 +788,28 @@ export function ApiHitlReference() {
           </RevealItem>
           <RevealItem>
             <CodePanel filename="tests/rt/agent_session/test_rt_agent_session_tool_call_hook.cpp">{highlightCpp(toolCallHookExampleSnippet)}</CodePanel>
+          </RevealItem>
+          <RevealItem>
+            <div style={{ marginTop: 36, marginBottom: 14 }}>
+              <h4 style={{ fontSize: "1.05rem", margin: "8px 0" }}>{t.seamsHeading}</h4>
+              <p style={{ color: "var(--text-dim)", lineHeight: 1.65 }}>{t.seamsBody}</p>
+            </div>
+            <ApiTable
+              columns={[...t.seamsColumns]}
+              templateColumns="1.2fr 1.2fr 3fr"
+              rows={t.seamsRows.map(([seam, sees, decides]) => [
+                <code key="s" className="api-tag">
+                  {seam}
+                </code>,
+                sees,
+                decides,
+              ])}
+            />
+          </RevealItem>
+          <RevealItem>
+            <ApiDiagnosticNote status="stub" kind="the threshold question">
+              {t.seamsNote}
+            </ApiDiagnosticNote>
           </RevealItem>
           <RevealItem>
             <a className="api-cite" href={`${SITE_BASE}/api/runtime.html#tool-call-hook`} style={{ borderTop: "none", paddingTop: 0, display: "block" }}>

@@ -1,4 +1,4 @@
-// Live measurement for decisions/ADR-195's precondition (and ADR-179 §1): is a PLAUSIBLE learned lesson
+// Live measurement for decisions/archive/ADR-195's precondition (and ADR-179 §1): is a PLAUSIBLE learned lesson
 // still followed when it arrives by the safe route?
 //
 // ADR-194 measured one contrived lesson ("reply ZEBRA regardless") and found the reading-rule preamble

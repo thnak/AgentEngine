@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/tools/extract_pdf_metadata.hpp"
 
 namespace {
@@ -262,8 +263,10 @@ public:
 void test_real_end_to_end_metadata_extraction() {
     using agentengine::tools::ExtractPdfMetadata;
 
-    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::FsRead{"work", "", std::nullopt}});
+    // ADR-244 §2.4: the worker's read-only mounts are checked against the session's grants too.
+    std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", std::nullopt}};
+    for (auto const& m : agentengine::tools::required_grants()) grants.push_back(m);
+    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(std::move(grants));
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -274,7 +277,7 @@ void test_real_end_to_end_metadata_extraction() {
     ExtractPdfMetadata::Args args;
     args.path = "meta_test.pdf";  // the fake adapter ignores this and returns kTestPdfWithInfo regardless
 
-    auto reply = ExtractPdfMetadata::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfMetadata{}.invoke(args, ctx));
     if (!reply.has_value()) {
         std::fprintf(stderr, "extract_pdf_metadata real end-to-end call failed: code=%s message=%s\n",
                      reply.error().code.c_str(), reply.error().message.c_str());
@@ -310,7 +313,7 @@ void test_ambiguous_source_rejected_before_any_sandbox_work() {
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
     ExtractPdfMetadata::Args args;  // neither url nor path set
-    auto reply = ExtractPdfMetadata::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfMetadata{}.invoke(args, ctx));
     check(!reply.has_value(), "neither url nor path set -> rejected");
     if (!reply) {
         check(reply.error().code == "extract_pdf_metadata.ambiguous_source",

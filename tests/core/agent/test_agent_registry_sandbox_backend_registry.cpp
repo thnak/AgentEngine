@@ -32,24 +32,25 @@ using agentengine::ProfileTraits;
 using agentengine::result;
 using agentengine::SandboxHandle;
 using agentengine::SandboxSpec;
+using agentengine::task;
 
 // A concrete SandboxBackend conformer, supporting both target platforms -- used to prove the
 // is_strict=false path never consults the registry at all.
 struct ConcreteBackend {
     static constexpr ProfileTraits traits{5, platform_id::windows_x86_64 | platform_id::linux_x86_64,
                                            cold_start_class::milliseconds};
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) { return SandboxHandle{}; }
-    result<ExecOutcome> exec(SandboxHandle&, ExecRequest const&, EffectContext&) { return ExecOutcome{}; }
-    void destroy(SandboxHandle&) {}
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{}; }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) { co_return ExecOutcome{}; }
+    task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 // The current-platform-supporting backend a real deployment would register for Strict to resolve.
 struct AvailableBackend {
     static constexpr ProfileTraits traits{
         30, platform_id::windows_x86_64 | platform_id::linux_x86_64, cold_start_class::milliseconds};
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) { return SandboxHandle{}; }
-    result<ExecOutcome> exec(SandboxHandle&, ExecRequest const&, EffectContext&) { return ExecOutcome{}; }
-    void destroy(SandboxHandle&) {}
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{}; }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) { co_return ExecOutcome{}; }
+    task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 // No SandboxProfile<...> tag -- 002 §3's table default, Strict.

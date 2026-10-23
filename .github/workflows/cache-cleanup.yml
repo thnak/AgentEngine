@@ -1,0 +1,31 @@
+name: Cache cleanup
+
+# A pull request's sccache entries are written under refs/pull/<n>/merge. Once the PR closes nothing
+# can ever read them again (a new PR reads main's scope, not another PR's), yet they count against
+# the repository's 10 GB Actions-cache limit and push main's live entries out: measured 2026-10-15,
+# three merged PRs held 8.1 GB of 10.9 GB while main held 2.7 GB. Delete them when the PR closes.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  delete-pr-caches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Delete this PR's caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        # DELETE /actions/caches deletes every entry whose key starts with `key` under `ref`, but at most
+        # 30 per call (measured 2026-10-15), so loop until a call deletes nothing. Entry-by-entry deletes
+        # are one call per object (thousands per PR) and trip the API rate limit.
+        run: |
+          while :; do
+            n=$(gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=sccache&ref=$REF" --jq .total_count) || n=0  # 404 = nothing matched = done
+            echo "deleted $n"
+            [ "$n" -gt 0 ] || break
+          done

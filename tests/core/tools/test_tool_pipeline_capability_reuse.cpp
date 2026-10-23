@@ -17,6 +17,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -44,13 +45,13 @@ bool g_live_during_call[2] = {false, false};
 int g_call_index = -1;
 
 struct StashingTool
-    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+    : agentengine::Tool<StashingTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "stashing_tool";
     static constexpr std::string_view description = "Stashes a copy of its own bound capability.";
     using Args = StashArgs;
     using Reply = StashReply;
 
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext& ctx) const {
         int slot = ++g_call_index;
         if (ctx.bound_capabilities && !ctx.bound_capabilities->empty()) {
             agentengine::BoundCapability const& live_handle = (*ctx.bound_capabilities)[0];
@@ -58,7 +59,7 @@ struct StashingTool
             g_live_during_call[slot] = live_handle.use().has_value();
             g_stash[slot] = live_handle;  // a copy -- shares the same ticket (ADR-009)
         }
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -71,14 +72,14 @@ int main() {
     using agentengine::ToolTable;
     using agentengine::invoke_tool;
 
-    auto const table = ToolTable::from_tools<StashingTool>();
+    auto const table = ToolTable::from(StashingTool{});
     CapabilitySet held = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
 
     // -- call n ------------------------------------------------------------------------------------
     {
         agentengine::EffectContext ctx;
         ToolCallRequest req{"call-n", "stashing_tool", *json::parse(R"({"noop":true})"), false};
-        auto result = invoke_tool(table, held, req, ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n succeeds");
     }
     check(g_live_during_call[0], "positive control: the handle WAS live during call n's own invoke()");
@@ -93,7 +94,7 @@ int main() {
     {
         agentengine::EffectContext ctx;
         ToolCallRequest req{"call-n+1", "stashing_tool", *json::parse(R"({"noop":true})"), false};
-        auto result = invoke_tool(table, held, req, ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n+1 succeeds");
     }
     check(g_live_during_call[1], "positive control: the handle WAS live during call n+1's own invoke()");

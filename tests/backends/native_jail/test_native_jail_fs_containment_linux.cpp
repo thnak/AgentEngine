@@ -1,4 +1,4 @@
-// 008-Sandbox-and-Isolation.md SS9 G2/G3's Linux filesystem-containment half --
+// rfcs/008-Sandbox-and-Isolation.md SS9 G2/G3's Linux filesystem-containment half --
 // LinuxNativeJailBackend::setup_jail() (linux_native_jail_backend.cpp) now builds a real
 // pivot_root + bind-mount jail per exec() call: MS_PRIVATE first, a tmpfs-backed root, exactly the
 // granted MountSpec set bind-mounted in (read-only grants remounted MS_RDONLY -- the initial
@@ -12,6 +12,8 @@
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as every other Linux native_jail
 // test -- run via tests/helpers/cgroup_v2_test_setup.sh.
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -86,18 +88,20 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "fs-escape: create() succeeds");
         if (handle.has_value()) {
             std::string secret_path = (secret_dir / "secret.txt").string();
             ExecRequest req{.language = "native", .source = hostile_child_cmd("probe_read " + quote(secret_path))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "fs-escape: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_read(secret) stdout=" << outcome->stdout_text;
@@ -112,7 +116,7 @@ int main() {
             ExecRequest granted_req{
                 .language = "native",
                 .source = hostile_child_cmd("probe_read /work/granted.txt")};
-            auto granted_outcome = backend.exec(*handle, granted_req, ctx);
+            auto granted_outcome = agentengine::rt::block_on(backend.exec(*handle, granted_req, ctx));
             AE_CHECK(granted_outcome.has_value(), "fs-escape positive control: exec() returns a result");
             if (granted_outcome.has_value()) {
                 std::cout << "  measured: contained probe_read(granted) stdout="
@@ -121,7 +125,7 @@ int main() {
                           "fs-escape positive control: a path INSIDE the granted /work mount IS "
                           "readable (the denial above is real containment, not a broken guest)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -134,19 +138,22 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         spec.mounts.push_back(
             MountSpec{.source = ro_dir.string(), .guest_path = "/ro", .read_write = false});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "ro-bind: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("probe_write /ro/ro_file.txt")};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "ro-bind: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_write(ro) stdout=" << outcome->stdout_text;
@@ -163,7 +170,7 @@ int main() {
             // Positive control: the identical write, against the RW-granted mount, succeeds --
             // proves the write mechanism itself works and the RO denial above is real containment.
             ExecRequest rw_req{.language = "native", .source = hostile_child_cmd("probe_write /work/rw_file.txt")};
-            auto rw_outcome = backend.exec(*handle, rw_req, ctx);
+            auto rw_outcome = agentengine::rt::block_on(backend.exec(*handle, rw_req, ctx));
             AE_CHECK(rw_outcome.has_value(), "ro-bind positive control: exec() returns a result");
             if (rw_outcome.has_value()) {
                 std::cout << "  measured: contained probe_write(rw) stdout=" << rw_outcome->stdout_text;
@@ -175,7 +182,7 @@ int main() {
             AE_CHECK(host_rw_content_after.find("hostile_write_probe") != std::string::npos,
                       "ro-bind positive control: the write through the RW mount is visible on the "
                       "HOST side too (a real bind mount, not an isolated tmpfs-only copy)");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 

@@ -21,7 +21,7 @@
 //
 // REQUIRES: a running Docker daemon reachable via the `docker` CLI on PATH
 // (MandatorySandboxProvider<DockerExecutionSurface>). Portable across Windows and Linux (2026-08-29,
-// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md) -- this comment previously said
+// decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md) -- this comment previously said
 // "REQUIRES Windows (SandboxToolProvider/SessionShellSandbox's own current platform scope)", which was
 // already stale by the time it was written: `agentengine::mediated_shell_runner`
 // (SandboxToolProvider's own dependency chain) has built on both platforms since ADR-103. Verified:
@@ -40,11 +40,13 @@
 //       genuinely different resource shapes do not interfere with each other when composed together.
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 #include "backends/native_jail/sandbox_tool_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -72,8 +74,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -176,11 +177,11 @@ std::optional<std::string> read_ledger_entry(Ledger<>& ledger, std::string const
                                                 IdentityHandle owner, std::string const& entry_name) {
     auto head = ledger.head_tree_digest(branch_name, owner);
     if (!head.has_value()) return std::nullopt;
-    auto tree = ledger.get_tree_safe(*head, owner);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(*head, owner));
     if (!tree.has_value()) return std::nullopt;
     for (auto const& e : tree->entries) {
         if (e.name != entry_name) continue;
-        auto bytes = ledger.get_blob_safe(e.digest, owner);
+        auto bytes = agentengine::rt::block_on(ledger.get_blob_safe(e.digest, owner));
         if (!bytes.has_value()) return std::nullopt;
         return std::string(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     }
@@ -227,10 +228,11 @@ int main() {
     MandatorySandboxProvider<DockerExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     Session live;
-    live.initialize("composed-live-session", real_owner_principal);
+    live.initialize("composed-live-session", real_owner_principal, ae_test::trusted_unbounded());
     auto engaged = live.history_provider().engage(
         std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)));
     check(engaged.has_value(), "setup: engage() succeeds with both real, already-bound providers");

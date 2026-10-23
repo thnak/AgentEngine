@@ -1,4 +1,4 @@
-// Closes decisions/ADR-066-context-provider-attribution-provenance.md §7's named residual:
+// Closes decisions/archive/ADR-066-context-provider-attribution-provenance.md §7's named residual:
 // "attribution is stamped only inside assemble_context()'s own loop ... wiring attribution through
 // rt/message_codec.hpp's JSON codec -- checked, confirmed absent; the field does not currently
 // survive a JSON round-trip through that codec." Proves message_to_json()/message_from_json() now

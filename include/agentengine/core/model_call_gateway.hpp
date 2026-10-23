@@ -91,6 +91,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -108,6 +110,8 @@
 #include "agentengine/core/stream.hpp"
 #include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"  // IdempotencyKey
+#include "agentengine/pal/reactor.hpp"
+#include "agentengine/rt/sleep.hpp"  // ADR-237 §4.4: retry backoff suspends
 #include "agentengine/rt/circuit_breaker.hpp"  // rt::CircuitBreaker, rt::Admit (ADR-037 Phase 2)
 
 namespace agentengine {
@@ -129,9 +133,16 @@ namespace model_call_gateway_detail {
 // §4: retry applies to Transient only. Deliberately conservative, matching "policy/contract/resource/
 // fatal aren't retried" on the `chat()` side; no separate coarser vocabulary to re-derive this from
 // anymore -- the old `quark::errc`-keyed split this replaced is gone with `classify_drained_failure`.
+// ADR-237 D6: the class decision is core/error.hpp's `is_retryable`; this site only says its retry re-sends the
+// same call inside the caller's same deadline and budget (`shared`), so `resource` and `canceled` never retry.
 [[nodiscard]] inline bool is_retryable(failure_class klass) noexcept {
-    return klass == failure_class::transient;
+    return agentengine::is_retryable(klass, retry_budget::shared);
 }
+
+// ADR-237 D6: a tier's failure falls through to the next (fallback) tier unless it was `canceled` -- a call
+// stopped on request must not be re-sent to another provider that keeps working on its behalf. Every other class
+// keeps the pre-D6 behaviour (any exhausted tier fails over; G2).
+[[nodiscard]] inline bool fails_over(error const& e) noexcept { return e.klass != failure_class::canceled; }
 
 }  // namespace model_call_gateway_detail
 
@@ -170,11 +181,12 @@ public:
     explicit ModelCallGateway(Primary primary, std::tuple<Fallback...> fallbacks,
                                RetryPolicy retry_policy = {}, BreakerConfig breaker_config = {},
                                JitterSource jitter = &resilient_chat_client_detail::real_jitter,
-                               bool sticky = false)
+                               bool sticky = false, pal::Reactor* reactor = nullptr)
         : primary_(std::move(primary)),
           fallbacks_(std::move(fallbacks)),
           retry_policy_(retry_policy),
           jitter_(std::move(jitter)),
+          borrowed_reactor_(reactor),
           sticky_(sticky) {
         if (retry_policy_.max_attempts == 0) retry_policy_.max_attempts = 1;
         breakers_.reserve(1 + sizeof...(Fallback));
@@ -294,6 +306,7 @@ private:
             if constexpr (sizeof...(Fallback) == 0) {
                 co_return attempt;
             } else {
+                if (!model_call_gateway_detail::fails_over(attempt.error())) co_return attempt;  // ADR-237 D6
                 co_return co_await try_tier<1>(request, ctx);
             }
         } else {
@@ -305,6 +318,7 @@ private:
                 co_return attempt;
             }
             if constexpr (Tier < sizeof...(Fallback)) {
+                if (!model_call_gateway_detail::fails_over(attempt.error())) co_return attempt;  // ADR-237 D6
                 co_return co_await try_tier<Tier + 1>(request, ctx);
             } else {
                 co_return attempt;  // the last tier -- its own failure is the whole call's outcome
@@ -360,7 +374,12 @@ private:
                                          "gateway.usage_unavailable"};
             }
             ++attempts_used;
-            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            // #184: a caller-caused cancel is neither success nor failure for the breaker (frees a half-open probe).
+            if (!succeeded && drained.failure.klass == failure_class::canceled && ctx.cancellation.stop_requested()) {
+                breaker.on_canceled();
+            } else {
+                breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            }
 
             if (succeeded) {
                 co_return ChatResponse{std::move(drained.accumulated), *drained.usage};
@@ -385,21 +404,15 @@ private:
                         drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
                 }
             }
-            // Code review finding (2026-08-12), recorded as a named residual rather than fixed here:
-            // this blocks the calling (actor worker) thread for `delay`, with no co_await/suspension
-            // point across the whole retry loop -- on a shared thread pool this can stall other
-            // actors scheduled on the same worker. NOT a hazard newly introduced by this file:
-            // `ResilientChatClient::chat()` (removed 2026-08-12; see retry_policy.hpp's own top
-            // comment) already did the identical blocking `sleep_for` inside a `task<>` coroutine,
-            // predating ADR-036. A real fix needs a coroutine-suspending timer primitive that doesn't
-            // exist anywhere in `rt::task<T>` today (historical: originally "Quark's task<>," before
-            // ADR-037 replaced the underlying coroutine type; the gap itself -- confirmed still live,
-            // see the blocking `sleep_for` below -- was never specific to which task type), and would
-            // touch both files -- new
-            // infrastructure, not a same-pass edit; left for separate design → red-team → prove work
-            // per this project's own governance for
-            // concurrency-critical changes.
-            std::this_thread::sleep_for(delay);
+            // ADR-237 §4.4 (#180): the backoff SUSPENDS this coroutine on the reactor instead of blocking
+            // the thread it runs on, and it is cancellable: a stop on `ctx.cancellation` ends the wait
+            // early and the call fails `canceled` (not retryable, D6) rather than sleeping out the delay.
+            // Residual: a call driven by a raw resume() with no home (no block_on, strand or host Resumer) parks forever
+            // here -- rt::sleep_until refuses homeless waiters (ADR-237 §4.2), as every rt::http-based primary already does.
+            if (co_await rt::sleep_for(backoff_reactor(), delay, ctx.cancellation) == rt::sleep_status::canceled) {
+                co_return std::unexpected(error{failure_class::canceled,
+                                                 "model call canceled during retry backoff", "gateway.canceled"});
+            }
         }
     }
 
@@ -421,6 +434,10 @@ private:
             if constexpr (sizeof...(Fallback) == 0) {
                 producer.fail(*failure);
             } else {
+                if (!model_call_gateway_detail::fails_over(*failure)) {  // ADR-237 D6
+                    producer.fail(*failure);
+                    return;
+                }
                 stream_tier<1>(request, ctx, producer, stop);
             }
         } else {
@@ -429,6 +446,10 @@ private:
                 stream_attempt_with_retry(backend, breakers_[Tier], Tier, request, ctx, producer, stop);
             if (!failure.has_value()) return;
             if constexpr (Tier < sizeof...(Fallback)) {
+                if (!model_call_gateway_detail::fails_over(*failure)) {  // ADR-237 D6
+                    producer.fail(*failure);
+                    return;
+                }
                 stream_tier<Tier + 1>(request, ctx, producer, stop);
             } else {
                 producer.fail(*failure);
@@ -511,13 +532,24 @@ private:
                 if (terminated_by_consumer) break;
                 if (!s.done()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-            if (terminated_by_consumer) return std::nullopt;
+            if (terminated_by_consumer) {
+                breaker.on_canceled();  // #184: the consumer left mid-attempt -- release a half-open probe slot
+                return std::nullopt;
+            }
 
             // Same fail-closed-on-missing-usage rule `attempt_with_retry()` already enforces for `call()`
             // -- 004 §5's TokenBudget<N> depends on a true per-call token count.
             bool const succeeded = s.terminal() == stream_terminal::closed && last_usage.has_value();
             ++attempts_used;
-            breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            bool const caller_canceled =
+                !succeeded && s.terminal() != stream_terminal::closed &&
+                s.fail_error().klass == failure_class::canceled &&
+                (stop.stop_requested() || ctx.cancellation.stop_requested());
+            if (caller_canceled) {
+                breaker.on_canceled();  // #184
+            } else {
+                breaker.on_result(succeeded, model_call_gateway_detail::monotonic_now_ns());
+            }
 
             if (succeeded) {
                 if (sticky_) last_successful_tier_ = tier_index;
@@ -551,11 +583,28 @@ private:
                     return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
                 }
             }
-            // Same pre-existing blocking-`sleep_for` residual `attempt_with_retry()` already carries
-            // (see that function's own comment) -- not newly introduced here, not fixed here either.
+            // Not a coroutine: this runs on `call_stream()`'s own dedicated thread (not a shared pool
+            // thread), so a blocking `sleep_for` here does not stall other work. It does not observe
+            // `stop` mid-sleep; that goes away with the thread itself (ADR-237 §4.5 rule 1).
             std::this_thread::sleep_for(delay);
         }
     }
+
+    // The reactor `attempt_with_retry()` suspends its backoff on. A host-supplied reactor (constructor) is
+    // borrowed; otherwise the gateway lazily creates a private one on its first backoff (a call that never
+    // retries never starts a thread), the same "owns a private one when none is supplied" rule the provider
+    // chat clients apply to their Runtime. The lock covers only the creation, never a suspension.
+    [[nodiscard]] pal::Reactor& backoff_reactor() {
+        if (borrowed_reactor_ != nullptr) return *borrowed_reactor_;
+        std::lock_guard lock(lazy_reactor_->m);
+        if (!lazy_reactor_->reactor) lazy_reactor_->reactor = pal::make_default_reactor();
+        return *lazy_reactor_->reactor;
+    }
+
+    struct LazyReactor {
+        std::mutex                    m;
+        std::unique_ptr<pal::Reactor> reactor;
+    };
 
     // Identical formula to `ResilientChatClient::compute_backoff` (same file-top rationale: bounded
     // exponential with jitter, respecting the remaining deadline) -- duplicated rather than shared
@@ -577,6 +626,8 @@ private:
     RetryPolicy retry_policy_;
     std::vector<rt::CircuitBreaker> breakers_;  // index 0 = primary's, index I = fallbacks_[I-1]'s
     JitterSource jitter_;
+    pal::Reactor*                 borrowed_reactor_ = nullptr;  // ADR-237 §4.4; must outlive this gateway
+    std::unique_ptr<LazyReactor>  lazy_reactor_ = std::make_unique<LazyReactor>();
     // ADR-148 (GitHub issue #16 Finding 3): sticky tier pinning. `last_successful_tier_` is read/
     // written by `call()`/`call_stream()`/`stream_attempt_with_retry()` under the SAME single-writer
     // invariant `call_stream()`'s own top comment already documents for `breakers_[i]` (at most one of

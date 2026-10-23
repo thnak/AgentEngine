@@ -1,4 +1,4 @@
-// decisions/ADR-003-caller-aware-import-gating.md prove phase: the caller-gated import tier
+// decisions/archive/ADR-003-caller-aware-import-gating.md prove phase: the caller-gated import tier
 // (Design B, revised per §3.3), exercising claims B1-B8, B10, B11, B13 from the ADR's own §4
 // claims tables as literally as possible, PLUS B14 (added during this prove pass's own independent
 // verification -- a real gap in a code comment's "redundant, not required" claim about the finder's

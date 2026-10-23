@@ -1,6 +1,6 @@
 // ADR-037 port of test_agui_projection.cpp onto agentengine::rt::AgentSession (include/agentengine/
 // rt/agent_session.hpp) -- the Quark-actor-free replacement for agentengine::AgentSession (core/
-// agent_session.hpp). Milestone 7 Phase E2 (013-UI-and-Streaming-Surfaces.md §2.1/§2.2,
+// agent_session.hpp). Milestone 7 Phase E2 (rfcs/013-UI-and-Streaming-Surfaces.md §2.1/§2.2,
 // docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `RunEventProjector`
 // (protocol/agui/projection.hpp) both end to end against a REAL `rt::AgentSession` turn loop (via
 // `enable_event_stream()`, real since Phase A, ported to rt:: by ADR-037 Phase 2 Slice 1) for the
@@ -15,11 +15,14 @@
 // session_streaming_and_events.cpp already establish. Every hand-fed-RunEvent block (E2-3 onward)
 // needs no changes at all -- it never touches AgentSession in the first place.
 
+#include <utility>
 #include <iostream>
 #include <memory_resource>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/content.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
@@ -46,8 +49,7 @@ namespace agui = agentengine::agui;
 // immediately from both chat() and chat_stream().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 ae::Message make_turn(std::string message_id) {
@@ -113,7 +115,7 @@ int main() {
     {
         using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
         Session session;
-        session.initialize("s-success", ae::Principal{"p1", ""});
+        session.initialize("s-success", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 
         auto r = drive(session.start_run(agentengine::rt::StartRun{make_turn("m-1")}));
@@ -160,7 +162,7 @@ int main() {
     {
         using Session = agentengine::rt::AgentSession<ScriptedChatClient>;
         Session session;
-        session.initialize("s-fail", ae::Principal{"p1", ""});
+        session.initialize("s-fail", ae::Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().fail_next = true;
         auto viewer = session.enable_event_stream(std::pmr::get_default_resource());
 

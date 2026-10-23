@@ -14,10 +14,12 @@
 //         the "rides the already-proven request_port/resume_workflow path, no new engine mechanism"
 //         claim (ADR-149 §3 finding 3) end to end, not just as marshal-helper unit tests.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/magentic.hpp"
 
@@ -53,8 +55,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -154,22 +155,22 @@ int main() {
         // mgr: round 0 routes to plan_review carrying a typed request; round 1 (after resume) reads
         // the typed response back out of what the port routed back to it, and finishes via "done".
         std::vector<ExecutorBody> bodies = {
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 result<MagenticPlanSignoffResponse> resp = parse_plan_signoff_response(in);
                 if (resp.has_value()) {
                     // Round 1+: the port's resolved response came back. Finish, carrying whether it
                     // was approved so the test can assert on it via r.output.
-                    return ExecutorOutcome{text_message(resp->approved ? "approved" : "rejected"), {"done"}};
+                    co_return ExecutorOutcome{text_message(resp->approved ? "approved" : "rejected"), {"done"}};
                 }
                 // Round 0: no signoff response yet -- send the plan for review.
                 Message req = make_plan_signoff_request(MagenticPlanSignoffRequest{"do the thing"});
-                return ExecutorOutcome{req, {"plan_review"}};
+                co_return ExecutorOutcome{req, {"plan_review"}};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};  // p1 is never reached in this scenario
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};  // p1 is never reached in this scenario
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};  // done sink
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};  // done sink
             },
             {},  // plan_review is a request_port -- never dispatched to a body
         };

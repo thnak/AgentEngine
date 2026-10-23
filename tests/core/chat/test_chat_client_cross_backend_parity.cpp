@@ -1,5 +1,5 @@
 // Milestone 5 Phase J1 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, roadmap
-// exit criterion; 004-Model-Provider-Plane.md §7 G1): "the same agent, unchanged, runs on >= 3
+// exit criterion; rfcs/004-Model-Provider-Plane.md §7 G1): "the same agent, unchanged, runs on >= 3
 // backends; behavioural differences are limited to those the capability table predicts, and every
 // applied fallback appears in the trace."
 //
@@ -497,7 +497,7 @@ int main() {
         // during this port: without message_start/message_delta usage events, the gateway's own
         // fail-closed-on-missing-usage rule (model_call_gateway.hpp's attempt_with_retry) rejects an
         // otherwise-successful response as "gateway.usage_unavailable" -- exercise the SAME code path
-        // (004-Model-Provider-Plane.md §5's TokenBudget<N> depends on a true per-call token count) a
+        // (rfcs/004-Model-Provider-Plane.md §5's TokenBudget<N> depends on a true per-call token count) a
         // real streaming fallback answer would.
         std::string const fallback_sse =
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"

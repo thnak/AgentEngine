@@ -22,7 +22,7 @@
 //         other's state -- proving per-session isolation, not asserting it.
 //   S3 -- the must-fix #1 regression: a descriptor with both `captures_session_state` and
 //         `backgroundable` set is refused by `background_task()`, structurally, before step 8.
-//   S4 -- `make_tool_descriptor<ToolT>()` (the existing, unmodified path) is completely unaffected --
+//   S4 -- `make_tool_descriptor(ToolT{})` (the existing, unmodified path) is completely unaffected --
 //         `captures_session_state` defaults false, ordinary stateless tools are still backgroundable
 //         exactly as before.
 //   S5 -- fork_from() copies provider-owned state (not just history text); clear_in_process_state()
@@ -51,16 +51,20 @@
 #include <memory_resource>
 #include <optional>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
 #include "agentengine/core/codeact_runner_binding.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -83,8 +87,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session*.cpp file uses -- every ChatClientT fixture below co_returns immediately.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -149,37 +152,63 @@ AE_JSON_SCHEMA(CounterArgs, delta)
 struct CounterReply { int total = 0; };
 AE_JSON_SCHEMA(CounterReply, total)
 
-// CounterTool's OWN static invoke() is deliberately wrong (a sentinel no test path should ever see)
-// -- proving make_tool_descriptor_with_invoke genuinely runs the CALLER's callable instead of
-// CounterTool::invoke, not just in addition to it.
+// ADR-237 §5.2: instance form. The old static `invoke()` was a deliberately wrong sentinel (-999) that
+// proved the factory ran the CALLER's callable; with the instance form the real body IS `invoke`, so
+// that proof is no longer needed -- the tool holds the provider's own session-scoped counter, exactly
+// the state the old closure captured.
 struct CounterTool : agentengine::Tool<CounterTool, agentengine::Capabilities<>,
-                                        agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                        agentengine::EffectClass<agentengine::effect_class::pure>,
+                                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "counter_tool";
     static constexpr std::string_view description = "Adds delta to a session-scoped counter.";
     using Args  = CounterArgs;
     using Reply = CounterReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return Reply{-999};  // sentinel: must never appear in any test's observed result
+
+    explicit CounterTool(int& counter) : counter_(&counter) {}
+
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
+        *counter_ += a.delta;
+        co_return CounterReply{*counter_};
     }
+
+private:
+    int* counter_;
 };
 
-// A second tool, declared Backgroundable, for S3 -- gets its descriptor built via
-// make_tool_descriptor_with_invoke instead, to prove that combination is refused regardless of the
-// tool's own declared capabilities.
 struct BgArgs { bool unused = false; };
 AE_JSON_SCHEMA(BgArgs, unused)
 struct BgReply { bool unused = false; };
 AE_JSON_SCHEMA(BgReply, unused)
 
+// A second tool, declared Backgroundable AND CapturesSessionState, for S3 -- to prove that combination
+// is refused regardless of the tool's own declared capabilities. ADR-237 §5.2: `CapturesSessionState`
+// (what the old factory set unconditionally) is now the tool's own declaration.
 struct BackgroundableStatefulTool
     : agentengine::Tool<BackgroundableStatefulTool, agentengine::Capabilities<>,
                          agentengine::Backgroundable,
-                         agentengine::EffectClass<agentengine::effect_class::pure>> {
+                         agentengine::EffectClass<agentengine::effect_class::pure>,
+                         agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_stateful_tool";
     static constexpr std::string_view description = "Declared Backgroundable, for S3.";
     using Args  = BgArgs;
     using Reply = BgReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return Reply{}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
+        co_return BgReply{};
+    }
+};
+
+// S4's control: a tool deliberately LEFT on the transitional static-invoke form, so S4 can still pin
+// the zero-argument factory's own default (`captures_session_state = false`). That form and that factory
+// are deleted together once every conformer is converted (ADR-237 §5.2), taking S4 with them.
+struct StatelessBackgroundableTool
+    : agentengine::Tool<StatelessBackgroundableTool, agentengine::Capabilities<>,
+                         agentengine::Backgroundable,
+                         agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
+    static constexpr std::string_view name        = "stateless_bg_tool";
+    static constexpr std::string_view description = "Declared Backgroundable with a static invoke, for S4.";
+    using Args  = BgArgs;
+    using Reply = BgReply;
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return BgReply{}; }
 };
 
 // The state-owning ContextProvider: counter_ is an ORDINARY MEMBER (no core-seam change, no StateT
@@ -190,11 +219,7 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<CounterTool>(
-            [this](CounterArgs a, EffectContext&) -> agentengine::result<CounterReply> {
-                counter_ += a.delta;
-                return CounterReply{counter_};
-            }));
+        c.tools.push_back(agentengine::make_tool_descriptor(CounterTool{counter_}));
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -282,16 +307,26 @@ AE_JSON_SCHEMA(MountArgs, skill_name)
 struct MountReply { bool ok = false; };
 AE_JSON_SCHEMA(MountReply, ok)
 
-// Sentinel invoke() -- must never actually run; the real logic is the provider's own closure.
-struct MountTool : agentengine::Tool<MountTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+// ADR-237 §5.2: instance form. Both tools hold the provider explicitly and reach its private
+// `real_mount`/`real_use_runner` through the `friend` declarations below; each `invoke` is defined
+// out-of-line, where `TestCodeActProvider` is complete. The old static invoke()s were sentinels that
+// must never run -- the instance invoke IS the real path now.
+class TestCodeActProvider;
+
+struct MountTool
+    : agentengine::Tool<MountTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "mount";
     static constexpr std::string_view description = "Mounts a skill (test double).";
     using Args  = MountArgs;
     using Reply = MountReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            agentengine::error{agentengine::failure_class::fatal, "dead path", "test.dead_static_invoke"});
-    }
+
+    explicit MountTool(TestCodeActProvider& provider) : provider_(&provider) {}
+
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    TestCodeActProvider* provider_;
 };
 
 struct UseRunnerArgs { bool unused = false; };
@@ -300,15 +335,19 @@ struct UseRunnerReply { int tag = 0; };
 AE_JSON_SCHEMA(UseRunnerReply, tag)
 
 struct UseRunnerTool
-    : agentengine::Tool<UseRunnerTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+    : agentengine::Tool<UseRunnerTool, agentengine::EffectClass<agentengine::effect_class::pure>,
+                        agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "use_runner";
     static constexpr std::string_view description = "Reads the shared runner's tag (test double).";
     using Args  = UseRunnerArgs;
     using Reply = UseRunnerReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            agentengine::error{agentengine::failure_class::fatal, "dead path", "test.dead_static_invoke"});
-    }
+
+    explicit UseRunnerTool(TestCodeActProvider& provider) : provider_(&provider) {}
+
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    TestCodeActProvider* provider_;
 };
 
 // The provider under test: same shape as tools/cli_chat.cpp's ToolDeclaringHistoryProvider.
@@ -326,10 +365,8 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<MountTool>(
-            [this](MountArgs a, EffectContext& ctx) { return real_mount(std::move(a), ctx); }));
-        c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<UseRunnerTool>(
-            [this](UseRunnerArgs a, EffectContext& ctx) { return real_use_runner(std::move(a), ctx); }));
+        c.tools.push_back(agentengine::make_tool_descriptor(MountTool{*this}));
+        c.tools.push_back(agentengine::make_tool_descriptor(UseRunnerTool{*this}));
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -339,6 +376,10 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form tools above reach these.
+    friend struct MountTool;
+    friend struct UseRunnerTool;
+
     [[nodiscard]] agentengine::result<MountReply> real_mount(MountArgs a, EffectContext&) {
         mounted_skills_.mount(a.skill_name);
         return MountReply{true};
@@ -419,6 +460,16 @@ public:
 static_assert(agentengine::ChatClient<CapturingChatClient>,
               "CapturingChatClient must satisfy the ChatClient concept (004 §1)");
 
+// ADR-237 §5.2: out-of-line -- both need `TestCodeActProvider` complete.
+agentengine::task<agentengine::result<MountReply>> MountTool::invoke(MountArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount(std::move(a), ctx);
+}
+
+agentengine::task<agentengine::result<UseRunnerReply>> UseRunnerTool::invoke(UseRunnerArgs a,
+                                                                            EffectContext& ctx) const {
+    co_return provider_->real_use_runner(std::move(a), ctx);
+}
+
 }  // namespace
 
 int main() {
@@ -427,7 +478,7 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session;
-        session.initialize("s-s1", Principal{"p", ""});
+        session.initialize("s-s1", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             tool_call_message("c1", "counter_tool", R"({"delta":3})"),
@@ -457,14 +508,14 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session_a;
-        session_a.initialize("s-s2-a", Principal{"p", ""});
+        session_a.initialize("s-s2-a", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client_a = session_a.emplace_chat_client();
         client_a.set_script({tool_call_message("c1", "counter_tool", R"({"delta":10})")});
         CapabilitySet const held_a = CapabilitySet::grant_root({});
         session_a.set_capabilities(&held_a);
 
         StatefulSession session_b;
-        session_b.initialize("s-s2-b", Principal{"p", ""});
+        session_b.initialize("s-s2-b", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client_b = session_b.emplace_chat_client();
         client_b.set_script({tool_call_message("c1", "counter_tool", R"({"delta":1})")});
         CapabilitySet const held_b = CapabilitySet::grant_root({});
@@ -493,7 +544,7 @@ int main() {
     // ============================================================================================
     {
         StatefulSession session;
-        session.initialize("s-s5-source", Principal{"p", ""});
+        session.initialize("s-s5-source", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({tool_call_message("c1", "counter_tool", R"({"delta":5})")});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -518,7 +569,7 @@ int main() {
 
         fork.clear_in_process_state();
         check(fork.history().empty(), "S5: clear_in_process_state() resets history");
-        fork.initialize("s-s5-after-clear", Principal{"p", ""});
+        fork.initialize("s-s5-after-clear", Principal{"p", ""}, ae_test::trusted_unbounded());
         // capabilities_/chat_client_ wiring deliberately survives clear_in_process_state() (both stay
         // "configuration," never per-session data) -- reuse the SAME client, fresh script.
         fork_client.reset_call_count();
@@ -536,12 +587,11 @@ int main() {
     // S3 -- captures_session_state + Backgroundable is refused, structurally
     // ============================================================================================
     {
-        auto desc = agentengine::make_tool_descriptor_with_invoke<BackgroundableStatefulTool>(
-            [](BgArgs, EffectContext&) -> agentengine::result<BgReply> { return BgReply{}; });
+        auto desc = agentengine::make_tool_descriptor(BackgroundableStatefulTool{});
         check(desc.captures_session_state, "S3: the descriptor is correctly marked state-capturing");
         check(desc.backgroundable,
-              "S3: BackgroundableStatefulTool's OWN Backgroundable declaration still comes through "
-              "make_tool_descriptor_with_invoke unchanged (it is not silently cleared)");
+              "S3: BackgroundableStatefulTool's OWN Backgroundable declaration still comes through the "
+              "value-taking factory unchanged (it is not silently cleared)");
 
         agentengine::ToolTable const table = agentengine::ToolTable::from_descriptors({desc});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -551,9 +601,9 @@ int main() {
         EffectContext ctx;
         bool completion_called = false;
 
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, /*approve=*/{}, /*current_background_count=*/0,
-            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; });
+            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; }));
 
         check(!submitted.has_value(),
               "S3: background_task() refuses a captures_session_state descriptor even though it "
@@ -565,12 +615,12 @@ int main() {
     }
 
     // ============================================================================================
-    // S4 -- make_tool_descriptor<ToolT>() (unmodified path) is unaffected
+    // S4 -- make_tool_descriptor(ToolT{}) (unmodified path) is unaffected
     // ============================================================================================
     {
-        auto stateless_desc = agentengine::make_tool_descriptor<BackgroundableStatefulTool>();
+        auto stateless_desc = agentengine::make_tool_descriptor(StatelessBackgroundableTool{});
         check(!stateless_desc.captures_session_state,
-              "S4: the ordinary make_tool_descriptor<ToolT>() path defaults captures_session_state to "
+              "S4: the ordinary make_tool_descriptor(ToolT{}) path defaults captures_session_state to "
               "false, exactly as before this change");
         check(stateless_desc.backgroundable,
               "S4: the tool's own Backgroundable declaration is still correctly extracted");
@@ -578,15 +628,15 @@ int main() {
         agentengine::ToolTable const table = agentengine::ToolTable::from_descriptors({stateless_desc});
         CapabilitySet const held =
             CapabilitySet::grant_root({agentengine::Capability{agentengine::cap::Background{4}}});
-        agentengine::ToolCallRequest const req{"c-ok", "bg_stateful_tool",
+        agentengine::ToolCallRequest const req{"c-ok", "stateless_bg_tool",
                                                 agentengine::json::Value::make_object({}),
                                                 /*arguments_tainted=*/false, 0};
         EffectContext ctx;
         bool completion_called = false;
 
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, /*approve=*/{}, /*current_background_count=*/0,
-            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; });
+            [&completion_called](ToolResult, agentengine::ToolInvocationAudit) { completion_called = true; }));
 
         check(submitted.has_value(),
               "S4: an ordinary stateless Backgroundable tool still backgrounds successfully -- no "
@@ -606,8 +656,8 @@ int main() {
 
     CodeActSession kit_a;
     CodeActSession kit_b;
-    kit_a.initialize("s-a", Principal{"p", ""});
-    kit_b.initialize("s-b", Principal{"p", ""});
+    kit_a.initialize("s-a", Principal{"p", ""}, ae_test::trusted_unbounded());
+    kit_b.initialize("s-b", Principal{"p", ""}, ae_test::trusted_unbounded());
     CapabilitySet const held_ab = CapabilitySet::grant_root({});
     kit_a.set_capabilities(&held_ab);
     kit_b.set_capabilities(&held_ab);
@@ -682,7 +732,7 @@ int main() {
         using DelegationSession = AgentSession<CapturingChatClient>;
         DelegationSession session;
         Principal const owner = agentengine::make_embedded_principal("p-owner", "tenant-a");
-        session.initialize("s-root", owner);
+        session.initialize("s-root", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(StartRun{user_message("hello")}));
@@ -707,7 +757,7 @@ int main() {
 
         using DelegationSession = AgentSession<CapturingChatClient>;
         DelegationSession session;
-        session.initialize("s-delegated", *derived);
+        session.initialize("s-delegated", *derived, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto r = drive(session.start_run(StartRun{user_message("hello")}));

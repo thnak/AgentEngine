@@ -15,7 +15,7 @@
 // on.
 //
 // THE SECURITY PRECONDITION THIS TOOL GETS RIGHT, DELIBERATELY, NOT BY ACCIDENT
-// (decisions/ADR-130-content-durability-conformer.md's own `test_identity_durability_precondition.cpp`
+// (decisions/archive/ADR-130-content-durability-conformer.md's own `test_identity_durability_precondition.cpp`
 // proved this the hard way): making `Ledger`'s own content durable WITHOUT ALSO durably configuring
 // `IdentityAuthority::bootstrap()` turns a previously-latent id-recycling risk into a REAL, working
 // cross-principal content leak on a process restart. This tool configures BOTH `Ledger`'s own
@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
     SandboxProvider sandbox_provider;
     auto bound = sandbox_provider.bind_root_branch(cli_ledger, owner, staging_root, *branch_quota,
                                                      *run_quota, *storage_quota, session_id);
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
     if (!bound.has_value()) {
         std::cerr << "FATAL: failed to bind this session's real, durable sandbox: "
                   << bound.error().message << " (" << bound.error().code << ")\n";
@@ -159,6 +160,11 @@ int main(int argc, char** argv) {
     auto built = Builder(model)
                      .session_id(session_id)
                      .principal(cli_principal)
+                     // ADR-244: stated, not defaulted -- the builders' former 25-turn default, kept; one user
+                     // watches the session and can stop it, so tokens are not capped.
+                     .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                          agentengine::Bound<std::uint64_t>::unbounded(),
+                                                          agentengine::Bound<std::uint64_t>::at_most(25)})
                      .grant(Capability{cap::RunCommand{}})
                      .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
                      .providers(std::make_tuple(std::move(sandbox_provider)))

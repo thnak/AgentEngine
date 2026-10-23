@@ -1,5 +1,5 @@
 #pragma once
-// Test-only fixture player for the ChatClient seam (004-Model-Provider-Plane.md §6, "Recording and
+// Test-only fixture player for the ChatClient seam (rfcs/004-Model-Provider-Plane.md §6, "Recording and
 // replay"). 004 §6 describes a *general* recording/replay feature: capturing a live request,
 // response (or full ordered chunk sequence), timing, and usage from a real ChatClient call, then
 // serving it back with identical chunk boundaries. That feature does not exist yet — there is no

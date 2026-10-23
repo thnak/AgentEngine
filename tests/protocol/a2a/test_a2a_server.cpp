@@ -1,4 +1,4 @@
-// Milestone 7 Phase D3 (012-A2A-Conformance.md §2.3, docs/planning/milestone-7-protocol-conformance-
+// Milestone 7 Phase D3 (rfcs/012-A2A-Conformance.md §2.3, docs/planning/milestone-7-protocol-conformance-
 // breakdown.md). Proves `A2aServer` (protocol/a2a/server.hpp) end to end against a REAL
 // `agentengine::rt::AgentSession` -- `Task.id` really is the session's own `run_id`
 // (`AgentSession::last_run_id()`), `SendMessage` really drives a full turn through a real
@@ -12,12 +12,15 @@
 // `rt::` test in this suite already uses) instead of `block_on(ref.ask<...>(...))` against a real
 // actor mailbox. Same behavior proven, no engine/mailbox left to stand it up.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
 #include <memory_resource>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 
 namespace {
@@ -38,8 +41,7 @@ namespace a2a = agentengine::a2a;
 
 template <class T>
 T drive(art::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Same shape test_agent_session_suspend_resume.cpp's own CannedChatClient uses -- echoes the run_id
@@ -102,19 +104,20 @@ struct Harness {
 
     Session session;
 
-    explicit Harness(std::string session_id) {
-        session.initialize(std::move(session_id), ae::Principal{"p-owner", ""});
+    explicit Harness(std::string session_id, ae::SessionChoices choices = ae_test::trusted_unbounded()) {
+        session.initialize(std::move(session_id), ae::Principal{"p-owner", ""}, std::move(choices));
         session.emplace_chat_client();
     }
 
     [[nodiscard]] a2a::RunStarter starter() {
-        return [this](art::StartRun req) -> ae::result<a2a::RunOutcome> {
+        return [this](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
             ae::result<art::AgentResponse> resp = drive(session.start_run(std::move(req)));
             if (!resp) {
-                return std::unexpected(ae::error{ae::failure_class::transient,
-                                                  "the run did not complete", "a2a.run_did_not_complete"});
+                co_return std::unexpected(
+                    ae::error{ae::failure_class::transient, "the run did not complete",
+                              "a2a.run_did_not_complete"});
             }
-            return a2a::RunOutcome{session.last_run_id(), *resp};
+            co_return a2a::RunOutcome{session.last_run_id(), *resp};
         };
     }
 };
@@ -135,7 +138,7 @@ int main() {
     // --- D3-1/2/3: a real SendMessage produces a Task whose id IS the real run_id, COMPLETED, with -
     // --- the real reply content and a two-message history.                                        ---
     Harness<CannedChatClient> h{"s-a2a"};
-    a2a::A2aServer server(h.starter(), "ctx-1");
+    a2a::A2aServer server(h.starter(), "ctx-1", ae::AuthoritySource::single_trusted_caller());
 
     // ADR-061 §7 R2: `send_message` now REQUIRES the caller, and it is checked for real -- the
     // session above is initialized owning `Principal{"p-owner", ""}`, so this caller must match
@@ -143,7 +146,7 @@ int main() {
     // and `AgentSession::handle()` skipped admission entirely.
     ae::rt::SessionCaller const kOwner{"p-owner", ""};
 
-    auto sent = server.send_message(text_message("hello"), kOwner);
+    auto sent = drive(server.send_message(text_message("hello"), kOwner));
     check(sent.has_value(), "D3-1: send_message() against a real AgentSession succeeds");
     std::string task_id;
     if (sent.has_value()) {
@@ -210,8 +213,8 @@ int main() {
     // --- ask) -- proven against a SECOND real session, not a fabricated in-memory shortcut.        ---
     {
         Harness<FailingChatClient> hf{"s-a2a-fail"};
-        a2a::A2aServer failing_server(hf.starter(), "ctx-2");
-        auto failed = failing_server.send_message(text_message("this will fail"), kOwner);
+        a2a::A2aServer failing_server(hf.starter(), "ctx-2", ae::AuthoritySource::single_trusted_caller());
+        auto failed = drive(failing_server.send_message(text_message("this will fail"), kOwner));
         check(failed.has_value(),
               "D3-8: even a run that never completes still produces a real Task -- SendMessage "
               "itself does not fail, the TASK reports the failure");
@@ -226,34 +229,66 @@ int main() {
         }
     }
 
+    // --- D3-11 (ADR-237 D6, I7): a run that ended `canceled` -- a real session the host canceled -- is A2A's
+    // --- own terminal TASK_STATE_CANCELED, not FAILED. D3-8 above is the control (a failed run is FAILED). ---
+    {
+        Harness<CannedChatClient> hc{"s-a2a-cancel"};
+        a2a::A2aServer canceled_server(
+            [&hc](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
+                hc.session.cancel();  // no run in flight yet: a no-op for the run below (ADR-178 K6) ...
+                ae::result<art::AgentResponse> resp = drive(hc.session.start_run(std::move(req)));
+                if (resp) co_return a2a::RunOutcome{hc.session.last_run_id(), *resp};
+                co_return std::unexpected(resp.error());  // ... so the starter forwards the run's own error
+            },
+            "ctx-cancel", ae::AuthoritySource::single_trusted_caller());
+        // A starter that forwards the session's error verbatim, with the host's cancel landing mid-run.
+        Harness<CannedChatClient> hk{"s-a2a-cancel-2"};
+        bool canceled_once = false;
+        hk.session.set_run_event_tap([&hk, &canceled_once](ae::RunEvent const& ev) {
+            if (ev.kind == ae::run_event_kind::model_call_started && !canceled_once) {
+                canceled_once = true;
+                hk.session.cancel();
+            }
+        });
+        a2a::A2aServer cancel_mid_run_server(
+            [&hk](art::StartRun req) -> art::task<ae::result<a2a::RunOutcome>> {
+                ae::result<art::AgentResponse> resp = drive(hk.session.start_run(std::move(req)));
+                if (resp) co_return a2a::RunOutcome{hk.session.last_run_id(), *resp};
+                co_return std::unexpected(resp.error());
+            },
+            "ctx-cancel-2", ae::AuthoritySource::single_trusted_caller());
+        auto canceled = drive(cancel_mid_run_server.send_message(text_message("stop me"), kOwner));
+        check(canceled.has_value() && canceled->status.state == a2a::task_state::canceled,
+              "D3-11: a run the host canceled is TASK_STATE_CANCELED (class canceled), not TASK_STATE_FAILED");
+        auto not_canceled = drive(canceled_server.send_message(text_message("fine"), kOwner));
+        check(not_canceled.has_value() && not_canceled->status.state == a2a::task_state::completed,
+              "D3-11 control: the same forwarding starter with a stale (pre-run) cancel completes");
+    }
+
     // --- D3-9/D3-10: ADR-061 §35/§37.3's `authority` parameter, against a REAL Tier-3-mode session --
     {
-        Harness<CannedChatClient> h3{"s-a2a-tier3"};
-        h3.session.set_require_authority(true);
-        a2a::A2aServer tier3_server(h3.starter(), "ctx-3");
+        Harness<CannedChatClient> h3{"s-a2a-tier3", ae_test::per_request_no_ceiling()};
+        a2a::A2aServer tier3_server(h3.starter(), "ctx-3",
+                                    ae::AuthoritySource::per_request(ae::CapabilitySet::no_ceiling()));
 
-        // D3-9: the session requires per-request authority; omitting it (the plain 2-arg call, exactly
-        // what every pre-existing call site still does) must NOT silently fall back to `caller` --
-        // agent_session.hpp's own §20.4 admission denies it outright (run.authority_required), which
-        // this dispatcher surfaces as a real, retrievable FAILED task, the same shape D3-8 already
-        // proved for a chat-layer failure -- SendMessage itself does not reject, the TASK reports it.
-        auto no_authority = tier3_server.send_message(text_message("no authority supplied"), kOwner);
-        check(no_authority.has_value(),
-              "D3-9: SendMessage itself still succeeds even when the underlying run is denied");
-        check(no_authority.has_value() &&
-                  no_authority->status.state == a2a::task_state::failed,
-              "D3-9: a Tier-3 session denies a request with no `authority` argument -- omission does "
-              "NOT silently fall back to the `caller` argument admitting the run");
+        // D3-9: the server states per_request (ADR-244 §2.3), so omitting `authority` (the plain 2-arg call)
+        // must NOT silently fall back to `caller`. The server refuses it before the run starter is called
+        // (a2a.authority_required) -- an error from SendMessage itself, with no task created; the session
+        // behind it would refuse it again (run.authority_required).
+        auto no_authority = drive(tier3_server.send_message(text_message("no authority supplied"), kOwner));
+        check(!no_authority.has_value() && no_authority.error().code == "a2a.authority_required",
+              "D3-9: a per_request server refuses a message with no `authority` -- omission does NOT "
+              "silently fall back to the `caller` argument admitting the run");
 
         // D3-10: a real RequestAuthority, for a principal 018 §2 admits against the session's own
         // owner, is honored -- the run actually completes.
         art::RequestAuthority const authority{
             ae::Principal{"p-owner", ""},
             std::make_shared<ae::CapabilitySet const>(ae::CapabilitySet::grant_root({})),
-            std::chrono::steady_clock::now() + std::chrono::hours{1},
+            ae::Expiry::at(std::chrono::steady_clock::now() + std::chrono::hours{1}),
         };
         auto with_authority =
-            tier3_server.send_message(text_message("real authority supplied"), kOwner, authority);
+            drive(tier3_server.send_message(text_message("real authority supplied"), kOwner, authority));
         check(with_authority.has_value() &&
                   with_authority->status.state == a2a::task_state::completed,
               "D3-10: a real, admitted `authority` argument lets a Tier-3 session's run complete");

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2 — the
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.2 — the
 // `SparseIndex` seam and its core-resident default, `BM25Index` (std-only, zero third-party
 // dependency, CONVENTIONS.md tier 1, matching `VectorIndex`/`BruteForceCosineIndex`'s own bar
 // directly one file over). Mirrors `core/vector_index.hpp`'s exact shape — concept + default
@@ -28,18 +28,23 @@
 #include <unordered_set>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/vector_index.hpp"  // ScoredId
 
 namespace agentengine {
 
+// ADR-237 §5.1: `task`-shaped and `EffectContext`-threaded, exactly like `VectorIndex` -- a remote sparse
+// conformer would need both; `BM25Index` completes without suspending.
 template <class T>
 // ae-naming-lint: allow SparseIndex — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
 concept SparseIndex = requires(T idx, std::vector<std::string> ids, std::vector<std::string> texts,
-                                 std::string const& query, std::size_t k, std::string const& id) {
-    { idx.add_batch(ids, texts) } -> std::same_as<result<void>>;
-    { idx.search(query, k) } -> std::same_as<result<std::vector<ScoredId>>>;
-    { idx.contains(id) } -> std::same_as<bool>;
+                                 std::string const& query, std::size_t k, std::string const& id,
+                                 EffectContext& ctx) {
+    { idx.add_batch(ids, texts, ctx) } -> std::same_as<task<result<void>>>;
+    { idx.search(query, k, ctx) } -> std::same_as<task<result<std::vector<ScoredId>>>>;
+    { idx.contains(id, ctx) } -> std::same_as<task<result<bool>>>;
 };
 
 namespace bm25_index_detail {
@@ -78,7 +83,21 @@ class BM25Index {
 public:
     explicit BM25Index(double k1 = 1.2, double b = 0.75) : k1_(k1), b_(b) {}
 
-    [[nodiscard]] result<void> add_batch(std::vector<std::string> const& ids,
+    // -- the seam (ADR-237 §5.1) -- local compute: completes without suspending; `ctx` is unused.
+    [[nodiscard]] task<result<void>> add_batch(std::vector<std::string> const& ids,
+                                               std::vector<std::string> const& texts, EffectContext&) {
+        co_return add_batch_now(ids, texts);
+    }
+    [[nodiscard]] task<result<std::vector<ScoredId>>> search(std::string const& query, std::size_t k,
+                                                             EffectContext&) const {
+        co_return search_now(query, k);
+    }
+    [[nodiscard]] task<result<bool>> contains(std::string const& id, EffectContext&) const {
+        co_return contains_now(id);
+    }
+
+private:
+    [[nodiscard]] result<void> add_batch_now(std::vector<std::string> const& ids,
                                           std::vector<std::string> const& texts) {
         std::unique_lock lock(mutex_);
         if (ids.size() != texts.size()) {
@@ -110,7 +129,7 @@ public:
         return {};
     }
 
-    [[nodiscard]] result<std::vector<ScoredId>> search(std::string const& query, std::size_t k) const {
+    [[nodiscard]] result<std::vector<ScoredId>> search_now(std::string const& query, std::size_t k) const {
         std::shared_lock lock(mutex_);
         if (order_.empty()) return std::vector<ScoredId>{};
 
@@ -145,11 +164,12 @@ public:
         return out;
     }
 
-    [[nodiscard]] bool contains(std::string const& id) const {
+    [[nodiscard]] bool contains_now(std::string const& id) const {
         std::shared_lock lock(mutex_);
         return doc_length_.contains(id);
     }
 
+public:
     [[nodiscard]] std::size_t size() const {
         std::shared_lock lock(mutex_);
         return order_.size();

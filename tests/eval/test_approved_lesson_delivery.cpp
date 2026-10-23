@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-191-approved-lesson-delivery.md: a lesson a human approved reaches the model as an
+// Proof for decisions/archive/ADR-191-approved-lesson-delivery.md: a lesson a human approved reaches the model as an
 // approved-lesson block -- still tainted, still fenced, origin unchanged -- only when the session re-verifies its
 // exact text against the host's registry; every other path is refused, and every approved delivery is audited.
 //   A1-A6  ApprovedLessonRegistry: an approver required (acknowledgement optional), per-principal scope, exact bytes, simulated approvals
@@ -20,10 +20,13 @@
 #include <vector>
 
 #include "agentengine/core/approved_lessons.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/protocol/anthropic/chat_client.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 namespace ae = agentengine;
 using ae::rt::AgentSession;
@@ -42,8 +45,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 class CapturingClient {
@@ -132,7 +134,7 @@ struct Run {
 
 Run run_once(ae::ApprovedLessonRegistry const* registry, std::string const& principal) {
     AgentSession<CapturingClient, NoSessionState, LessonProvider> session;
-    session.initialize("s-approved", ae::Principal{principal, ""});
+    session.initialize("s-approved", ae::Principal{principal, ""}, ae_test::trusted_unbounded());
     if (registry != nullptr) session.set_approved_lessons(registry);
     Run run;
     session.set_run_event_tap([&run](ae::RunEvent const& e) {
@@ -366,7 +368,7 @@ int main() {
         };
         auto session_accepts = [](std::string const& id) {
             AgentSession<CapturingClient, NoSessionState, LessonProvider> s;
-            s.initialize("s-ids", ae::Principal{"p", ""});
+            s.initialize("s-ids", ae::Principal{"p", ""}, ae_test::trusted_unbounded());
             bool const u = s.set_unattended_approvals(id).has_value();
             bool const f = s.disable_system_channel_fence(id).has_value();
             return u || f;

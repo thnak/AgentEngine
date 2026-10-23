@@ -1,4 +1,4 @@
-// Proves ADR-102 Phase 3 (decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
+// Proves ADR-102 Phase 3 (decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md's own
 // roadmap) -- SandboxRuntime (sandbox/sandbox_runtime.hpp), driven against a REAL Docker daemon via
 // DockerExecutionSurface (sandbox/docker_execution_surface.hpp), not a mock. Ported from
 // docs/planning/proofs/execution_surface/{probe_execution_surface.cpp,probe_sandbox_rollback.cpp}
@@ -39,11 +39,13 @@
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <utility>
 
 using namespace agentengine;
 
@@ -59,8 +61,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::size_t count_docker_containers() {
@@ -109,7 +110,7 @@ int main() {
               "turn 1 stdout contains the file's own content");
         check(r1->checkpoint.turn_index == 1, "turn 1 checkpoint.turn_index == 1");
 
-        auto tree1 = ledger.get_tree_safe(r1->checkpoint.tree, owner);
+        auto tree1 = agentengine::rt::block_on(ledger.get_tree_safe(r1->checkpoint.tree, owner));
         check(tree1.has_value(), "turn 1 committed tree is readable by its own author");
         if (tree1.has_value()) {
             bool found_note = false;
@@ -119,7 +120,7 @@ int main() {
             }
             check(found_note, "turn 1 committed tree contains note.txt");
             if (found_note) {
-                auto note_bytes = ledger.get_blob_safe(note_digest, owner);
+                auto note_bytes = agentengine::rt::block_on(ledger.get_blob_safe(note_digest, owner));
                 check(note_bytes.has_value(), "turn 1 note.txt blob is readable");
                 if (note_bytes.has_value()) {
                     std::string const content(reinterpret_cast<char const*>(note_bytes->data()),
@@ -262,7 +263,7 @@ int main() {
         check(deleted.has_value(), "[11] the rm turn succeeds");
         if (deleted.has_value()) {
             check(deleted->exec.exit_code == 0, "[11] rm exits 0 inside the container");
-            auto tree = ledger.get_tree_safe(deleted->checkpoint.tree, owner);
+            auto tree = agentengine::rt::block_on(ledger.get_tree_safe(deleted->checkpoint.tree, owner));
             check(tree.has_value(), "[11] the rm turn's committed tree is readable");
             if (tree.has_value()) {
                 bool doomed = false;

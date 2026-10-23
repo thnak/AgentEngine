@@ -38,14 +38,18 @@
 #include <memory_resource>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -68,8 +72,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session_suspend_approval.cpp's own "no cross-test-file coupling" precedent.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 template <class Pred>
@@ -108,37 +111,37 @@ AE_JSON_SCHEMA(ProgressReply, ok)
 
 // Reports progress exactly once, then succeeds. Not Backgroundable -- exercises the ordinary
 // invoke_tool() bracket at the three real rt/agent_session.hpp call sites.
-struct ProgressTool : agentengine::Tool<ProgressTool> {
+struct ProgressTool : agentengine::Tool<ProgressTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "progress_tool";
     static constexpr std::string_view description = "Reports progress once during invoke().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         ctx.report_progress(agentengine::ContentItem{agentengine::Text{"half done"}});
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
 // Never reports progress -- the positive control (P2).
-struct SilentTool : agentengine::Tool<SilentTool> {
+struct SilentTool : agentengine::Tool<SilentTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "silent_tool";
     static constexpr std::string_view description = "Never calls report_progress().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 // Backgroundable AND reports progress from inside invoke() -- the tool D's own regression check
 // runs on tool_pipeline.hpp::background_task()'s genuinely detached std::thread.
-struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool, agentengine::Backgroundable> {
+struct BackgroundableProgressTool : agentengine::Tool<BackgroundableProgressTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "bg_progress_tool";
     static constexpr std::string_view description = "Backgroundable; also calls report_progress().";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         ctx.report_progress(agentengine::ContentItem{
             agentengine::Text{"should never be observed by the caller's own closure"}});
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -171,14 +174,14 @@ public:
 // Backgroundable; reports (via its own Reply, reusing ProgressReply::ok) whether ctx.sandbox_fs was
 // null when its invoke() ran on background_task()'s detached thread -- E's own regression check.
 struct BackgroundableSandboxFsTool
-    : agentengine::Tool<BackgroundableSandboxFsTool, agentengine::Backgroundable> {
+    : agentengine::Tool<BackgroundableSandboxFsTool, agentengine::Backgroundable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "bg_sandbox_fs_tool";
     static constexpr std::string_view description =
         "Backgroundable; reports whether ctx.sandbox_fs was null when invoke() ran.";
     using Args  = ProgressArgs;
     using Reply = ProgressReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
-        return Reply{ctx.sandbox_fs == nullptr};
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
+        co_return Reply{ctx.sandbox_fs == nullptr};
     }
 };
 
@@ -190,7 +193,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<ProgressTool, SilentTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(ProgressTool{}, SilentTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -299,7 +302,7 @@ int main() {
     // ---- P1: a real tool_call_delta event, correct call_id and text ------------------------------
     {
         Session session;
-        session.initialize("p1", Principal{"p", ""});
+        session.initialize("p1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "progress_tool", R"({"noop":true})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -335,7 +338,7 @@ int main() {
     // ---- P2 (positive control): a silent tool produces no tool_call_delta event ------------------
     {
         Session session;
-        session.initialize("p2", Principal{"p", ""});
+        session.initialize("p2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "silent_tool", R"({"noop":true})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("done"), Usage{1, 1, 0, 0, 0.0}},
@@ -359,7 +362,7 @@ int main() {
     // ---- P3: two sequential calls in ONE round each get their OWN correctly-tagged call_id --------
     {
         Session session;
-        session.initialize("p3", Principal{"p", ""});
+        session.initialize("p3", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {two_tool_call_response("c1", "c2", "progress_tool", R"({"noop":true})"),
              Usage{1, 1, 0, 0, 0.0}},
@@ -412,16 +415,16 @@ int main() {
             CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableProgressTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableProgressTool{});
         agentengine::ToolCallRequest const req{"call-bg", "bg_progress_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 
         std::atomic<bool> completed{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed](agentengine::ToolResult, agentengine::ToolInvocationAudit) {
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "D setup: the Backgroundable tool call is accepted");
 
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),
@@ -452,13 +455,13 @@ int main() {
         CapabilitySet const held = CapabilitySet::grant_root({agentengine::cap::Background{1}});
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
-        auto const table = agentengine::ToolTable::from_tools<BackgroundableSandboxFsTool>();
+        auto const table = agentengine::ToolTable::from(BackgroundableSandboxFsTool{});
         agentengine::ToolCallRequest const req{"call-bg-fs", "bg_sandbox_fs_tool",
                                                 *json::parse(R"({"noop":true})"), false};
 
         std::atomic<bool> completed{false};
         std::atomic<bool> saw_null{false};
-        auto submitted = agentengine::background_task(
+        auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
             table, held, req, ctx, agentengine::ApprovalDecider{}, /*current_background_count=*/0,
             [&completed, &saw_null](agentengine::ToolResult result, agentengine::ToolInvocationAudit) {
                 if (!result.content.empty()) {
@@ -469,7 +472,7 @@ int main() {
                     }
                 }
                 completed.store(true);
-            });
+            }));
         check(submitted.has_value(), "E setup: the Backgroundable tool call is accepted");
 
         check(wait_until([&] { return completed.load(); }, std::chrono::seconds(2)),

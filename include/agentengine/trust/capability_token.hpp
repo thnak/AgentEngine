@@ -1,7 +1,7 @@
 #pragma once
-// Design A of decisions/ADR-005-capability-bearer-tokens-cross-process.md, resolving OQ-3
-// (OpenQuestions.md), 007-Capability-and-Trust-Model.md §10 Q1, 008-Sandbox-and-Isolation.md §9 Q4,
-// and 018-Identity-Authorization-and-Secrets.md §Q2: a capability that must cross a process
+// Design A of decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md, resolving OQ-3
+// (OpenQuestions.md), rfcs/007-Capability-and-Trust-Model.md §10 Q1, rfcs/008-Sandbox-and-Isolation.md §9 Q4,
+// and rfcs/018-Identity-Authorization-and-Secrets.md §Q2: a capability that must cross a process
 // boundary (the `remote` sandbox profile, delegated A2A calls, a remote plugin) represented as a
 // self-verifying, macaroon-style bearer token with caveats, so the boundary needs no bespoke
 // authority protocol of its own.

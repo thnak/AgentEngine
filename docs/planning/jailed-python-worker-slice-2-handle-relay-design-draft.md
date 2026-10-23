@@ -4,7 +4,7 @@
 **Status:** Design draft, self-red-teamed once, then IMPLEMENTED and PROVEN in this same session —
 unlike the sibling Linux-parity draft (`docs/planning/linux-jailed-python-worker-design-draft.md`),
 this machine IS the Windows build/test environment ADR-081 itself was proven on, so this document is
-not a paper-only artifact: it is the design phase of what becomes `decisions/ADR-085-...md`, pending an
+not a paper-only artifact: it is the design phase of what becomes `decisions/archive/ADR-085-...md`, pending an
 independent red-team pass. **§1's own original design (`DuplicateHandle`-based file relay) was
 FALSIFIED during implementation** — real I/O against a duplicated file handle inside the AppContainer'd
 worker fails with `ERROR_INVALID_HANDLE`, reproducibly, even though the duplicate is confirmed present
@@ -12,13 +12,13 @@ and open (`GetHandleInformation` succeeds). §1 below is left in its ORIGINAL, f
 (struck through in spirit, not in fact — CLAUDE.md's own discipline: the reasoning that was wrong is
 part of the record) with a correction notice; §1a is the revised, shipped design.
 
-**Relates to:** `decisions/ADR-081-jailed-python-worker-process-slice-1.md` §3 ("Explicitly, narrowly
+**Relates to:** `decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md` §3 ("Explicitly, narrowly
 out of scope for this pass... Slice 2 — real file/listdir/socket relay (`HandleRelay` for the
 `open`/`listdir`/`connect_authorize`/`connect_send`/`connect_recv`/`connect_close` `worker_query`
-kinds). Every such call is denied today"), `decisions/ADR-004-appcontainer-native-jail-windows-backend.md`
+kinds). Every such call is denied today"), `decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md`
 §5.3 (AC-S1: "with zero granted capabilities, guest code cannot open an outbound socket" — measured as
-`WinError 10013` on `connect()`, socket() itself succeeds), `decisions/ADR-014-worktree-mount-path-canonicalization.md`
-(`open_within_mount_root`/`list_within_mount_root`, reused unchanged), `decisions/ADR-011-first-party-egress-proxy.md`
+`WinError 10013` on `connect()`, socket() itself succeeds), `decisions/archive/ADR-014-worktree-mount-path-canonicalization.md`
+(`open_within_mount_root`/`list_within_mount_root`, reused unchanged), `decisions/archive/ADR-011-first-party-egress-proxy.md`
 (`sandbox::resolve_and_validate`/`is_blocked_address`, reused for the new raw-connect SSRF check this
 design adds), `src/backends/native_jail/mediated_python_worker_protocol.hpp` (the wire catalog this
 design fills in, unchanged shape), `src/backends/native_jail/python_worker_mediation.cpp`'s
@@ -251,7 +251,7 @@ opaque, host-minted integer id and relays every operation.
    `{"ok": true, "sent": <bytes actually accepted>}"` — Python's own `socket.send()` contract already
    permits a short write, so this is not a new semantic, just relayed faithfully.
    *(As implemented: the codec is `relay_base64.hpp` over `core/base64.hpp` (ADR-203), and since
-   [ADR-205](../../decisions/ADR-205-strict-relay-base64.md) it decodes strictly — only canonical padded
+   [ADR-205](../../decisions/archive/ADR-205-strict-relay-base64.md) it decodes strictly — only canonical padded
    base64 is accepted in either direction; anything else is a malformed frame, denied `net.socket_closed`
    host-side and raised as `RuntimeError` worker-side.)*
 3. **`connect_recv`** (payload `{socket_id, bufsize}`): same id lookup; `bufsize` clamped to a fixed

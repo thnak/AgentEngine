@@ -1,5 +1,5 @@
 // agentengine_python_worker's entry point -- the jailed Python worker process
-// (008-Sandbox-and-Isolation.md §1b/§3, 010-Python-Code-Interpreter.md §2/§6; the design superseding
+// (rfcs/008-Sandbox-and-Isolation.md §1b/§3, rfcs/010-Python-Code-Interpreter.md §2/§6; the design superseding
 // native_jail_backend.hpp's former "Correction (2026-08-23)" comment). Spawned exclusively by
 // `NativeJailBackend::create_python_worker()` (native_jail_backend.cpp) -- CREATE_SUSPENDED, inside an
 // AppContainer, assigned to a Job Object, with exactly two inherited pipe handles and NOTHING else

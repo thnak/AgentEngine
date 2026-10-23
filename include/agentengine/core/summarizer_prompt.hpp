@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-190-summarizer-prompt-contract.md: what the engine SAYS to a declared
+// Implements decisions/archive/ADR-190-summarizer-prompt-contract.md: what the engine SAYS to a declared
 // summarizer model (029 §4's memory extraction, 005 §4's `Summarize<N>` history compaction), and what it
 // keeps of the reply.
 //

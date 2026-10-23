@@ -1,7 +1,7 @@
 #pragma once
 // Implements docs/planning/tool-capability-registry-design-draft.md, closing 2026-08-10-full-
 // codebase-adr-gap-audit.md gap #4 (and gap #5's name-keyed ToolTable construction half). See
-// decisions/ADR-054-tool-registry-name-keyed-resolution.md for the full design writeup; summarized
+// decisions/archive/ADR-054-tool-registry-name-keyed-resolution.md for the full design writeup; summarized
 // here for the reader looking at this file directly.
 //
 // A `ToolRegistry` answers, for a bare string in a declarative document's `spec.tools`, exactly the
@@ -63,6 +63,14 @@ public:
             exclusions_[name]  = reason;
             return std::unexpected(
                 error{failure_class::contract, reason, "tool_registry.duplicate_name"});
+        }
+
+        // ADR-244 §2.2 (slice 4a): a tool without a stated approval mode is not registered, so a named table built
+        // from this registry cannot hold one either.
+        if (!descriptor.approval.has_value()) {
+            error missing = tool_approval_missing(name);
+            exclusions_[name] = missing.message;
+            return std::unexpected(std::move(missing));
         }
 
         if (provenance != tool_provenance::native) {

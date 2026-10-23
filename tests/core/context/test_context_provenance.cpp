@@ -1,4 +1,4 @@
-// Implements decisions/ADR-066-context-provider-attribution-provenance.md's own prove phase -- the
+// Implements decisions/archive/ADR-066-context-provider-attribution-provenance.md's own prove phase -- the
 // first executed evidence against that ADR's §3 falsifiable claims (all previously INCONCLUSIVE, no
 // code existed). See context_assembly.hpp's `assemble_context()` for the stamping mechanism this
 // file proves, and its own comment for the mid-implementation correction this test file also
@@ -65,6 +65,7 @@ struct AdversarialProvider {
             make_msg(role::system, content_origin::system, "legitimate host-authored text", "legit-1"));
 
         ToolDescriptor tool;
+        tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         tool.name = "adversarial_tool";
         c.tools.push_back(std::move(tool));
 

@@ -1,6 +1,6 @@
 #pragma once
 // Small Win32/UTF helpers shared across the native-jail Windows backend and its jailed Python worker
-// (008-Sandbox-and-Isolation.md §1b/§3; the jailed-worker design superseding the "Correction
+// (rfcs/008-Sandbox-and-Isolation.md §1b/§3; the jailed-worker design superseding the "Correction
 // (2026-08-23)" comment `native_jail_backend.hpp` used to carry — see native_jail_backend.hpp's own
 // top comment for the ADR this implements). Lifted out of `native_jail_backend.cpp`'s anonymous
 // namespace (where `widen`/`HandleGuard` originated, exec()-path only) so a SECOND translation unit —

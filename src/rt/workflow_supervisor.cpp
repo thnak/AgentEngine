@@ -29,6 +29,9 @@ void WorkflowSupervisor::initialize(agentengine::workflow::Workflow graph, std::
                   agentengine::workflow::check_workflow_executable(graph_, contexts_).has_value() &&
                   agent_kind_bodies_are_structurally_agent_backed() &&
                   batch_bodies_are_batchable();  // ADR-235 §3.1
+    // ADR-244 §2.3: a graph whose agent node wraps a per_request session would run that node with no authority.
+    initialize_refusal_ = agent_node_authority_refusal();
+    if (initialize_refusal_.has_value()) valid_base_ = false;
     valid_ = valid_base_ && sub_workflow_kind_nodes_are_bound();
 }
 
@@ -290,9 +293,11 @@ task<WorkflowResult> WorkflowSupervisor::resume_workflow_locked(ResumeWorkflow r
                 // attributed to the real caller (I4) rather than to "the outer supervisor".
                 // `propagate_admission_to_children()` is what keeps that from denying every
                 // forwarded caller on an inner the host never separately configured.
-                drive(inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
-                                                              request.response, request.routes,
-                                                              request.caller}));
+                // ADR-237 §5.1 (Phase G): awaited in place -- this is already a coroutine, so the
+                // nested run no longer needs the `drive()`/`block_on` trampoline.
+                co_await inner->resume_workflow(ResumeWorkflow{pending.inner_interaction_id,
+                                                               request.response, request.routes,
+                                                               request.caller});
         }
         // ADR-169 (issue #65), found by A11c during implementation, NOT designed up front: an
         // inner `admission_denied` must NOT fall through to the terminal-failure branch below.
@@ -604,7 +609,10 @@ task<void> WorkflowSupervisor::run_executor_job(
         std::lock_guard<std::mutex> lock(*charge_mutex);
         add_usage(out->usage, u);
     };
-    agentengine::result<ExecutorOutcome> outcome = body(payload, ctx);
+    // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped; await it here. This is what finally
+    // makes `run_executor_job` a coroutine that can genuinely suspend -- a body that parks parks
+    // THIS job rather than blocking the pool worker it was dispatched on.
+    agentengine::result<ExecutorOutcome> outcome = co_await body(payload, ctx);
     agentengine::Usage charged;
     {
         std::lock_guard<std::mutex> lock(*charge_mutex);
@@ -646,7 +654,9 @@ task<void> WorkflowSupervisor::run_sub_workflow_job(
     {
         ScopedForwardedEventSink const guard(*inner, std::move(sink), std::move(path_prefix));
         // Issue #156 (ADR-214): the outer run's cancel is linked into the nested run it dispatches.
-        r = drive(inner->run_workflow(RunWorkflow{payload, std::nullopt, std::move(cancellation)}));
+        // ADR-237 §5.1 (Phase G): awaited in place -- this job is already a coroutine, so the nested
+        // run no longer needs the `drive()`/`block_on` trampoline.
+        r = co_await inner->run_workflow(RunWorkflow{payload, std::nullopt, std::move(cancellation)});
     }
     if (r.status == workflow_status::completed) {
         // GitHub issue #35 follow-up (ADR-163): a sub_workflow that completes SYNCHRONOUSLY within
@@ -706,7 +716,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         }
         ports_.clear();
         // ADR-235 §3.5 step 4: resolved vendor batch items, folded like a round's own results.
-        if (std::optional<workflow_status> const ended = fold_batch_items(next)) {
+        if (std::optional<workflow_status> const ended = co_await fold_batch_items(next)) {
             push_fan_in_aggregated_events();
             co_return finish(*ended, entered_at);
         }
@@ -880,6 +890,11 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
                 // run_executor_job() alongside sink/executor_id/round/attempt/path_prefix.
                 agentengine::EffectContext ctx = contexts_[idx];
                 ctx.cancellation                = cancellation_token();
+                // ADR-241 §8.4 / G13h: every node of this run serves ONE root run -- the workflow run's own id when
+                // the host set none (a top-level workflow), the outer run's when a host stamped it (a workflow
+                // driven from a tool). `run_id_` exists before the first node is dispatched (set at the top of
+                // `run_workflow`, restored by `resume_workflow`), so N agent nodes share one admission bucket.
+                if (ctx.root_run_id.empty()) ctx.root_run_id = run_id_;
                 in_flight.push_back(pool_.submit(run_executor_job(
                     body_override[i] ? *body_override[i] : bodies_[idx], exec_deliveries[i].payload, std::move(ctx),
                     slot, event_sink,
@@ -1042,7 +1057,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // ADR-236 §3: never submit (and pay for) a job for a round that is already cancelled -- it would only be
         // abandoned and cancelled on the next poll.
         if (!batch_chunks.empty() && !cancel_requested()) {
-            batch_waiting = submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
+            batch_waiting = co_await submit_batch_chunks(batch_chunks, exec_deliveries, replies, batch_deferred);
         }
 
         ++rounds_;
@@ -1067,7 +1082,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
             // break-on-first-failure convention below).
             if (merge_on_join_hook_ && !merge_failed &&
                 graph_.executors[idx].worktree_mode == agentengine::sharing_mode::branch) {
-                agentengine::result<void> merged = merge_on_join_hook_(graph_.executors[idx].id);
+                agentengine::result<void> merged = co_await merge_on_join_hook_(graph_.executors[idx].id);
                 if (!merged) {
                     state_.failed_executor = graph_.executors[idx].id;
                     merge_failed = true;
@@ -1209,7 +1224,7 @@ task<WorkflowResult> WorkflowSupervisor::execute() {
         // whether or not this round is about to suspend, so a checkpoint taken here always has
         // enough to resume from either way -- see file banner's "Checkpoint hook" paragraph.
         if (checkpoint_hook_) {
-            checkpoint_hook_(rounds_, to_record());
+            co_await checkpoint_hook_(rounds_, to_record());
             push_structural_event(agentengine::workflow::workflow_event_kind::checkpoint_saved,
                                    agentengine::workflow::workflow_event_payload::CheckpointSaved{rounds_});
         }
@@ -1348,6 +1363,11 @@ WorkflowSupervisor::route_result WorkflowSupervisor::route_from(std::size_t from
 
     if (!reply.ok) {
         EdgeFailurePolicy const pol    = policy_for(from_index);
+        // ADR-237 D6: a `canceled` step was stopped on request (a sibling's failure, its own caller) -- it is never
+        // propagated as a failure marker nor rerouted to a fallback executor that would keep working on its behalf,
+        // whatever the edge declares; and is_retryable() never retries it. It ends the run like `fail`. (The run's
+        // OWN cancel never gets here: execute() ends the round `cancelled` before routing, issue #156.)
+        if (reply.klass == agentengine::failure_class::canceled) return route_result::workflow_failed;
         agentengine::Message const marker = failure_marker(from_id, reply.klass);
 
         switch (pol.kind) {
@@ -1688,6 +1708,17 @@ bool WorkflowSupervisor::agent_kind_bodies_are_structurally_agent_backed() const
         }
     }
     return true;
+}
+
+std::optional<agentengine::error> WorkflowSupervisor::agent_node_authority_refusal() const {
+    for (std::size_t i = 0; i < graph_.executors.size() && i < bodies_.size(); ++i) {
+        if (!bodies_[i]) continue;
+        AgentExecutorBodyTag const* tag = bodies_[i].target<AgentExecutorBodyTag>();
+        if (tag != nullptr && tag->source() == agentengine::authority_mode::per_request) {
+            return node_requires_authority("agent node '" + graph_.executors[i].id + "'");
+        }
+    }
+    return std::nullopt;
 }
 
 bool WorkflowSupervisor::sub_workflow_kind_nodes_are_bound() const {

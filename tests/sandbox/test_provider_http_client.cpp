@@ -386,6 +386,8 @@ int main() {
             check(!outcome.has_value(), "P2: a cancelled call reports failure, not a truncated success");
             if (!outcome.has_value()) {
                 check(outcome.error().code == "net.cancelled", "P2: specific diagnostic code");
+                check(outcome.error().klass == agentengine::failure_class::canceled,
+                      "P2 (ADR-237 D6): and class canceled, so no retry predicate retries it (was transient)");
             }
         }
     }

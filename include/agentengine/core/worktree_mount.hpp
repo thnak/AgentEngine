@@ -32,6 +32,7 @@
 #include "agentengine/core/worktree_types.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -98,31 +99,31 @@ namespace detail {
 // nothing has ever `put_tree`'d before. Idempotent: `put_tree` already dedups, so calling this
 // repeatedly across many writes never grows the store past one empty-tree entry.
 template <WorktreeObjectStore S>
-[[nodiscard]] result<Digest> ensure_empty_tree(S& store) {
-    return store.put_tree(Tree{});
+[[nodiscard]] task<result<Digest>> ensure_empty_tree(S& store) {
+    co_return co_await store.put_tree(Tree{});
 }
 
 // Walks `segments` down from `tree_digest`, returning the `TreeEntry` found at the end. Every
 // intermediate segment must resolve to a Tree (a file "in the middle" of a path is a contract
 // violation, not a valid deeper lookup).
 template <WorktreeObjectStore S>
-[[nodiscard]] result<TreeEntry> resolve_entry_at_path(S& store, Digest const& tree_digest,
+[[nodiscard]] task<result<TreeEntry>> resolve_entry_at_path(S& store, Digest tree_digest,
                                                        std::span<std::string const> segments) {
-    auto tree = store.get_tree(tree_digest);
-    if (!tree) return std::unexpected(tree.error());
+    auto tree = co_await store.get_tree(tree_digest);
+    if (!tree) co_return std::unexpected(tree.error());
 
     std::string const& head = segments.front();
     auto it = std::ranges::find_if(tree->entries, [&](TreeEntry const& e) { return e.name == head; });
     if (it == tree->entries.end()) {
-        return std::unexpected(error{failure_class::contract, "no entry named '" + head + "' at this path",
+        co_return std::unexpected(error{failure_class::contract, "no entry named '" + head + "' at this path",
                                       "worktree.mount_path_not_found"});
     }
-    if (segments.size() == 1) return *it;
+    if (segments.size() == 1) co_return *it;
     if (!it->is_tree) {
-        return std::unexpected(error{failure_class::contract, "'" + head + "' is a file, not a directory",
+        co_return std::unexpected(error{failure_class::contract, "'" + head + "' is a file, not a directory",
                                       "worktree.mount_path_not_a_directory"});
     }
-    return resolve_entry_at_path(store, it->digest, segments.subspan(1));
+    co_return co_await resolve_entry_at_path(store, it->digest, segments.subspan(1));
 }
 
 // Sets (inserts or replaces) the entry named by the LAST segment of `segments` to
@@ -131,11 +132,11 @@ template <WorktreeObjectStore S>
 // commits that returned digest as the new Ref, propagating the change all the way to the root in
 // one recursive unwind rather than needing a separate "patch the ancestors" pass.
 template <WorktreeObjectStore S>
-[[nodiscard]] result<Digest> set_entry_at_path(S& store, Digest const& tree_digest,
+[[nodiscard]] task<result<Digest>> set_entry_at_path(S& store, Digest tree_digest,
                                                 std::span<std::string const> segments,
-                                                Digest const& leaf_digest, bool leaf_is_tree) {
-    auto tree = store.get_tree(tree_digest);
-    if (!tree) return std::unexpected(tree.error());
+                                                Digest leaf_digest, bool leaf_is_tree) {
+    auto tree = co_await store.get_tree(tree_digest);
+    if (!tree) co_return std::unexpected(tree.error());
     std::vector<TreeEntry> entries = tree->entries;
 
     std::string const& head = segments.front();
@@ -148,24 +149,24 @@ template <WorktreeObjectStore S>
         Digest child_digest;
         if (it != entries.end()) {
             if (!it->is_tree) {
-                return std::unexpected(error{failure_class::contract,
+                co_return std::unexpected(error{failure_class::contract,
                                               "cannot write through '" + head +
                                                   "': it already names a file, not a directory",
                                               "worktree.mount_write_type_conflict"});
             }
             child_digest = it->digest;
         } else {
-            auto empty = ensure_empty_tree(store);
-            if (!empty) return std::unexpected(empty.error());
+            auto empty = co_await ensure_empty_tree(store);
+            if (!empty) co_return std::unexpected(empty.error());
             child_digest = *empty;
         }
-        auto new_child = set_entry_at_path(store, child_digest, segments.subspan(1), leaf_digest, leaf_is_tree);
-        if (!new_child) return std::unexpected(new_child.error());
+        auto new_child = co_await set_entry_at_path(store, child_digest, segments.subspan(1), leaf_digest, leaf_is_tree);
+        if (!new_child) co_return std::unexpected(new_child.error());
         new_entry = TreeEntry{head, *new_child, true};
     }
 
     if (it != entries.end()) *it = new_entry; else entries.push_back(new_entry);
-    return store.put_tree(Tree{std::move(entries)});
+    co_return co_await store.put_tree(Tree{std::move(entries)});
 }
 
 // Resolves `subtree_path` (a Mount's fixed, host-configured root within its ref) down from
@@ -175,19 +176,19 @@ template <WorktreeObjectStore S>
 // with independent quotas via different `subtree_path`s -- 025 §5's own example, `/work` and
 // `/input` on the same ref).
 template <WorktreeObjectStore S>
-[[nodiscard]] result<Digest> resolve_subtree_digest(S& store, Digest const& root_digest,
-                                                      std::string const& subtree_path) {
-    if (subtree_path.empty()) return root_digest;
+[[nodiscard]] task<result<Digest>> resolve_subtree_digest(S& store, Digest root_digest,
+                                                      std::string subtree_path) {
+    if (subtree_path.empty()) co_return root_digest;
     auto segments = split_mount_path(subtree_path);
-    if (!segments) return std::unexpected(segments.error());
-    if (segments->empty()) return root_digest;
-    auto entry = resolve_entry_at_path(store, root_digest, *segments);
-    if (!entry) return std::unexpected(entry.error());
+    if (!segments) co_return std::unexpected(segments.error());
+    if (segments->empty()) co_return root_digest;
+    auto entry = co_await resolve_entry_at_path(store, root_digest, *segments);
+    if (!entry) co_return std::unexpected(entry.error());
     if (!entry->is_tree) {
-        return std::unexpected(error{failure_class::fatal, "mount subtree path does not name a directory",
+        co_return std::unexpected(error{failure_class::fatal, "mount subtree path does not name a directory",
                                       "worktree.mount_subtree_not_a_directory"});
     }
-    return entry->digest;
+    co_return entry->digest;
 }
 
 // Total bytes (sum of every reachable Blob's size) and total file count (every reachable Blob leaf,
@@ -204,36 +205,36 @@ template <WorktreeObjectStore S>
 // by value, so without it every quota-checked write copied every file in the mount just to read
 // `.size()`. Same numbers either way: the refinement's contract is `get_blob(d)->size()`.
 template <WorktreeObjectStore S>
-[[nodiscard]] result<std::uint64_t> blob_size_of(S& store, Digest const& digest) {
+[[nodiscard]] task<result<std::uint64_t>> blob_size_of(S& store, Digest digest) {
     if constexpr (WorktreeObjectStoreWithBlobSize<S>) {
-        return store.blob_size(digest);
+        co_return co_await store.blob_size(digest);
     } else {
-        auto blob = store.get_blob(digest);
-        if (!blob) return std::unexpected(blob.error());
-        return static_cast<std::uint64_t>(blob->size());
+        auto blob = co_await store.get_blob(digest);
+        if (!blob) co_return std::unexpected(blob.error());
+        co_return static_cast<std::uint64_t>(blob->size());
     }
 }
 
 template <WorktreeObjectStore S>
-[[nodiscard]] result<std::pair<std::uint64_t, std::uint32_t>> subtree_usage(S& store, Digest const& tree_digest) {
-    auto tree = store.get_tree(tree_digest);
-    if (!tree) return std::unexpected(tree.error());
+[[nodiscard]] task<result<std::pair<std::uint64_t, std::uint32_t>>> subtree_usage(S& store, Digest tree_digest) {
+    auto tree = co_await store.get_tree(tree_digest);
+    if (!tree) co_return std::unexpected(tree.error());
     std::uint64_t bytes = 0;
     std::uint32_t files = 0;
     for (auto const& entry : tree->entries) {
         if (entry.is_tree) {
-            auto sub = subtree_usage(store, entry.digest);
-            if (!sub) return std::unexpected(sub.error());
+            auto sub = co_await subtree_usage(store, entry.digest);
+            if (!sub) co_return std::unexpected(sub.error());
             bytes += sub->first;
             files += sub->second;
         } else {
-            auto size = blob_size_of(store, entry.digest);
-            if (!size) return std::unexpected(size.error());
+            auto size = co_await blob_size_of(store, entry.digest);
+            if (!size) co_return std::unexpected(size.error());
             bytes += *size;
             ++files;
         }
     }
-    return std::make_pair(bytes, files);
+    co_return std::make_pair(bytes, files);
 }
 
 // `mount.subtree_path` (host-configured, fixed) followed by `guest_path` (per-call), as one combined
@@ -280,16 +281,16 @@ template <WorktreeObjectStore S>
 // The blob's bytes, refused past `granted.size_cap_bytes` -- `mount_read()`'s last step, shared the
 // same way.
 template <WorktreeObjectStore OS>
-[[nodiscard]] result<std::vector<std::byte>> read_blob_within_size_cap(OS& object_store, cap::FsRead const& granted,
-                                                                       Digest const& blob_digest) {
-    auto bytes = object_store.get_blob(blob_digest);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::vector<std::byte>>> read_blob_within_size_cap(OS& object_store, cap::FsRead granted,
+                                                                       Digest blob_digest) {
+    auto bytes = co_await object_store.get_blob(blob_digest);
+    if (!bytes) co_return std::unexpected(bytes.error());
     if (granted.size_cap_bytes.has_value() && bytes->size() > *granted.size_cap_bytes) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "the requested file exceeds this capability's size cap",
                                       "worktree.mount_read_exceeds_size_cap"});
     }
-    return bytes;
+    co_return bytes;
 }
 
 } // namespace detail
@@ -304,30 +305,30 @@ template <WorktreeObjectStore OS>
 // `/work/private`). `granted.size_cap_bytes`, if set, is enforced after the read (the size is only
 // known once the blob is fetched).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<std::byte>> mount_read(OS& object_store, RS& ref_store, Mount const& mount,
-                                                          cap::FsRead const& granted,
-                                                          std::string const& guest_path) {
+[[nodiscard]] task<result<std::vector<std::byte>>> mount_read(OS& object_store, RS& ref_store, Mount mount,
+                                                          cap::FsRead granted,
+                                                          std::string guest_path) {
     auto authorized = detail::authorize_mount_read(mount, granted, guest_path);
-    if (!authorized) return std::unexpected(authorized.error());
+    if (!authorized) co_return std::unexpected(authorized.error());
 
     auto full_segments = detail::combined_mount_segments(mount, guest_path);
-    if (!full_segments) return std::unexpected(full_segments.error());
+    if (!full_segments) co_return std::unexpected(full_segments.error());
 
-    auto ref = read_ref(ref_store, mount.ref_name);
-    if (!ref) return std::unexpected(ref.error());
+    auto ref = co_await read_ref(ref_store, mount.ref_name);
+    if (!ref) co_return std::unexpected(ref.error());
     if (!ref->has_value()) {
-        return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
+        co_return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
                                       "worktree.mount_ref_missing"});
     }
 
-    auto entry = detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments);
-    if (!entry) return std::unexpected(entry.error());
+    auto entry = co_await detail::resolve_entry_at_path(object_store, (*ref)->tree_digest, *full_segments);
+    if (!entry) co_return std::unexpected(entry.error());
     if (entry->is_tree) {
-        return std::unexpected(error{failure_class::contract, "the requested path names a directory, not a file",
+        co_return std::unexpected(error{failure_class::contract, "the requested path names a directory, not a file",
                                       "worktree.mount_read_is_directory"});
     }
 
-    return detail::read_blob_within_size_cap(object_store, granted, entry->digest);
+    co_return co_await detail::read_blob_within_size_cap(object_store, granted, entry->digest);
 }
 
 // Writes `content` to `guest_path` (relative to `mount`) through `granted`, the caller's already-
@@ -355,67 +356,67 @@ namespace detail {
 // The digest is the store's own `put_blob()` result: for every in-tree store that is
 // `compute_digest(content)`, and for any store it is the key `get_blob()` resolves.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::pair<Ref, Digest>> mount_write_with_blob(OS& object_store, RS& ref_store, Mount const& mount,
-                                                                   cap::FsWrite const& granted,
-                                                                   std::string const& guest_path,
+[[nodiscard]] task<result<std::pair<Ref, Digest>>> mount_write_with_blob(OS& object_store, RS& ref_store, Mount mount,
+                                                                   cap::FsWrite granted,
+                                                                   std::string guest_path,
                                                                    std::span<std::byte const> content) {
     if (granted.mount_id != mount.mount_id) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "this capability does not authorize the requested mount",
                                       "worktree.mount_capability_mismatch"});
     }
     if (!capability_detail::path_prefix_covers(granted.path_prefix, guest_path)) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "this capability's path scope does not cover the requested path",
                                       "worktree.mount_path_outside_capability"});
     }
 
     auto full_segments = detail::combined_mount_segments(mount, guest_path);
-    if (!full_segments) return std::unexpected(full_segments.error());
+    if (!full_segments) co_return std::unexpected(full_segments.error());
 
-    auto ref = read_ref(ref_store, mount.ref_name);
-    if (!ref) return std::unexpected(ref.error());
+    auto ref = co_await read_ref(ref_store, mount.ref_name);
+    if (!ref) co_return std::unexpected(ref.error());
     if (!ref->has_value()) {
-        return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
+        co_return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
                                       "worktree.mount_ref_missing"});
     }
 
-    auto blob_digest = object_store.put_blob(content);
-    if (!blob_digest) return std::unexpected(blob_digest.error());
+    auto blob_digest = co_await object_store.put_blob(content);
+    if (!blob_digest) co_return std::unexpected(blob_digest.error());
 
-    auto new_root = detail::set_entry_at_path(object_store, (*ref)->tree_digest, *full_segments,
+    auto new_root = co_await detail::set_entry_at_path(object_store, (*ref)->tree_digest, *full_segments,
                                                *blob_digest, /*leaf_is_tree=*/false);
-    if (!new_root) return std::unexpected(new_root.error());
+    if (!new_root) co_return std::unexpected(new_root.error());
 
     if (granted.quota_bytes.has_value() || granted.file_count_cap.has_value()) {
-        auto subtree_digest = detail::resolve_subtree_digest(object_store, *new_root, mount.subtree_path);
-        if (!subtree_digest) return std::unexpected(subtree_digest.error());
-        auto usage = detail::subtree_usage(object_store, *subtree_digest);
-        if (!usage) return std::unexpected(usage.error());
+        auto subtree_digest = co_await detail::resolve_subtree_digest(object_store, *new_root, mount.subtree_path);
+        if (!subtree_digest) co_return std::unexpected(subtree_digest.error());
+        auto usage = co_await detail::subtree_usage(object_store, *subtree_digest);
+        if (!usage) co_return std::unexpected(usage.error());
         if (granted.quota_bytes.has_value() && usage->first > *granted.quota_bytes) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::resource, "No space left on device", "worktree.mount_write_quota_exceeded"});
         }
         if (granted.file_count_cap.has_value() && usage->second > *granted.file_count_cap) {
-            return std::unexpected(error{failure_class::resource, "No space left on device",
+            co_return std::unexpected(error{failure_class::resource, "No space left on device",
                                           "worktree.mount_write_file_count_exceeded"});
         }
     }
 
-    auto committed = commit_ref(ref_store, mount.ref_name, *new_root);
-    if (!committed) return std::unexpected(committed.error());
-    return std::make_pair(std::move(*committed), std::move(*blob_digest));
+    auto committed = co_await commit_ref(ref_store, mount.ref_name, *new_root);
+    if (!committed) co_return std::unexpected(committed.error());
+    co_return std::make_pair(std::move(*committed), std::move(*blob_digest));
 }
 
 } // namespace detail
 
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<Ref> mount_write(OS& object_store, RS& ref_store, Mount const& mount,
-                                       cap::FsWrite const& granted, std::string const& guest_path,
+[[nodiscard]] task<result<Ref>> mount_write(OS& object_store, RS& ref_store, Mount mount,
+                                       cap::FsWrite granted, std::string guest_path,
                                        std::span<std::byte const> content) {
-    auto written = detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, content);
-    if (!written) return std::unexpected(written.error());
-    return std::move(written->first);
+    auto written = co_await detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, content);
+    if (!written) co_return std::unexpected(written.error());
+    co_return std::move(written->first);
 }
 
 // ============================================================================================
@@ -465,7 +466,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // parent (new commits, tree grows) -- both versions retained, nothing silently overwritten, matching
 // 025 §4's own wording literally. This is a deliberate choice with a named consequence (design draft
 // §3): the conflicts Ref has no built-in retention/pruning, the same class of residual
-// `decisions/README.md`'s own ADR-038 entry already names for passivation/archival generally.
+// `decisions/archive/README.md`'s own ADR-038 entry already names for passivation/archival generally.
 //
 // Digests are reused directly from the ALREADY-STORED `MergeConflict::ours`/`::theirs` entries, never
 // re-written as fresh blobs: `object_store` is the SAME content-addressed store the parent/branch
@@ -473,12 +474,12 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // retained" requirement -- no data duplication, and correct regardless of whether a conflicting entry
 // is itself a blob or (a blob-vs-tree type fork) a tree, since `is_tree` is carried through unchanged.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<void> materialize_merge_conflicts(OS& object_store, RS& ref_store,
-                                                         std::string const& parent_ref_name,
-                                                         std::string const& ours_agent_id,
-                                                         SubWorktree const& branch,
-                                                         std::vector<MergeConflict> const& conflicts) {
-    if (conflicts.empty()) return {};
+[[nodiscard]] task<result<void>> materialize_merge_conflicts(OS& object_store, RS& ref_store,
+                                                         std::string parent_ref_name,
+                                                         std::string ours_agent_id,
+                                                         SubWorktree branch,
+                                                         std::vector<MergeConflict> conflicts) {
+    if (conflicts.empty()) co_return result<void>{};
 
     std::string const ref_name = conflicts_ref_name(parent_ref_name);
 
@@ -488,18 +489,18 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     // theirs entries, and every earlier failed attempt's own entries) survives untouched; a REPEAT
     // conflict at the identical <path>.<agent> leaf simply replaces its own prior evidence there.
     Digest root_digest;
-    auto existing = read_ref(ref_store, ref_name);
-    if (!existing) return std::unexpected(existing.error());
+    auto existing = co_await read_ref(ref_store, ref_name);
+    if (!existing) co_return std::unexpected(existing.error());
     if (existing->has_value()) {
         root_digest = (*existing)->tree_digest;
     } else {
-        auto empty = detail::ensure_empty_tree(object_store);
-        if (!empty) return std::unexpected(empty.error());
+        auto empty = co_await detail::ensure_empty_tree(object_store);
+        if (!empty) co_return std::unexpected(empty.error());
         root_digest = *empty;
     }
 
     auto apply_one = [&](std::string const& conflict_path, std::string const& agent_id,
-                          TreeEntry const& side) -> result<void> {
+                          TreeEntry const& side) -> task<result<void>> {
         // The agent id is an IDENTIFIER, not itself a navigable path -- sanitized so a '/' inside it
         // (routine for a workflow executor's own branch name) becomes part of the LEAF's own name,
         // never mistaken for a directory separator by set_entry_at_path below.
@@ -523,26 +524,26 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
         }
 
         auto new_root =
-            detail::set_entry_at_path(object_store, root_digest, segments, side.digest, side.is_tree);
-        if (!new_root) return std::unexpected(new_root.error());
+            co_await detail::set_entry_at_path(object_store, root_digest, segments, side.digest, side.is_tree);
+        if (!new_root) co_return std::unexpected(new_root.error());
         root_digest = *new_root;
-        return {};
+        co_return result<void>{};
     };
 
     for (MergeConflict const& c : conflicts) {
         if (c.ours.has_value()) {
-            auto r = apply_one(c.path, ours_agent_id, *c.ours);
-            if (!r) return r;
+            auto r = co_await apply_one(c.path, ours_agent_id, *c.ours);
+            if (!r) co_return r;
         }
         if (c.theirs.has_value()) {
-            auto r = apply_one(c.path, branch.name, *c.theirs);
-            if (!r) return r;
+            auto r = co_await apply_one(c.path, branch.name, *c.theirs);
+            if (!r) co_return r;
         }
     }
 
-    auto committed = commit_ref(ref_store, ref_name, root_digest);
-    if (!committed) return std::unexpected(committed.error());
-    return {};
+    auto committed = co_await commit_ref(ref_store, ref_name, root_digest);
+    if (!committed) co_return std::unexpected(committed.error());
+    co_return result<void>{};
 }
 
 // ============================================================================================

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -56,7 +57,7 @@ int main() {
         return 1;
     }
 
-    auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor()});
+    auto const table = ToolTable::from_descriptors({(*sandbox)->tool_descriptor(agentengine::approval_mode::never_require)});
 
     // -- Positive case: granted capabilities, a real script that writes a file --------------------
     {
@@ -76,7 +77,7 @@ int main() {
                 {{"source", json::Value::make_string("echo written-by-shell > out.txt")}}),
             false};
         agentengine::ToolInvocationAudit audit;
-        auto result = invoke_tool(table, held, req, ctx, nullptr, &audit);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr, &audit));
         check(!result.is_error, "granted capabilities: run_shell call succeeds");
         check(audit.ok, "audit records success");
         if (!result.content.empty()) {
@@ -107,7 +108,7 @@ int main() {
             "call-2", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("echo should_not_run > denied.txt")}}),
             false};
-        auto result = invoke_tool(table, held, req, ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(result.is_error, "no granted capability: run_shell call is denied");
         auto const* err = std::get_if<agentengine::Error>(&result.content[0].value);
         check(err != nullptr, "denial is a structured Error content item, not a crash or silent no-op");
@@ -126,21 +127,21 @@ int main() {
         ToolCallRequest const mkdir_req{
             "call-3a", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("mkdir sub")}}), false};
-        auto mkdir_result = invoke_tool(table, held, mkdir_req, ctx1, nullptr);
+        auto mkdir_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, mkdir_req, ctx1, nullptr));
         check(!mkdir_result.is_error, "mkdir sub succeeds");
 
         auto ctx2 = make_ctx(held);
         ToolCallRequest const cd_req{
             "call-3b", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("cd sub")}}), false};
-        auto cd_result = invoke_tool(table, held, cd_req, ctx2, nullptr);
+        auto cd_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, cd_req, ctx2, nullptr));
         check(!cd_result.is_error, "cd sub succeeds");
 
         auto ctx3 = make_ctx(held);
         ToolCallRequest const pwd_req{
             "call-3c", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("pwd")}}), false};
-        auto pwd_result = invoke_tool(table, held, pwd_req, ctx3, nullptr);
+        auto pwd_result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, pwd_req, ctx3, nullptr));
         check(!pwd_result.is_error, "pwd succeeds");
         if (!pwd_result.content.empty()) {
             auto const* data = std::get_if<agentengine::Data>(&pwd_result.content[0].value);

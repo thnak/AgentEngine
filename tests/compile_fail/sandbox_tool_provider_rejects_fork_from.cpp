@@ -1,4 +1,4 @@
-// This file MUST NOT compile (ADR-096 C2, decisions/ADR-096-session-sandbox-lifecycle-context-
+// This file MUST NOT compile (ADR-096 C2, decisions/archive/ADR-096-session-sandbox-lifecycle-context-
 // provider-wiring.md §4/§6) -- see tests/compile_fail/CMakeLists.txt's compile-fail gate. `ComposedContextProvider
 // <Ms...>`'s own copy-assignment operator is UNCONDITIONALLY `= delete`d (core/
 // composed_context_provider.hpp:119-120, ADR-074) -- for ANY `Ms`, not specifically because

@@ -1,4 +1,4 @@
-# Compiler-version floor (021-Platform-Support-and-Portability.md §5: "CMake >= 3.28, C++23.
+# Compiler-version floor (rfcs/021-Platform-Support-and-Portability.md §5: "CMake >= 3.28, C++23.
 # Compilers: MSVC 19.4x, g++ 14+, clang 20+ (clang-cl on Windows)."). A build below the floor fails
 # configure with a clear message instead of surfacing as a confusing C++23 feature-support error
 # later in the build.

@@ -5,7 +5,7 @@
 2026-08-13). Per `CLAUDE.md`'s research discipline: do not assert what a protocol/vendor API does
 from memory. **Why this doc exists:** the user proposed letting concurrently-running agents share one
 vendor batch inference call to save cost — this is the real shape of what "batch" already means in
-AgentEngine's own architecture (`004-Model-Provider-Plane.md` §8 Q1, resolved 2026-08-04, currently
+AgentEngine's own architecture (`rfcs/004-Model-Provider-Plane.md` §8 Q1, resolved 2026-08-04, currently
 blocked on `StandingEffect`/`background_task`, which shipped for tool calls in M7 Phase B but was
 never wired to model calls). This doc grounds the design question in the real vendor mechanics before
 any design is drafted — see the companion gap doc,

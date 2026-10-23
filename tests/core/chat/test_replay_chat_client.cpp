@@ -1,5 +1,5 @@
 // Milestone 5 Phase G2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md lines
-// 513-521; 004-Model-Provider-Plane.md §6/§7 G3): proves `ReplayChatClient`
+// 513-521; rfcs/004-Model-Provider-Plane.md §6/§7 G3): proves `ReplayChatClient`
 // (core/replay_chat_client.hpp) end to end -- the real, product-code recording PLAYER that
 // supersedes tests/support/recorded_chat_client.hpp's `RecordedChatClient` for product code
 // (decision 8). Every scenario is constructed directly against `ChatCallRecording`
@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <memory>
 #include <thread>
 #include <variant>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/chat_recording.hpp"
 #include "agentengine/core/replay_chat_client.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 
 #include "../../support/run_task_sync.hpp"
@@ -300,12 +302,18 @@ int main() {
     {
         // Bonus (cheap alongside the above): "cancelled"/"deadline_exceeded" map onto the matching
         // stable error code, not a generic catch-all -- proves terminal_to_error's own dispatch table.
-        for (auto const& [terminal_str, expected_code] :
-             std::vector<std::pair<std::string, std::string>>{
-                 {"cancelled", "replay_chat_client.stream_cancelled"},
-                 {"deadline_exceeded", "replay_chat_client.stream_deadline_exceeded"},
-                 {"failed", "replay_chat_client.stream_failed"},
-                 {"some_unrecognized_value", "replay_chat_client.stream_failed"},
+        // ADR-237 D6: and onto the matching CLASS -- "cancelled" is `canceled` (was `fatal`), "deadline_exceeded"
+        // is `resource` (was `transient`, which let a shared-budget retry re-send an exhausted deadline).
+        struct TerminalCase {
+            std::string   terminal_str;
+            std::string   expected_code;
+            failure_class expected_class;
+        };
+        for (auto const& [terminal_str, expected_code, expected_class] : std::vector<TerminalCase>{
+                 {"cancelled", "replay_chat_client.stream_cancelled", failure_class::canceled},
+                 {"deadline_exceeded", "replay_chat_client.stream_deadline_exceeded", failure_class::resource},
+                 {"failed", "replay_chat_client.stream_failed", failure_class::fatal},
+                 {"some_unrecognized_value", "replay_chat_client.stream_failed", failure_class::fatal},
              }) {
             ChatCallRecording rec;
             rec.mode = recording_mode::streaming;
@@ -325,7 +333,43 @@ int main() {
             check(s.fail_error().code == expected_code,
                   ("(6 bonus) stream_terminal \"" + terminal_str + "\" maps to the expected error code")
                       .c_str());
+            check(s.fail_error().klass == expected_class,
+                  ("(6 D6) stream_terminal \"" + terminal_str + "\" maps to class " +
+                   std::string(failure_class_to_string(expected_class)))
+                      .c_str());
         }
+        // ADR-237 D6: so the shared-budget retry decision (ModelCallGateway's) refuses both a replayed cancel and
+        // a replayed deadline -- the deadline is no longer retried inside the budget it exhausted.
+        check(!is_retryable(replay_chat_client_detail::terminal_to_error("deadline_exceeded", "").klass,
+                            retry_budget::shared),
+              "(6 D6) a replayed deadline is not retried under a shared budget");
+        check(!is_retryable(replay_chat_client_detail::terminal_to_error("cancelled", "").klass, retry_budget::fresh),
+              "(6 D6) a replayed cancel is not retried even by a fresh attempt");
+    }
+
+    // ---- (10) ADR-237 D6: every class round-trips through the recording's error JSON, `canceled` included ----
+    {
+        for (failure_class k : {failure_class::transient, failure_class::policy, failure_class::contract,
+                                failure_class::resource, failure_class::fatal, failure_class::canceled}) {
+            error const e{k, "msg", "test.code", 7};
+            json::Value const j = error_to_json(e);
+            auto back           = error_from_json(j);
+            check(back.has_value() && back->klass == k && back->code == "test.code" && back->native_code == 7,
+                  ("(10) class " + std::string(failure_class_to_string(k)) + " round-trips").c_str());
+        }
+        check(failure_class_to_wire_string(failure_class::canceled) == "canceled",
+              "(10) the wire spelling of canceled is \"canceled\" (one l, A2A's and 027's spelling)");
+        check(!failure_class_from_wire_string("cancelled").has_value(),
+              "(10) \"cancelled\" (two l) is not a class name -- it is only a stream_terminal spelling");
+        // A unary recording whose chat_error is `canceled` replays it verbatim.
+        ChatCallRecording rec;
+        rec.mode       = recording_mode::unary;
+        rec.chat_error = error{failure_class::canceled, "stopped", "test.canceled"};
+        ReplayChatClient client(rec);
+        EffectContext ctx = make_ctx();
+        auto result = run_task_sync<agentengine::result<ChatResponse>>(client.chat(ChatRequest{}, ctx));
+        check(!result.has_value() && result.error().klass == failure_class::canceled,
+              "(10) a recorded canceled chat_error replays as canceled");
     }
 
     // ---- (7) chat_stream() against a UNARY-mode recording fails immediately, pushes nothing --------
@@ -389,6 +433,111 @@ int main() {
                       "(9) the replayed response is otherwise the recorded one");
             }
         }
+    }
+
+    // ---- (11) ADR-237 §4.4/§4.5 (#180): the optional-runtime path --------------------------------------
+    {
+        using namespace std::chrono_literals;
+        rt::Runtime runtime(rt::RuntimeConfig{});
+        auto const now = [] { return std::chrono::steady_clock::now(); };
+
+        // (11a) order + closed terminal; (11b) pacing really waits (control: a recorded 200 ms gap).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 200ms, false));
+            rec.chunks.push_back(make_chunk("c", 200ms, true));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            auto const t0 = now();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            auto const took = now() - t0;
+            check(received == std::vector<std::string>{"a", "b", "c"} && saw_final,
+                  "(11a) the runtime path replays every chunk in order");
+            check(s.terminal() == stream_terminal::closed, "(11a) the runtime path closes on a closed recording");
+            check(took >= 180ms, "(11b) the recorded 200 ms gap is really waited on the runtime path");
+        }
+        // (11a) failed terminal keeps the recorded error (ADR-177).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "failed";
+            rec.stream_error = error{failure_class::transient, "recorded boom", "recorded.code"};
+            rec.chunks.push_back(make_chunk("x", 0ms, false));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            check(received == std::vector<std::string>{"x"}, "(11a) the chunk before the failure replays");
+            check(s.terminal() == stream_terminal::failed, "(11a) the runtime path fails a failed recording");
+            auto const e = s.fail_error();
+            check(e.klass == failure_class::transient && e.code == "recorded.code" && e.message == "recorded boom",
+                  "(11a) the recorded error replays exactly (class, code, message)");
+        }
+        // (11b) a stop during a long recorded gap ends the stream promptly.
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 10s, true));
+            ReplayChatClient client(rec, {}, {}, &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::this_thread::sleep_for(100ms);  // let the worker reach the 10 s gap
+            auto const t0 = now();
+            s.cancel();
+            while (!s.done() && now() - t0 < 3s) { while (s.next()) {} std::this_thread::yield(); }
+            check(s.done() && now() - t0 < 1s, "(11b) cancelling during a 10 s recorded gap ends the stream < 1 s");
+        }
+        // (11c) an injected SleepFn forces the thread path (and is called with the recorded deltas).
+        {
+            ChatCallRecording rec;
+            rec.mode = recording_mode::streaming;
+            rec.stream_terminal = "closed";
+            rec.chunks.push_back(make_chunk("a", 0ms, false));
+            rec.chunks.push_back(make_chunk("b", 5s, true));
+            auto deltas = std::make_shared<std::vector<std::chrono::milliseconds>>();
+            ReplayChatClient client(rec, {}, [deltas](std::chrono::milliseconds d) { deltas->push_back(d); },
+                                    &runtime);
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::vector<std::string> received;
+            bool saw_final = false;
+            drain_stream(s, received, saw_final);
+            check(deltas->size() == 2 && (*deltas)[1] == 5s,
+                  "(11c) an injected SleepFn is honoured (thread path) even with a runtime supplied");
+        }
+        // (11d) the runtime path runs no detached thread of its own: the lane count is the Runtime's, and the
+        // worker is a root the Runtime joins -- destroying the Runtime with a stream mid-gap must return
+        // promptly (a detached thread sleeping 10 s would have outlived it; a joined root is stopped).
+    }
+    {
+        using namespace std::chrono_literals;
+        ChatCallRecording rec;
+        rec.mode = recording_mode::streaming;
+        rec.stream_terminal = "closed";
+        rec.chunks.push_back(make_chunk("a", 0ms, false));
+        rec.chunks.push_back(make_chunk("b", 10s, true));
+        auto const t0 = std::chrono::steady_clock::now();
+        {
+            auto runtime = std::make_unique<rt::Runtime>(rt::RuntimeConfig{});
+            ReplayChatClient client(rec, {}, {}, runtime.get());
+            EffectContext ctx = make_ctx();
+            stream<ChatResponseUpdate> s = client.chat_stream(ChatRequest{}, ctx);
+            std::this_thread::sleep_for(100ms);
+            runtime.reset();  // shutdown requests stop on the owned root and joins it
+            while (s.next()) {}
+            check(s.done(), "(11d) Runtime shutdown stopped and joined the replay root (no detached worker)");
+        }
+        check(std::chrono::steady_clock::now() - t0 < 2s, "(11d) Runtime shutdown with a replay mid-gap is prompt");
     }
 
     if (g_failures == 0) {

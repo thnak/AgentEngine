@@ -20,11 +20,13 @@
 //   E3    -- positive control for E1/E2: the same graphs WITHOUT with_request_info() complete without
 //            suspending -- the pauses come from the review points and nothing else.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/yaml_value.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/review_points.hpp"
@@ -44,8 +46,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct Draft {};
@@ -94,9 +95,9 @@ using agentengine::rt::workflow_status;
 }
 
 [[nodiscard]] ExecutorBody counting_appender(std::string name, std::shared_ptr<int> calls) {
-    return [name = std::move(name), calls](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
+    return [name = std::move(name), calls](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         ++*calls;
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 

@@ -1,7 +1,7 @@
 # Runs KataBackend's real-deployment test suite (test_kata_backend_linux,
 # test_kata_backend_slice2_linux, test_kata_backend_abuse_corpus_linux,
 # test_kata_backend_slice9_10_linux) against a genuine Kata Containers sandbox. Every ADR from
-# decisions/ADR-084 through ADR-095 discloses these tests as compile-verified only -- no live
+# decisions/archive/ADR-084 through ADR-095 discloses these tests as compile-verified only -- no live
 # deployment was reachable in any session that wrote them. This workflow is that missing
 # verification.
 #

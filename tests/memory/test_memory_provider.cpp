@@ -21,6 +21,7 @@
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 namespace {
@@ -95,7 +96,7 @@ int main() {
     ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-jules", ""};
 
-    auto bootstrapped = ae::ensure_memory_worktree(object_store, ref_store, principal);
+    auto bootstrapped = agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
     AE_CHECK(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
@@ -109,7 +110,7 @@ int main() {
     dark_mode.tags = {"ui", "preference"};
     dark_mode.salience = 0.5f;
     dark_mode.origin = ae::MemoryOrigin{ae::memory_source::user_stated, "run-0", "turn-0", principal};
-    AE_CHECK(ae::write_memory_item(object_store, ref_store, mount, write_cap, dark_mode).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, dark_mode)).has_value(),
              "setup: writing the first (relevant) memory item succeeds");
 
     ae::MemoryItem unrelated{};
@@ -117,7 +118,7 @@ int main() {
     unrelated.content = "the build system is CMake";
     unrelated.salience = 0.1f;
     unrelated.origin = ae::MemoryOrigin{ae::memory_source::tool_derived, "run-0", "turn-0", principal};
-    AE_CHECK(ae::write_memory_item(object_store, ref_store, mount, write_cap, unrelated).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, unrelated)).has_value(),
              "setup: writing the second (unrelated) memory item succeeds");
 
     Provider provider{object_store, ref_store, mount, read_cap, write_cap, MockSummarizerClient{},
@@ -149,7 +150,8 @@ int main() {
         auto args = ae::json::parse(R"({"query":"CMake"})");
         AE_CHECK(args.has_value(), "setup: recall args parse");
         ae::EffectContext tool_ctx{};
-        auto reply_json = out1->tools.front().invoke(*args, tool_ctx);
+        auto reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
+            out1->tools.front().invoke(*args, tool_ctx));
         AE_CHECK(reply_json.has_value(), "G4-R5: invoking the contributed recall tool succeeds");
         auto reply = ae::schema::from_json<ae::RecallReply>(*reply_json);
         AE_CHECK(reply.has_value() && !reply->results.empty() &&
@@ -172,7 +174,7 @@ int main() {
              "randomness");
 
     // --- G3: on_turn_end() extracts via a declared (mock) ChatClient and writes model_inferred --
-    auto before = ae::list_memory_items(object_store, ref_store, mount, read_cap);
+    auto before = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));
     AE_CHECK(before.has_value() && before->size() == 2, "setup: 2 items exist before extraction");
 
     ae::Message turn_arr[2] = {make_msg(ae::role::user, "remember I like tea", "m-2"),
@@ -184,7 +186,7 @@ int main() {
     ae::test_support::run_task_sync<std::monostate>(
         provider.on_turn_end(ae::TurnView{std::span<ae::Message const>(turn_arr, 2)}, turn_ctx));
 
-    auto after = ae::list_memory_items(object_store, ref_store, mount, read_cap);
+    auto after = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));
     AE_CHECK(after.has_value() && after->size() == 3,
              "G3-R1: on_turn_end() wrote exactly one new MemoryItem via the mock summarizer");
 

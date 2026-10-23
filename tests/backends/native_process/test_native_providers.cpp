@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's src/backends/native_process/native_providers.hpp: NativeShellProvider/
 // NativeBashProvider/NativePythonProvider/NativeNodeProvider end to end -- concept satisfaction,
 // capability-gated discovery, dispatch that starts in the worktree (R-S8 pins what that does NOT
@@ -155,7 +155,7 @@ int main() {
                  {"args", json::Value::make_array(
                               {json::Value::make_string("/c"), json::Value::make_string("echo"),
                                json::Value::make_string("hello-native-provider")})}});
-            auto reply_json = contribution->tools[0].invoke(args_json, ctx);
+            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ctx));
             AE_CHECK(reply_json.has_value(), "S5: the tool's own closure spawns for real and succeeds");
             if (reply_json.has_value()) {
                 auto reply = schema::from_json<NativeProcessRunReply>(*reply_json);
@@ -184,7 +184,7 @@ int main() {
         auto args_json = json::Value::make_object(
             {{"program", json::Value::make_string("cmd")}, {"args", json::Value::make_array({})}});
         if (contribution.has_value() && contribution->tools.size() == 1) {
-            auto reply_json = contribution->tools[0].invoke(args_json, ungranted_ctx);
+            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ungranted_ctx));
             AE_CHECK(!reply_json.has_value(),
                       "R-S6: invoking with an EffectContext that holds no NativeExec grant at all is "
                       "denied, even using a ContextContribution built while a grant WAS held");
@@ -206,7 +206,7 @@ int main() {
                  {"args", json::Value::make_array({json::Value::make_string("/c"),
                                                     json::Value::make_string("type"),
                                                     json::Value::make_string("../../escape.txt")})}});
-            auto reply_json = contribution->tools[0].invoke(args_json, ctx);
+            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ctx));
             AE_CHECK(!reply_json.has_value(),
                       "R-S7: a '..'-escaping argv entry is rejected before ever reaching the spawned "
                       "child, end to end through the real tool closure");
@@ -241,10 +241,10 @@ int main() {
             auto run = [&](std::vector<std::string> const& argv) {
                 std::vector<json::Value> items;
                 for (auto const& a : argv) items.push_back(json::Value::make_string(a));
-                return contribution->tools[0].invoke(
+                return test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(
                     json::Value::make_object({{"program", json::Value::make_string("cmd")},
                                               {"args", json::Value::make_array(std::move(items))}}),
-                    ctx);
+                    ctx));
             };
             auto stdout_of = [](result<json::Value> const& r) -> std::string {
                 if (!r.has_value()) return {};

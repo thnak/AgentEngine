@@ -32,7 +32,7 @@
 // already-accepted narrowing this codebase's own `create_one_directory` (Windows sibling) documents
 // for directory creation, not a new kind of gap this file introduces.
 //
-// FIXED (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on):
+// FIXED (2026-08-29, decisions/archive/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on):
 // `remove(path, recursive=true)` used to recurse one C++ stack frame per directory-tree level --
 // the IDENTICAL structural hazard `accumulate_usage()` above was fixed for (ADR-103's own real,
 // twice-reproduced segfault). `remove(recursive=true)` is guest-reachable the same way `usage()`

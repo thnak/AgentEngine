@@ -172,6 +172,7 @@ int main() {
     // ---- D3: tool-schema shaping -------------------------------------------------------------------
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "Get the weather for a location";
         t.args_schema_json = R"({"type":"object","properties":{"location":{"type":"string"}},"required":["location"]})";
@@ -198,6 +199,7 @@ int main() {
     }
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "broken";
         t.args_schema_json = "{not valid json";
         auto wire = translate_tool(t);
@@ -253,6 +255,7 @@ int main() {
         ChatRequest req;
         req.messages.push_back(text_message(role::user, "what's the weather in Seattle?"));
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "get_weather";
         t.description = "weather lookup";
         t.args_schema_json = R"({"type":"object","properties":{}})";
@@ -513,6 +516,7 @@ int main() {
     // ---- D3: a complex/nested args_schema_json passes through translate_tool completely unchanged ----
     {
         ToolDescriptor t;
+        t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         t.name = "book_flight";
         t.description = "Book a flight with multiple passengers and stops";
         t.args_schema_json = R"({"type":"object","properties":{)"
@@ -848,7 +852,7 @@ int main() {
         }
     }
 
-    // ---- ADR-023 Phase 1: apply_response_format_scan (decisions/ADR-023-response-format-codec-
+    // ---- ADR-023 Phase 1: apply_response_format_scan (decisions/archive/ADR-023-response-format-codec-
     // seam.md §6 point 3) -- `chat()` only calls this when `scan_response_format_leaks_` is armed
     // (default false); the function itself is tested directly here, the same level
     // `parse_chat_completion_response` itself is tested at above, rather than standing up
@@ -926,6 +930,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor known_tool;
+        known_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         known_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{known_tool};
 
@@ -957,6 +962,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor unrelated_tool;
+        unrelated_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         unrelated_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{unrelated_tool};
 
@@ -1049,6 +1055,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor live_tool;
+        live_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         live_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{live_tool};
 
@@ -1074,6 +1081,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor live_tool;
+        live_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         live_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{live_tool};
 
@@ -1101,6 +1109,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor unrelated_tool;
+        unrelated_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         unrelated_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{unrelated_tool};
 
@@ -1125,6 +1134,7 @@ int main() {
         message.content.push_back(std::move(clean));
 
         ToolDescriptor live_tool;
+        live_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         live_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{live_tool};
 
@@ -1143,6 +1153,7 @@ int main() {
         message.content.push_back(std::move(leaked));
 
         ToolDescriptor unrelated_tool;
+        unrelated_tool.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         unrelated_tool.name = "get_weather";
         std::vector<ToolDescriptor> tools{unrelated_tool};
 

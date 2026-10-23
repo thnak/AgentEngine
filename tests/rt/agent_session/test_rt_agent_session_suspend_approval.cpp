@@ -41,11 +41,14 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -69,8 +72,7 @@ void check(bool cond, char const* what) {
 // suspends on an external wake" reasoning as test_rt_agent_session.cpp's own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -115,13 +117,13 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
-// decisions/ADR-070-host-configurable-responsibility-boundary.md: a second gated tool, this one
+// decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: a second gated tool, this one
 // `policy_driven` -- the mode the new PolicyDecider seam exists to resolve, distinct from
 // GatedTool's `always_require` above.
 struct PolicyGateArgs { int value = 0; };
@@ -141,9 +143,9 @@ struct PolicyGatedTool : agentengine::Tool<PolicyGatedTool, agentengine::Capabil
     static constexpr std::string_view description = "Needs policy_driven resolution before every call.";
     using Args = PolicyGateArgs;
     using Reply = PolicyGateReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         policy_gated_tool_invoked_log() = true;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -155,7 +157,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool, PolicyGatedTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}, PolicyGatedTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -263,7 +265,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su1", Principal{"p", ""});
+        session.initialize("su1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -304,7 +306,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su2", Principal{"p", ""});
+        session.initialize("su2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -334,7 +336,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su3", Principal{"p", ""});
+        session.initialize("su3", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
@@ -374,7 +376,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su4", Principal{"p", ""});
+        session.initialize("su4", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-path"), Usage{1, 1, 0, 0, 0.0}},
@@ -410,7 +412,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su5", Principal{"p", ""});
+        session.initialize("su5", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -439,7 +441,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su6", Principal{"owner", "tenant-a"});
+        session.initialize("su6", Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -474,7 +476,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su7", Principal{"p", ""});
+        session.initialize("su7", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
@@ -486,8 +488,8 @@ int main() {
         // Deliberately no set_approval_decider() -- proving the PolicyDecider alone resolves this
         // policy_driven call without ever needing a human.
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_approve;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_approve;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));
@@ -512,7 +514,7 @@ int main() {
         policy_gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su8", Principal{"p", ""});
+        session.initialize("su8", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "policy_gated_tool", R"({"value":9})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-via-policy"), Usage{1, 1, 0, 0, 0.0}},
@@ -521,8 +523,8 @@ int main() {
         session.set_capabilities(&held);
         session.set_suspend_for_approval(true);
         session.set_policy_decider(
-            [](Principal const&, agentengine::ToolDescriptor const&, bool) {
-                return agentengine::policy_decision::auto_deny;
+            [](Principal const&, agentengine::ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                co_return agentengine::policy_decision::auto_deny;
             });
 
         auto r1 = drive(session.start_run(StartRun{user_message("go")}));
@@ -545,7 +547,7 @@ int main() {
         gated_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("su9", Principal{"p", ""});
+        session.initialize("su9", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "gated_tool", R"({"value":7})"), Usage{1, 1, 0, 0, 0.0}},
             {text_response("denied-by-timeout"), Usage{1, 1, 0, 0, 0.0}},

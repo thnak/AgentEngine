@@ -1,4 +1,4 @@
-// Implements decisions/ADR-190-summarizer-prompt-contract.md's tests: the request both declared
+// Implements decisions/archive/ADR-190-summarizer-prompt-contract.md's tests: the request both declared
 // summarizers receive (a fixed instruction plus a JSON Lines transcript, no tools), what a memory
 // extraction reply must look like to be stored, what a compaction reply must contain, and both providers end
 // to end with a mock summarizer that CAPTURES what it is sent -- the thing every earlier mock ignored, which
@@ -18,6 +18,7 @@
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/core/summarizer_prompt.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 namespace {
@@ -367,13 +368,13 @@ int main() {
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore ref_store;
         ae::Principal const principal{"p-summary", ""};
-        (void)ae::ensure_memory_worktree(object_store, ref_store, principal);
+        (void)agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal));
         ae::Mount const mount = ae::memory_mount(principal);
         ae::cap::FsRead const read_cap{ae::memory_mount_id(principal), "", std::nullopt};
         ae::cap::FsWrite const write_cap{ae::memory_mount_id(principal), "", std::nullopt, std::nullopt};
         using Provider = ae::MemoryProvider<CapturingSummarizer, ae::InMemoryWorktreeObjectStore, ae::rt::InMemoryAppendLogStore>;
         auto count = [&] {
-            auto items = ae::list_memory_items(object_store, ref_store, mount, read_cap);
+            auto items = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));
             return items.has_value() ? items->size() : std::size_t{9999};
         };
         ae::EffectContext ctx{};

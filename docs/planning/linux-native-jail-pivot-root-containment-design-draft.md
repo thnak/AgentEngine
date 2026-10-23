@@ -1,6 +1,6 @@
 # Design draft: Linux `native-jail` filesystem and process containment (`pivot_root` + bind mounts)
 
-**Status: PROMOTED to `decisions/ADR-083-linux-native-jail-pivot-root-containment.md` (2026-08-23,
+**Status: PROMOTED to `decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md` (2026-08-23,
 same day this draft was written)** — a Linux build/test environment (WSL2/Ubuntu) was obtained
 specifically to prove this design; §2's design and §3's self-red-team below are unchanged and are
 what ADR-083 §2 cites as its own design phase. This document is kept as the detailed design/red-team
@@ -33,7 +33,7 @@ Re-grounded directly against current code (this pass, not carried over from the 
   CLONE_NEWUTS | CLONE_NEWIPC | SIGCHLD` and nothing else — no `mount()`, `pivot_root()`, or
   `chroot()` anywhere in the file. The header's own comment says so directly: `CLONE_NEWNS` gives the
   guest a *private copy* of the mount table, but nothing restricts which existing host paths remain
-  visible inside it. `008-Sandbox-and-Isolation.md:437-449` states the same thing as current,
+  visible inside it. `rfcs/008-Sandbox-and-Isolation.md:437-449` states the same thing as current,
   non-stale spec text: zero filesystem/process containment on Linux `native-jail` today. This is
   confirmed independent of ADR-037's churn (ADR-037 only removed Quark; this backend predates and
   postdates that removal unchanged).

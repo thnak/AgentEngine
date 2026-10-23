@@ -5,7 +5,7 @@ agentengine_fast_build_this_directory()
 
 # ---- Policy-reachability CI tool -- 007 §9 gate G6, M2 Phase F task F2 ------------------
 # Enumerates {capability kind, tool, taint} against the real mechanical enforcement
-# decisions/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
+# decisions/archive/ADR-009-capability-set-enforcement-mechanism.md built (CapabilitySet::contains(),
 # trust/capability.hpp) via include/agentengine/trust/policy_reachability.hpp's enumerator -- see
 # that header's own top comment for the RFC-vs-code scope note (no declarative rule set exists yet,
 # decision 4; taint is enumerated as the boolean the mechanism actually has, not 007 §5's
@@ -34,9 +34,12 @@ target_link_libraries(agentengine_test_driver PRIVATE agentengine::core agenteng
 # registers one ctest per tests/scenarios/*.json.
 add_executable(agentengine_scenario_runner agentengine_scenario_runner.cpp)
 target_include_directories(agentengine_scenario_runner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine_warnings)
-# ADR-208: the driver builds real sandboxes (the mediated shell); the runner only replays recorded doubles,
-# so it sees the shell's headers (run_shell's declared shape) but does NOT link it (ADR-208 G6).
+target_link_libraries(agentengine_scenario_runner PRIVATE agentengine::core agentengine::mediated_shell_runner agentengine_warnings)
+# ADR-208 G6 originally had the runner NOT link the mediated shell (it only replays recorded doubles,
+# so it was expected to see run_shell's declared shape and never its body). ADR-237 §5.2 made
+# `make_tool_descriptor_with_invoke` build its type-erased `invoke` as a coroutine, which the compiler
+# now emits eagerly for the `run_shell` closure (SessionShellSandbox::tool_descriptor) in any TU that
+# sees it -- including this one -- so the real symbols must be linked, exactly as the test driver does.
 target_include_directories(agentengine_scenario_runner PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(MSVC)
   # Both include the whole AgentSession surface and exceed MSVC's default section limit (C1128).

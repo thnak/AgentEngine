@@ -9,7 +9,7 @@
 // large, mature, heavily tested file).
 //
 // 2026-08-23 consolidation (docs/planning/2026-08-22-component-role-audit-tracker.md Findings A/B,
-// decisions/ADR-074-composed-context-provider-consolidation.md): this type used to be one of THREE
+// decisions/archive/ADR-074-composed-context-provider-consolidation.md): this type used to be one of THREE
 // overlapping composites -- a hand-written, fixed two-provider `HistoryAndSkillsProvider<H,S>`
 // (deleted, fully subsumed); this type, eager-construction-only and plain-copyable; and
 // `core/session_builder.hpp`'s `detail::LazyComposedContextProvider<Ms...>`, which existed ONLY
@@ -57,7 +57,7 @@ template <class... Ms>
 // ae-naming-lint: allow ComposedContextProvider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 class ComposedContextProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- only load-bearing if this
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 -- only load-bearing if this
     // composite is itself wrapped in its own descriptor; its own internal `contributors_` (below) are
     // named by each wrapped `Ms`'s own declared name.
     static constexpr std::string_view name = "composed";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
@@ -76,7 +76,7 @@ public:
     // instance -- an auto-engaged one made that `.engage()` call fail closed with `already_engaged`
     // every time, a real functional bug for any real caller choosing default-constructible providers,
     // not just a test artifact (found live via a component-role-audit-tracker session, 2026-08-23,
-    // decisions/ADR-074-composed-context-provider-consolidation.md -- the two requirements are
+    // decisions/archive/ADR-074-composed-context-provider-consolidation.md -- the two requirements are
     // genuinely irreconcilable on one no-argument constructor spelling, since whether `Ms` happens to
     // be default-constructible cannot change what construction-time DOES). A caller that wants the old
     // eager, immediately-usable-when-possible ergonomics uses the explicit tuple constructor below
@@ -142,7 +142,7 @@ public:
     // collide with `smuggler`'s stale tag, and `operator=` wrongly allowed the merge, leaking the FIRST
     // session's content into the SECOND. Closed by retagging with `AgentSession::session_identity_` (a
     // monotonic, process-wide, never-reused counter value -- `agent_session.hpp`'s own comment on that
-    // member and `agent_session_detail::g_next_session_identity`) instead of `this`. `owner_`'s TYPE
+    // member and `agent_session_detail::next_session_identity()`) instead of `this`. `owner_`'s TYPE
     // changed accordingly, from `void const*` to `std::uint64_t` (`0` now means "untagged", matching
     // `nullptr`'s old role -- real identities start at `1`).
     //
@@ -150,7 +150,7 @@ public:
     // engaged_`, leaving it `true` on the moved-from side even though its `contributors_` is now
     // empty -- desyncing the class's own "`engaged_ == true` iff `contributors_` is populated"
     // invariant (this exact bug, live-reproduced, is why the type being consolidated here fixed it
-    // this way originally -- see decisions/ADR-074-composed-context-provider-consolidation.md).
+    // this way originally -- see decisions/archive/ADR-074-composed-context-provider-consolidation.md).
     // ADR-116 FOLLOW-ON (2026-08-30, independent red-team, same day): the ORIGINAL ADR-116 shape left
     // `owner_` unset (`nullptr`) on a freshly move-CONSTRUCTED instance, reasoning that "a freshly
     // move-constructed instance is not yet embedded in any session's member slot". That reasoning
@@ -313,7 +313,7 @@ private:
     // constructor/`operator=`'s own comments above for the full, same-day-revised rationale. `0` for a
     // bare, standalone instance never reached through `AgentSession::history_provider()` and never
     // move-constructed/move-assigned from anything that was (real identities from
-    // `agent_session_detail::g_next_session_identity` start at `1`). PROPAGATED (not reset) by the move
+    // `agent_session_detail::next_session_identity()` start at `1`). PROPAGATED (not reset) by the move
     // constructor above -- the original ADR-116 shape left this unset on every freshly move-constructed
     // instance, which a same-day independent red-team pass found let a session's live, tagged content
     // pass through an untagged intermediate variable and defeat `operator=`'s whole check; propagating

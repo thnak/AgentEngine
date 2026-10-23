@@ -1,4 +1,4 @@
-// Milestone 7 Phase F2 (015-Declarative-Agent-Format.md §3, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase F2 (rfcs/015-Declarative-Agent-Format.md §3, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `compile_workflow_document()` (workflow/yaml_compiler.hpp)
 // against 015's own §3 example -- both LITERALLY as written (proving the real, honest finding that
 // it is underspecified relative to what `validate_workflow()` requires) and EXTENDED with the
@@ -112,7 +112,7 @@ spec:
                       "Workflow, produced by the declarative loader, checked by the SAME shared "
                       "validator the C++ WorkflowBuilder form uses (I6)");
 
-                // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): metadata.description/version now
+                // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): metadata.description/version now
                 // have real slots.
                 check(compiled->description == "Research a topic and write it up.",
                       "W-2: description <- metadata.description");

@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G1
+// Implements rfcs/004-Model-Provider-Plane.md §6 ("Recording and replay") -- Milestone 5 Phase G1
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, Phase G / decision 8): "promote
 // the recording mechanism from RecordedChatClient's test-scoped fixture player to the real thing:
 // every real backend (D/E) records request, response or full ordered chunk sequence, timing, and
@@ -170,9 +170,9 @@ public:
 
         auto pair = make_stream<ChatResponseUpdate>(std::pmr::get_default_resource());
 
-        // Every capture is by value/move -- no reference back to `*this` (mirrors
-        // protocol/openai/chat_client.hpp's run_stream_worker precisely: a `RecordingChatClient`
-        // instance may be destroyed, reused, or have another concurrent `chat_stream()` call started
+        // Every capture is by value/move -- no reference back to `*this` (the same discipline the provider
+        // clients' `run_stream_worker_async` keeps for the producer root it starts on its Runtime: a
+        // `RecordingChatClient` instance may be destroyed, reused, or have another concurrent `chat_stream()` call started
         // against it long before this thread finishes).
         std::thread(
             [inner_stream = std::move(inner_stream), producer = std::move(pair.producer),
@@ -247,7 +247,7 @@ public:
                         producer.fail(inner_stream.fail_error());
                         break;
                     case stream_terminal::cancelled:
-                        producer.fail(error{failure_class::fatal,
+                        producer.fail(error{failure_class::canceled,  // ADR-237 D6 (was fatal)
                                              "the inner (recorded) chat_stream() call was cancelled",
                                              "recording_chat_client.inner_stream_cancelled"});
                         break;

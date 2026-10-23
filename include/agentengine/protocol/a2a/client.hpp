@@ -1,5 +1,5 @@
 #pragma once
-// Implements 012-A2A-Conformance.md §3/§4a -- consuming a remote A2A agent (client role). Milestone 7
+// Implements rfcs/012-A2A-Conformance.md §3/§4a -- consuming a remote A2A agent (client role). Milestone 7
 // Phase D4 (docs/planning/milestone-7-protocol-conformance-breakdown.md).
 //
 // Transport-agnostic, exactly like `A2aServer` (server.hpp) and `McpClient` (protocol/mcp/client.hpp):
@@ -8,6 +8,11 @@
 // backed callables; this phase's own test wires them directly into a real `A2aServer::send_message`/
 // `get_task`/`cancel_task` (D3), the same "same process, two roles, real machinery underneath" shape
 // every prior Phase C/D client test already used.
+//
+// ADR-237 §5.1: every callable this header takes and every verb it exposes is now asynchronous
+// (`rt::task`) -- `RemoteAgentTransport`'s send/get/cancel, `CardFetcher`, and the four `A2aClient`
+// methods wrapping them. A remote A2A peer is reached over the network, so none of these was ever
+// genuinely synchronous; the synchronous forms were the Phase D4 stand-in.
 //
 // Scope: pass-through `send_message`/`get_task`/`cancel_task` (§A.2's client-facing operations this
 // codebase can meaningfully drive today), plus §3/§4a's digest-pinned Agent Card caching -- "a card
@@ -33,22 +38,25 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/protocol/a2a/agent_card.hpp"
 #include "agentengine/protocol/a2a/types.hpp"
+#include "agentengine/rt/task.hpp"
 
 namespace agentengine::a2a {
 
 // What a real transport sub-phase would implement as three RPC calls (§A.2's own table: `SendMessage`,
 // `GetTask`, `CancelTask`) -- exactly the "no real transport yet, take what a transport would supply
 // as given" layering `A2aServer`'s own `RunStarter` already establishes for the server side.
+// ADR-237 §5.1: each of the three callables is asynchronous -- a real transport IS a network round
+// trip, which is the reason these are a seam at all rather than direct calls.
 struct RemoteAgentTransport {
-    std::function<result<Task>(Message const&)>     send_message;
-    std::function<result<Task>(std::string const&)> get_task;
-    std::function<result<Task>(std::string const&)> cancel_task;
+    std::function<task<result<Task>>(Message const&)>     send_message;
+    std::function<task<result<Task>>(std::string const&)> get_task;
+    std::function<task<result<Task>>(std::string const&)> cancel_task;
 };
 
 // §A.3: `GET /.well-known/agent-card.json`. A plain callable rather than a URL this phase would have
 // to fetch over a real HTTP client that does not exist yet (011 §7/012 §7 both defer Streamable HTTP
-// to a later sub-phase).
-using CardFetcher = std::function<result<AgentCard>()>;
+// to a later sub-phase). ADR-237 §5.1 makes it a `task` producer: that fetch is a network call.
+using CardFetcher = std::function<task<result<AgentCard>>()>;
 
 namespace client_detail {
 
@@ -75,26 +83,30 @@ public:
         : transport_(std::move(transport)), card_fetcher_(std::move(card_fetcher)),
           client_name_(std::move(client_name)) {}
 
-    [[nodiscard]] result<Task> send_message(Message const& msg) { return transport_.send_message(msg); }
-    [[nodiscard]] result<Task> get_task(std::string const& task_id) const { return transport_.get_task(task_id); }
-    [[nodiscard]] result<Task> cancel_task(std::string const& task_id) const {
-        return transport_.cancel_task(task_id);
+    [[nodiscard]] task<result<Task>> send_message(Message const& msg) {
+        co_return co_await transport_.send_message(msg);
+    }
+    [[nodiscard]] task<result<Task>> get_task(std::string const& task_id) const {
+        co_return co_await transport_.get_task(task_id);
+    }
+    [[nodiscard]] task<result<Task>> cancel_task(std::string const& task_id) const {
+        co_return co_await transport_.cancel_task(task_id);
     }
 
     // §3/§4a: fetches (or re-fetches) the remote agent's card. §4a's own rule ("a card whose skills
     // or schemas change is re-approved rather than silently trusted") is enforced by comparing this
     // fetch's own digest against the PRIOR cached one -- a change flips `rug_pull_detected()`, never
     // silently overwrites the trust decision.
-    [[nodiscard]] result<AgentCard> fetch_agent_card() {
-        result<AgentCard> fetched = card_fetcher_();
-        if (!fetched) return fetched;
+    [[nodiscard]] task<result<AgentCard>> fetch_agent_card() {
+        result<AgentCard> fetched = co_await card_fetcher_();
+        if (!fetched) co_return fetched;
         std::string const digest = client_detail::digest_of(*fetched);
         if (cached_card_.has_value() && digest != cached_digest_) {
             rug_pull_detected_ = true;
         }
         cached_card_   = *fetched;
         cached_digest_ = digest;
-        return fetched;
+        co_return fetched;
     }
 
     [[nodiscard]] bool rug_pull_detected() const noexcept { return rug_pull_detected_; }

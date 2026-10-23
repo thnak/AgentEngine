@@ -1,6 +1,6 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-009-capability-set-enforcement-mechanism.md
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-009-capability-set-enforcement-mechanism.md
 // (trust/capability.hpp): the in-process `Capability`/`CapabilitySet` enforcement mechanism that
-// upholds 007-Capability-and-Trust-Model.md §3's five properties. Miniature versions of 007 §9's
+// upholds rfcs/007-Capability-and-Trust-Model.md §3's five properties. Miniature versions of 007 §9's
 // G1 (no ambient authority), G3 (attenuation only), and G4 (revocation) — this milestone's surface,
 // not the full fuzzed/randomized-workload gates a later pass owns. C4/R-C3's per-axis widening
 // sweep and C5/R-C5's stashed-copy revocation test are the positive-control-bearing claims (022 §5:

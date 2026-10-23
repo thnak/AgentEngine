@@ -30,11 +30,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <string_view>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentResponse;
 using agentengine::rt::AgentSession;
@@ -58,8 +61,7 @@ void check(bool cond, char const* what) {
 // rt::AgentSession test file's own drive<T>().
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -91,13 +93,15 @@ AE_JSON_SCHEMA(DemoOutput, name, value)
 
 // The validator closure a real caller would write at the ONE place that knows both T and constructs
 // the session -- AgentSession itself never sees DemoOutput, matching ADR-058 §4 B2's own finding.
-[[nodiscard]] std::function<agentengine::result<void>(std::string_view)> make_demo_validator() {
-    return [](std::string_view text) -> agentengine::result<void> {
+// ADR-237 §5.1 (step 32): `AgentSessionCore::set_output_schema` takes a TASK-returning validator now,
+// so this fixture's validator is a coroutine (it never parks).
+[[nodiscard]] std::function<agentengine::rt::task<agentengine::result<void>>(std::string_view)> make_demo_validator() {
+    return [](std::string_view text) -> agentengine::rt::task<agentengine::result<void>> {
         auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto decoded = agentengine::schema::from_json<DemoOutput>(*parsed);
-        if (!decoded) return std::unexpected(decoded.error());
-        return {};
+        if (!decoded) co_return std::unexpected(decoded.error());
+        co_return agentengine::result<void>{};
     };
 }
 
@@ -194,7 +198,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":42})";
 
         Session session;
-        session.initialize("o1", Principal{"p", ""});
+        session.initialize("o1", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -221,7 +225,7 @@ int main() {
         std::string const invalid_json = R"({"name":"widget"})";
 
         Session session;
-        session.initialize("o2", Principal{"p", ""});
+        session.initialize("o2", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(invalid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -242,7 +246,7 @@ int main() {
         std::string const not_json_at_all = "plain prose, not JSON, not schema-shaped";
 
         Session session;
-        session.initialize("o3", Principal{"p", ""});
+        session.initialize("o3", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_response(not_json_at_all), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -269,7 +273,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":7})";
 
         Session session;
-        session.initialize("o4", Principal{"p", ""});
+        session.initialize("o4", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -297,7 +301,7 @@ int main() {
         std::string const valid_json = R"({"name":"widget","value":9})";
 
         Session session;
-        session.initialize("o5", Principal{"p", ""});
+        session.initialize("o5", Principal{"p", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({{text_response(valid_json), Usage{1, 1, 0, 0, 0.0}}});
         CapabilitySet const held = CapabilitySet::grant_root({});

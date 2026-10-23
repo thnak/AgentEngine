@@ -1,4 +1,4 @@
-// Measures the one quantitative claim decisions/ADR-005-capability-bearer-tokens-cross-process.md
+// Measures the one quantitative claim decisions/archive/ADR-005-capability-bearer-tokens-cross-process.md
 // §5 rests on: Design A's verify() is a pure local computation (no host round-trip needed to check
 // a token), while Design B's check() -- even measured here in the most favorable case, an
 // in-process mutex+hash-map lookup with no actual IPC/network hop -- is a callback. Any real

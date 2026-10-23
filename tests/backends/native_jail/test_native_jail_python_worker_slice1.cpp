@@ -19,7 +19,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
 
+#include "../../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -68,15 +71,17 @@ int main() {
         cfg.pids = 4;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         auto const t0 = std::chrono::steady_clock::now();
         ExecRequest req{"python", "while True:\n    pass\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         auto const elapsed =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0);
 
@@ -100,7 +105,7 @@ int main() {
         // handle returns session_terminated immediately (bounded), not a second hang.
         auto const t1 = std::chrono::steady_clock::now();
         ExecRequest req2{"python", "1 + 1"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         auto const elapsed2 =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t1);
         AE_CHECK(!out2.has_value(),
@@ -111,6 +116,39 @@ int main() {
         }
         AE_CHECK(elapsed2.count() < 2000,
                  "G-lifecycle-2: the post-kill call fails fast (no hang waiting on a dead worker)");
+    }
+
+    // ================================================================================================
+    // G-Q1b: kill-reason ordering. The watchdog must publish kill_reason BEFORE TerminateJobObject, because
+    // exec_session()'s blocked ReadFile returns the instant the worker dies. The test-only post-terminate
+    // hook widens the kill->(late store) window to 400ms: under store-after-terminate the reader sees
+    // reason==none and misclassifies the wall-clock kill as crash.
+    // ================================================================================================
+    {
+        NativeJailBackend::set_test_post_terminate_hook(+[] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        });
+        MediatedPythonConfig cfg;
+        cfg.python_home = AE_PYTHON_HOME;
+        cfg.exec_wall_ms = 500;
+        cfg.memory_bytes = 256ull * 1024 * 1024;
+        cfg.pids = 4;
+        MediatedPythonRunner runner(std::move(cfg), backend);
+        auto init = ae_test::initialize_runner(runner);
+        AE_CHECK(init.has_value(), "G-Q1b setup: runner initializes a real jailed worker process");
+        ExecState state{};
+        EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
+        ExecRequest req{"python", "while True:\n    pass\n"};
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
+        NativeJailBackend::set_test_post_terminate_hook(nullptr);
+        AE_CHECK(out.has_value(), "G-Q1b: exec_session() returns an outcome");
+        if (out.has_value()) {
+            AE_CHECK(out->klass == exec_outcome_class::timeout,
+                     "G-Q1b: a wall-clock kill is timeout even when the watchdog is delayed after the kill "
+                     "(reason published before TerminateJobObject), not crash");
+        }
     }
 
     // ================================================================================================
@@ -131,11 +169,13 @@ int main() {
         cfg.pids = 4;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q2 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         // Try to allocate ~512 MiB, well past the 64 MiB cap -- either the worker is killed by the Job
         // Object before the allocation completes (outcome: oom/timeout/crash, never ok with success
@@ -146,7 +186,7 @@ int main() {
         ExecRequest req{"python",
                           "buf = bytearray(512 * 1024 * 1024)\n"
                           "print('ALLOCATED_OK', len(buf))\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         bool const contained =
             !out.has_value() ||

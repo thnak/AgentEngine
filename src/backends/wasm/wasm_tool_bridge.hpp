@@ -95,7 +95,7 @@ namespace agentengine::wasm {
 
 [[nodiscard]] inline result<std::vector<agentengine::ToolDescriptor>> wasm_tools_as_descriptors_from(
     std::shared_ptr<WasmBackend> const& backend, SandboxHandle const& handle,
-    std::string const& plugin_id, EffectContext& ctx) {
+    std::string const& plugin_id, EffectContext& ctx, approval_mode approval) {
     // Fail closed before touching the backend at all -- an ambiguous plugin_id poisons every tool
     // this call would otherwise produce.
     if (plugin_id.find("::") != std::string::npos) {
@@ -122,6 +122,7 @@ namespace agentengine::wasm {
         descriptor.name = plugin_id + "::" + wasm_tool.name;
         descriptor.description = wasm_tool.description;
         descriptor.capability_ceiling = {cap::ToolCall{descriptor.name}};
+        descriptor.approval = approval;  // ADR-244 slice 4a: the host's, for every tool the plugin lists
         descriptor.args_schema_json = wasm_tool.args_schema_json;
         descriptor.reply_schema_json = wasm_tool.result_schema_json;
         // The invoke closure below holds a shared_ptr into live, mutable WasmBackend::instances_
@@ -132,13 +133,13 @@ namespace agentengine::wasm {
         descriptor.captures_session_state = true;
 
         std::string const tool_name = wasm_tool.name;  // captured by value, not a reference into `*listed`
-        descriptor.invoke = [backend, handle, tool_name](
+        descriptor.invoke = make_sync_invoke([backend, handle, tool_name](
                                  json::Value const& args, EffectContext& call_ctx) -> result<json::Value> {
             auto outcome =
                 backend->invoke_tool(handle, ToolInvokeRequest{tool_name, json::dump(args)}, call_ctx);
             if (!outcome) return std::unexpected(outcome.error());
             return wasm_tool_result_to_json(tool_name, *outcome);
-        };
+        });
 
         out.push_back(std::move(descriptor));
     }

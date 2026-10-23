@@ -1,7 +1,7 @@
 // 007 §9 gate G6 / M2 Phase F task F2: CI-runnable policy-reachability tool. Enumerates every
 // declared {agent, tool, capability kind, taint} cell in policy_reachability_fixture.hpp's CLEAN
 // reference set against the real CapabilitySet::contains() mechanism
-// (include/agentengine/trust/capability.hpp, decisions/ADR-009-capability-set-enforcement-
+// (include/agentengine/trust/capability.hpp, decisions/archive/ADR-009-capability-set-enforcement-
 // mechanism.md) via include/agentengine/trust/policy_reachability.hpp's enumerator, and reports every
 // finding: oracle mismatches, taint-variance, and over-broad grants (an agent-declared capability
 // kind no declared tool of theirs ever requires). Exit 0 if clean, 1 otherwise -- the same

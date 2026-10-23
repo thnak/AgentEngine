@@ -1,4 +1,4 @@
-// decisions/ADR-175 -- hand-off costs of the resume-home model: block_on(), AsyncMutex under contention,
+// decisions/archive/ADR-175 -- hand-off costs of the resume-home model: block_on(), AsyncMutex under contention,
 // channel<T> with a block_on() consumer, ThreadPool throughput, AsyncMutex::is_held_by_current_thread().
 // Prints numbers; asserts nothing. Written by ADR-175's third red-team round to measure the change against
 // HEAD, and kept so the next change to these primitives is measured the same way.
@@ -19,7 +19,7 @@
 //   ThreadPool(4) trivial jobs              unchanged
 // Thread count is fixed at 4 (CLAUDE.md machine safety); memory is capped.
 //
-// decisions/ADR-219 added the homeless-chain and resumer-chain lines (§6 of that ADR has the before/after
+// decisions/archive/ADR-219 added the homeless-chain and resumer-chain lines (§6 of that ADR has the before/after
 // numbers). Against headers older than ADR-219, define AE_BENCH_PRE_ADR219 (/D AE_BENCH_PRE_ADR219), which
 // leaves out the resumer lines -- those types do not exist there.
 

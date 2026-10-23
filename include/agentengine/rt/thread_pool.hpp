@@ -4,7 +4,7 @@
 // constructed `agentengine::rt::task<void>` to completion on a POOL WORKER THREAD instead of the
 // calling thread, so the caller isn't blocked for the round-trip.
 //
-// A JOB MAY SUSPEND (decisions/ADR-175, issue #78). Each job is driven by `block_on()` on the worker that
+// A JOB MAY SUSPEND (decisions/archive/ADR-175, issue #78). Each job is driven by `block_on()` on the worker that
 // picked it up: a job that parks on a contended `AsyncMutex` or `channel<T>` await is handed back to that
 // worker by the waker (`rt/resume_home.hpp`) and resumed there, so a job runs on exactly one worker thread
 // from start to finish and the worker is occupied until it completes.

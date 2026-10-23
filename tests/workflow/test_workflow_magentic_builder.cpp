@@ -17,11 +17,13 @@
 //         WorkflowSupervisor's designated_stall_reporter enforcement (ADR-149 item 2), proven on
 //         the SAME builder-produced graph, not a separately hand-built one.
 
+#include <utility>
 #include <atomic>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/magentic.hpp"
 
@@ -57,8 +59,7 @@ void check(bool cond, char const* what) {
 // genuinely suspending co_await in its executor bodies.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -209,21 +210,21 @@ int main() {
         std::atomic<int> step{0};
         std::vector<ExecutorBody> bodies = {
             // mgr: p1, then p2, then done -- a deterministic ledger, matching examples/17's own shape.
-            [&step](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [&step](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 int const n = step.fetch_add(1);
                 std::vector<std::string> route = n == 0 ? std::vector<std::string>{"p1"}
                                                  : n == 1 ? std::vector<std::string>{"p2"}
                                                           : std::vector<std::string>{"done"};
-                return ExecutorOutcome{text_message(text_of(in)), route};
+                co_return ExecutorOutcome{text_message(text_of(in)), route};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">p1")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">p1")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{text_message(text_of(in) + ">p2")};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{text_message(text_of(in) + ">p2")};
             },
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{in};
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{in};
             },
         };
         WorkflowSupervisor sup;
@@ -250,16 +251,16 @@ int main() {
                   "B6: max_stalls() forwards to TerminationBound");
 
             std::vector<ExecutorBody> bodies = {
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                     ExecutorOutcome out{text_message(text_of(in)), {"p1"}};
                     out.stalled = true;  // never makes progress
-                    return out;
+                    co_return out;
                 },
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                    return ExecutorOutcome{text_message(text_of(in))};
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{text_message(text_of(in))};
                 },
-                [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                    return ExecutorOutcome{in};  // the synthetic done sink
+                [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{in};  // the synthetic done sink
                 },
             };
             WorkflowSupervisor sup;

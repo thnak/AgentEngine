@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md — the seam to every inference API. Terminology (027 §5,
+// Implements rfcs/004-Model-Provider-Plane.md — the seam to every inference API. Terminology (027 §5,
 // §7): `ChatClient`, not `Provider` — "provider" stays free for the colloquial vendor sense.
 //
 // Milestone 5 Phase B1/B2 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md):
@@ -67,7 +67,7 @@ struct ChatClientCapabilities {  // ae-naming-lint: allow ChatClientCapabilities
 // surveyed backend can express both.
 enum class reasoning_effort { off, low, medium, high };  // ae-naming-lint: allow reasoning_effort — 004 §2's amendment names this concept normatively; 027 has not been updated to list it
 
-// decisions/ADR-230 (GitHub issue #44): a chat client whose own HOST-SIDE state can hold an interaction open
+// decisions/archive/ADR-230 (GitHub issue #44): a chat client whose own HOST-SIDE state can hold an interaction open
 // across calls -- `rt::WorkflowChatClient`, whose wrapped workflow suspends on a `request_port`. The ask is
 // reported by the client object itself (`pending_client_interactions()`, below), never read out of response
 // content, and the answer travels out of band on `ChatRequest::client_interaction_answers`, never in
@@ -254,8 +254,15 @@ struct ChatResponseUpdate {  // ae-naming-lint: allow ChatResponseUpdate — pre
 // `chat()`-only wrapper templates (`FailoverChatClient`/`ResilientChatClient`/`MiddlewareChatClient`)
 // are UNAFFECTED — they still declare and use `chat()`/`chat_stream()` internally as their own
 // concrete methods, unrelated to whether this concept requires either one.
+//
+// Lifetime contract (decisions/archive/ADR-237 §5.1, #172): the `EffectContext` passed to `chat_stream()` --
+// and the `CapabilitySet` it borrows -- must outlive the returned stream, as must the client itself
+// and anything it references (its `SecretStore`). A conformer may read them from its producer after
+// `chat_stream()` returns: the real backends resolve their API key (`SecretStore::resolve`, now
+// `task`-shaped) as the producer's first step. Every caller today drains the stream within the turn
+// that owns `ctx`, so this holds without change.
 template <class T>
-concept ChatClient = requires(T client, ChatRequest request, EffectContext& ctx) {
+concept ChatClient =requires(T client, ChatRequest request, EffectContext& ctx) {
     { client.capabilities() } -> std::same_as<ChatClientCapabilities>;
     { client.chat_stream(request, ctx) } -> std::same_as<stream<ChatResponseUpdate>>;
 };

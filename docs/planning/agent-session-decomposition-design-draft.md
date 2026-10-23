@@ -349,6 +349,6 @@ Named up front, not discovered mid-implementation:
 
 This stays a design draft until it's been red-teamed and the findings are folded back in (matching
 `session-sandbox-lifecycle-wiring-design-draft.md`'s own process, cited above as the template).
-Once stable, the actual ADR goes in `decisions/ADR-097-*.md`, Proposed status, awaiting the
+Once stable, the actual ADR goes in `decisions/archive/ADR-097-*.md`, Proposed status, awaiting the
 project owner's own Judged sign-off — this session cannot self-Judge a change to hot-path/
 security-critical code per CLAUDE.md.

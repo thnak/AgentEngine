@@ -1,5 +1,5 @@
 // AgentEngine "get started" examples, 19 -- a reference PolicyDecider for delegated/spawned-agent
-// calls (GitHub issue #30, decisions/ADR-151-delegated-agent-approval-policy.md).
+// calls (GitHub issue #30, decisions/archive/ADR-151-delegated-agent-approval-policy.md).
 //
 // Not part of MAF's own sample progression -- closes a real, previously-named gap: `Principal`
 // already carries `on_behalf_of`/`delegation_depth` (007 §2/018 §2), so a PolicyDecider auto-
@@ -40,6 +40,7 @@
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -93,9 +94,9 @@ struct ReviewedActionTool
     static constexpr std::string_view description = "An action gated by PolicyDecider.";
     using Args = ReviewedActionArgs;
     using Reply = ReviewedActionReply;
-    static result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const {
         action_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -104,7 +105,7 @@ public:
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<ReviewedActionTool>().descriptors();
+        c.tools = ToolTable::from(ReviewedActionTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -165,7 +166,12 @@ int main() {
         ActionAgent session;
         // A real human/service identity: on_behalf_of is empty -- derive_on_behalf_of() (018 §2) is
         // never called for a genuine top-level principal, only for a delegated/spawned one.
-        session.initialize("s-top-level", Principal{"p-human-operator", ""});
+        // ADR-244: where the session's authority comes from, its token budget and its turn cap are stated, never
+        // defaulted. This session holds its own grants, and its scripted client cannot run away, so neither is capped.
+        session.initialize("s-top-level", Principal{"p-human-operator", ""},
+                           agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded(),
+                                                       agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
@@ -224,12 +230,13 @@ int main() {
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({cap::AgentCall{"reviewer-child", trust::SpawnBudget::mint_root(2)}});
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"p-human-operator", ""};
 
         Ref const caller_ref{"session:example-19", ""};
         AgentSpawnArgs const args{"reviewer-child", "review and act"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "(B) perform_agent_spawn() succeeds");
         check(action_invoked(),

@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md (GitHub #148): a quota- or
+// Proof for decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md (GitHub #148): a quota- or
 // size-capped FsRead/FsWrite grant admits a tool that declares an uncapped ceiling AND
 // `EnforcesGrantedCaps`, the per-call handle carries the GRANT's cap, and the cap still holds at use.
 //   U1-U9  -- CapabilitySet::clamped_binding()/bind_clamped(): clamps quantity axes only, never scope
@@ -19,6 +19,7 @@
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/trust/policy_reachability.hpp"
 #include "backends/native_jail/session_shell_wiring.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -74,21 +75,21 @@ ae::result<ProbeReply> record_bound(ae::EffectContext& ctx) {
 struct GrantEnforcingProbe
     : ae::Tool<GrantEnforcingProbe,
                ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>,
-               ae::EnforcesGrantedCaps> {
+               ae::EnforcesGrantedCaps, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "grant_enforcing_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) { return record_bound(ctx); }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const { co_return record_bound(ctx); }
 };
 
 struct PlainProbe
-    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>> {
+    : ae::Tool<PlainProbe, ae::Capabilities<ae::cap::decl::FsRead<"work">, ae::cap::decl::FsWrite<"work">>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "plain_probe";
     static constexpr std::string_view description = "Records its bound capabilities.";
     using Args  = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext& ctx) { return record_bound(ctx); }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext& ctx) const { co_return record_bound(ctx); }
 };
 
 ae::EffectContext make_ctx(CapabilitySet const& held) {
@@ -117,7 +118,7 @@ ae::ToolResult call(ae::ToolTable const& table, CapabilitySet const& held, std::
     ctx.sandbox_fs = fs;
     ae::ToolCallRequest const req{"call", tool, std::move(args), false};
     ae::ToolInvocationAudit audit;
-    auto r      = ae::invoke_tool(table, held, req, ctx, nullptr, &audit);
+    auto r      = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, req, ctx, nullptr, &audit));
     g_last_code = audit.error_code;
     return r;
 }
@@ -194,7 +195,7 @@ int main() {
 
     // ---- P: through invoke_tool ----------------------------------------------------------------
     {
-        auto const table = ae::ToolTable::from_tools<GrantEnforcingProbe, PlainProbe>();
+        auto const table = ae::ToolTable::from(GrantEnforcingProbe{}, PlainProbe{});
         CapabilitySet const held = capped_grant();
 
         g_invocations = 0;
@@ -246,7 +247,7 @@ int main() {
         check(sandbox.has_value(), "setup: SessionShellSandbox::create succeeds");
         if (!sandbox) return 1;
 
-        ae::ToolDescriptor const shell_tool = (*sandbox)->tool_descriptor();
+        ae::ToolDescriptor const shell_tool = (*sandbox)->tool_descriptor(ae::approval_mode::never_require);
         check(shell_tool.enforces_granted_caps, "setup: run_shell's live descriptor carries EnforcesGrantedCaps");
         auto const table = ae::ToolTable::from_descriptors({shell_tool});
 
@@ -295,7 +296,7 @@ int main() {
                                               Capability{ae::cap::FsWrite{"work", "", kQuota, kFileCap}}};
         ae::trust::ReachabilityAgent const agent{
             "agent", ceiling,
-            {ae::make_tool_descriptor<GrantEnforcingProbe>(), ae::make_tool_descriptor<PlainProbe>()}};
+            {ae::make_tool_descriptor(GrantEnforcingProbe{}), ae::make_tool_descriptor(PlainProbe{})}};
         auto const report = ae::trust::enumerate_policy_reachability({agent}, {});
         bool tagged_granted = true, tagged_seen = false, plain_denied = true, plain_seen = false;
         for (auto const& cell : report.cells) {
@@ -315,13 +316,13 @@ int main() {
     // ---- A: the agent registry's ceiling check uses the same rule ---------------------------------
     {
         CapabilitySet const ceiling = capped_grant();
-        auto const tagged = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor<GrantEnforcingProbe>()});
+        auto const tagged = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor(GrantEnforcingProbe{})});
         check(tagged.has_value(), "A1: an agent with a capped ceiling may list a grant-enforcing tool");
-        auto const plain = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor<PlainProbe>()});
+        auto const plain = ae::agent_detail::check_capability_ceiling(ceiling, {ae::make_tool_descriptor(PlainProbe{})});
         check(!plain.has_value() && plain.error().code == "agent.capability_ceiling_exceeded",
               "A2: and is still refused a plain tool declaring the uncapped ceiling");
         auto const other = ae::agent_detail::check_capability_ceiling(capped_grant("other"),
-                                                        {ae::make_tool_descriptor<GrantEnforcingProbe>()});
+                                                        {ae::make_tool_descriptor(GrantEnforcingProbe{})});
         check(!other.has_value(), "A3: a ceiling on a different mount still refuses the grant-enforcing tool");
     }
 

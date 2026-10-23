@@ -34,12 +34,15 @@ void check(bool cond, char const* what) {
 agentengine::ToolDescriptor make_descriptor(std::string name, std::string description,
                                              std::string args_schema_json) {
     agentengine::ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name = std::move(name);
     d.description = std::move(description);
     d.args_schema_json = std::move(args_schema_json);
     d.reply_schema_json = R"({"type":"object","properties":{}})";
     d.invoke = [](agentengine::json::Value const&, agentengine::EffectContext&)
-        -> agentengine::result<agentengine::json::Value> { return agentengine::json::Value::make_null(); };
+        -> agentengine::task<agentengine::result<agentengine::json::Value>> {
+        co_return agentengine::json::Value::make_null();
+    };
     return d;
 }
 

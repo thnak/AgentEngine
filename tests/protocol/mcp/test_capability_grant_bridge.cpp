@@ -1,4 +1,4 @@
-// ADR-061 prove phase, §42/§43 (decisions/ADR-061-host-provided-inbound-transport.md). Proves the
+// ADR-061 prove phase, §42/§43 (decisions/archive/ADR-061-host-provided-inbound-transport.md). Proves the
 // shared trust::steady_deadline_from() primitive's use by mcp::capability_grant_from_bearer_claims()
 // -- the falsifiable claims table at §42.3 -- and, end to end, that the resulting CapabilityGrant is
 // accepted by a REAL McpServer::dispatch() call. trust::steady_deadline_from()'s extraction itself
@@ -39,12 +39,12 @@ struct GatedReply {
 };
 AE_JSON_SCHEMA(GatedReply, unused)
 
-struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>> {
+struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<ae::cap::decl::Entropy>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{}; }
 };
 
 trust::BearerTokenClaims make_claims(std::string sub, std::chrono::system_clock::time_point exp) {
@@ -72,7 +72,7 @@ int main() {
         check(grant.has_value(), "claim 2 setup: a well-formed, unexpired claim succeeds");
         auto expected =
             trust::steady_deadline_from(claims.exp, kWallNow, kSteadyNow, trust::kMaxAuthorityHorizon);
-        check(expected.has_value() && grant.has_value() && grant->expiry == *expected,
+        check(expected.has_value() && grant.has_value() && grant->expiry == ae::Expiry::at(*expected),
               "claim 2: CapabilityGrant.expiry matches steady_deadline_from()'s own output exactly");
 
         // Control: a differing wall_now produces a differing expiry -- not a fixed/ignored value.
@@ -106,9 +106,10 @@ int main() {
         auto key = trust::generate_bearer_secret_key();
         check(key.has_value(), "claim 4 setup: generate_bearer_secret_key() succeeds");
 
-        auto const table = ae::ToolTable::from_tools<GatedTool>();
-        ae::CapabilitySet const held;  // grants nothing -- held_ alone could never pass gated_tool
-        mcp::McpServer server(table, held, ae::ApprovalDecider{}, "capability-grant-bridge-test-server");
+        auto const table = ae::ToolTable::from(GatedTool{});
+        // ADR-244 §2.3: a server that serves bridged grants states per_request; it holds nothing of its own.
+        mcp::McpServer server(table, mcp::McpAuthority::per_request(ae::CapabilitySet::no_ceiling()),
+                              ae::ApprovalDecider{}, "capability-grant-bridge-test-server");
 
         auto token = trust::mint_bearer_token(
             *key, make_claims("caller-3", kWallNow + std::chrono::hours{1}));
@@ -134,8 +135,7 @@ int main() {
         auto resp = server.dispatch(req, caller, grant.has_value() ? std::optional{*grant} : std::nullopt,
                                      kSteadyNow);
         check(resp.result.has_value() && !resp.result->find("isError")->as_bool(),
-              "claim 4: a REAL McpServer::dispatch() accepts the bridged grant end to end, authorizing "
-              "a tool held_ alone (empty) could never have permitted");
+              "claim 4: a REAL per_request McpServer::dispatch() accepts the bridged grant end to end");
 
         // kind threading control: human kind produces a Principal reflecting it.
         auto human_grant = mcp::capability_grant_from_bearer_claims(*verified, kEntropyCaps, kWallNow,

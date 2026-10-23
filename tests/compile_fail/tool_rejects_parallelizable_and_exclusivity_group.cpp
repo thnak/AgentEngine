@@ -1,4 +1,4 @@
-// This file MUST NOT compile (decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4, MUST-FIX
+// This file MUST NOT compile (decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4, MUST-FIX
 // 1) — see tests/compile_fail/CMakeLists.txt's compile-fail gate. `Parallelizable` (unconditional: safe
 // alongside every other tool) and `ExclusivityGroup<Name>` (narrower: safe alongside everyone
 // EXCEPT its own group) are two different, contradictory concurrency claims about the same tool —
@@ -10,6 +10,6 @@ using namespace agentengine;
 
 // must not compile: BadTool claims both "unconditionally concurrency-safe" and "concurrency-safe
 // except within group db-write" about itself at once.
-struct BadTool : Tool<BadTool, Parallelizable, ExclusivityGroup<"db-write">> {};
+struct BadTool : Tool<BadTool, Parallelizable, ExclusivityGroup<"db-write">, Approval<approval_mode::never_require>> {};
 
 int main() { return 0; }

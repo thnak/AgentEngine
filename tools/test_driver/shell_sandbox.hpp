@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-208 (decisions/ADR-208-test-driver-real-tools-and-tool-doubles.md) §2.3, G6: the one place a
+// Implements ADR-208 (decisions/archive/ADR-208-test-driver-real-tools-and-tool-doubles.md) §2.3, G6: the one place a
 // driver session's real sandbox is built. `agentengine_test_driver` and the driver's tests wire
 // `make_shell_sandbox` as `DriverConfig::sandbox_factory`; the scenario runner does not include this header
 // and does not link the mediated shell, so a replay cannot build a sandbox (it serves recorded doubles).
@@ -20,7 +20,7 @@ namespace agentengine::test_driver {
 class ShellSandbox final : public RealToolSandbox {
 public:
     explicit ShellSandbox(std::unique_ptr<SessionShellSandbox> sandbox) : sandbox_(std::move(sandbox)) {}
-    [[nodiscard]] ToolDescriptor run_shell() override { return sandbox_->tool_descriptor(); }
+    [[nodiscard]] ToolDescriptor run_shell() override { return sandbox_->tool_descriptor(kRunShellApproval); }
     [[nodiscard]] FileSystemAdapter* filesystem() override { return sandbox_->filesystem_adapter(); }
 
 private:

@@ -1,4 +1,4 @@
-// decisions/ADR-205-strict-relay-base64.md: `base64::decode_strict` (the native-jail HandleRelay wire's decode rule)
+// decisions/archive/ADR-205-strict-relay-base64.md: `base64::decode_strict` (the native-jail HandleRelay wire's decode rule)
 // accepts canonical padded base64 and nothing else.
 //
 // The reference is written from the rule's definition, not from the decoder's code: a string is canonical exactly

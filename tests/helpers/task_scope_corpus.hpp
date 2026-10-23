@@ -1,5 +1,5 @@
 #pragma once
-// ADR-147 (task-scope containment corpus, 008-Sandbox-and-Isolation.md §9 G9): a corpus of
+// ADR-147 (task-scope containment corpus, rfcs/008-Sandbox-and-Isolation.md §9 G9): a corpus of
 // ORDINARY-LOOKING task instructions -- never phrased as a probe, never containing an obviously
 // hostile literal ("..\\..\\Windows", "cmd.exe") the way tests/test_mediated_shell_runner_hostile_
 // corpus.cpp's own "hostile-name corpus" deliberately does -- each pairing a plausible task

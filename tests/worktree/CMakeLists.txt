@@ -10,9 +10,9 @@ agentengine_add_test(test_worktree_object_store
   LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 
 # ---- Worktree Ref persistence over Quark's Store seam (025 §2, Milestone 3 Phase A2) -----------
-# Header-only (core/worktree.hpp's commit_ref/read_ref) -- links only agentengine::core, no
-# platform-specific crypto dependency (unlike A1's digest computation).
-agentengine_add_test(test_worktree_ref_store LIBS agentengine::core agentengine_warnings)
+# commit_ref/read_ref are header-only; the A2-L1 lane check (ADR-237 §14 step 48) writes a real tree through
+# mount_write, which computes digests, so this links agentengine::worktree_store like A1.
+agentengine_add_test(test_worktree_ref_store LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 
 # ---- Worktree sub-worktree sharing modes (025 §3, Milestone 3 Phase B1) ------------------------
 # `scratch` mode calls empty_tree_digest() -> compute_digest(), so this needs the same real,
@@ -81,7 +81,7 @@ if(WIN32)
 endif()
 
 # ---- Worktree mount OS-level path-escape corpus (025 §5, 021 §6 G3, Milestone 3 Phase C2,
-# decisions/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
+# decisions/archive/ADR-014-worktree-mount-path-canonicalization.md) --------------------------------------
 # Real Win32 filesystem I/O against a scratch directory under the system temp path: junctions,
 # real reparse-point crossing, a real TOCTOU interleaving proven deterministically. Shells out to
 # `cmd.exe /c mklink /J` for junction setup (test-only infrastructure), so this needs cmd.exe on

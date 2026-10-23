@@ -5,7 +5,7 @@
 // real native tool through core/tool_pipeline.hpp's real ten-step pipeline (Phase B) via
 // invoke_agent_tool() (E3's own glue, core/agent_registry.hpp) -- not a stub, not a mock pipeline.
 //
-// decisions/ADR-059-invoke-agent-tool-capability-attenuation.md: invoke_agent_tool() attenuates the
+// decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md: invoke_agent_tool() attenuates the
 // CALLER's own held `ctx.capabilities` down to the target's declared ceiling (CapabilitySet::
 // attenuate(), ADR-009) instead of minting the target's own ceiling unconditionally (the I2 hole
 // ADR-059 fixes) -- every case below therefore needs a real, covering `ctx.capabilities` to prove
@@ -60,14 +60,14 @@ struct EchoReply {
 };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
@@ -92,8 +92,8 @@ struct PolicyGatedTool
     static constexpr std::string_view description = "A tool gated by PolicyDecider.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"policy_gated: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"policy_gated: " + args.message};
     }
 };
 
@@ -238,9 +238,9 @@ int main() {
 
         bool approval_decider_called = false;
         agentengine::ApprovalDecider const tripwire = [&approval_decider_called](
-            agentengine::Principal const&, std::string_view, std::string const&) {
+            agentengine::Principal const&, std::string_view, std::string const&) -> agentengine::task<bool> {
             approval_decider_called = true;
-            return false;  // would deny if ever reached -- proves auto_approve short-circuits it
+            co_return false;  // would deny if ever reached -- proves auto_approve short-circuits it
         };
 
         // 6a. non-delegated (top-level) caller -- require_approval, no ApprovalDecider configured ->

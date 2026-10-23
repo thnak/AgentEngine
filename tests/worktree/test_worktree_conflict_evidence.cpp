@@ -1,5 +1,5 @@
 // Proof for ADR-055 (2026-08-10-full-codebase-adr-gap-audit.md gap #14): `conflicts_ref_name()`/
-// `materialize_merge_conflicts()` (core/worktree.hpp), closing 025-Worktree-and-Virtual-Filesystem.md
+// `materialize_merge_conflicts()` (core/worktree.hpp), closing rfcs/025-Worktree-and-Virtual-Filesystem.md
 // §4's "the merge fails and is surfaced, with both versions retained at /conflicts/<path>.<agent>"
 // requirement. Modeled on test_worktree_merge.cpp's own fixture shape (blob_of/tree_of helpers, the
 // same InMemoryWorktreeObjectStore/InMemoryAppendLogStore pair) so the two can be compared side by
@@ -34,6 +34,7 @@
 #include <string>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
@@ -55,11 +56,11 @@ Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
     std::vector<std::byte> bytes;
     bytes.reserve(content.size());
     for (char c : content) bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
-    return *store.put_blob(bytes);
+    return *agentengine::rt::block_on(store.put_blob(bytes));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 std::string string_of(std::vector<std::byte> const& bytes) {
@@ -90,34 +91,34 @@ int main() {
         auto a_v1 = blob_of(obj_store, "v1");
         auto base_tree = tree_of(obj_store, {{"a.txt", a_v1, false}});
 
-        auto parent = commit_ref(ref_store, "session:s-20", base_tree);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:s-20", base_tree));
         AE_CHECK(parent.has_value(), "M2 setup: parent commit succeeds");
-        auto branch = create_sub_worktree(ref_store, *parent, "session:s-20/agents/writer",
-                                           sharing_mode::branch);
+        auto branch = agentengine::rt::block_on(create_sub_worktree(ref_store, *parent, "session:s-20/agents/writer",
+                                           sharing_mode::branch));
         AE_CHECK(branch.has_value(), "M2 setup: branch creation succeeds");
 
         auto a_ours = blob_of(obj_store, "ours-edit");
         auto branch_tree = tree_of(obj_store, {{"a.txt", a_ours, false}});
-        AE_CHECK(write_sub_worktree(ref_store, *branch, branch_tree).has_value(),
+        AE_CHECK(agentengine::rt::block_on(write_sub_worktree(ref_store, *branch, branch_tree)).has_value(),
                  "M2 setup: branch edits a.txt");
 
         auto a_theirs = blob_of(obj_store, "theirs-edit");
         auto parent_moved_tree = tree_of(obj_store, {{"a.txt", a_theirs, false}});
-        auto parent_after = commit_ref(ref_store, "session:s-20", parent_moved_tree);
+        auto parent_after = agentengine::rt::block_on(commit_ref(ref_store, "session:s-20", parent_moved_tree));
         AE_CHECK(parent_after.has_value(), "M2 setup: parent independently edits a.txt too");
 
-        auto outcome = merge_branch_into_parent(obj_store, ref_store, *branch, *parent_after);
+        auto outcome = agentengine::rt::block_on(merge_branch_into_parent(obj_store, ref_store, *branch, *parent_after));
         AE_CHECK(outcome.has_value() && !outcome->ok(), "M2 setup: the merge genuinely conflicts");
 
-        auto materialized = materialize_merge_conflicts(obj_store, ref_store, "session:s-20", "planner",
-                                                          *branch, outcome->conflicts);
+        auto materialized = agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-20", "planner",
+                                                          *branch, outcome->conflicts));
         AE_CHECK(materialized.has_value(), "M2: materialize_merge_conflicts succeeds");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-20"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-20")));
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(),
                  "M2: a real conflicts ref now exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M2: exactly two entries -- ours and theirs -- were materialized");
             TreeEntry const* ours_entry = nullptr;
@@ -136,7 +137,7 @@ int main() {
                      "content preserved");
         }
 
-        auto parent_reread = read_ref(ref_store, "session:s-20");
+        auto parent_reread = agentengine::rt::block_on(read_ref(ref_store, "session:s-20"));
         AE_CHECK(parent_reread.has_value() && parent_reread->has_value() &&
                      (*parent_reread)->tree_digest == parent_moved_tree,
                  "M2: the PARENT ref is completely untouched -- materialization commits only to the "
@@ -160,13 +161,13 @@ int main() {
         c.theirs = TreeEntry{"new.txt", theirs_blob, false};
 
         auto materialized =
-            materialize_merge_conflicts(obj_store, ref_store, "session:s-21", "planner", branch, {c});
+            agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-21", "planner", branch, {c}));
         AE_CHECK(materialized.has_value(), "M3: materialize_merge_conflicts succeeds for an add/add fork");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-21"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-21")));
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(), "M3: a conflicts ref exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M3: both ours and theirs are materialized even with no base entry at all");
         }
@@ -188,13 +189,13 @@ int main() {
         c.theirs = std::nullopt;                                 // theirs deleted it
 
         auto materialized =
-            materialize_merge_conflicts(obj_store, ref_store, "session:s-22", "planner", branch, {c});
+            agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-22", "planner", branch, {c}));
         AE_CHECK(materialized.has_value(), "M4: materialize_merge_conflicts succeeds for an edit/delete fork");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-22"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-22")));
         AE_CHECK(conflicts_ref.has_value() && conflicts_ref->has_value(), "M4: a conflicts ref exists");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 1,
                      "M4: exactly ONE entry -- the side that actually still exists -- not a fabricated "
                      "entry for the side that was deleted");
@@ -216,21 +217,21 @@ int main() {
         first.path = "first.txt";
         first.ours = TreeEntry{"first.txt", blob_of(obj_store, "first-ours"), false};
 
-        auto r1 = materialize_merge_conflicts(obj_store, ref_store, "session:s-23", "planner", branch,
-                                               {first});
+        auto r1 = agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-23", "planner", branch,
+                                               {first}));
         AE_CHECK(r1.has_value(), "M5 setup: the first materialization succeeds");
 
         MergeConflict second;
         second.path = "second.txt";
         second.ours = TreeEntry{"second.txt", blob_of(obj_store, "second-ours"), false};
 
-        auto r2 = materialize_merge_conflicts(obj_store, ref_store, "session:s-23", "planner", branch,
-                                               {second});
+        auto r2 = agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-23", "planner", branch,
+                                               {second}));
         AE_CHECK(r2.has_value(), "M5: the second materialization against the SAME parent succeeds");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-23"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-23")));
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(tree.has_value() && tree->entries.size() == 2,
                      "M5: BOTH attempts' evidence coexists in the same conflicts ref -- the first "
                      "attempt's entry was not silently dropped when the second one committed");
@@ -244,11 +245,11 @@ int main() {
         SubWorktree branch;
         branch.name = "session:s-24/agents/w5";
 
-        auto materialized = materialize_merge_conflicts(obj_store, ref_store, "session:s-24", "planner",
-                                                          branch, {});
+        auto materialized = agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-24", "planner",
+                                                          branch, {}));
         AE_CHECK(materialized.has_value(), "M6: an empty conflicts list succeeds trivially");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-24"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-24")));
         AE_CHECK(conflicts_ref.has_value() && !conflicts_ref->has_value(),
                  "M6: no conflicts ref was ever created -- there was nothing to materialize");
     }
@@ -279,7 +280,7 @@ int main() {
         c.theirs = TreeEntry{"a.txt", blob_of(obj_store, "theirs-content"), false};
 
         auto materialized =
-            materialize_merge_conflicts(obj_store, ref_store, "session:s-32", "planner", branch, {c});
+            agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-32", "planner", branch, {c}));
         AE_CHECK(materialized.has_value(), "M8 setup: real conflict evidence is materialized");
 
         // The host builds the mount and grants read access -- exactly the two host-policy-owned
@@ -288,15 +289,15 @@ int main() {
         Mount const mount = conflicts_mount("session:s-32");
         cap::FsRead const granted{mount.mount_id, "", std::nullopt};
 
-        auto ours_bytes = mount_read(obj_store, ref_store, mount, granted, "a.txt.planner");
+        auto ours_bytes = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "a.txt.planner"));
         AE_CHECK(ours_bytes.has_value() && string_of(*ours_bytes) == "ours-content",
-                 "M8: ours's evidence is readable through the ordinary mount_read() path, byte-exact");
+                 "M8: ours's evidence is readable through the ordinary agentengine::rt::block_on(mount_read()) path, byte-exact");
 
         // branch.name's own '/' is sanitized to '_' by materialize_merge_conflicts() specifically so
         // this stays a single reachable leaf, not a directory `mount_read()` would try to descend
         // into -- an '/'-preserving guest path here would 404, not merely read the wrong thing.
         auto theirs_bytes =
-            mount_read(obj_store, ref_store, mount, granted, "a.txt.session:s-32_agents_writer");
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "a.txt.session:s-32_agents_writer"));
         AE_CHECK(theirs_bytes.has_value() && string_of(*theirs_bytes) == "theirs-content",
                  "M8: theirs's evidence is ALSO readable through the same mount -- both versions "
                  "genuinely retained AND genuinely reachable, not just present in the store");
@@ -304,7 +305,7 @@ int main() {
         // A capability minted for a DIFFERENT mount_id is correctly refused -- the mount is not
         // accidentally wide open to any FsRead grant that happens to pass by.
         cap::FsRead const wrong_grant{"/some/other/mount", "", std::nullopt};
-        auto denied = mount_read(obj_store, ref_store, mount, wrong_grant, "a.txt.planner");
+        auto denied = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, wrong_grant, "a.txt.planner"));
         AE_CHECK(!denied.has_value() && denied.error().code == "worktree.mount_capability_mismatch",
                  "M8: a capability minted for a different mount_id is rejected, not silently honored");
     }
@@ -323,19 +324,19 @@ int main() {
         c.ours = TreeEntry{"file.txt", blob_of(obj_store, "nested-ours"), false};
 
         auto materialized =
-            materialize_merge_conflicts(obj_store, ref_store, "session:s-33", "planner", branch, {c});
+            agentengine::rt::block_on(materialize_merge_conflicts(obj_store, ref_store, "session:s-33", "planner", branch, {c}));
         AE_CHECK(materialized.has_value(), "M9 setup: a nested-path conflict is materialized");
 
         Mount const mount = conflicts_mount("session:s-33");
         cap::FsRead const granted{mount.mount_id, "", std::nullopt};
-        auto bytes = mount_read(obj_store, ref_store, mount, granted, "dir/sub/file.txt.planner");
+        auto bytes = agentengine::rt::block_on(mount_read(obj_store, ref_store, mount, granted, "dir/sub/file.txt.planner"));
         AE_CHECK(bytes.has_value() && string_of(*bytes) == "nested-ours",
                  "M9: a nested conflict path is reachable via the SAME directory structure the "
                  "original file had -- real nested Tree entries, not a flat name with '/' baked in");
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("session:s-33"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("session:s-33")));
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto root = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto root = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             AE_CHECK(root.has_value() && root->entries.size() == 1 && root->entries[0].name == "dir" &&
                           root->entries[0].is_tree,
                      "M9: the conflicts ref's own ROOT has exactly one real subdirectory entry "

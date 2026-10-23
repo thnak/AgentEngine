@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3 --
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3 --
 // `HybridRagContextProvider<EmbedderT, DenseIndexT, SparseIndexT, OS, RS>`, a NEW, SEPARATE
 // `ContextProvider` conformer (matching ADR-063 §2.1b's own "each RAG kind is its own class"
 // precedent exactly -- `VectorRagContextProvider`, `MemoryProvider`, `SkillsProvider` are all
@@ -14,11 +14,10 @@
 // `vector_rag_context_provider.hpp`'s `vector_rag_detail` namespace -- not reimplemented -- per this
 // ADR's own "generalize, don't duplicate" discipline (ADR-063 §2.6b's precedent, extended here).
 //
-// `DenseIndexT` is `AnyVectorIndex` (local `VectorIndex` OR network-backed `RemoteVectorIndex`,
-// core/remote_vector_index.hpp) -- the identical dispatch `VectorRagContextProvider` itself gained
-// from ADR-180 §2.1, reused here rather than re-derived. `SparseIndexT` is always `SparseIndex`
-// (core/sparse_index.hpp) -- synchronous only in this pass (ADR-180 §2.2: no `RemoteSparseIndex`
-// vendor need was named), so the sparse leg never needs a `synchronous_leaf` gate of its own.
+// `DenseIndexT` is any `VectorIndex`, local or network-backed; `SparseIndexT` any `SparseIndex`. Since
+// decisions/archive/ADR-237 §5.1 (#172) both seams are `task`-shaped and every call below -- in `on_context()` and
+// in the `recall` tool alike -- is simply awaited: no dispatch on the index kind, no `synchronous_leaf`
+// gate, no `rt::drive_leaf_task()`.
 
 #include <cstddef>
 #include <span>
@@ -33,14 +32,12 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/json_schema.hpp"
-#include "agentengine/core/remote_vector_index.hpp"
 #include "agentengine/core/sparse_index.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/vector_rag_context_provider.hpp"  // RagRecallArgs/Reply, vector_rag_detail::*
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
-#include "agentengine/rt/drive_leaf_task.hpp"
 
 namespace agentengine {
 
@@ -92,12 +89,12 @@ namespace hybrid_rag_detail {
 }  // namespace hybrid_rag_detail
 
 template <class EmbedderT, class DenseIndexT, class SparseIndexT, class OS, class RS>
-    requires Embedder<EmbedderT> && AnyVectorIndex<DenseIndexT> && SparseIndex<SparseIndexT> &&
+    requires Embedder<EmbedderT> && VectorIndex<DenseIndexT> && SparseIndex<SparseIndexT> &&
              WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 // ae-naming-lint: allow HybridRagContextProvider — ADR-180: new vocabulary, not yet in 027 §2-4's tables.
 class HybridRagContextProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3: every ContextProvider routed
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: every ContextProvider routed
     // through make_context_provider_descriptor()/ComposedContextProvider must declare a static name.
     // Distinct from VectorRagContextProvider's own "rag" -- a session composing BOTH providers (e.g.
     // one plain-vector corpus, one hybrid corpus) must be able to tell their contributions apart.
@@ -144,15 +141,10 @@ public:
         std::vector<float> const& query_vector = embedded->front();
         std::span<float const> const query_span(query_vector.data(), query_vector.size());
 
-        result<std::vector<ScoredId>> dense_result;
-        if constexpr (RemoteVectorIndex<DenseIndexT>) {
-            dense_result = co_await dense_index_->search(query_span, candidate_k_, ctx);
-        } else {
-            dense_result = dense_index_->search(query_span, candidate_k_);
-        }
+        auto dense_result = co_await dense_index_->search(query_span, candidate_k_, ctx);
         if (!dense_result) co_return std::unexpected(dense_result.error());
 
-        auto sparse_result = sparse_index_->search(query_text, candidate_k_);
+        auto sparse_result = co_await sparse_index_->search(query_text, candidate_k_, ctx);
         if (!sparse_result) co_return std::unexpected(sparse_result.error());
 
         auto fused = hybrid_rag_detail::reciprocal_rank_fusion(*dense_result, *sparse_result, rrf_k_);
@@ -160,7 +152,7 @@ public:
 
         ContextContribution contribution;
         for (ScoredId const& s : fused) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             // Same best-effort posture VectorRagContextProvider::on_context() already takes (see that
             // method's own comment): a stale index entry skips, rather than failing the whole
@@ -178,16 +170,16 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
-    [[nodiscard]] result<json::Value> reply_from_scored(std::vector<ScoredId> const& scored) const {
+    [[nodiscard]] task<result<json::Value>> reply_from_scored(std::vector<ScoredId> const& scored) const {
         RagRecallReply reply;
         reply.results.reserve(scored.size());
         for (ScoredId const& s : scored) {
-            auto rendered = vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
+            auto rendered = co_await vector_rag_detail::render_scored_chunk(*object_store_, *ref_store_, mount_,
                                                                      read_cap_, s);
             if (!rendered) continue;
             reply.results.push_back(*rendered);
         }
-        return schema::to_json(reply);
+        co_return schema::to_json(reply);
     }
 
     // Mirrors VectorRagContextProvider::make_recall_tool_descriptor()'s exact lifetime reasoning (see
@@ -200,80 +192,44 @@ private:
         d.approval          = approval_mode::never_require;
         d.args_schema_json  = schema::json_schema_of<RagRecallArgs>();
         d.reply_schema_json = schema::json_schema_of<RagRecallReply>();
+        // ADR-153's must-fix, applied here too: `invoke` reads the corpus with `read_cap_`, a value fixed
+        // at construction, so without a ceiling the pipeline's steps 4/7 bind nothing and any caller --
+        // a CodeAct/sandbox bridge holding no FsRead on this mount included -- would read with this
+        // provider's authority. Declaring the ceiling makes the caller's own grant the gate (I2).
+        d.capability_ceiling = {Capability{read_cap_}};
+        // Captures `this`; ADR-160's scheduler and `rerun_comparable()` key off this flag.
+        d.captures_session_state = true;
 
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
-            (void)this;
-            auto args = schema::from_json<RagRecallArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-
-            if constexpr (EmbedderT::synchronous_leaf) {
-                std::vector<std::string> const query_batch{args->query};
-                auto driven = rt::drive_leaf_task(embedder_.embed_batch(query_batch, ctx));
-                if (!driven) return std::unexpected(driven.error());
-                auto& embedded = *driven;
-                if (!embedded) return std::unexpected(embedded.error());
-                if (embedded->empty()) {
-                    return std::unexpected(
-                        error{failure_class::contract,
-                              "Embedder::embed_batch returned zero vectors for a one-text query batch",
-                              "hybrid_rag_context_provider.embed_batch_empty_result"});
-                }
-                std::vector<float> const& query_vector = embedded->front();
-                std::span<float const> const query_span(query_vector.data(), query_vector.size());
-
-                // ADR-180 §2.1's identical second-leaf gate, reused for the dense leg here: a
-                // RemoteVectorIndex conformer must ALSO declare synchronous_leaf = true before
-                // recall's synchronous invoke may drive it. The sparse leg needs no such gate --
-                // SparseIndex::search() was never a coroutine (§2.2: no RemoteSparseIndex in this pass).
-                if constexpr (RemoteVectorIndex<DenseIndexT>) {
-                    if constexpr (DenseIndexT::synchronous_leaf) {
-                        auto driven_dense = rt::drive_leaf_task(
-                            dense_index_->search(query_span, /*k=*/candidate_k_, ctx));
-                        if (!driven_dense) return std::unexpected(driven_dense.error());
-                        auto& dense_result = *driven_dense;
-                        if (!dense_result) return std::unexpected(dense_result.error());
-                        return finish_recall(*dense_result, args->query, ctx);
-                    } else {
-                        return std::unexpected(error{
-                            failure_class::contract,
-                            "recall(query) cannot be invoked: this HybridRagContextProvider's dense "
-                            "RemoteVectorIndex conformer declares synchronous_leaf = false (decisions/"
-                            "ADR-180 §2.1). Use HybridRagContextProvider::on_context()'s default "
-                            "injection instead, or compose a synchronous_leaf = true dense index.",
-                            "hybrid_rag_context_provider.recall_tool_requires_synchronous_leaf_index"});
-                    }
-                } else {
-                    auto dense_result = dense_index_->search(query_span, /*k=*/candidate_k_);
-                    if (!dense_result) return std::unexpected(dense_result.error());
-                    return finish_recall(*dense_result, args->query, ctx);
-                }
-            } else {
-                return std::unexpected(error{
-                    failure_class::contract,
-                    "recall(query) cannot be invoked: this Embedder conformer declares "
-                    "synchronous_leaf = false, so it is unsafe to drive its embed_batch() task "
-                    "synchronously from this tool's invoke (decisions/ADR-064). Use "
-                    "HybridRagContextProvider::on_context()'s default injection instead, or compose "
-                    "an Embedder whose embed_batch() body never awaits anything but nested "
-                    "task<T>/task<void> and declares synchronous_leaf = true.",
-                    "hybrid_rag_context_provider.recall_tool_requires_synchronous_leaf_embedder"});
-            }
-        };
+        // ADR-237 §5.1/§5.2: a plain lambda handing off to a member coroutine whose frame owns the args by value.
+        d.invoke = [this](json::Value const& args, EffectContext& ctx) { return recall_call(args, ctx); };
         return d;
     }
 
-    // Shared tail of both invoke branches above: runs the (already-obtained) dense result against the
-    // sparse leg, fuses, and renders -- factored out once rather than duplicated per branch.
-    [[nodiscard]] result<json::Value> finish_recall(std::vector<ScoredId> const& dense_result,
-                                                       std::string const& query_text, EffectContext&) {
-        auto sparse_result = sparse_index_->search(query_text, candidate_k_);
-        if (!sparse_result) return std::unexpected(sparse_result.error());
-        auto fused = hybrid_rag_detail::reciprocal_rank_fusion(dense_result, *sparse_result, rrf_k_);
-        // 10, matching VectorRagContextProvider::make_recall_tool_descriptor()'s own on-demand
-        // max_results literal -- independent of max_injected_ (default-injection sizing, a
-        // different concern from an on-demand query).
+    // The `recall(query)` call: args validated first, then the dense leg, the sparse leg, and the fusion.
+    [[nodiscard]] task<result<json::Value>> recall_call(json::Value args_value, EffectContext& ctx) {
+        auto args = schema::from_json<RagRecallArgs>(args_value);
+        if (!args) co_return std::unexpected(args.error());
+
+        std::vector<std::string> const query_batch{args->query};
+        auto embedded = co_await embedder_.embed_batch(query_batch, ctx);
+        if (!embedded) co_return std::unexpected(embedded.error());
+        if (embedded->empty()) {
+            co_return std::unexpected(error{failure_class::contract,
+                                            "Embedder::embed_batch returned zero vectors for a one-text query batch",
+                                            "hybrid_rag_context_provider.embed_batch_empty_result"});
+        }
+        std::vector<float> const& query_vector = embedded->front();
+        std::span<float const> const query_span(query_vector.data(), query_vector.size());
+
+        auto dense_result = co_await dense_index_->search(query_span, /*k=*/candidate_k_, ctx);
+        if (!dense_result) co_return std::unexpected(dense_result.error());
+        auto sparse_result = co_await sparse_index_->search(args->query, candidate_k_, ctx);
+        if (!sparse_result) co_return std::unexpected(sparse_result.error());
+        auto fused = hybrid_rag_detail::reciprocal_rank_fusion(*dense_result, *sparse_result, rrf_k_);
+        // 10, matching VectorRagContextProvider's own on-demand max_results literal -- independent of
+        // max_injected_ (default-injection sizing, a different concern from an on-demand query).
         if (fused.size() > 10) fused.resize(10);
-        return reply_from_scored(fused);
+        co_return co_await reply_from_scored(fused);
     }
 
     OS*          object_store_;

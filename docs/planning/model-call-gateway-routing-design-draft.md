@@ -60,7 +60,7 @@ route above a threshold, else a `default_route`.
 ### Self-red-team (Finding 1)
 
 - **004 §4's "explicit policy, never implicit" rule extends to routing, not just failover.** The
-  spec text (verified, `004-Model-Provider-Plane.md` line 129-130): *"Failover between providers is
+  spec text (verified, `rfcs/004-Model-Provider-Plane.md` line 129-130): *"Failover between providers is
   explicit policy, never implicit: a failover that silently changes model is a correctness change,
   and must appear in the trace and in the response metadata."* A routing decision is the same class
   of correctness-relevant model change. `ChatResponse::fallback_tier` already exists for failover
@@ -83,7 +83,7 @@ route above a threshold, else a `default_route`.
 
 ## Finding 2 — Buffer-then-decide is stricter than 004 §4 actually requires (confirmed, and the file's own comment overstates its citation)
 
-**Verification:** read 004 §4 directly (`004-Model-Provider-Plane.md` lines 116-130). The section
+**Verification:** read 004 §4 directly (`rfcs/004-Model-Provider-Plane.md` lines 116-130). The section
 says nothing about mid-stream token buffering. The actual rule is line 129-130, quoted above: no
 *silent, untraced* failover — not "no partial output before a decision is final." `model_call_
 gateway.hpp`'s own top comment (lines 47-57) cites "004 §4" for *"the silent mid-stream backend

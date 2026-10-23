@@ -24,7 +24,9 @@
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/tools/extract_pdf_text.hpp"
+#include "../support/run_task_sync.hpp"
 
 namespace {
 
@@ -198,8 +200,10 @@ public:
 void test_real_end_to_end_extraction() {
     using agentengine::tools::ExtractPdfText;
 
-    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
-        {agentengine::cap::FsRead{"work", "", std::nullopt}});
+    // ADR-244 §2.4: the worker's read-only mounts are checked against the session's grants too.
+    std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", std::nullopt}};
+    for (auto const& m : agentengine::tools::required_grants()) grants.push_back(m);
+    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(std::move(grants));
     agentengine::EffectContext ctx;
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -210,7 +214,7 @@ void test_real_end_to_end_extraction() {
     ExtractPdfText::Args args;
     args.path = "test.pdf";  // the fake adapter ignores this and returns kTestPdf regardless
 
-    auto reply = ExtractPdfText::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfText{}.invoke(args, ctx));
     if (!reply.has_value()) {
         std::fprintf(stderr, "extract_pdf_text real end-to-end call failed: code=%s message=%s\n",
                      reply.error().code.c_str(), reply.error().message.c_str());
@@ -226,6 +230,28 @@ void test_real_end_to_end_extraction() {
     }
 }
 
+// ADR-244 §2.4: a session that may read the file but holds none of `required_grants()` cannot start the
+// worker -- the worker's mounts are not granted by the tool on its own authority. (The end-to-end test above
+// is the positive control: the same call with the grants succeeds.)
+void test_worker_mounts_need_the_sessions_grants() {
+    using agentengine::tools::ExtractPdfText;
+    agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(
+        {agentengine::cap::FsRead{"work", "", std::nullopt}});
+    agentengine::EffectContext ctx;
+    ctx.principal = agentengine::Principal{"test-principal", ""};
+    ctx.capabilities = agentengine::borrow_capabilities(held);
+    FakePdfFileSystemAdapter adapter;
+    ctx.sandbox_fs = &adapter;
+
+    ExtractPdfText::Args args;
+    args.path = "test.pdf";
+    auto reply = agentengine::rt::block_on(ExtractPdfText{}.invoke(args, ctx));
+    if (reply.has_value()) std::fprintf(stderr, "unexpectedly ran without the worker grants\n");
+    else std::fprintf(stderr, "  refused: code=%s\n", reply.error().code.c_str());
+    check(!reply.has_value() && reply.error().code == "sandbox.mount_not_authorized",
+          "without required_grants() the worker is refused (sandbox.mount_not_authorized)");
+}
+
 void test_ambiguous_source_rejected_before_any_sandbox_work() {
     using agentengine::tools::ExtractPdfText;
     agentengine::CapabilitySet const held;
@@ -234,7 +260,7 @@ void test_ambiguous_source_rejected_before_any_sandbox_work() {
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
     ExtractPdfText::Args args;  // neither url nor path set
-    auto reply = ExtractPdfText::invoke(args, ctx);
+    auto reply = agentengine::rt::block_on(ExtractPdfText{}.invoke(args, ctx));
     check(!reply.has_value(), "neither url nor path set -> rejected");
     if (!reply) {
         check(reply.error().code == "extract_pdf_text.ambiguous_source",
@@ -245,7 +271,8 @@ void test_ambiguous_source_rejected_before_any_sandbox_work() {
 void test_companion_skill_parses_for_real() {
     auto descriptor = agentengine::tools::make_extracting_document_text_skill_source();
     check(descriptor.origin_id == "extract-pdf-text", "the skill source's own origin_id is set");
-    auto loaded = descriptor.load_skills();
+    auto loaded = agentengine::test_support::run_task_sync<
+        agentengine::result<std::vector<agentengine::SkillSourceResult>>>(descriptor.load_skills());
     if (!loaded.has_value()) {
         std::fprintf(stderr, "skill parse error: code=%s message=%s\n", loaded.error().code.c_str(),
                      loaded.error().message.c_str());
@@ -277,6 +304,7 @@ int main() {
     test_ambiguous_source_rejected_before_any_sandbox_work();
     test_companion_skill_parses_for_real();
     test_real_end_to_end_extraction();
+    test_worker_mounts_need_the_sessions_grants();
 
     if (g_failures == 0) {
         std::printf("test_extract_pdf_text: all checks passed\n");

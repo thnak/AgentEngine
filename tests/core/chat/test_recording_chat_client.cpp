@@ -1,5 +1,5 @@
 // Milestone 5 Phase G1 (docs/planning/milestone-5-providers-identity-secrets-breakdown.md, Phase G /
-// decision 8, 004-Model-Provider-Plane.md §6): proves `RecordingChatClient<Inner>`
+// decision 8, rfcs/004-Model-Provider-Plane.md §6): proves `RecordingChatClient<Inner>`
 // (core/recording_chat_client.hpp) end to end against hand-rolled, scripted `ChatClient` conformers --
 // no real backend, no network. Mirrors tests/test_resilient_chat_client.cpp's own conformer/check()
 // pattern (state behind a shared_ptr so the test's local handle and the wrapper's internal copy of

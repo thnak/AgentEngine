@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §1's `ae::stream<T>`. ADR-037: this file's INTERNAL backend
+// Implements rfcs/004-Model-Provider-Plane.md §1's `ae::stream<T>`. ADR-037: this file's INTERNAL backend
 // is `agentengine::rt::channel<T, agentengine::error>` (rt/channel.hpp) instead of Quark's actor-
 // integrated `ReplyStream`/`StreamChannel`/ask-stream OPEN-handshake machinery -- the mailbox-adjacent
 // runtime dependency ADR-037 exists to remove. Milestone 5 Phase B4b's own original design note
@@ -118,6 +118,14 @@ public:
         auto const r = inner_.push(std::move(value));
         return r == rt::channel_producer<T, error>::push_result::ok ? stream_push::ok
                                                                       : stream_push::terminated;
+    }
+
+    // Non-blocking push (ADR-237 §4.5 rule 5): `std::nullopt` when the channel is full and still open, with
+    // `value` left intact; otherwise as push().
+    [[nodiscard]] std::optional<stream_push> try_push(T& value) {
+        auto const r = inner_.try_push(value);
+        if (!r) return std::nullopt;
+        return *r == rt::channel_producer<T, error>::push_result::ok ? stream_push::ok : stream_push::terminated;
     }
 
     // In-band EoS. Idempotent; also fires automatically (as Closed) if the producer is dropped without

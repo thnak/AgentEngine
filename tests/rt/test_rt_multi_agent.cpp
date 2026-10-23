@@ -49,10 +49,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 #include "agentengine/core/tool.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/multi_agent.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
@@ -77,8 +80,7 @@ void check(bool cond, char const* what) {
 // codebase's own "safe here" precondition for a naive resume()-loop driver.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -134,14 +136,14 @@ AE_JSON_SCHEMA(GatedReply, unused)
 
 std::string g_last_observed_principal_id;
 
-struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<agentengine::cap::decl::Entropy>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name        = "gated_tool";
     static constexpr std::string_view description = "Requires cap::Entropy -- gating probe.";
     using Args  = GatedArgs;
     using Reply = GatedReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext& ctx) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext& ctx) const {
         g_last_observed_principal_id = ctx.principal.id;
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -151,7 +153,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools.push_back(agentengine::make_tool_descriptor<GatedTool>());
+        c.tools.push_back(agentengine::make_tool_descriptor(GatedTool{}));
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) {
@@ -263,7 +265,7 @@ int main() {
                 auto s = std::make_unique<
                     AgentSession<CannedChatClient, agentengine::rt::NoSessionState,
                                  agentengine::HistoryProvider<agentengine::Window<0>>>>();
-                s->initialize("child", p);
+                s->initialize("child", p, ae_test::trusted_unbounded());
                 s->emplace_chat_client();
                 return s;
             };
@@ -283,7 +285,7 @@ int main() {
         SessionFactory<ScriptedGatedChatClient, agentengine::rt::NoSessionState, GatedToolProvider>
             factory = [](Principal const& p) {
                 auto s = std::make_unique<ChildSession>();
-                s->initialize("child", p);
+                s->initialize("child", p, ae_test::trusted_unbounded());
                 s->emplace_chat_client();
                 return s;
             };
@@ -292,6 +294,7 @@ int main() {
         EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(parent_caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
 
         // S2: a narrower_grant subsumed by the parent's live capabilities lets the gated tool through.
         g_last_observed_principal_id.clear();
@@ -310,6 +313,7 @@ int main() {
         EffectContext ctx_empty;
         ctx_empty.capabilities = agentengine::borrow_capabilities(empty_caller_caps);
         ctx_empty.principal     = Principal{"caller", "tenant-a"};
+        ctx_empty.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
         auto denied = drive(agentengine::rt::multi_agent::spawn(
             ctx_empty, factory, StartRun{user_message("hi")},
             std::vector<agentengine::Capability>{agentengine::cap::Entropy{}}));
@@ -348,6 +352,7 @@ int main() {
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
         SessionFactory<CannedChatClient, agentengine::rt::NoSessionState,
                        agentengine::HistoryProvider<agentengine::Window<0>>>
             null_factory = [](Principal const&) {
@@ -566,6 +571,7 @@ int main() {
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
 
         // R1: fails twice with a RETRYABLE class, succeeds on the third attempt -- Budget debits
         // spawn-count exactly 3 times (once per attempt actually made).
@@ -575,7 +581,7 @@ int main() {
                            agentengine::HistoryProvider<agentengine::Window<0>>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
-                    s->initialize("child", p);
+                    s->initialize("child", p, ae_test::trusted_unbounded());
                     s->emplace_chat_client(shared_attempts, /*fail_times=*/2, failure_class::resource);
                     return s;
                 };
@@ -598,7 +604,7 @@ int main() {
                            agentengine::HistoryProvider<agentengine::Window<0>>>
                 factory = [shared_attempts](Principal const& p) {
                     auto s = std::make_unique<ChildSession>();
-                    s->initialize("child", p);
+                    s->initialize("child", p, ae_test::trusted_unbounded());
                     s->emplace_chat_client(shared_attempts, /*fail_times=*/99, failure_class::contract);
                     return s;
                 };
@@ -611,6 +617,30 @@ int main() {
             check(!res.has_value(), "R2: a contract failure is not recovered");
             check(budget.remaining_spawns() == 5 - 1,
                   "R2: exactly ONE attempt was made -- a contract failure is never retried");
+        }
+
+        // R3 (ADR-237 D6): a CANCELED child is never retried -- exactly one attempt, though the second would
+        // succeed. R1 is the control: the same shape failing `resource` is retried by a fresh attempt.
+        {
+            auto shared_attempts = std::make_shared<std::atomic<int>>(0);
+            SessionFactory<FlakyChatClient, agentengine::rt::NoSessionState,
+                           agentengine::HistoryProvider<agentengine::Window<0>>>
+                factory = [shared_attempts](Principal const& p) {
+                    auto s = std::make_unique<ChildSession>();
+                    s->initialize("child", p, ae_test::trusted_unbounded());
+                    s->emplace_chat_client(shared_attempts, /*fail_times=*/1, failure_class::canceled);
+                    return s;
+                };
+            Budget budget(/*max_spawns=*/5, /*max_tokens=*/10000, /*max_in_flight=*/5);
+            agentengine::RetryPolicy policy;
+            policy.max_attempts = 3;
+            auto res = drive(agentengine::rt::multi_agent::spawn_with_retry(
+                ctx, factory, StartRun{user_message("hi")}, std::vector<agentengine::Capability>{},
+                policy, budget));
+            check(!res.has_value() && res.error().klass == failure_class::canceled,
+                  "R3: a canceled child is not recovered, and its canceled class reaches the caller");
+            check(budget.remaining_spawns() == 5 - 1,
+                  "R3: exactly ONE attempt was made -- a canceled child is never retried");
         }
     }
 

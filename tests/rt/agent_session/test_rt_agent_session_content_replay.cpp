@@ -1,4 +1,4 @@
-// Proves decisions/ADR-069-content-triggered-model-response-replay.md's ContentReplayGateway<Inner>
+// Proves decisions/archive/ADR-069-content-triggered-model-response-replay.md's ContentReplayGateway<Inner>
 // plugs into a real rt::AgentSession's own ChatClientT slot with ZERO changes to agent_session.hpp --
 // AgentSession already accepts anything satisfying ChatClient<ChatClientT> OR
 // ModelCallGatewayLike<ChatClientT> (agent_session.hpp's own class template requires-clause), and
@@ -10,10 +10,13 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/content_replay_gateway.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -34,8 +37,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -131,7 +133,7 @@ int main() {
         };
 
         AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-        session.initialize("cr-t1", Principal{"p1", ""});
+        session.initialize("cr-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(ScriptedGatewayInner{state}, trigger);
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
@@ -165,7 +167,7 @@ int main() {
         };
 
         AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-        session.initialize("cr-t2", Principal{"p1", ""});
+        session.initialize("cr-t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(ScriptedGatewayInner{state}, trigger, /*max_replay_attempts=*/2,
                                      /*session_lifetime_cap=*/8);
 

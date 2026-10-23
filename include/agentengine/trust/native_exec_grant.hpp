@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §9 (I6) -- the DECLARATIVE form of a
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §9 (I6) -- the DECLARATIVE form of a
 // `cap::NativeExec` grant, so a host configuring native execution from YAML/JSON can express exactly what a
 // CRTP `cap::decl::NativeExec<...>` declaration expresses, the held-shell opt-in (`live_session`) and its two
 // caps included. Before ADR-209 no declarative path produced a capability at all (the declarative agent

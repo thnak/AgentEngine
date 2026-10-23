@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-071-native-unsandboxed-process-execution-providers.md's "wrapped by
+// Implements decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md's "wrapped by
 // another provider to seed capabilities" request: a host composes some subset of NativeShellProvider/
 // NativeBashProvider/NativePythonProvider/NativeNodeProvider (native_providers.hpp) so their
 // discovery-seeded instructions and tool contributions are merged into ONE coherent block the model
@@ -47,7 +47,7 @@ namespace detail {
 // a caller manually nesting composition (e.g. wiring a second, separately-built
 // `NativeCapabilityAnnouncer` alongside this one into some outer, hand-rolled composite), which
 // stays the host's own responsibility, the same "the mechanism only bounds what a host's own
-// misconfiguration can reach" shape decisions/ADR-070-host-configurable-responsibility-boundary.md
+// misconfiguration can reach" shape decisions/archive/ADR-070-host-configurable-responsibility-boundary.md
 // §7 already names for `PolicyDecider`.
 template <class... Ps>
 [[nodiscard]] constexpr bool native_provider_families_distinct() {

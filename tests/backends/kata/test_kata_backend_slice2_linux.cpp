@@ -6,10 +6,13 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <string>
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
 
@@ -45,9 +48,9 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;  // NetPolicy default: deny_all=true, empty allowlist
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): default NetPolicy (deny_all=true) still creates cleanly");
-        if (handle.has_value()) backend.destroy(*handle);
+        if (handle.has_value()) agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // ---- 2. NetPolicy: deny_all=false fails closed, not silently granted or silently denied. ------
@@ -56,7 +59,7 @@ int main() {
     // (ADR-093, kata_backend.cpp's own §Slice 10 comment) superseded with a real, capability-gated
     // NetPolicy mechanism -- `spec.net.deny_all=false`/a nonempty `allowlist` with ZERO
     // `cap::SandboxNetOut` grants (the default `SandboxSpec` both cases below construct) now fails
-    // closed with `kata_backend.net_capability_required` instead (kata_backend.cpp's own real, current
+    // closed with `sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional)` instead (kata_backend.cpp's own real, current
     // rejection for "NetPolicy requests real network access... but the caller holds no
     // cap::SandboxNetOut grant at all"). `net_allowlist_unsupported` no longer appears anywhere in
     // kata_backend.cpp at all (grep-confirmed) -- this assertion was never actually exercised against
@@ -65,19 +68,19 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;
         spec.net.deny_all = false;
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_capability_required",
+                  handle.error().code == "sandbox.net_not_authorized",
               "create(): NetPolicy{deny_all=false} with no cap::SandboxNetOut grant fails closed with "
-              "kata_backend.net_capability_required, not silently ignored");
+              "sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional), not silently ignored");
     }
     {
         KataBackend backend;
         SandboxSpec spec;
         spec.net.allowlist.push_back("example.com:443:https");
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() &&
-                  handle.error().code == "kata_backend.net_capability_required",
+                  handle.error().code == "sandbox.net_not_authorized",
               "create(): a nonempty NetPolicy::allowlist with no cap::SandboxNetOut grant also fails "
               "closed the same way");
     }
@@ -90,7 +93,8 @@ int main() {
         m.source = BlobRef{"sha256:deadbeef", "text/plain", 4, "test-store"};
         m.guest_path = "/mnt/blob";
         spec.mounts.push_back(m);
-        auto handle = backend.create(spec, ctx);
+        ae_test::grant_listed_mounts(spec);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.blob_mount_unsupported",
               "create(): MountSpec::source as a BlobRef fails closed with "
               "kata_backend.blob_mount_unsupported");
@@ -98,24 +102,26 @@ int main() {
 
     // ---- 3a. SLICE 11 (red-team finding, kata-backend-config-pipeline-pids-disk-net-redesign-
     //          draft.md §5a'): a MountSpec host path targeting this backend's own workdir root is
-    //          rejected outright, unconditionally -- WITH ZERO cap::SandboxMount grant held, the
-    //          exact zero-grant condition the finding depends on (authorize_spec()'s own capability
-    //          check skips itself entirely for a caller holding no relevant grant at all, so this
-    //          check must NOT rely on that layer). Runs before any resource is acquired (same as the
+    //          rejected outright, unconditionally -- EVEN WITH a covering cap::SandboxMount grant
+    //          held. (The finding was found with zero grants, when authorize_spec() skipped itself;
+    //          ADR-244 made that check unconditional, so the zero-grant shape is now refused earlier
+    //          with sandbox.mount_not_authorized. Granting the mount is the stronger form: the
+    //          workdir is forbidden whatever the caller holds.) Runs before any resource is acquired (same as the
     //          BlobRef/',' checks above), so -- unlike most of this file's cases -- this one does NOT
     //          require a live Kata/containerd deployment to prove for real. -----------------------
     {
         KataBackend backend;
-        SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
+        SandboxSpec spec;  // the mount below IS granted (grant_listed_mounts): the workdir check must still fire
         MountSpec m;
         m.source = std::string("/run/agentengine-kata");
         m.guest_path = "/mnt/workdir";
         m.read_write = true;
         spec.mounts.push_back(m);
-        auto handle = backend.create(spec, ctx);
+        ae_test::grant_listed_mounts(spec);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
               "create(): a MountSpec host path equal to this backend's own workdir root is rejected "
-              "with kata_backend.workdir_mount_forbidden, with ZERO cap::SandboxMount grant held");
+              "with kata_backend.workdir_mount_forbidden, even with a covering cap::SandboxMount grant");
     }
     {
         KataBackend backend;
@@ -125,7 +131,8 @@ int main() {
         m.guest_path = "/mnt/quota-file";
         m.read_write = true;
         spec.mounts.push_back(m);
-        auto handle = backend.create(spec, ctx);
+        ae_test::grant_listed_mounts(spec);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.workdir_mount_forbidden",
               "create(): a MountSpec host path CONTAINED WITHIN this backend's own workdir root "
               "(e.g. a live disk-quota loop-backing file) is rejected the same way, not just an "
@@ -142,7 +149,8 @@ int main() {
         m.guest_path = "/mnt/sibling";
         m.read_write = false;
         spec.mounts.push_back(m);
-        auto handle = backend.create(spec, ctx);
+        ae_test::grant_listed_mounts(spec);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code != "kata_backend.workdir_mount_forbidden",
               "create(): a host path that only shares the workdir root as a string PREFIX (a sibling "
               "directory, not a real path-component descendant) is NOT rejected by the workdir "
@@ -156,7 +164,7 @@ int main() {
     //         grant is readable but not writable (EROFS), read-write grant is writable. -------------
     {
         char const* host_dir = "/tmp/ae_kata_slice2_mount_test";
-        std::system(("rm -rf " + std::string(host_dir) + " && mkdir -p " + host_dir).c_str());
+        { std::error_code ec; std::filesystem::remove_all(host_dir, ec); std::filesystem::create_directories(host_dir, ec); }
         std::ofstream(std::string(host_dir) + "/probe.txt") << "kata_mount_probe_content";
 
         KataBackend backend;
@@ -166,13 +174,14 @@ int main() {
         ro_mount.guest_path = "/mnt/ro";
         ro_mount.read_write = false;
         spec.mounts.push_back(ro_mount);
+        ae_test::grant_listed_mounts(spec);
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a real host-path MountSpec grant creates cleanly");
         if (handle.has_value()) {
             ExecRequest read_req;
             read_req.source = "cat /mnt/ro/probe.txt";
-            auto read_out = backend.exec(*handle, read_req, ctx);
+            auto read_out = agentengine::rt::block_on(backend.exec(*handle, read_req, ctx));
             check(read_out.has_value() && read_out->klass == exec_outcome_class::ok &&
                       read_out->stdout_text.find("kata_mount_probe_content") != std::string::npos,
                   "REAL bind mount: content written on the HOST is readable inside the GUEST VM "
@@ -180,13 +189,13 @@ int main() {
 
             ExecRequest write_req;
             write_req.source = "echo should_not_write > /mnt/ro/probe.txt 2>&1; echo EXIT:$?";
-            auto write_out = backend.exec(*handle, write_req, ctx);
+            auto write_out = agentengine::rt::block_on(backend.exec(*handle, write_req, ctx));
             check(write_out.has_value() &&
                       write_out->stdout_text.find("EXIT:0") == std::string::npos,
                   "a read_write=false mount rejects a guest write attempt (nonzero exit, not "
                   "silently succeeding)");
 
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Read-write grant: the guest CAN write, and the write is visible back on the HOST --
@@ -198,15 +207,16 @@ int main() {
         rw_mount.guest_path = "/mnt/rw";
         rw_mount.read_write = true;
         rw_spec.mounts.push_back(rw_mount);
-        auto rw_handle = rw_backend.create(rw_spec, ctx);
+        ae_test::grant_listed_mounts(rw_spec);
+        auto rw_handle = agentengine::rt::block_on(rw_backend.create(rw_spec, ctx));
         check(rw_handle.has_value(), "create(): a read_write=true MountSpec grant creates cleanly");
         if (rw_handle.has_value()) {
             ExecRequest write_req;
             write_req.source = "echo written_from_guest > /mnt/rw/from_guest.txt";
-            auto write_out = rw_backend.exec(*rw_handle, write_req, ctx);
+            auto write_out = agentengine::rt::block_on(rw_backend.exec(*rw_handle, write_req, ctx));
             check(write_out.has_value() && write_out->klass == exec_outcome_class::ok,
                   "a read_write=true mount accepts a guest write");
-            rw_backend.destroy(*rw_handle);
+            agentengine::rt::block_on(rw_backend.destroy(*rw_handle));
 
             std::ifstream host_check(std::string(host_dir) + "/from_guest.txt");
             std::string line;
@@ -223,12 +233,12 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;
         spec.limits.memory_bytes = 256ull * 1024 * 1024;  // 256 MiB, well under the ~2GiB default
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a small ResourceLimits::memory_bytes creates cleanly");
         if (handle.has_value()) {
             ExecRequest mem_req;
             mem_req.source = "free -m | awk '/Mem:/{print $2}'";
-            auto mem_out = backend.exec(*handle, mem_req, ctx);
+            auto mem_out = agentengine::rt::block_on(backend.exec(*handle, mem_req, ctx));
             check(mem_out.has_value() && mem_out->klass == exec_outcome_class::ok,
                   "exec(): reading guest total memory succeeds");
             if (mem_out.has_value()) {
@@ -240,7 +250,7 @@ int main() {
                       "requested 256 MiB cap (well under the ~2GiB unconfigured default), proving "
                       "--memory-limit actually resizes the VM rather than being cosmetic");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -258,12 +268,12 @@ int main() {
         spec.limits.fds = 123;  // an unusual, specific number -- if it appears verbatim in the
                                  // exec'd process's own ulimit output, that's real evidence of
                                  // propagation, not a coincidence with some other default.
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a ResourceLimits::fds cap creates cleanly");
         if (handle.has_value()) {
             ExecRequest fds_req;
             fds_req.source = "ulimit -n";
-            auto fds_out = backend.exec(*handle, fds_req, ctx);
+            auto fds_out = agentengine::rt::block_on(backend.exec(*handle, fds_req, ctx));
             check(fds_out.has_value() && fds_out->klass == exec_outcome_class::ok,
                   "exec(): reading the exec'd process's own RLIMIT_NOFILE succeeds");
             if (fds_out.has_value()) {
@@ -281,7 +291,7 @@ int main() {
                       "(if this ever fails on a real run, it's real evidence the other way, not a "
                       "flake -- the whole point of this case is to stop assuming either answer)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -290,13 +300,13 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;
         spec.limits.wall_ms = 3000;  // 3s -- much tighter than the 30s fixed default
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a tight ResourceLimits::wall_ms creates cleanly");
         if (handle.has_value()) {
             auto t0 = std::chrono::steady_clock::now();
             ExecRequest slow_req;
             slow_req.source = "sleep 10";
-            auto slow_out = backend.exec(*handle, slow_req, ctx);
+            auto slow_out = agentengine::rt::block_on(backend.exec(*handle, slow_req, ctx));
             auto t1 = std::chrono::steady_clock::now();
             double secs = std::chrono::duration<double>(t1 - t0).count();
             std::fprintf(stderr, "  exec('sleep 10') under wall_ms=3000 took %.2fs\n", secs);
@@ -306,11 +316,11 @@ int main() {
                   "REAL per-instance override: exec() returned well before the guest's own 10s "
                   "sleep finished and well before run_ctr()'s 30s fixed default -- wall_ms=3000 "
                   "was actually honored, not just accepted and ignored");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
-    std::system("rm -rf /tmp/ae_kata_slice2_mount_test");
+    { std::error_code ec; std::filesystem::remove_all("/tmp/ae_kata_slice2_mount_test", ec); }
 
     if (g_failures == 0) {
         std::fprintf(stderr, "test_kata_backend_slice2_linux: ALL PASS\n");

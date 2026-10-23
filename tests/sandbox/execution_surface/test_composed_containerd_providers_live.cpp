@@ -1,4 +1,4 @@
-// ADR-145 (decisions/ADR-145-containerd-execution-surface-promotion.md) §7 residual, closed here: the
+// ADR-145 (decisions/archive/ADR-145-containerd-execution-surface-promotion.md) §7 residual, closed here: the
 // ContainerdExecutionSurface counterpart to test_composed_sandbox_providers_live.cpp (that file's own
 // original ADR-102 Phase 5 slice). Proves the SAME claim that file proves for Docker, but for
 // containerd: ComposedContextProvider<SandboxToolProvider, MandatorySandboxProvider<
@@ -20,11 +20,13 @@
 // disclosed precondition).
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 #include "backends/native_jail/sandbox_tool_provider.hpp"
 
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -52,8 +54,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -150,11 +151,11 @@ std::optional<std::string> read_ledger_entry(Ledger<>& ledger, std::string const
                                                 IdentityHandle owner, std::string const& entry_name) {
     auto head = ledger.head_tree_digest(branch_name, owner);
     if (!head.has_value()) return std::nullopt;
-    auto tree = ledger.get_tree_safe(*head, owner);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(*head, owner));
     if (!tree.has_value()) return std::nullopt;
     for (auto const& e : tree->entries) {
         if (e.name != entry_name) continue;
-        auto bytes = ledger.get_blob_safe(e.digest, owner);
+        auto bytes = agentengine::rt::block_on(ledger.get_blob_safe(e.digest, owner));
         if (!bytes.has_value()) return std::nullopt;
         return std::string(reinterpret_cast<char const*>(bytes->data()), bytes->size());
     }
@@ -198,10 +199,11 @@ int main() {
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     Session live;
-    live.initialize("composed-containerd-live-session", real_owner_principal);
+    live.initialize("composed-containerd-live-session", real_owner_principal, ae_test::trusted_unbounded());
     auto engaged = live.history_provider().engage(
         std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)));
     check(engaged.has_value(), "setup: engage() succeeds with both real, already-bound providers");

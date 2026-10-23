@@ -119,7 +119,7 @@ at outside this project.
 
 - [MCP 2026-07-28 Specification: transport going stateless — HN](https://news.ycombinator.com/item?id=49088058)
 
-Cross-check: `011-MCP-Conformance.md §3.3` already documents `resources/subscribe`/`unsubscribe`
+Cross-check: `rfcs/011-MCP-Conformance.md §3.3` already documents `resources/subscribe`/`unsubscribe`
 being replaced by `subscriptions/listen` as of this exact revision — this HN thread is external
 confirmation the RFC is current, not a new finding.
 

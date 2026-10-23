@@ -1,4 +1,4 @@
-// Proves KataBackend Slice 9/10 (kata_backend.hpp's own header comment, decisions/ADR-093-kata-
+// Proves KataBackend Slice 9/10 (kata_backend.hpp's own header comment, decisions/archive/ADR-093-kata-
 // backend-netpolicy-allowlist-config-cni.md) against a REAL Kata sandbox: the `--config`-mode OCI
 // spec pipeline (Slice 9) and the real `NetPolicy` allowlist via manual netns + `cnitool` + create-
 // time-pinned nftables (Slice 10). Same "REQUIRES a real Kata/containerd deployment" precondition as
@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/kata/kata_backend.hpp"
@@ -48,17 +49,17 @@ int main() {
     {
         KataBackend backend;
         SandboxSpec spec;
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): --config-mode pipeline creates cleanly under deny_all");
         if (handle.has_value()) {
             ExecRequest req;
             req.source = "echo slice9_alive";
-            auto out = backend.exec(*handle, req, ctx);
+            auto out = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             check(out.has_value() && out->klass == exec_outcome_class::ok &&
                       out->stdout_text.find("slice9_alive") != std::string::npos,
                   "exec(): a --config-mode-created instance runs a real command and returns real "
                   "output, same as the old convenience-flag path");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -69,10 +70,10 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.deny_all = false;
-        auto handle = backend.create(spec, ctx);
-        check(!handle.has_value() && handle.error().code == "kata_backend.net_capability_required",
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
+        check(!handle.has_value() && handle.error().code == "sandbox.net_not_authorized",
               "create(): NetPolicy{deny_all=false, empty allowlist} with NO cap::SandboxNetOut grant "
-              "fails closed with kata_backend.net_capability_required (the capability gate fires "
+              "fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional) (the capability gate fires "
               "before this backend's own 'unrestricted egress unsupported' shape is ever reached)");
     }
 
@@ -90,7 +91,7 @@ int main() {
         spec.net.deny_all = false;
         spec.capabilities = CapabilitySet::grant_root(
             {Capability{cap::SandboxNetOut{{"irrelevant.example:443:https"}}}});
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "sandbox.net_not_authorized",
               "create(): NetPolicy{deny_all=false, empty allowlist} WITH a capability grant present "
               "still fails closed, this time via authorize_spec()'s own 'no finite grant can "
@@ -110,7 +111,7 @@ int main() {
         spec.net.allowlist.push_back("not-a-valid-entry");
         spec.capabilities =
             CapabilitySet::grant_root({Capability{cap::SandboxNetOut{{"not-a-valid-entry"}}}});
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.allowlist_entry_malformed",
               "create(): a malformed NetPolicy::allowlist entry ('host:port:scheme' grammar "
               "violation) fails closed with kata_backend.allowlist_entry_malformed");
@@ -126,7 +127,7 @@ int main() {
         spec.net.allowlist.push_back("127.0.0.1:80:http");
         spec.capabilities =
             CapabilitySet::grant_root({Capability{cap::SandboxNetOut{{"127.0.0.1:80:http"}}}});
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(!handle.has_value() && handle.error().code == "kata_backend.allowlist_entry_blocked",
               "create(): a NetPolicy::allowlist entry resolving to a blocked range (loopback) fails "
               "closed with kata_backend.allowlist_entry_blocked -- resolve_and_validate() is really "
@@ -134,8 +135,8 @@ int main() {
     }
 
     // ---- 5. Red-team finding (BLOCKING, fixed same pass -- kata_backend.cpp's own comment at the
-    //         fix site, decisions/ADR-093-...md §5): a nonempty allowlist with NO cap::SandboxNetOut
-    //         grant at all fails closed with kata_backend.net_capability_required, rather than
+    //         fix site, decisions/archive/ADR-093-...md §5): a nonempty allowlist with NO cap::SandboxNetOut
+    //         grant at all fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional), rather than
     //         silently sailing through authorize_spec()'s own "opt-out when zero grants" shape --
     //         proves this backend no longer grants real network egress via SandboxSpec::net alone,
     //         with zero capability ever held (the exact I2 ambient-authority gap the red-team found).
@@ -143,10 +144,10 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.allowlist.push_back("example.com:443:https");
-        auto handle = backend.create(spec, ctx);
-        check(!handle.has_value() && handle.error().code == "kata_backend.net_capability_required",
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
+        check(!handle.has_value() && handle.error().code == "sandbox.net_not_authorized",
               "create(): a nonempty NetPolicy::allowlist with NO cap::SandboxNetOut grant at all "
-              "fails closed with kata_backend.net_capability_required -- real network egress is "
+              "fails closed with sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional) -- real network egress is "
               "never reachable via SandboxSpec::net alone, zero ambient authority");
     }
 
@@ -162,31 +163,32 @@ int main() {
         spec.net.allowlist.push_back("example.com:443:https");
         spec.capabilities = CapabilitySet::grant_root(
             {Capability{cap::SandboxNetOut{{"example.com:443:https"}}}});
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a real NetPolicy::allowlist entry creates cleanly "
                                    "(ip netns add + cnitool add + nft rules all succeeded)");
         if (handle.has_value()) {
             ExecRequest allowed_req;
             allowed_req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://example.com/ || echo FAILED";
-            auto allowed_out = backend.exec(*handle, allowed_req, ctx);
+                "echo | nc -w 5 example.com 443 >/dev/null 2>&1 && echo CONNECTED || echo FAILED";
+            auto allowed_out = agentengine::rt::block_on(backend.exec(*handle, allowed_req, ctx));
             check(allowed_out.has_value() && allowed_out->klass == exec_outcome_class::ok &&
-                      allowed_out->stdout_text.find("FAILED") == std::string::npos,
+                      allowed_out->stdout_text.find("CONNECTED") != std::string::npos,
                   "REAL enforcement: the guest can reach the allowlisted destination "
                   "(example.com:443) -- /etc/hosts pin + nftables ACCEPT rule both actually work, "
                   "not just accepted and silently ignored");
 
             ExecRequest blocked_req;
             blocked_req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://1.1.1.1/ || echo FAILED";
-            auto blocked_out = backend.exec(*handle, blocked_req, ctx);
+                "echo | nc -w 5 1.1.1.1 443 >/dev/null 2>&1 && echo CONNECTED || echo FAILED";
+            auto blocked_out = agentengine::rt::block_on(backend.exec(*handle, blocked_req, ctx));
             check(blocked_out.has_value() &&
-                      blocked_out->stdout_text.find("FAILED") != std::string::npos,
+                      blocked_out->stdout_text.find("FAILED") != std::string::npos &&
+                      blocked_out->stdout_text.find("CONNECTED") == std::string::npos,
                   "REAL enforcement: the guest CANNOT reach a destination NOT on the allowlist "
                   "(1.1.1.1) -- the default-deny nftables policy actually blocks traffic, proving "
                   "this is a real allowlist and not an allow-everything netns with cosmetic rules");
 
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -201,10 +203,10 @@ int main() {
         KataBackend backend;
         SandboxSpec spec;
         spec.limits.pids = 16;
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a ResourceLimits::pids cap creates cleanly "
                                    "(SLICE 11 -- linux.resources.pids.limit in the OCI spec)");
-        if (handle.has_value()) backend.destroy(*handle);
+        if (handle.has_value()) agentengine::rt::block_on(backend.destroy(*handle));
     }
 
     // ---- 8. SLICE 11: ResourceLimits::disk_bytes -- a backend-owned, loop-device-backed, fixed-size
@@ -221,7 +223,7 @@ int main() {
                                                         // kata_backend.hpp's own scope note that this
                                                         // pass does not compensate for filesystem
                                                         // metadata overhead.
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a ResourceLimits::disk_bytes cap creates cleanly "
                                    "(SLICE 11 -- loop-device-backed ext4 overlay upperdir)");
         if (handle.has_value()) {
@@ -231,7 +233,7 @@ int main() {
             // that the command ran.
             fill_req.source =
                 "dd if=/dev/zero of=/tmp/fill.bin bs=1M count=32 2>&1; echo EXIT_CODE=$?";
-            auto fill_out = backend.exec(*handle, fill_req, ctx);
+            auto fill_out = agentengine::rt::block_on(backend.exec(*handle, fill_req, ctx));
             check(fill_out.has_value() && fill_out->klass == exec_outcome_class::ok &&
                       fill_out->stdout_text.find("EXIT_CODE=0") == std::string::npos,
                   "REAL enforcement: a guest write exceeding the 8 MiB disk_bytes cap fails with a "
@@ -248,13 +250,13 @@ int main() {
             // removing the failed fill's partial output before measuring a clean, fresh write.
             fits_req.source = "rm -f /tmp/fill.bin; dd if=/dev/zero of=/tmp/small.bin bs=1M count=1 "
                                "2>&1; echo EXIT_CODE=$?";
-            auto fits_out = backend.exec(*handle, fits_req, ctx);
+            auto fits_out = agentengine::rt::block_on(backend.exec(*handle, fits_req, ctx));
             check(fits_out.has_value() && fits_out->klass == exec_outcome_class::ok &&
                       fits_out->stdout_text.find("EXIT_CODE=0") != std::string::npos,
                   "positive control: a guest write WELL WITHIN the disk_bytes cap succeeds cleanly -- "
                   "proves the prior case's failure is really the quota, not a broken filesystem");
 
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 
@@ -273,22 +275,46 @@ int main() {
         spec.limits.net_bytes = 256;  // deliberately far smaller than a single TLS handshake +
                                        // minimal HTTP response -- the FIRST real request should
                                        // already exceed this budget.
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): a real NetPolicy::allowlist entry WITH net_bytes creates "
                                    "cleanly (SLICE 11 -- named nft quota object on output+input chains)");
         if (handle.has_value()) {
+            // busybox has no curl; wget over its ssl_client carries a real HTTPS payload.
             ExecRequest req;
             req.source =
-                "curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://example.com/ || echo "
-                "FAILED";
-            auto out = backend.exec(*handle, req, ctx);
+                "wget -q -T 5 -O /dev/null https://example.com/ && echo CONNECTED || echo FAILED";
+            auto out = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             check(out.has_value() &&
-                      (out->stdout_text.find("FAILED") != std::string::npos ||
+                      (out->stdout_text.find("CONNECTED") == std::string::npos ||
                        out->klass != exec_outcome_class::ok),
                   "REAL enforcement: a request whose response alone exceeds the tiny 256-byte "
                   "net_bytes budget is cut off by the shared nft quota -- proves net_bytes counts "
                   "real INBOUND bytes (the input chain), not merely egress");
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
+        }
+    }
+
+    // ---- 9b. POSITIVE CONTROL for case 9: the identical request, allowlist and grant WITHOUT
+    //          net_bytes must succeed. Without it, case 9's "cut off" check passes just as well when
+    //          the request could never have worked (no client in the image, no route) -- a test that
+    //          cannot fail proves nothing.
+    {
+        KataBackend backend;
+        SandboxSpec spec;
+        spec.net.allowlist.push_back("example.com:443:https");
+        spec.capabilities = CapabilitySet::grant_root(
+            {Capability{cap::SandboxNetOut{{"example.com:443:https"}}}});
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
+        check(handle.has_value(), "create(): case 9b's allowlist-only instance (no net_bytes) creates cleanly");
+        if (handle.has_value()) {
+            ExecRequest req;
+            req.source =
+                "wget -q -T 5 -O /dev/null https://example.com/ && echo CONNECTED || echo FAILED";
+            auto out = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
+            check(out.has_value() && out->stdout_text.find("CONNECTED") != std::string::npos,
+                  "positive control for case 9: the same HTTPS request WITHOUT net_bytes succeeds, "
+                  "so case 9's cut-off is the quota and not an unusable client or route");
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
     }
 

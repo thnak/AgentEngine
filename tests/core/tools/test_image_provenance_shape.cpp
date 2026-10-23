@@ -43,6 +43,7 @@ void check(bool cond, std::string const& what) {
 
 [[nodiscard]] agentengine::ToolDescriptor tool(char const* name, std::string schema) {
     agentengine::ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name = name;
     d.reply_schema_json = std::move(schema);
     return d;

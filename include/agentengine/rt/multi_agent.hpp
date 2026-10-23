@@ -30,6 +30,8 @@
 // `core/memory.hpp`'s own `write_seq` prediction is a documented, unresolved concurrent-writer race --
 // out of scope for this file to fix, and not exercised by anything here).
 
+#include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -40,12 +42,16 @@
 #include <optional>
 #include <semaphore>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/retry_policy.hpp"
+#include "agentengine/core/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/delegated_run_guard.hpp"
 #include "agentengine/rt/task.hpp"
 #include "agentengine/rt/thread_pool.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -64,9 +70,13 @@ namespace agentengine::rt::multi_agent {
 // layer this file's callers do not have. `contract`/`policy` failures are NEVER retried -- retrying a
 // capability denial can never succeed (`attenuate()` fails closed identically every attempt) and would
 // only burn attempts/`Budget` spend on an unwinnable call (an I2-adjacent hazard, round 2).
+//
+// ADR-237 D6 reconciled the divergence named above: which classes retry is decided once, in core/error.hpp's
+// `is_retryable(failure_class, retry_budget)`. This site states only that each attempt is a fresh child run with
+// a budget of its own (`fresh`), which is why `resource` retries here and not in the gateway; `canceled` never
+// retries anywhere.
 [[nodiscard]] inline bool is_retryable(agentengine::failure_class klass) noexcept {
-    return klass == agentengine::failure_class::transient ||
-           klass == agentengine::failure_class::resource;
+    return agentengine::is_retryable(klass, agentengine::retry_budget::fresh);
 }
 
 // A child's construction is entirely the factory's own responsibility -- session id, chat client,
@@ -185,6 +195,27 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             "spawn() requires a live capability grant on the caller's EffectContext",
             "multi_agent.no_live_capabilities"});
     }
+    // ADR-244 §2.3 (slice 3c): the child runs under the caller's authority source, admitted against the caller's
+    // expiry under `per_request`; a context no session built has no source and is refused. `spawn()` owns the
+    // child's authority, so a request that already carries one is refused rather than replaced.
+    if (!parent_call_ctx.authority_source.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.authority_source", std::array<std::string_view, 1>{
+                                          "the caller's EffectContext::authority_source (set by the session)"}));
+    }
+    bool const per_request = *parent_call_ctx.authority_source == agentengine::authority_mode::per_request;
+    if (per_request && (!parent_call_ctx.authority_expires_at.has_value() ||
+                        !parent_call_ctx.authority_expires_at->live(std::chrono::steady_clock::now()))) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+                                                     "spawn(): the caller's per-request authority has expired",
+                                                     "multi_agent.authority_expired"});
+    }
+    if (request.authority.has_value()) {
+        co_return std::unexpected(agentengine::error{
+            agentengine::failure_class::policy,
+            "spawn() derives the child's authority from the caller's context; a StartRun carrying its own is refused",
+            "multi_agent.request_authority_unexpected"});
+    }
 
     agentengine::Principal child_principal = parent_call_ctx.principal;
     if (delegate_principal.has_value()) {
@@ -212,13 +243,54 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
             "session)",
             "multi_agent.factory_returned_null"});
     }
+    // ADR-244 §2.3 (slice 3c): the factory states the child's own budget and turn cap (its `SessionChoices`); the
+    // child is re-initialised under the caller's source, its budget tightened to what the caller has left.
+    if (!child->choices().has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.child_choices",
+            std::array<std::string_view, 1>{"the SessionFactory initializes the child with SessionChoices"}));
+    }
+    agentengine::Bound<std::uint64_t> budget = child->choices()->token_budget;
+    if (parent_call_ctx.remaining_token_budget.has_value()) {
+        budget = agentengine::Bound<std::uint64_t>::tighter(
+            budget, agentengine::Bound<std::uint64_t>::at_most(*parent_call_ctx.remaining_token_budget));
+    }
+    agentengine::Bound<std::uint64_t> const max_turns = child->choices()->max_turns;
+    child->initialize(child->session_id(), child_principal,
+                      agentengine::SessionChoices{
+                          per_request ? agentengine::AuthoritySource::per_request(*narrowed)
+                                      : agentengine::AuthoritySource::single_trusted_caller(),
+                          budget, max_turns});
     // Lifetime: `narrowed` (a local) outlives `child` (declared after it) within this coroutine frame,
     // and this function co_awaits `child->start_run()` to completion before EITHER goes out of scope --
     // matching `EffectContext::capabilities`' own documented "caller must outlive every use" contract
     // (`effect_context.hpp`) applied to `set_capabilities()`'s identical non-owning-pointer shape.
-    child->set_capabilities(&*narrowed);
+    if (per_request) {
+        request.authority = RequestAuthority{
+            child_principal,
+            std::shared_ptr<agentengine::CapabilitySet const>(std::shared_ptr<void>{}, &*narrowed),
+            *parent_call_ctx.authority_expires_at};
+    } else {
+        child->set_capabilities(&*narrowed);
+    }
 
-    co_return co_await child->start_run(std::move(request));
+    // ADR-244 §2.3 / ADR-193: the child's whole spend is the caller's, charged on every outcome (the same guard
+    // `run_child_agent_session` uses).
+    auto const charge = [&child, &parent_call_ctx]() -> agentengine::Usage {
+        agentengine::Usage const spent = child->run_usage();
+        if (parent_call_ctx.charge_delegated_usage) {
+            parent_call_ctx.charge_delegated_usage(spent, child->discarded_tokens_estimate());
+        }
+        return spent;
+    };
+    std::optional<agentengine::result<AgentResponse>> run_result;
+    {
+        delegated_run_detail::ChargeOnUnwind guard{charge};
+        run_result.emplace(co_await child->start_run(std::move(request)));
+        guard.completed();
+    }
+    (void)charge();
+    co_return std::move(*run_result);
 }
 
 // A retry attempt is a genuinely new session + resource mint (round 1 fix 3/6), not exempt from the

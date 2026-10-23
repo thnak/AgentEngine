@@ -105,7 +105,7 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
 // Falls back to a deterministic ledger (scan the transcript for what each specialist already
 // contributed) if the live reply doesn't parse -- a safety net, never the primary decision.
 [[nodiscard]] ExecutorBody planner_moderator(RealClient& client, EffectContext& ctx) {
-    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+    return [&client, &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
 
         auto resp = live_call(
@@ -132,20 +132,20 @@ using RealClient = openai::OpenAIChatClient<InMemorySecretStore>;
             decision = !has_facts ? "researcher" : (!has_summary ? "writer" : "done");
         }
         std::printf("[moderator] %s%s\n", decision.c_str(), live_decided ? "" : " (fallback ledger)");
-        return ExecutorOutcome{text_message(transcript), {decision}};
+        co_return ExecutorOutcome{text_message(transcript), {decision}};
     };
 }
 
 [[nodiscard]] ExecutorBody specialist(std::string label, std::string system_prompt, RealClient& client,
                                        EffectContext& ctx) {
-    return [label, system_prompt, &client, &ctx](Message const& in,
-                                                  EffectContext&) -> agentengine::result<Message> {
+    return [label, system_prompt, &client,
+            &ctx](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const transcript = text_of(in);
         auto resp = live_call(client, ctx, system_prompt, "Transcript so far:\n" + transcript);
-        if (!resp.has_value()) return std::unexpected(resp.error());
+        if (!resp.has_value()) co_return std::unexpected(resp.error());
         std::string const reply = text_of(resp->message);
         std::printf("[%s] %s\n", label.c_str(), reply.c_str());
-        return text_message(transcript + "\n\n" + label + ": " + reply);
+        co_return ExecutorOutcome{text_message(transcript + "\n\n" + label + ": " + reply)};
     };
 }
 
@@ -218,8 +218,8 @@ int main() {
                    "transcript above, write a 2-sentence summary suitable for a general "
                    "audience. Synthesize, do not restate the facts verbatim.",
                    client, ctx),
-        [](Message const& in, EffectContext&) -> agentengine::result<Message> {
-            return text_message(text_of(in));
+        [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+            co_return ExecutorOutcome{text_message(text_of(in))};
         },
     };
 

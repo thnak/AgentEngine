@@ -6,7 +6,7 @@ work rather than rushed code, per this project's `design → red-team → prove 
 (CLAUDE.md) applied honestly to something this size.
 
 **Relates to:** `docs/planning/2026-08-10-full-codebase-adr-gap-audit.md` gap #7. `006-Tool-and-
-Function-Plane.md` §6b / `019-Durability-and-Long-Running-Agents.md` §2 (`schedule_wakeup`'s own
+Function-Plane.md` §6b / `rfcs/019-Durability-and-Long-Running-Agents.md` §2 (`schedule_wakeup`'s own
 normative definition — the "Timer/schedule" row of 019 §2's wake-condition table).
 `core/standing_effect.hpp` (the existing, real `StandingEffect` handle shape `background_task`
 already produces for real). `rt/agent_session.hpp`'s own top comment (the exact, current, honest
@@ -79,7 +79,7 @@ system won't let an over-long request past.
 std::vector<StandingEffect>` introspection method on `AgentSession` (read-only, mirroring `open_
 interactions()`'s existing shape) that a HOST polls — the host, not `AgentSession` itself, owns
 deciding WHEN and HOW OFTEN to check (a cron-style poll loop, a `tools/cli_chat.cpp`-style REPL tick,
-a future `020-Configuration-and-Hosting.md`-owned `EmbeddedHost` facade's own scheduler — all
+a future `rfcs/020-Configuration-and-Hosting.md`-owned `EmbeddedHost` facade's own scheduler — all
 deliberately out of THIS primitive's scope). A due entry the host observes is resolved by the host
 calling back into the session (the exact shape of that resumption call — a new `WakeupDue` request
 analogous to `ResolveInteraction`, or reuse of the existing turn-start path — is real, separate design
@@ -105,7 +105,7 @@ in-memory-only (`standing_effect.hpp`'s own comment: "NOT one of `AgentSessionRe
 SAME limitation `background_task` already has today, not a new regression this draft introduces, but
 worth naming plainly since "Timer/schedule" (019 §2's own row name) has a much stronger intuitive
 expectation of durability than "a task currently running." Closing this needs `StandingEffect`
-persistence generally — a separate, larger, already-named gap (`decisions/README.md`'s own ADR-038
+persistence generally — a separate, larger, already-named gap (`decisions/archive/README.md`'s own ADR-038
 entry notes passivation's own durable-state story), not something this draft's own scope can absorb.
 
 ## 5. What this draft does not claim

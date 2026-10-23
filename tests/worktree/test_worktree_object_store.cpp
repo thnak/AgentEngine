@@ -1,4 +1,4 @@
-// Proof for 025-Worktree-and-Virtual-Filesystem.md §2's content-addressed object model
+// Proof for rfcs/025-Worktree-and-Virtual-Filesystem.md §2's content-addressed object model
 // (core/worktree.hpp), Milestone 3 Phase A1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). Exercises the three
 // structural claims §2 makes: snapshotting is recording one digest, diffing two states is a tree
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "agentengine/core/worktree.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -52,11 +53,11 @@ int main() {
     {
         InMemoryWorktreeObjectStore store;
         auto bytes = bytes_of("hello worktree");
-        auto digest = store.put_blob(bytes);
+        auto digest = agentengine::rt::block_on(store.put_blob(bytes));
         AE_CHECK(digest.has_value(), "A-C1: put_blob succeeds");
         AE_CHECK(digest.has_value() && is_valid_hex_digest(*digest),
                  "A-C1: digest is a well-formed 64-char hex string");
-        auto fetched = digest.has_value() ? store.get_blob(*digest) : result<std::vector<std::byte>>{};
+        auto fetched = digest.has_value() ? agentengine::rt::block_on(store.get_blob(*digest)) : result<std::vector<std::byte>>{};
         AE_CHECK(fetched.has_value() && *fetched == bytes,
                  "A-C1: get_blob returns exactly the bytes that were put");
     }
@@ -67,8 +68,8 @@ int main() {
     {
         InMemoryWorktreeObjectStore store;
         auto bytes = bytes_of("duplicate me");
-        auto d1 = store.put_blob(bytes);
-        auto d2 = store.put_blob(bytes);
+        auto d1 = agentengine::rt::block_on(store.put_blob(bytes));
+        auto d2 = agentengine::rt::block_on(store.put_blob(bytes));
         AE_CHECK(d1.has_value() && d2.has_value() && *d1 == *d2,
                  "A-C2: identical content produces the identical digest");
         AE_CHECK(store.blob_count() == 1, "A-C2 (dedup): store holds exactly one blob after two puts");
@@ -78,8 +79,8 @@ int main() {
     // constant, and no accidental collision on this input pair).
     {
         InMemoryWorktreeObjectStore store;
-        auto d1 = store.put_blob(bytes_of("content A"));
-        auto d2 = store.put_blob(bytes_of("content B"));
+        auto d1 = agentengine::rt::block_on(store.put_blob(bytes_of("content A")));
+        auto d2 = agentengine::rt::block_on(store.put_blob(bytes_of("content B")));
         AE_CHECK(d1.has_value() && d2.has_value() && *d1 != *d2,
                  "A-C3: different content produces different digests");
     }
@@ -91,8 +92,8 @@ int main() {
         InMemoryWorktreeObjectStore store;
         Tree order_a{{{"b.txt", "digest-b", false}, {"a.txt", "digest-a", false}}};
         Tree order_b{{{"a.txt", "digest-a", false}, {"b.txt", "digest-b", false}}};
-        auto d1 = store.put_tree(order_a);
-        auto d2 = store.put_tree(order_b);
+        auto d1 = agentengine::rt::block_on(store.put_tree(order_a));
+        auto d2 = agentengine::rt::block_on(store.put_tree(order_b));
         AE_CHECK(d1.has_value() && d2.has_value() && *d1 == *d2,
                  "A-C4: identical entries in different insertion order hash identically");
         AE_CHECK(store.tree_count() == 1, "A-C4 (dedup): store holds exactly one tree after both puts");
@@ -106,12 +107,12 @@ int main() {
         InMemoryWorktreeObjectStore store;
         Tree before{{{"a.txt", "digest-a1", false}, {"b.txt", "digest-b", false}}};
         Tree after{{{"a.txt", "digest-a2", false}, {"b.txt", "digest-b", false}}};  // a.txt changed
-        auto d_before = store.put_tree(before);
-        auto d_after = store.put_tree(after);
+        auto d_before = agentengine::rt::block_on(store.put_tree(before));
+        auto d_after = agentengine::rt::block_on(store.put_tree(after));
         AE_CHECK(d_before.has_value() && d_after.has_value() && *d_before != *d_after,
                  "A-C5: a tree differing by one entry produces a different digest");
 
-        auto fetched = store.get_tree(*d_before);
+        auto fetched = agentengine::rt::block_on(store.get_tree(*d_before));
         AE_CHECK(fetched.has_value() && fetched->entries.size() == 2,
                  "A-C5: get_tree returns the right entry count");
         AE_CHECK(fetched.has_value() && fetched->entries[0].name == "a.txt" &&
@@ -123,10 +124,10 @@ int main() {
     // never a crash, never a default-constructed empty result mistaken for "found."
     {
         InMemoryWorktreeObjectStore store;
-        auto missing_blob = store.get_blob(std::string(64, '0'));
+        auto missing_blob = agentengine::rt::block_on(store.get_blob(std::string(64, '0')));
         AE_CHECK(!missing_blob.has_value() && missing_blob.error().code == "worktree.blob_not_found",
                  "A-C6: get_blob on an unknown digest fails closed with worktree.blob_not_found");
-        auto missing_tree = store.get_tree(std::string(64, '0'));
+        auto missing_tree = agentengine::rt::block_on(store.get_tree(std::string(64, '0')));
         AE_CHECK(!missing_tree.has_value() && missing_tree.error().code == "worktree.tree_not_found",
                  "A-C6: get_tree on an unknown digest fails closed with worktree.tree_not_found");
     }
@@ -149,8 +150,8 @@ int main() {
     // well-formed digest for each is still worth proving directly).
     {
         InMemoryWorktreeObjectStore store;
-        auto empty_blob = store.put_blob(std::span<std::byte const>{});
-        auto empty_tree = store.put_tree(Tree{});
+        auto empty_blob = agentengine::rt::block_on(store.put_blob(std::span<std::byte const>{}));
+        auto empty_tree = agentengine::rt::block_on(store.put_tree(Tree{}));
         AE_CHECK(empty_blob.has_value() && is_valid_hex_digest(*empty_blob),
                  "A-R1: hashing an empty blob succeeds with a well-formed digest");
         AE_CHECK(empty_tree.has_value() && is_valid_hex_digest(*empty_tree),
@@ -197,16 +198,16 @@ int main() {
                 threads.emplace_back([&store, &bad, t] {
                     for (int i = 0; i < kPerThread; ++i) {
                         auto const content = "t" + std::to_string(t) + "-" + std::to_string(i);
-                        auto blob = store.put_blob(bytes_of(content));
+                        auto blob = agentengine::rt::block_on(store.put_blob(bytes_of(content)));
                         if (!blob) { ++bad[t]; continue; }
-                        auto tree = store.put_tree(Tree{{TreeEntry{content, *blob, false}}});
-                        auto back = store.get_blob(*blob);
-                        auto size = store.blob_size(*blob);
+                        auto tree = agentengine::rt::block_on(store.put_tree(Tree{{TreeEntry{content, *blob, false}}}));
+                        auto back = agentengine::rt::block_on(store.get_blob(*blob));
+                        auto size = agentengine::rt::block_on(store.blob_size(*blob));
                         if (!tree || !back || *back != bytes_of(content) || !size || *size != content.size()) {
                             ++bad[t];
                             continue;
                         }
-                        auto tree_back = store.get_tree(*tree);
+                        auto tree_back = agentengine::rt::block_on(store.get_tree(*tree));
                         if (!tree_back || tree_back->entries.size() != 1 || tree_back->entries[0].digest != *blob)
                             ++bad[t];
                         (void)store.blob_count();

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- `NativeShellSessionProvider`: a
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §9 (build step 7) -- `NativeShellSessionProvider`: a
 // HELD native `pwsh` (native_shell_session.hpp) whose cwd, environment and processes persist across
 // `native_shell_session_exec` calls. Windows only, `AGENTENGINE_WITH_NATIVE_PROCESS=ON`, like every native
 // provider (ADR-071).
@@ -321,13 +321,13 @@ private:
         // Capability ceiling left empty, as for the one-shot native providers (native_providers.hpp): the real
         // authorization is per invocation, against the live EffectContext, inside exec().
         d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
             auto args = schema::from_json<NativeShellSessionArgs>(args_value);
             if (!args) return std::unexpected(args.error());
             auto reply = exec(std::move(*args), ctx);
             if (!reply) return std::unexpected(reply.error());
             return schema::to_json(*reply);
-        };
+        });
         return d;
     }
 

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -34,14 +35,14 @@ struct EchoReply {
 };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : agentengine::Tool<EchoTool> {
+struct EchoTool : agentengine::Tool<EchoTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Echo the input message back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
 
-    static agentengine::result<Reply> invoke(Args args, agentengine::EffectContext&) {
-        return Reply{"echo: " + args.message};
+    agentengine::task<agentengine::result<Reply>> invoke(Args args, agentengine::EffectContext&) const {
+        co_return Reply{"echo: " + args.message};
     }
 };
 
@@ -100,12 +101,12 @@ int main() {
 
     // --- F1-R6: invoke_tool() (M2's real pipeline) actually computes and surfaces the key --------
     {
-        auto const table = agentengine::ToolTable::from_tools<EchoTool>();
+        auto const table = agentengine::ToolTable::from(EchoTool{});
         agentengine::CapabilitySet held;
         agentengine::ToolCallRequest req{"call-1", "echo", args1, false, /*call_index=*/7};
         agentengine::ToolInvocationAudit audit;
         auto ctx = make_ctx("s-pipeline:run:3", 2);
-        auto result = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit));
         check(result.is_error == false, "F1-R6 setup: the pipeline call itself succeeds");
         IdempotencyKey expected = derive_idempotency_key(ctx, 7, args1);
         check(audit.idempotency_key == expected,

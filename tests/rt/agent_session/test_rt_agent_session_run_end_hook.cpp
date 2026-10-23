@@ -31,12 +31,15 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -59,8 +62,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 std::vector<run_end_reason>& fired() {
@@ -79,19 +81,19 @@ struct GatedTool : Tool<GatedTool, Capabilities<>, EffectClass<effect_class::pur
     static constexpr std::string_view description = "Needs approval.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 // Cancels the session it is told about, from inside a tool body -- a cancel BETWEEN turns.
 rt::AgentSessionCore* g_cancel_target = nullptr;
-struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_tool";
     static constexpr std::string_view description = "Cancels the run.";
     using Args = GateArgs;
     using Reply = GateReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         if (g_cancel_target != nullptr) g_cancel_target->cancel();
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -108,7 +110,7 @@ public:
         }
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<GatedTool, CancelTool>().descriptors();
+        c.tools = ToolTable::from(GatedTool{}, CancelTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -210,7 +212,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e1", Principal{"p", ""});
+        s.initialize("e1", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.emplace_chat_client().set_script({Step{text("done"), {}, false}});
         auto r = drive(s.start_run(StartRun{user("hi")}));
@@ -223,7 +225,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e2", Principal{"p", ""});
+        s.initialize("e2", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.set_suspend_for_approval(true);
         s.emplace_chat_client().set_script({Step{call("c1", "gated_tool", R"({"value":1})"), {}, false},
@@ -265,9 +267,9 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e3", Principal{"p", ""});
+        s.initialize("e3", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
-        s.set_max_turns(2);
+        check(s.set_max_turns(agentengine::Bound<std::uint64_t>::at_most(2)).has_value(), "E3 setup: max_turns 2");
         s.emplace_chat_client().set_script({Step{call("c1", "cancel_tool", R"({"value":1})"), {}, false}});
         g_cancel_target = nullptr;  // the tool does nothing here: a loop that never converges
         auto r = drive(s.start_run(StartRun{user("loop")}));
@@ -279,7 +281,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e4", Principal{"p", ""});
+        s.initialize("e4", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.emplace_chat_client().set_script(
             {Step{std::nullopt, error{failure_class::transient, "backend down", "test.backend_down"}, false}});
@@ -292,7 +294,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e5", Principal{"p", ""});
+        s.initialize("e5", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.emplace_chat_client().set_script({Step{call("c1", "cancel_tool", R"({"value":1})"), {}, false},
                                             Step{text("never"), {}, false}});
@@ -307,7 +309,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e6", Principal{"p", ""});
+        s.initialize("e6", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.emplace_chat_client().set_script({Step{std::nullopt, std::nullopt, true}});
         bool caught = false;
@@ -324,7 +326,7 @@ int main() {
     {
         fired().clear();
         ComposedSession s;
-        s.initialize("e7", Principal{"p", ""});
+        s.initialize("e7", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         check(s.history_provider().engage(std::tuple<HookedProvider, PlainProvider>{}).has_value(),
               "E7 setup: engage the composed providers");
@@ -339,7 +341,7 @@ int main() {
     {
         fired().clear();
         PlainSession s;
-        s.initialize("e8", Principal{"p", ""});
+        s.initialize("e8", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         s.emplace_chat_client().set_script({Step{text("plain"), {}, false}});
         auto r = drive(s.start_run(StartRun{user("hi")}));
@@ -350,7 +352,7 @@ int main() {
     {
         fired().clear();
         Session s;
-        s.initialize("e9", Principal{"p", ""});
+        s.initialize("e9", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         std::vector<RunEvent> events;
         s.set_run_event_tap([&](RunEvent const& e) { events.push_back(e); });
@@ -372,7 +374,7 @@ int main() {
     // ---- E10 (ADR-209 §15.5): a release reported from on_context is a run event too (bracketed like E9).
     {
         Session s;
-        s.initialize("e10", Principal{"p", ""});
+        s.initialize("e10", Principal{"p", ""}, ae_test::trusted_unbounded());
         s.set_capabilities(&held);
         g_context_reports = true;
         std::vector<RunEvent> events;

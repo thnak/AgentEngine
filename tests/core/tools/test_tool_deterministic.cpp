@@ -1,4 +1,4 @@
-// Implements decisions/ADR-212-deterministic-tool-output-declaration.md (GitHub issue #81): the
+// Implements decisions/archive/ADR-212-deterministic-tool-output-declaration.md (GitHub issue #81): the
 // `Deterministic` tag, `Tool<>::declared_deterministic()`, `ToolDescriptor::deterministic` from both
 // factories, `rerun_comparable()`, and the declarative path inheriting the flag by name (§3.4). The
 // §3.3 static_assert is proven separately by the compile-fail gates in tests/compile_fail/; this
@@ -10,6 +10,8 @@
 #include "agentengine/core/json_schema_validator.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/tool_registry.hpp"
+
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 
 namespace {
 
@@ -29,42 +31,42 @@ struct SumReply { int sum = 0; std::string note; };
 AE_JSON_SCHEMA(SumReply, sum, note)
 
 // Deterministic + pure: the canonical case.
-struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::Deterministic> {
+struct SumTool : ae::Tool<SumTool, ae::EffectClass<ae::effect_class::pure>, ae::Deterministic, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "sum";
     static constexpr std::string_view description = "Adds two integers.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.a + a.b, "sum"}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.a + a.b, "sum"}; }
 };
 
 // Same claim, tag order reversed, plus a later EffectClass overriding an earlier one: the fold must
 // not depend on position, and last-declared wins exactly as `declared_effect_class()` does.
 struct EchoTool : ae::Tool<EchoTool, ae::Deterministic, ae::EffectClass<ae::effect_class::at_most_once>,
-                           ae::EffectClass<ae::effect_class::pure>> {
+                           ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Returns its first argument.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.a, "echo"}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.a, "echo"}; }
 };
 
 // Pure but NOT deterministic: safe to repeat, different answer each time. The case issue #81 names.
 int g_counter = 0;
-struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pure>> {
+struct CounterTool : ae::Tool<CounterTool, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "counter";
     static constexpr std::string_view description = "Returns a fresh number on every call.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{++g_counter, "counter"}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{++g_counter, "counter"}; }
 };
 
 // No policies at all -- the empty-pack instantiation the MSVC C3520 note in tool.hpp is about.
-struct BareTool : ae::Tool<BareTool> {
+struct BareTool : ae::Tool<BareTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "bare";
     static constexpr std::string_view description = "Declares nothing.";
     using Args = SumArgs;
     using Reply = SumReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{}; }
 };
 
 ae::EffectContext make_ctx() {
@@ -78,8 +80,8 @@ ae::EffectContext make_ctx() {
 bool rerun_matches(ae::ToolDescriptor const& d, ae::json::Value const& args) {
     auto ctx1 = make_ctx();
     auto ctx2 = make_ctx();
-    auto first = d.invoke(args, ctx1);
-    auto second = d.invoke(args, ctx2);
+    auto first = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(d.invoke(args, ctx1));
+    auto second = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(d.invoke(args, ctx2));
     return first && second && ae::schema::json_value_equal(*first, *second);
 }
 
@@ -95,23 +97,23 @@ int main() {
     static_assert(EchoTool::kEffectClass == ae::effect_class::pure);
 
     // D2: make_tool_descriptor copies it; undeclared stays false.
-    auto sum = ae::make_tool_descriptor<SumTool>();
-    auto echo = ae::make_tool_descriptor<EchoTool>();
-    auto counter = ae::make_tool_descriptor<CounterTool>();
-    auto bare = ae::make_tool_descriptor<BareTool>();
+    auto sum = ae::make_tool_descriptor(SumTool{});
+    auto echo = ae::make_tool_descriptor(EchoTool{});
+    auto counter = ae::make_tool_descriptor(CounterTool{});
+    auto bare = ae::make_tool_descriptor(BareTool{});
     check(sum.deterministic, "D2: make_tool_descriptor copies Deterministic");
     check(echo.deterministic && echo.effect_class == ae::effect_class::pure,
           "D2: tag order and a later EffectClass do not change the result");
     check(!counter.deterministic, "D2: an undeclared tool is not deterministic");
     check(!bare.deterministic, "D2: an empty-policy tool is not deterministic");
-    auto with_invoke = ae::make_tool_descriptor_with_invoke<SumTool>(
-        [](SumArgs a, ae::EffectContext&) -> ae::result<SumReply> { return SumReply{a.a + a.b, "w"}; });
-    // ...but not through the session-state factory: its closure is not the code the tag describes.
-    check(!with_invoke.deterministic && with_invoke.captures_session_state,
-          "D2: make_tool_descriptor_with_invoke drops Deterministic");
+    // ADR-237 §5.2: the `...with_invoke` case that used to sit here is gone with the factory it tested.
+    // It asserted that a factory-supplied closure did NOT inherit `Deterministic` (its closure was not
+    // the code the tag describes). No such path exists any more -- a descriptor's invoke is always the
+    // conformer's own declared code -- so there is nothing left to assert.
 
     // D3: a hand-built descriptor defaults to false (MCP bridge, WASM, providers -- ADR-212 §3.4).
     ae::ToolDescriptor hand_built;
+    hand_built.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
     check(!hand_built.deterministic, "D3: a default-constructed descriptor is not deterministic");
 
     // D4: rerun_comparable() -- including the hand-built combination Tool<> would have rejected.

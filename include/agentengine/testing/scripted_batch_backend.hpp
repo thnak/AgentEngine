@@ -1,5 +1,5 @@
 #pragma once
-// decisions/ADR-235-batch-inference-coalescing.md §3.2: a deterministic, in-memory `BatchBackend` for
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2: a deterministic, in-memory `BatchBackend` for
 // tests. It records every call (submit/poll/cancel/release, with the items and context each carried),
 // and lets the test decide what each later poll reports -- a vendor that finishes, expires, fails a job,
 // returns results in any order, or returns results for ids it was never sent.
@@ -10,6 +10,8 @@
 // real vendor would 404 an id it never issued.
 //
 // Not a production type: lives under `testing/`; nothing under `core/` or `rt/` includes it.
+//
+// ADR-237 §5.1: the four vendor calls are `task`-shaped like the seam; each completes without suspending.
 
 #include <cstddef>
 #include <map>
@@ -47,43 +49,44 @@ public:
         return item_bytes_;
     }
 
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
+                                                   EffectContext& ctx) override {
         std::lock_guard<std::mutex> lock(mu_);
         if (fail_next_submit_) {
             fail_next_submit_ = false;
-            return std::unexpected(error{failure_class::transient, "scripted submit failure",
-                                         "scripted_batch.submit_failed"});
+            co_return std::unexpected(error{failure_class::transient, "scripted submit failure",
+                                            "scripted_batch.submit_failed"});
         }
         std::string id = "job" + std::to_string(submitted_.size() + 1);
         submitted_.push_back(Submitted{id, items, ctx.principal.id});
         jobs_[id] = BatchPoll{};
-        return id;
+        co_return id;
     }
 
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job_id, EffectContext&) override {
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job_id, EffectContext&) override {
         std::lock_guard<std::mutex> lock(mu_);
         polled_.push_back(job_id);
         if (failing_polls_ > 0) {
             --failing_polls_;
-            return std::unexpected(error{failing_poll_class_, "scripted poll failure", "scripted_batch.poll_failed"});
+            co_return std::unexpected(error{failing_poll_class_, "scripted poll failure", "scripted_batch.poll_failed"});
         }
         auto it = jobs_.find(job_id);
         if (it == jobs_.end()) {
-            return std::unexpected(error{failure_class::contract, "unknown job " + job_id, "scripted_batch.unknown_job"});
+            co_return std::unexpected(error{failure_class::contract, "unknown job " + job_id, "scripted_batch.unknown_job"});
         }
-        return it->second;
+        co_return it->second;
     }
 
-    [[nodiscard]] result<void> cancel(std::string const& job_id, EffectContext&) override {
+    [[nodiscard]] task<result<void>> cancel(std::string const& job_id, EffectContext&) override {
         std::lock_guard<std::mutex> lock(mu_);
         cancelled_.push_back(job_id);
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<void> release(std::string const& job_id, EffectContext&) override {
+    [[nodiscard]] task<result<void>> release(std::string const& job_id, EffectContext&) override {
         std::lock_guard<std::mutex> lock(mu_);
         released_.push_back(job_id);
-        return {};
+        co_return result<void>{};
     }
 
     // -- scripting --------------------------------------------------------------------------------------

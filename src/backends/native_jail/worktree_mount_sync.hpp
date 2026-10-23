@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §5/§7 -- Milestone 3 Phase F1
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §5/§7 -- Milestone 3 Phase F1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). The bridge
 // core/worktree_mount_fs.hpp's own header names as still missing: "syncing a Tree onto mount_root...
 // that materialization/sync mechanism is a Phase [F1] dependency of PythonRunner/ShellRunner, not
@@ -48,6 +48,7 @@
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::native_jail {
 
@@ -134,30 +135,30 @@ namespace detail {
 // by a concurrent commit can still be primed. A red-team probe (2026-09-14) demonstrated exactly
 // that; a caller that needs "the ref did not move" must re-read the ref after materializing.
 template <WorktreeObjectStore OS>
-[[nodiscard]] result<void> materialize_subtree(OS& object_store, Mount const& mount, cap::FsRead const& granted,
-                                                Digest const& tree_digest, std::string const& guest_prefix,
+[[nodiscard]] task<result<void>> materialize_subtree(OS& object_store, Mount mount, cap::FsRead granted,
+                                                Digest tree_digest, std::string guest_prefix,
                                                 FileSystemAdapter& fs) {
-    auto tree = object_store.get_tree(tree_digest);
-    if (!tree) return std::unexpected(tree.error());
+    auto tree = co_await object_store.get_tree(tree_digest);
+    if (!tree) co_return std::unexpected(tree.error());
     auto unambiguous = require_unambiguous_entry_names(*tree);
-    if (!unambiguous) return std::unexpected(unambiguous.error());
+    if (!unambiguous) co_return std::unexpected(unambiguous.error());
     for (TreeEntry const& entry : tree->entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
         if (entry.is_tree) {
             auto mk = fs.make_directory(guest_path, /*parents=*/true);
-            if (!mk) return std::unexpected(mk.error());
-            auto r = materialize_subtree(object_store, mount, granted, entry.digest, guest_path, fs);
-            if (!r) return r;
+            if (!mk) co_return std::unexpected(mk.error());
+            auto r = co_await materialize_subtree(object_store, mount, granted, entry.digest, guest_path, fs);
+            if (!r) co_return r;
             continue;
         }
         auto authorized = agentengine::detail::authorize_mount_read(mount, granted, guest_path);
-        if (!authorized) return std::unexpected(authorized.error());
-        auto bytes = agentengine::detail::read_blob_within_size_cap(object_store, granted, entry.digest);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!authorized) co_return std::unexpected(authorized.error());
+        auto bytes = co_await agentengine::detail::read_blob_within_size_cap(object_store, granted, entry.digest);
+        if (!bytes) co_return std::unexpected(bytes.error());
         auto written = fs.write_file(guest_path, *bytes, /*append=*/false);
-        if (!written) return std::unexpected(written.error());
+        if (!written) co_return std::unexpected(written.error());
     }
-    return {};
+    co_return result<void>{};
 }
 
 // Recursively walks `fs` (a real host directory) starting at `guest_prefix` ("" = the adapter's own
@@ -165,25 +166,25 @@ template <WorktreeObjectStore OS>
 // via `mount_write` -- the SAME `granted`-capability + quota enforcement a guest `open(path, "w")`
 // gets -- and appending one `ContentItem` per file harvested to `out`.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<void> harvest_subtree(OS& object_store, RS& ref_store, Mount const& mount,
-                                            cap::FsWrite const& granted, std::string const& guest_prefix,
+[[nodiscard]] task<result<void>> harvest_subtree(OS& object_store, RS& ref_store, Mount mount,
+                                            cap::FsWrite granted, std::string guest_prefix,
                                             FileSystemAdapter& fs, std::vector<ContentItem>& out) {
     auto entries = fs.list_directory(guest_prefix);
-    if (!entries) return std::unexpected(entries.error());
+    if (!entries) co_return std::unexpected(entries.error());
     for (auto const& entry : *entries) {
         std::string guest_path = guest_prefix.empty() ? entry.name : guest_prefix + "/" + entry.name;
         if (entry.is_directory) {
-            auto r = harvest_subtree(object_store, ref_store, mount, granted, guest_path, fs, out);
-            if (!r) return r;
+            auto r = co_await harvest_subtree(object_store, ref_store, mount, granted, guest_path, fs, out);
+            if (!r) co_return r;
             continue;
         }
         auto bytes = fs.read_file(guest_path);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!bytes) co_return std::unexpected(bytes.error());
         // The stored blob's digest comes back from the write itself: hashing the bytes here first, as
         // this once did, SHA-256'd every harvested file twice.
         auto written =
-            agentengine::detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, *bytes);
-        if (!written) return std::unexpected(written.error());
+            co_await agentengine::detail::mount_write_with_blob(object_store, ref_store, mount, granted, guest_path, *bytes);
+        if (!written) co_return std::unexpected(written.error());
 
         std::string media_type = guess_media_type(entry.name);
         out.push_back(ContentItem{
@@ -191,7 +192,7 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
             content_origin::tool,
             /*tainted=*/true});
     }
-    return {};
+    co_return result<void>{};
 }
 
 } // namespace detail
@@ -199,18 +200,18 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // Primes `fs` (a real host directory, e.g. what `MediatedPythonConfig::mount_roots[mount.mount_id]`
 // points at) with `mount`'s CURRENT tree content, through `granted` (an already-bound cap::FsRead).
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<void> materialize_mount(OS& object_store, RS& ref_store, Mount const& mount,
-                                              cap::FsRead const& granted, FileSystemAdapter& fs) {
-    auto ref = read_ref(ref_store, mount.ref_name);
-    if (!ref) return std::unexpected(ref.error());
+[[nodiscard]] task<result<void>> materialize_mount(OS& object_store, RS& ref_store, Mount mount,
+                                              cap::FsRead granted, FileSystemAdapter& fs) {
+    auto ref = co_await read_ref(ref_store, mount.ref_name);
+    if (!ref) co_return std::unexpected(ref.error());
     if (!ref->has_value()) {
-        return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
+        co_return std::unexpected(error{failure_class::contract, "this mount's ref has never been committed",
                                       "worktree.mount_ref_missing"});
     }
     auto subtree_digest =
-        agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
-    if (!subtree_digest) return std::unexpected(subtree_digest.error());
-    return detail::materialize_subtree(object_store, mount, granted, *subtree_digest, "", fs);
+        co_await agentengine::detail::resolve_subtree_digest(object_store, (*ref)->tree_digest, mount.subtree_path);
+    if (!subtree_digest) co_return std::unexpected(subtree_digest.error());
+    co_return co_await detail::materialize_subtree(object_store, mount, granted, *subtree_digest, "", fs);
 }
 
 // Harvests every real file currently under `fs` (e.g. what a run just wrote to /out's real host
@@ -221,13 +222,13 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
 // matching this seam's existing per-write-commit granularity rather than inventing a batch-commit
 // transaction this codebase has nowhere else.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<ContentItem>> harvest_mount(OS& object_store, RS& ref_store,
-                                                               Mount const& mount, cap::FsWrite const& granted,
+[[nodiscard]] task<result<std::vector<ContentItem>>> harvest_mount(OS& object_store, RS& ref_store,
+                                                               Mount mount, cap::FsWrite granted,
                                                                FileSystemAdapter& fs) {
     std::vector<ContentItem> out;
-    auto r = detail::harvest_subtree(object_store, ref_store, mount, granted, "", fs, out);
-    if (!r) return std::unexpected(r.error());
-    return out;
+    auto r = co_await detail::harvest_subtree(object_store, ref_store, mount, granted, "", fs, out);
+    if (!r) co_return std::unexpected(r.error());
+    co_return out;
 }
 
 } // namespace agentengine::native_jail

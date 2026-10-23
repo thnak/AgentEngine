@@ -1,6 +1,6 @@
 #pragma once
-// Implements decisions/ADR-153-agent-memory-codeact-bridging.md -- the read-materialization half of
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` ("ordinary read access to the memory
+// Implements decisions/archive/ADR-153-agent-memory-codeact-bridging.md -- the read-materialization half of
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.memory` ("ordinary read access to the memory
 // worktree's files under `/memory`", `FsRead<mount>`) and the pre-run half of `agent.notes`
 // (`FsWrite<mount>` on the SAME `/memory` mount -- 026 §5's table names both as capability grants over
 // one conceptual mount point, not two separate directories). This file only ever produces a snapshot a
@@ -38,6 +38,7 @@
 #include "agentengine/core/memory.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/trust/capability.hpp"
+#include "agentengine/core/task.hpp"
 #include "backends/native_jail/mediated_filesystem_adapter.hpp"
 #include "backends/native_jail/worktree_mount_sync.hpp"
 
@@ -99,23 +100,23 @@ using MaterializedMemoryMount = std::pair<std::string, std::wstring>;
 // still checks this against `memory_mount(principal)`'s own REAL `mount_id`, so the authority
 // derivation is unaffected by `mount_name` being a separate, cosmetic identifier.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<MaterializedMemoryMount> materialize_memory_mount(
-    OS& object_store, RS& ref_store, Principal const& principal, cap::FsRead const& granted,
-    std::string const& mount_name, std::filesystem::path const& host_root,
-    std::vector<std::string> const& reserved_mount_ids) {
+[[nodiscard]] task<result<MaterializedMemoryMount>> materialize_memory_mount(
+    OS& object_store, RS& ref_store, Principal principal, cap::FsRead granted,
+    std::string mount_name, std::filesystem::path host_root,
+    std::vector<std::string> reserved_mount_ids) {
     Mount const mount = memory_mount(principal);
 
     auto mount_dir = reserve_and_create_mount_dir(mount_name, host_root, reserved_mount_ids);
-    if (!mount_dir) return std::unexpected(mount_dir.error());
+    if (!mount_dir) co_return std::unexpected(mount_dir.error());
     std::wstring const mount_dir_w = mount_dir->wstring();
 
     auto adapter = mediated_shell::MediatedFileSystemAdapter::create(mount_dir_w);
-    if (!adapter) return std::unexpected(adapter.error());
+    if (!adapter) co_return std::unexpected(adapter.error());
 
-    auto materialized = materialize_mount(object_store, ref_store, mount, granted, *adapter);
-    if (!materialized) return std::unexpected(materialized.error());
+    auto materialized = co_await materialize_mount(object_store, ref_store, mount, granted, *adapter);
+    if (!materialized) co_return std::unexpected(materialized.error());
 
-    return MaterializedMemoryMount{mount_name, mount_dir_w};
+    co_return MaterializedMemoryMount{mount_name, mount_dir_w};
 }
 
 }  // namespace agentengine::native_jail

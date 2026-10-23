@@ -1,49 +1,23 @@
 # AgentEngine
 
-**A C++23 engine for building agent applications — sandboxed by construction, standards-native,
+**A C++23 engine for building agent applications: sandboxed by construction, standards-native,
 cross-platform.**
 
-AgentEngine hosts agents, sessions, tools, and multi-agent workflows on its own `agentengine::rt::`
-runtime substrate (historical: originally built on top of the
-[Quark](https://github.com/thnak/QuarkCpp) actor engine; ADR-037 removed that dependency entirely
-and the `third_party/quark` submodule is gone from the tree). Untrusted code isolation and a Python
-code interpreter are **built-in subsystems, not optional add-ons**, and the protocol surface is the
-open agent stack of 2026 — MCP, A2A, AG-UI, OpenTelemetry GenAI — rather than a proprietary API.
+AgentEngine gives you agents, sessions, tools and multi-agent workflows on its own runtime
+(`agentengine::rt::`), with untrusted-code isolation and a Python code interpreter built in rather than
+bolted on. It speaks the open agent protocols (MCP, A2A, AG-UI, OpenTelemetry GenAI) instead of a
+proprietary API. The vocabulary is [Microsoft Agent Framework](https://github.com/microsoft/agent-framework)'s
+(agent, session, tool, middleware, graph workflow), expressed as zero-cost C++ policy types instead of
+runtime configuration objects.
 
-The developer model is deliberately **MAF-shaped** (the agent / session / tool / middleware /
-graph-workflow vocabulary Microsoft Agent Framework established), expressed in AgentEngine's own
-**zero-cost CRTP policy idiom** (originally modeled on Quark's identical idiom) instead of runtime
-configuration objects.
+> **Status: implementation under way, not a finished product.** The design is 30 reviewed RFCs; the code
+> under `include/`, `src/` and `tests/` implements a large part of it, and each gate that was executed is
+> recorded as an ADR in [`decisions/`](decisions/README.md). What is built, and what is not, changes
+> weekly: read [`docs/planning/`](docs/planning/) for the live per-milestone status rather than trusting a
+> summary here. One scope decision up front: AgentEngine does **not** run an HTTP listener. Your host code
+> owns the socket and hands the engine parsed requests ([ADR-061](decisions/archive/ADR-061-host-provided-inbound-transport.md)).
 
-> **Status: implementation under way.** All 30 RFCs have passed review (each RFC's own header reads
-> **Reviewed**, dated 2026-08-05) and this repository now contains a real, tested C++23
-> implementation alongside the specification set — hundreds of passing tests under `tests/`, dozens
-> of headers under `include/agentengine/`, and 73 ADRs in [`decisions/`](decisions/README.md)
-> recording gates that were actually executed against real code, not just designed. Per the build
-> order in [`docs/planning/v1-implementation-roadmap.md`](docs/planning/v1-implementation-roadmap.md),
-> Milestones 0-6 (core substrate, tools/capabilities/sandbox, worktree/interpreter/CodeAct,
-> sessions/durability/memory, real providers/identity/secrets, multi-agent orchestration) are
-> complete. Milestone 7 (protocol conformance) is **in progress**: a Phase G gate audit
-> (2026-08-08) checked all 28 named gates across MCP/A2A/AG-UI/declarative-format against what had
-> been built and found 3 fully met, 7 partially met, and 18 blocked — mainly on the milestone having
-> deliberately deferred a real network listener. Phase H then resolved that as a genuine trust-boundary
-> question rather than an oversight: the project owner decided (2026-08-15) **AgentEngine will not
-> implement HTTP networking itself** — host code owns the socket and hands the engine parsed requests
-> (`decisions/ADR-061-host-provided-inbound-transport.md`, Judged). Red-teaming that design against the
-> already-shipped M7 code surfaced and fixed four real, live security defects (unauthenticated
-> cross-principal A2A/MCP task reads, an admission-check bypass, non-CSPRNG task ids). With no listener
-> needed for the client-role suite, a first real MCP conformance number now exists: spec `2026-07-28`,
-> non-auth **75/75 (100%)**, auth **3/49 (~6%, no OAuth machinery yet)** — so 011 §10 G2, and the
-> milestone's own exit criterion, remain **not yet met**. ADR-061's host-fronted server-role tier is
-> itself now Judged too (session-side admission mechanism, bearer-credential-to-authority bridges),
-> but it never built the test-fixture listener a real `conformance server`/`a2a-tck` run needs, so
-> 011 §10 G1 and 012 §8 G1 — and most of the remaining blocked gates — stay open on that one missing
-> piece. Milestones 8-9 (safety/observability/perf, hosting/platform/bulk-data) have not started.
-> Each RFC still names the gate that promotes it further,
-> from Reviewed toward Proven and Accepted — see the
-> [per-milestone breakdown docs](docs/planning/) for live, phase-by-phase status.
-
-## The shape of it
+## An agent is a type
 
 ```cpp
 struct Researcher : Agent<Researcher,
@@ -57,21 +31,28 @@ struct Researcher : Agent<Researcher,
         "Research the question. Cite sources. Hand off to the writer when you have enough.";
 };
 
-AgentSessionOptions opts;
-opts.grants = {/* the authority the caller holds; narrowed to Researcher's Capabilities<...> */};
+AgentSessionOptions opts{
+    .session_id = "user-42",
+    .principal  = {"user-42", "tenant-a"},
+    // Every session choice is stated (ADR-244): where authority comes from, the token budget, the turn cap.
+    .choices    = {AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::at_most(50'000),
+                   Bound<std::uint64_t>::at_most(12)},
+    .grants     = {/* the authority the caller holds; narrowed to Researcher's Capabilities<...> */},
+    .chat_client_grants = {},
+    .approve_tools      = std::nullopt,
+    .policy             = {},
+};
 auto researcher = make_agent_session<Researcher>(std::move(chat_client), opts);  // validates, then binds
 auto stream     = researcher->ask_stream("Compare WASI 0.2 and 0.3.");
 ```
 
-`make_agent_session<A>()` (ADR-226) runs `register_agent<A>()`'s validation and returns a running
-session whose tools, turn and token bounds, approval floor and capability ceiling are the ones `A`
-declares — `examples/01_hello_agent.cpp` runs one end to end, offline. The same agent is expressible in
-YAML and compiles to **byte-identical metadata**, and the same bridge (`bind_agent_session()`) runs the
-compiled document — that equivalence is a tested invariant, not a convention.
+`make_agent_session<A>()` validates the declaration and returns a running session whose tools, turn and
+token bounds, approval floor and capability ceiling are the ones `A` declares.
+[`examples/01_hello_agent.cpp`](examples/01_hello_agent.cpp) runs one end to end, offline. The same agent
+written in YAML compiles to byte-identical metadata; that equivalence is a tested invariant.
 
-For a single-provider script that doesn't need the full `Agent<>` policy surface, a smaller facade
-sits over the same `AgentSession` wiring — one credential, a `ModelCallGateway`-wrapped client by
-default, and a synchronous `.ask()`:
+For a single-provider script that doesn't need the full `Agent<>` surface, a smaller builder sits over the
+same session wiring:
 
 ```cpp
 auto built = quickstart::OpenAiSessionBuilder("gpt-4o-mini")
@@ -81,201 +62,122 @@ auto built = quickstart::OpenAiSessionBuilder("gpt-4o-mini")
 if (built) { auto reply = built->ask("Compare WASI 0.2 and 0.3."); }
 ```
 
-`build()` fails closed (no credential, no store) instead of failing at the first `chat()` call, and the
-built `Bundle` also has a streaming entry point, `ask_stream()`, reusing `ask()`'s own proven
-bounded-single-`resume()` contract (`decisions/ADR-073-unified-streaming-gateway-call-stream-tool-argument-result-streaming-ask-stream.md`,
-Judged). See `include/agentengine/core/session_builder.hpp` and
-[`docs/planning/quickstart-session-builder-design-draft.md`](docs/planning/quickstart-session-builder-design-draft.md)
-for scope and the red-team passes (eight rounds and counting) it went through before and after
-promotion.
+`build()` fails closed (no credential, no store) instead of failing at the first model call. See
+`include/agentengine/core/session_builder.hpp` and the
+[design notes](docs/planning/quickstart-session-builder-design-draft.md).
+
+## Build and run
+
+Requirements: CMake 3.28+ and a C++23 compiler. CI builds with MSVC, clang-cl (Windows) and gcc-14 (Linux).
+
+```
+cmake --preset dev          # tests, examples and test tools, unoptimized: the fast edit-build-test loop
+cmake --build --preset dev
+ctest --preset dev
+```
+
+Use `--preset release` for an optimized build; a change to engine templates should pass that one too. The
+dev build directory is `build-dev/`. Run an example from it, for instance
+`build-dev/examples/agentengine_example_01_hello_agent`.
+
+- **Real providers need HTTPS.** `AGENTENGINE_WITH_HTTPS` is OFF by default; turn it on to build the OpenAI and
+  Anthropic chat clients, the embedder and the Qdrant index (it vendors a pinned mbedTLS and CA bundle).
+- **Other options:** `AGENTENGINE_WITH_WASM` (plugin host), `AGENTENGINE_BUILD_PYTHON_RUNNER` (the interpreter).
+- **Tests marked `live-network`** call real services and skip without credentials; exclude them with
+  `ctest -LE live-network`. A handful of sandbox tests also need a Docker daemon.
+- **Parallelism limits and the other machine-safety rules** are in [CONVENTIONS.md](CONVENTIONS.md#build--test--machine-safety).
+- A local compiler cache makes rebuilds several times faster: [docs/guides/local-build-cache.md](docs/guides/local-build-cache.md).
+
+## Examples
+
+Thirty-five programs in [`examples/`](examples/), most of them offline against a scripted fake model. A selection:
+
+| Number | Shows |
+|---|---|
+| `01`-`03` | a first agent, adding tools, multi-turn |
+| `05`, `06` | human approval; capabilities and denial |
+| `07`, `29`, `32` | streaming, session events, the streaming session loop |
+| `08`, `11`, `18` | memory, skill mounts, a custom context provider |
+| `12`, `20`, `22` | session checkpoint, workflow checkpoint and resume, plan sign-off |
+| `04`, `09`, `10`, `13`, `14` | workflows: a first one, concurrent, conditional routing, reflection, multi-selection |
+| `15`, `21`, `23`, `27`, `28` | group chat, workflows as participants, handoff mesh, nested request ports |
+| `16`, `17`, `19`, `25`, `26`, `30` | the `_live` ones: they call a real model and need a provider key |
+| `35` | a harness agent |
 
 ## What makes it different
 
-- **Isolation is the substrate, not a tool.** Every effect — filesystem, network, secrets,
-  subprocess — is reachable only through an explicitly passed capability handle. Sandboxed code
-  starts with *none*. There is no "allow everything" constructor.
-- **Model output is data, never authority.** Nothing a model emits can widen a capability, approve
-  an action, or change policy. Enforced by the type system, not by discipline.
-- **Plugins are WASM components.** One signed artifact runs bit-identically on Windows and Linux
-  (the targeted OSes, 021 §2), holding only what it is granted. That includes the open-source
-  **C/C++ library ecosystem**
-  via `wasi-sdk` — SQLite, tree-sitter, libarchive, codecs, tokenizers, ONNX Runtime — where a heavy
-  library becomes *safer* as a plugin than as a linked host dependency.
-- **A Python interpreter that can actually `import numpy`.** The runtime choice is grounded in
-  dated research rather than fashion: see [the decision](#the-sandbox-decision).
-- **Files outlive the sandbox.** Every session owns a **worktree** — a content-addressed virtual disk
-  the engine manages — so persistence, rewind, and multi-agent sharing are engine properties, not
-  properties of whichever isolation technology is selected. Agents in one session share it or branch
-  from it with an explicit merge.
-- **CodeAct is the action space.** The agent's primary way of acting is writing a program that calls
-  a host-backed library, not emitting one tool-call JSON per step — so control flow and large
-  intermediate data stay inside the sandbox instead of transiting the context window.
-- **An unremarkable environment.** Normal Python, normal paths, normal exceptions, and *zero* prompt
-  text about sandboxes or capabilities. A model has seen millions of lines of ordinary Python and
-  none of our architecture. This is a prompt-surface choice and never a security mechanism — proven
-  by re-running the hostile suite against an agent that has been *told* the architecture.
-- **Standards-native.** MCP `2026-07-28` (stateless core, MRTR), A2A v1.0, AG-UI, OTel GenAI — each
-  with a named revision and an executable conformance suite. "Supports MCP" without a passing suite
-  is not a claim this project makes.
-- **Runs are replayable.** Every nondeterministic input crosses a recorded seam, so a run replays
-  offline with no external service contacted.
+- **Isolation is the substrate, not a tool.** Every effect (filesystem, network, secrets, subprocess) is
+  reachable only through an explicitly passed capability. Sandboxed code starts with none; there is no
+  "allow everything" constructor.
+- **Model output is data, never authority.** Nothing a model emits can widen a capability, approve an
+  action or change policy.
+- **Files outlive the sandbox.** Every session owns a content-addressed **worktree** the engine manages, so
+  persistence, rewind and multi-agent sharing don't depend on which isolation backend is selected.
+- **CodeAct is the action space.** The agent acts by writing a program against a host-backed library, so
+  control flow and large intermediate data stay in the sandbox instead of passing through the context
+  window.
+- **A Python interpreter that can `import numpy`.** It is embedded native CPython, chosen on dated
+  evidence ([research](docs/research/2026-standards-landscape.md) §6-8), not WASM.
+- **Plugins are WASM components** (WASI 0.3): one signed artifact runs the same on Windows and Linux, holding
+  only what it is granted.
+- **Standards with a named revision and a conformance run.** MCP `2026-07-28`, A2A v1.0, AG-UI, OTel GenAI.
+  The one number measured so far (2026-08, client role): MCP non-auth 75/75, auth 3/49 because there is
+  no OAuth client yet, so the MCP gate is **not yet met**. "Supports MCP" without a passing suite is not a
+  claim this project makes.
+- **Runs replay offline.** Every nondeterministic input crosses a recorded seam.
 
-## The sandbox decision
+## Layers
 
-The most consequential decision in the design, and the one most likely to be questioned:
+```
+ L4  Protocol surfaces     MCP server + client · A2A · AG-UI · OpenAI-compatible HTTP
+ L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
+ L2  Agent core            Agent · AgentSession · tool plane · ChatClient plane · middleware
+ L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
+ L0  Runtime substrate     agentengine::rt:: async mutex, thread pool, session/append-log store,
+                           circuit breaker, channel/stream backend, platform abstraction layer
+```
 
-- **WASM Component Model (WASI 0.3) is the plugin ABI — locked.** Portable, capability-based by
-  construction, language-agnostic, microsecond instantiation. The ecosystem risk is low because
-  *we* define the WIT world and authors compile to it.
-- **The Python code interpreter is embedded native CPython, permanently — never WASM, and never a
-  second runtime.** As of July 2026 the rich Python-on-WASM ecosystem (NumPy, pandas, SciPy, and
-  PEP 783 wheels on PyPI) is **Emscripten**-targeted and needs a JavaScript host, so it cannot be
-  embedded via wasmtime; the embeddable **WASI** CPython — governed by the now-accepted PEP 816 —
-  still lacks sockets, threads, a wheel platform tag, and a binary-wheel ecosystem. That evidence is
-  corroborating, not the reason: even a mature WASI Python would still be a second Python runtime,
-  and this project deliberately chooses one, permanently, so an agent's generated code — and the
-  humans verifying it — never have to know which runtime they're dealing with.
+Every agent runs inside a sandbox from a `SandboxBackend` that hosts its worktree. Execution options
+(`microvm` via Kata, `native-jail`, `remote`, `wasm`, `NoSandboxBackend`) are identical in contract and
+differ in strength; none is the default, and the developer chooses one and owns its disclosed risk
+([ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md), 2026-10-20).
 
-Isolation is still a seam with named profiles (`wasm`, `native-jail`, `remote`), identical in
-*contract* and differing only in *strength* — but the interpreter itself does not fork across them.
-Isolation strength for CPython comes from treating the **whole execution environment** (worktree,
-runners, capabilities, network policy) as the sandbox, with CPython's own dangerous entry points
-mediated at the point of use and the OS-level jail as a second layer (008 §1b) — not from swapping
-the interpreter for a differently-capable one. There is no `microvm` profile: a workload that would
-have reached for hardware isolation uses `remote` against infrastructure that already provides it.
-Evidence: [`docs/research/2026-standards-landscape.md`](docs/research/2026-standards-landscape.md)
-§6–8.
-
-## Core invariants
+## Eight invariants
 
 | | |
 |---|---|
-| **I1** | One session, one executor — `rt::AsyncMutex`, a runtime-checked guard (historical: originally Quark's structural, mailbox-enforced single-executor invariant; ADR-037) |
-| **I2** | No ambient authority — every effect needs an explicitly passed capability |
+| **I1** | One session, one executor |
+| **I2** | No ambient authority: every effect needs an explicitly passed capability |
 | **I3** | Model output is data, never authority |
-| **I4** | Every effect is attributable — span + audit record, always |
-| **I5** | Nondeterminism crosses a recorded seam — runs replay offline |
+| **I4** | Every effect is attributable: span and audit record, always |
+| **I5** | Nondeterminism crosses a recorded seam: runs replay offline |
 | **I6** | Declarative and native authoring surfaces are equivalent |
 | **I7** | Protocol conformance is a gate, at a named revision |
 | **I8** | Budgets are enforced by a benchmark gate, not documented |
 
 Full statements: [AgentEngineSpecification.md §4](AgentEngineSpecification.md).
 
-## Layering
+## Where things are
 
-```
- L4  Protocol surfaces     MCP server + client · A2A · AG-UI · OpenAI-compatible HTTP
- L3  Orchestration         workflow graph, handoff, group chat, checkpoint / resume / time-travel
- L2  Agent core            Agent · AgentSession · Tool plane · ChatClient plane · Middleware
- L1  Trust & isolation     capability model · sandbox seam · WASM component plugin ABI
- L0  Runtime substrate     agentengine::rt:: async mutex, thread pool, session/append-log store,
-                           circuit breaker, channel/stream backend, PAL
-```
-
-AgentEngine owns its own scheduler-equivalent (`rt::ThreadPool`), its own single-executor guard
-(`rt::AsyncMutex`), and its own durability seam (`rt::SessionStore`/`rt::AppendLogStore`) — no
-distributed cluster membership, no actor mailbox (historical: L0 used to be a configured Quark seam;
-ADR-037 replaced it with this self-contained substrate, and there is no multi-node cluster story at
-all post-migration).
-
-## The specification set
-
-Start with the [specification](AgentEngineSpecification.md), then
-[CONVENTIONS.md](CONVENTIONS.md), then the RFCs. Load-bearing first: **001, 002, 006, 007, 008,
-009, 010, 011**.
-
-| # | Document | Covers | Status |
-|---|---|---|---|
-| — | [AgentEngineSpecification.md](AgentEngineSpecification.md) | Vision, layering, invariants, locked decisions, the runtime substrate, glossary | Draft |
-| — | [CONVENTIONS.md](CONVENTIONS.md) | The binding coding contract | Draft |
-| 001 | [Execution Model](001-Execution-Model.md) | Run lifecycle, turn loop, concurrency, cancellation, failure, replay | Reviewed |
-| 002 | [Agent Model and Authoring](002-Agent-Model-and-Authoring.md) | CRTP policy surface, composition, middleware, metadata validation | Reviewed |
-| 003 | [Message and Content Model](003-Message-and-Content-Model.md) | `Content` items, provenance and taint, blobs, structured output, usage | Reviewed |
-| 004 | [ChatClient Plane](004-Model-Provider-Plane.md) | `ChatClient` seam, capability-driven degradation, reliability, cost, recording | Reviewed |
-| 005 | [Sessions, State and Memory](005-Sessions-State-and-Memory.md) | `AgentSession` actor, persistence, context assembly, compaction, memory, redaction | Reviewed |
-| 006 | [Tool and Function Plane](006-Tool-and-Function-Plane.md) | Declaration, the 10-step invocation pipeline, approval, concurrency, result hygiene | Reviewed |
-| 007 | [Capability and Trust Model](007-Capability-and-Trust-Model.md) | Threat model, principals, capabilities, taint, policy, trust tiers, supply chain, audit | Reviewed |
-| 008 | [Sandbox and Isolation](008-Sandbox-and-Isolation.md) | The isolation contract, profiles, per-backend enforcement, determinism, abuse handling | Reviewed |
-| 009 | [Plugin and Extension System](009-Plugin-and-Extension-System.md) | WIT worlds, package format, lifecycle, host imports, the C/C++ library track, skills | Reviewed |
-| 010 | [Code Interpreter and Shell](010-Python-Code-Interpreter.md) | Interpreter + CodeAct + Shell sharing one execution context, runtime selection and its evidence, workspace, packages, the `call_tool` bridge | Reviewed |
-| 011 | [MCP Conformance](011-MCP-Conformance.md) | MCP `2026-07-28` client + server: stateless core, MRTR, tools/resources/prompts, extensions, authorization | Reviewed |
-| 012 | [A2A Conformance](012-A2A-Conformance.md) | A2A v1.0: agent card, task lifecycle, bindings, delegation | Reviewed |
-| 013 | [UI and Streaming Surfaces](013-UI-and-Streaming-Surfaces.md) | The internal run event stream and its projections (AG-UI, A2A, SSE) | Reviewed |
-| 014 | [Workflow and Orchestration](014-Workflow-and-Orchestration.md) | Typed executor graph, supersteps, patterns, checkpointing, time-travel | Reviewed |
-| 015 | [Declarative Agent Format](015-Declarative-Agent-Format.md) | YAML/JSON agents and workflows; the equivalence rule | Reviewed |
-| 016 | [Observability](016-Observability.md) | OTel GenAI conformance, traces, metrics, content-capture privacy, audit vs telemetry | Reviewed |
-| 017 | [Safety and Content Governance](017-Safety-and-Content-Governance.md) | Prompt injection defence in depth, filters, PII, attack-class table | Reviewed |
-| 018 | [Identity, Authorization and Secrets](018-Identity-Authorization-and-Secrets.md) | Principals, admission vs effect authorization, secret seam, multi-tenancy | Reviewed |
-| 019 | [Durability and Long-Running Agents](019-Durability-and-Long-Running-Agents.md) | Checkpoints, suspension, exactly-once effects, recovery, retention | Reviewed |
-| 020 | [Configuration and Hosting](020-Configuration-and-Hosting.md) | Policy vs configuration, hosting shapes, server surfaces, operations | Reviewed |
-| 021 | [Platform Support and Portability](021-Platform-Support-and-Portability.md) | Support tiers, per-subsystem portability risk, build matrix | Reviewed |
-| 022 | [Testing and Evaluation](022-Testing-and-Evaluation.md) | Deterministic simulation, golden traces, evaluation, positive controls | Reviewed |
-| 023 | [Performance Targets and Budgets](023-Performance-Targets-and-Budgets.md) | Budget classes, provisional numbers, machine-independent invariants | Reviewed |
-| 024 | [Versioning, Compatibility and Governance](024-Versioning-Compatibility-and-Governance.md) | Versioning, deprecation, the decision process, RFC hygiene | Reviewed |
-| 025 | [Worktree and Virtual Filesystem](025-Worktree-and-Virtual-Filesystem.md) | The session's virtual disk: content-addressed objects, sub-worktrees, sharing and merge, mounts, per-turn commit | Reviewed |
-| 026 | [Agent-Facing Runtime Surface](026-Agent-Facing-Runtime-Surface.md) | What the model sees: the ordinary environment, plain Python, and the `agent` library that *is* CodeAct's action space | Reviewed |
-| 027 | [Vocabulary and Naming](027-Vocabulary-and-Naming.md) | The canonical name for every concept, aligned to MAF, plus the collision register for words that mean different things in different specs | Reviewed |
-| 028 | [Bulk Data Transfer and Zero-Copy](028-Bulk-Data-Transfer-and-Zero-Copy.md) | Moving large data without JSON, without copies, and without touching the context window: handles, Arrow, per-profile mapping | Reviewed |
-| 029 | [Memory System](029-Memory-System.md) | Memory as a principal-scoped worktree, not a wrapped vector database: structured `MemoryItem`s, attributed extraction, deterministic default retrieval, vectors as an optional upgrade | Reviewed |
-| 030 | [Project: Workspace Grouping and Lifecycle](030-Project-Workspace-and-Lifecycle.md) | A durable unit above a session — root session + owned sub-sessions + their worktree refs — with directed pause/restore/resume and no cap on concurrently open projects | Reviewed |
-
-Supporting documents: [`OpenQuestions.md`](OpenQuestions.md) (cross-cutting unresolved questions),
-[`decisions/`](decisions/) (the ADR process and record), and the dated, cited research records —
-[the 2026 standards landscape](docs/research/2026-standards-landscape.md) (protocol content,
-sandboxing trade space, the Python-on-WASM finding) and
-[the MCP ecosystem](docs/research/2026-mcp-ecosystem.md) (registry, SDKs, the C/C++ landscape, and
-the official conformance suite).
-
-### Conformance is a number, not a paragraph
-
-MCP publishes an **official conformance suite** that tests both client and server roles and
-validates every message against the spec's schema, and SEP-2484 explicitly permits any
-implementation to run it and report a compliance percentage. RFC 011's gate is therefore executable:
-`conformance server --url … --suite all` and `conformance client --command … --spec-version
-2026-07-28`, with a published percentage per role, pinned to a conformance release. Notably, **no C
-or C++ implementation currently claims `2026-07-28` conformance** — AgentEngine would be among the
-first.
-
-## Maturity ladder
-
-**Draft** → **Reviewed** (open questions resolved or deferred) → **Proven** (the RFC's named gate
-executed and recorded as an ADR) → **Accepted (platform)** (proven, implemented, covered by the
-suite on a named platform). **Reviewed is the floor today, not Draft** — all 30 RFCs cleared their
-review gate 2026-08-05 (`docs/planning/v1-review-signoff-workflow.md`; each RFC's own `**Status:**`
-header confirms it). Promotion beyond Reviewed happens by executing a gate — not by consensus that a
-document reads well — and several RFCs already have real, executed evidence in `decisions/` toward
-their named gate: 007 (Capability and Trust Model, §9) via ADR-005/006/007/009; 008 (Sandbox and
-Isolation, §9) via ADR-004/008/011/013/071; 009 (Plugin and Extension System, §10) via ADR-010; 010
-(Python Code Interpreter, §9) via ADR-001/002/003/015; 011 (MCP Conformance, §10) via ADR-061 §11's
-Tier 1 prove phase (real client-role conformance number, non-auth 75/75); 025 (Worktree and Virtual
-Filesystem, §9) via ADR-014. None of that evidence is a full gate close, though — every one of those
-ADRs is explicit about what it leaves open (e.g. ADR-004 is "Spiked, not Judged"; ADR-009 resolves "007 §3's
-in-process enforcement half"; ADR-014 is Windows-only with named untested residuals), so no RFC has
-actually reached **Proven** yet by this ladder's own strict definition. Check the ADR itself before
-citing one as closing a specific gate item.
-
-## Relationship to Quark (historical)
-
-AgentEngine used to consume [Quark](https://github.com/thnak/QuarkCpp) as an **unmodified
-submodule**, mapping its own concepts onto Quark's (sessions were actors, runs were asks, streams
-were credit-rings, durability was the `Store` seam) and never patching it in-tree — runtime changes
-went upstream as Quark RFCs. `decisions/ADR-037-remove-quark-as-core-runtime.md` (executed
-2026-08-13) removed that dependency entirely: `third_party/quark` is no longer a submodule of this
-repository, and AgentEngine's runtime substrate is now its own `agentengine::rt::` namespace (see
-`AgentEngineSpecification.md` §7). The design → red-team → prove → judge ADR process this project
-uses is still modeled on Quark's own governance discipline, which is unaffected by the runtime
-change.
+| | |
+|---|---|
+| [`rfcs/`](rfcs/README.md) | the 30 RFCs: the authoritative design, with an index and maturity ladder |
+| [`AgentEngineSpecification.md`](AgentEngineSpecification.md) | vision, layering, invariants, locked decisions |
+| [`CONVENTIONS.md`](CONVENTIONS.md) | the binding coding contract |
+| [`decisions/`](decisions/README.md) | ADRs: executed proofs behind specific gates, and the decision log |
+| [`OpenQuestions.md`](OpenQuestions.md) | what is unresolved and what it blocks |
+| [`docs/`](docs/) | research (dated, cited), planning and milestone status, guides, architecture |
+| `include/agentengine/`, `src/`, `tests/` | the engine; tests are one per load-bearing invariant |
+| `examples/`, `samples/` | runnable programs |
+| `wit/`, `plugins/`, `schema/` | the plugin ABI, first-party plugins, declarative-format schemas |
 
 ## Contributing
 
-Read [CONVENTIONS.md](CONVENTIONS.md) first. Every change must follow the specs; **when code and a
-spec disagree, the spec wins** — if the spec is wrong, fix the spec first, backed by an ADR, then
-the code. Contested, hot-path, or security-critical designs go through
-`design → red-team → prove → judge` and produce an ADR, not an ad-hoc change.
+Read [CONVENTIONS.md](CONVENTIONS.md) first. Every change follows the RFCs; when code and an RFC disagree,
+the RFC wins, so fix the RFC first, backed by an ADR, then the code. Contested, hot-path or
+security-critical designs go through `design → red-team → prove → judge` and produce an ADR, not an ad-hoc
+change. Security reports: [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-**MIT** — see [`LICENSE`](LICENSE). Resolved by the project owner 2026-08-04
-([024 Q1](024-Versioning-Compatibility-and-Governance.md), OQ-11), originally to match Quark's own
-licence back when Quark was a consumed dependency; ADR-037 later removed that dependency without
-reopening the licence choice.
+MIT, see [`LICENSE`](LICENSE).

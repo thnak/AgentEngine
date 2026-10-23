@@ -1,5 +1,5 @@
 #pragma once
-// Implements 029-Memory-System.md §4/§5 — `MemoryProvider`, a real `ContextProvider` conformer.
+// Implements rfcs/029-Memory-System.md §4/§5 — `MemoryProvider`, a real `ContextProvider` conformer.
 // Milestone 4 Phase G3 (writing: extraction via a declared `ChatClient`, decision 8) and Phase G4
 // (reading: default structured retrieval + a contributed `recall(query)` tool). Built last, after
 // B's `ContextProvider`/`ContextContribution.tools` (B1) and G1/G2's worktree-backed
@@ -32,6 +32,7 @@
 #include "agentengine/core/provenance_marker.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -192,13 +193,13 @@ inline constexpr double kMaxRelativeRecencyBoost = 1.0;
 // fixed memory-worktree tree digest and a fixed turn; no network call occurs") — every input is
 // either stored, structured data or the query text itself; nothing here reads a clock or calls out.
 template <WorktreeObjectStore OS, rt::AppendLogStore RS>
-[[nodiscard]] result<std::vector<MemoryItem>> rank_memory_items(OS& object_store, RS& ref_store,
-                                                                   Mount const& mount,
-                                                                   cap::FsRead const& granted,
-                                                                   std::string const& query_text,
+[[nodiscard]] task<result<std::vector<MemoryItem>>> rank_memory_items(OS& object_store, RS& ref_store,
+                                                                   Mount mount,
+                                                                   cap::FsRead granted,
+                                                                   std::string query_text,
                                                                    std::size_t max_results) {
-    auto items = list_memory_items(object_store, ref_store, mount, granted);
-    if (!items) return std::unexpected(items.error());
+    auto items = co_await list_memory_items(object_store, ref_store, mount, granted);
+    if (!items) co_return std::unexpected(items.error());
 
     std::uint64_t max_write_seq = 0;
     for (auto const& item : *items) max_write_seq = std::max(max_write_seq, item.write_seq);
@@ -223,8 +224,51 @@ template <WorktreeObjectStore OS, rt::AppendLogStore RS>
     for (std::size_t k = 0; k < scored.size() && k < max_results; ++k) {
         out.push_back((*items)[scored[k].second]);
     }
-    return out;
+    co_return out;
 }
+
+// ADR-237 §5.2: the contributed `recall` tool as a real `Tool<>` conformer (it was a hand-built
+// descriptor with a `make_sync_invoke` closure capturing the provider's read-only config by value).
+// It holds that same config, so it is deliberately NOT `CapturesSessionState` -- exactly as the old
+// closure was not (unlike the todos_* tools, whose closure captured `this`). The declared ceiling is
+// empty because the run's own read capability is only known at provider construction;
+// `make_recall_tool_descriptor()` still sets the ADR-153 runtime ceiling on the returned descriptor
+// (D3 later replaces that with a per-call requirement). Precondition (unchanged from the old
+// copy-capturing closure): the `MemoryProvider` -- and the `OS`/`RS` it points at -- must outlive any
+// `ToolDescriptor` this produces and any call driven through it.
+template <class OS, class RS>
+// ae-naming-lint: allow RecallTool — ADR-237 §5.2 Tool<> conformer for MemoryProvider's recall
+struct RecallTool : Tool<RecallTool<OS, RS>, Capabilities<>, Approval<approval_mode::never_require>> {
+    static constexpr std::string_view name        = "recall";
+    static constexpr std::string_view description = "Search memory for items matching a query.";
+    using Args  = RecallArgs;
+    using Reply = RecallReply;
+
+    RecallTool(OS* object_store, RS* ref_store, Mount mount, cap::FsRead read_cap)
+        : object_store_(object_store), ref_store_(ref_store), mount_(std::move(mount)),
+          read_cap_(std::move(read_cap)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext&) const {
+        auto ranked = co_await rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, args.query,
+                                        /*max_results=*/10);
+        if (!ranked) co_return std::unexpected(ranked.error());
+        // Gap-audit finding 17 applies here identically to `on_context()`'s default injection -- an
+        // item fetched on-demand via this tool is exactly as much "memory rendered for the agent to
+        // read" as a pre-injected one, so it gets the same confidence label.
+        Reply reply;
+        reply.results.reserve(ranked->size());
+        for (auto const& item : *ranked) {
+            reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
+        }
+        co_return reply;
+    }
+
+private:
+    OS*         object_store_;
+    RS*         ref_store_;
+    Mount       mount_;
+    cap::FsRead read_cap_;
+};
 
 // The `ContextProvider` conformer 029 §4/§5 both attach through. `OS`/`RS` mirror
 // `WorktreeObjectStore`/`rt::AppendLogStore`'s own template shape everywhere else in this project;
@@ -234,7 +278,7 @@ template <class SummarizerT, class OS, class RS>
     requires ChatClient<SummarizerT> && WorktreeObjectStore<OS> && rt::AppendLogStore<RS>
 class MemoryProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "memory";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     MemoryProvider(OS& object_store, RS& ref_store, Mount mount, cap::FsRead read_cap,
@@ -245,7 +289,10 @@ public:
           read_cap_(std::move(read_cap)),
           write_cap_(std::move(write_cap)),
           summarizer_(std::move(summarizer)),
-          max_injected_(max_injected) {}
+          max_injected_(max_injected) {
+        // ADR-237 §5.2 (N1): build the `recall` descriptor once; its config is fixed at construction.
+        recall_tool_ = build_recall_tool();
+    }
 
     // Phase G4: default injection (a short, budgeted set of high-ranked items, 029 §5) plus a
     // contributed `recall(query)` tool for on-demand lookups beyond what was pre-injected. Milestone
@@ -257,7 +304,7 @@ public:
         note_user_message(session_ctx.history);
 
         auto ranked =
-            rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
+            co_await rank_memory_items(*object_store_, *ref_store_, mount_, read_cap_, query_text, max_injected_);
         if (!ranked) co_return std::unexpected(ranked.error());
 
         ContextContribution contribution;
@@ -268,7 +315,7 @@ public:
         co_return contribution;
     }
 
-    // decisions/ADR-153-agent-memory-codeact-bridging.md: made PUBLIC (was private, reachable only
+    // decisions/archive/ADR-153-agent-memory-codeact-bridging.md: made PUBLIC (was private, reachable only
     // from `on_context()`'s own push into `ContextContribution.tools` above) so a host embedding both
     // this provider and a CodeAct sandbox (`src/backends/native_jail/`) can explicitly fold the SAME
     // `ToolDescriptor` into their own, separately-assembled `ToolBridgeConfig::bridged_tools`
@@ -281,51 +328,38 @@ public:
     // this change does not add any); it only removes an accidental encapsulation blocker that left the
     // CodeAct path with no way to reach an already-real, already-tested capability at all.
     [[nodiscard]] ToolDescriptor make_recall_tool_descriptor() const {
-        ToolDescriptor d;
-        d.name              = "recall";
-        d.description       = "Search memory for items matching a query.";
-        d.approval           = approval_mode::never_require;
-        d.args_schema_json  = schema::json_schema_of<RecallArgs>();
-        d.reply_schema_json = schema::json_schema_of<RecallReply>();
-        // decisions/ADR-153-agent-memory-codeact-bridging.md red-team, must-fix: without this, the
-        // closure below's authority comes ENTIRELY from `read_cap_` -- a value baked in at THIS
-        // provider's own construction, never re-derived from whatever `held` CapabilitySet the
-        // CALLER of `invoke_tool()` actually passes (`tool_pipeline.hpp`'s step 4/7 only binds
-        // against `capability_ceiling`; an empty one, as this was before, means step 4/7 is a no-op
-        // for this tool regardless of what the caller holds). That is harmless through
-        // `on_context()`'s own native-tool-calling path (the session's own resolved capabilities are
-        // exactly what this provider was constructed with, by the same host, in the first place) but
-        // would be a real I2 violation if this descriptor is bridged into a sandbox's
-        // `ToolBridgeConfig` (`tool_bridge.hpp`) as `make_recall_tool_descriptor()`'s own public-ness
-        // now permits: a sandbox holding NO matching FsRead grant would still read memory, reaching
-        // straight through to the native session's own authority rather than the sandbox's
-        // separately host-configured one. Declaring the ceiling here closes that door the same way
-        // every OTHER capability-gated tool in this codebase already is gated, for both callers alike.
-        d.capability_ceiling = {Capability{read_cap_}};
+        // ADR-237 §5.2 (N1): built once, in the constructor (`build_recall_tool()`); this hands out a
+        // copy for a caller that needs to own one (e.g. a CodeAct bridge's `ToolBridgeConfig`). The
+        // ADR-153 public-ness rationale above is unchanged.
+        return recall_tool_;
+    }
 
-        OS* object_store = object_store_;
-        RS* ref_store    = ref_store_;
-        Mount mount      = mount_;
-        cap::FsRead read_cap = read_cap_;
-        d.invoke = [object_store, ref_store, mount, read_cap](
-                       json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<RecallArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            auto ranked = rank_memory_items(*object_store, *ref_store, mount, read_cap, args->query,
-                                             /*max_results=*/10);
-            if (!ranked) return std::unexpected(ranked.error());
-            // Gap-audit finding 17 applies here identically to `on_context()`'s default injection --
-            // an item fetched on-demand via this tool is exactly as much "memory rendered for the
-            // agent to read" as a pre-injected one, so it gets the same confidence label.
-            RecallReply reply;
-            reply.results.reserve(ranked->size());
-            for (auto const& item : *ranked) {
-                reply.results.push_back(memory_detail::memory_item_to_labeled_text(item));
-            }
-            return schema::to_json(reply);
-        };
+private:
+    [[nodiscard]] ToolDescriptor build_recall_tool() const {
+        ToolDescriptor d = make_tool_descriptor<RecallTool<OS, RS>>(
+            RecallTool<OS, RS>{object_store_, ref_store_, mount_, read_cap_});
+        // decisions/archive/ADR-153-agent-memory-codeact-bridging.md red-team, must-fix: without this, the
+        // tool's authority comes ENTIRELY from `read_cap_` -- a value baked in at THIS provider's own
+        // construction, never re-derived from whatever `held` CapabilitySet the CALLER of
+        // `invoke_tool()` actually passes (`tool_pipeline.hpp`'s step 4/7 only binds against
+        // `capability_ceiling`; an empty one, as this was before, means step 4/7 is a no-op for this
+        // tool regardless of what the caller holds). That is harmless through `on_context()`'s own
+        // native-tool-calling path (the session's own resolved capabilities are exactly what this
+        // provider was constructed with, by the same host, in the first place) but would be a real I2
+        // violation if this descriptor is bridged into a sandbox's `ToolBridgeConfig`
+        // (`tool_bridge.hpp`) as `make_recall_tool_descriptor()`'s own public-ness now permits: a
+        // sandbox holding NO matching FsRead grant would still read memory, reaching straight through
+        // to the native session's own authority rather than the sandbox's separately host-configured
+        // one. Declaring the ceiling here closes that door the same way every OTHER capability-gated
+        // tool in this codebase already is gated, for both callers alike. (The `Tool<>` conformer
+        // cannot carry this itself -- the value is only known at construction -- so it stays a
+        // post-hoc set here; ADR-237 §9 D3 replaces it with a per-call requirement derived from the
+        // arguments and bound by the pipeline.)
+        d.capability_ceiling = {Capability{read_cap_}};
         return d;
     }
+
+public:
 
     // Phase G3: "ContextProvider.on_turn_end is where memory is written... may call a declared
     // ChatClient to extract candidate MemoryItems from the turn — an ordinary, budgeted,
@@ -367,7 +401,7 @@ public:
         item.content = last_extraction_.text;
         item.origin = MemoryOrigin{memory_source::model_inferred, ctx.run_id,
                                     std::to_string(ctx.turn_index), ctx.principal};
-        (void)write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
+        (void)co_await write_memory_item(*object_store_, *ref_store_, mount_, write_cap_, item);
         co_return std::monostate{};
     }
 
@@ -440,6 +474,7 @@ private:
     cap::FsWrite    write_cap_;
     SummarizerT     summarizer_;
     std::size_t     max_injected_;
+    ToolDescriptor  recall_tool_;  // ADR-237 §5.2 (N1): built once in the constructor
     std::optional<Message> pending_user_;  // ADR-190: the user message the next extraction includes
     std::string     last_user_key_;
     MemorySummaryDecision last_extraction_;

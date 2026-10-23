@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-172-containerd-execution-surface-isolation.md (GitHub issue #66) -- the
+// Proof for decisions/archive/ADR-172-containerd-execution-surface-isolation.md (GitHub issue #66) -- the
 // containerd sibling of ADR-171, which closed the identical gap for Docker.
 //
 // Before ADR-172, `ContainerdCliBackend::create()` emitted
@@ -50,6 +50,7 @@
 // and destroyed explicitly. Containment is proven by READING the kernel's own limit records rather
 // than by trying to breach them.
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
 #include <cstdio>
@@ -105,6 +106,18 @@ void check(bool cond, std::string const& what) {
         if (s == needle) ++n;
     }
     return n;
+}
+
+// True when `ls /sys/class/net` output names any interface other than loopback. The probes used to look
+// for the literal "eth0", which only exists on hosts without predictable interface names (a host NIC
+// called enp7s0 made every positive control fail while the negative checks passed vacuously).
+[[nodiscard]] bool has_non_loopback_interface(std::string const& ls_output) {
+    std::istringstream lines(ls_output);
+    for (std::string line; std::getline(lines, line);) {
+        while (!line.empty() && (line.back() == static_cast<char>(13) || line.back() == ' ')) line.pop_back();
+        if (!line.empty() && line != "lo") return true;
+    }
+    return false;
 }
 
 [[nodiscard]] bool contains(std::string const& haystack, std::string const& needle) {
@@ -294,7 +307,7 @@ int main() {
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
             check(net.has_value() && contains(net->stdout_text, "lo") &&
-                      !contains(net->stdout_text, "eth0"),
+                      !has_non_loopback_interface(net->stdout_text),
                   "L1: the container has ONLY loopback -- read from inside its own network namespace");
 
             auto caps = backend.exec(*inst, "grep CapBnd /proc/self/status");
@@ -334,7 +347,7 @@ int main() {
         check(inst.has_value(), "L2 setup: a host-networked container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
-            check(net.has_value() && contains(net->stdout_text, "eth0"),
+            check(net.has_value() && has_non_loopback_interface(net->stdout_text),
                   "L2 (POSITIVE CONTROL): the SAME code path WITH host_network does see the host's "
                   "interfaces -- so L1's absence of eth0 is a real containment result this probe is "
                   "capable of reporting the opposite of");
@@ -357,16 +370,16 @@ int main() {
         // Default surface: contained, and its real job still works.
         {
             ContainerdExecutionSurface surface;
-            auto reset = surface.reset(work);
+            auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: the default surface bind-mounts the directory");
             if (reset.has_value()) {
-                auto net = surface.run("ls /sys/class/net");
-                check(net.has_value() && !contains(net->stdout_text, "eth0"),
+                auto net = agentengine::rt::block_on(surface.run("ls /sys/class/net"));
+                check(net.has_value() && !has_non_loopback_interface(net->stdout_text),
                       "L5: the surface's own container is network-isolated too");
-                auto caps = surface.run("grep CapBnd /proc/self/status");
+                auto caps = agentengine::rt::block_on(surface.run("grep CapBnd /proc/self/status"));
                 check(caps.has_value() && contains(caps->stdout_text, "0000000000000000"),
                       "L5: and runs with a zeroed capability bounding set");
-                auto seeded = surface.run("cat hello.txt");
+                auto seeded = agentengine::rt::block_on(surface.run("cat hello.txt"));
                 check(seeded.has_value() && contains(seeded->stdout_text, "seed"),
                       "L5: while the surface's real job -- the bind mount -- still works under "
                       "containment; this is not a test that passes by breaking the feature");
@@ -380,11 +393,11 @@ int main() {
             ContainerdIsolation host_net{};
             host_net.host_network = true;
             ContainerdExecutionSurface surface("docker.io/library/alpine:latest", host_net);
-            auto reset = surface.reset(work);
+            auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: a host-networked surface resets");
             if (reset.has_value()) {
-                auto net = surface.run("ls /sys/class/net");
-                check(net.has_value() && contains(net->stdout_text, "eth0"),
+                auto net = agentengine::rt::block_on(surface.run("ls /sys/class/net"));
+                check(net.has_value() && has_non_loopback_interface(net->stdout_text),
                       "L5: the CALLER's isolation genuinely reaches reset()'s own create() -- a "
                       "surface that dropped it on the floor would show only loopback here and every "
                       "other check in this file would still have passed");

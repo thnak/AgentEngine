@@ -43,9 +43,13 @@
 #include <vector>
 
 #include "agentengine/core/history_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/session_builder.hpp"
 #include "agentengine/core/skill_provider.hpp"
+#include "agentengine/pal/net.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/secret_quarantine.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
 
 namespace {
@@ -172,7 +176,7 @@ struct ScriptedChatClient {
         return std::move(pair.consumer);
     }
 };
-// B30 (decisions/ADR-175 round 3 finding 1): a provider that throws. `ask_stream()`'s driver thread runs
+// B30 (decisions/archive/ADR-175 round 3 finding 1): a provider that throws. `ask_stream()`'s driver thread runs
 // the round through `rt::block_on()`, which rethrows -- uncaught on a std::jthread that was std::terminate.
 struct ThrowingChatClient {
     bool throws = true;  // a member, not a literal: a bare `throw` before `co_return` is unreachable code (C4702)
@@ -232,7 +236,7 @@ int main() {
 
     // ---- B1: no .api_key_from_env() at all -- build() fails closed, not a thrown exception --------
     {
-        auto built = OpenAiSessionBuilder("gpt-4o-mini").build();
+        auto built = OpenAiSessionBuilder("gpt-4o-mini").choices(ae_test::trusted(std::nullopt, 25)).build();
         check(!built.has_value(), "no credential named at all: build() fails");
         if (!built.has_value()) {
             check(built.error().code == "quickstart_builder.no_credential",
@@ -245,7 +249,7 @@ int main() {
     {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_DEFINITELY_UNSET")
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(!built.has_value(), "credential named but env var unset: build() fails");
         if (!built.has_value()) {
             check(built.error().code == "quickstart_builder.no_store",
@@ -265,18 +269,23 @@ int main() {
                          .session_id("s-proto")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "credential named and set: build() succeeds");
         if (built.has_value()) {
             check(built->session().has_chat_client(),
                   "the built session has a ChatClientT emplaced (ModelCallGateway<OpenAIChatClient>)");
-            check(built->capabilities().size() == 2,
-                  "capabilities() holds BOTH the implicit cap::Secret from api_key_from_env() AND the "
-                  "explicit .grant() -- neither silently dropped, neither silently duplicated");
-            check(built->capabilities().contains(
+            // ADR-244 §2.3 (slice 3c): the key's cap::Secret is the chat client's, held for the model call only.
+            check(built->capabilities().size() == 1 &&
+                      built->capabilities().contains(Capability{cap::FsRead{"scratch", "", std::nullopt}}),
+                  "capabilities() holds exactly the explicit .grant() -- the run's authority, which tools read");
+            check(!built->capabilities().contains(
                       Capability{cap::Secret{"openai-api-key", std::chrono::seconds{0}}}),
-                  "the api_key_from_env()-derived cap::Secret grant is really present, matching the "
-                  "SecretRef name the constructed OpenAIChatClient will resolve against at call time");
+                  "the api_key_from_env()-derived cap::Secret is NOT in the run's authority (ADR-244 §2.3)");
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"openai-api-key", std::chrono::seconds{0}}}),
+                  "the cap::Secret is held as the chat client's own secret, matching the SecretRef name the "
+                  "constructed OpenAIChatClient will resolve against at call time");
 
             // ---- §3's own load-bearing claim: MOVE the Bundle, then dereference through the new
             // location. If Store/CapabilitySet were stack-owned (the design draft's original, WRONG
@@ -288,7 +297,7 @@ int main() {
             auto moved = std::move(*built);
             check(moved.session().has_chat_client(),
                   "after moving the Bundle, the session (heap-owned via unique_ptr) is still wired");
-            check(moved.capabilities().size() == 2,
+            check(moved.capabilities().size() == 1,
                   "after moving the Bundle, CapabilitySet (heap-owned, stable address) still reads back "
                   "correctly -- the session's internal CapabilitySet const* still points at live memory");
         }
@@ -305,17 +314,22 @@ int main() {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("wrong-name", "AE_TEST_QUICKSTART_DEFINITELY_UNSET")
                          .api_key_from_env("right-name", "AE_TEST_QUICKSTART_KEY2")
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "correcting the credential name on a second call: build() still succeeds");
         if (built.has_value()) {
-            check(built->capabilities().size() == 1,
+            // ADR-244 §2.3 (slice 3c): the auto-derived grant is the chat client's secret, not the run's authority.
+            check(built->capabilities().size() == 0, "the run's authority holds no auto-derived cap::Secret at all");
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->size() == 1,
                   "exactly ONE auto-derived cap::Secret grant survives -- the first call's 'wrong-name' "
                   "grant was overwritten, not left behind as a phantom, unusable second entry");
-            check(built->capabilities().contains(
-                      Capability{cap::Secret{"right-name", std::chrono::seconds{0}}}),
+            check(built->session().chat_client_secrets() != nullptr &&
+                      built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"right-name", std::chrono::seconds{0}}}),
                   "the surviving grant is for the SECOND (corrected) name");
-            check(!built->capabilities().contains(
-                      Capability{cap::Secret{"wrong-name", std::chrono::seconds{0}}}),
+            check(built->session().chat_client_secrets() != nullptr &&
+                      !built->session().chat_client_secrets()->contains(
+                          Capability{cap::Secret{"wrong-name", std::chrono::seconds{0}}}),
                   "the FIRST (wrong) name's grant is genuinely gone, not merely shadowed");
         }
     }
@@ -341,7 +355,7 @@ int main() {
         // shape), so passing an already-constructed instance here works too, exercised deliberately to
         // prove the emplace-style `.store()` still accepts this call shape, not just default-args ones.
         builder.store(AgentEngineSecretStore(std::make_unique<EnvSecretSource>()));
-        auto built = builder.build();
+        auto built = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "the generic .api_key()+.store() path builds successfully against the "
                                   "REAL production AgentEngineSecretStore, not just InMemorySecretStore");
         if (built.has_value()) {
@@ -367,7 +381,7 @@ int main() {
         EffectContext ctx;
         ctx.principal    = Principal{"p-test", ""};
         ctx.capabilities = borrow_capabilities(held);
-        auto lease = store.resolve(SecretRef{"prod-api-key-2"}, ctx);
+        auto lease = rt::block_on(store.resolve(SecretRef{"prod-api-key-2"}, ctx));
         check(lease.has_value(),
               "resolve() succeeds against the REAL AgentEngineSecretStore/EnvSecretSource pair, using "
               "the EXACT capability-grant shape .api_key(SecretRef) produces -- proves the grant name "
@@ -385,9 +399,9 @@ int main() {
     {
         quickstart::OpenAiSessionBuilder builder("gpt-4o-mini");
         builder.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY");
-        auto first = builder.build();
+        auto first = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
         check(first.has_value(), "first build() call on this builder succeeds");
-        auto second = builder.build();
+        auto second = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
         check(!second.has_value(), "second build() call on the SAME builder instance fails closed, not "
                                     "UB and not a silently-broken second Bundle");
         if (!second.has_value()) {
@@ -408,7 +422,7 @@ int main() {
             builder("gpt-4o-mini");
         builder.api_key(SecretRef{"quarantined-key"});
         builder.store();  // default-constructs QuarantineSecretStore(nullptr) IN PLACE -- never moves one
-        auto built = builder.build();
+        auto built = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(),
               "the builder wires a real, non-movable SecretStore conformer (QuarantineSecretStore) via "
               "the emplace-style .store() -- the by-value shape a prior version had could not do this");
@@ -424,7 +438,7 @@ int main() {
     {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B8 setup: build() succeeds");
         if (built.has_value()) {
             check(!static_cast<bool>(built->session().approval_decider()),
@@ -442,15 +456,15 @@ int main() {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .approve_tools({"safe_tool"})
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B9 setup: build() succeeds");
         if (built.has_value()) {
             auto const& decide = built->session().approval_decider();
             check(static_cast<bool>(decide), ".approve_tools() installs a real ApprovalDecider");
             if (decide) {
-                check(decide(Principal{"p", ""}, "safe_tool", "{}"),
+                check(agentengine::test_support::run_task_sync<bool>(decide(Principal{"p", ""}, "safe_tool", "{}")),
                       "the named tool is auto-approved");
-                check(!decide(Principal{"p", ""}, "other_tool", "{}"),
+                check(!agentengine::test_support::run_task_sync<bool>(decide(Principal{"p", ""}, "other_tool", "{}")),
                       "an UN-named tool is denied, not silently auto-approved too");
             }
         }
@@ -460,69 +474,65 @@ int main() {
     {
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .policy([](Principal const&, ToolDescriptor const&, bool) {
-                             return policy_decision::auto_deny;
+                         .policy([](Principal const&, ToolDescriptor const&, bool) -> agentengine::task<agentengine::policy_decision> {
+                             co_return policy_decision::auto_deny;
                          })
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B10 setup: build() succeeds");
         if (built.has_value()) {
             auto const& policy = built->session().policy_decider();
             check(static_cast<bool>(policy), ".policy() installs a real PolicyDecider");
             if (policy) {
                 ToolDescriptor td{};
-                check(policy(Principal{"p", ""}, td, false) == policy_decision::auto_deny,
+                td.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
+                check(agentengine::test_support::run_task_sync<policy_decision>(policy(Principal{"p", ""}, td, false)) ==
+                          policy_decision::auto_deny,
                       "the host-authored decision function is genuinely reachable, unmodified, through "
                       "the builder");
             }
         }
     }
 
-    // ---- B11/B12/B13: red-team round 3's finding #7 regression proof -- `max_turns_` genuinely
-    // defaults to a FINITE value (25), not `AgentSession::initialize()`'s own raw `std::nullopt`
-    // (unbounded) default, and `.max_turns(...)` genuinely reaches the constructed session. Scope limit,
-    // named rather than silently skipped: this proves the builder's own WIRING is correct (the value it
-    // passes to `initialize()` reads back correctly through `AgentSession::max_turns()`); it does NOT
-    // re-run the red-team's own live hang-reproduction probe against a scripted, always-denies
-    // ChatClient -- this builder has no `.raw_client_only()` escape hatch (§2a, still unimplemented) to
-    // substitute a fake client for that without real network. The deeper guarantee ("does a finite
-    // `max_turns_` actually bound `run_rounds()`'s loop") is `AgentSession`'s own responsibility, not
-    // reproven here -- what IS this builder's own responsibility, and what these three prove, is that it
-    // actually gets threaded through instead of silently staying at the dangerous raw default.
+    // ---- B11/B12/B13: ADR-244 §2.2 (replacing red-team round 3 finding #7's finite default of 25) -- the builder
+    // has no default for the session's authority source, token budget or turn cap: without `.choices(...)` build()
+    // fails `choice.missing.session`, naming every option, and a stated choice reaches the constructed session
+    // unchanged. Scope limit, as before: this proves the builder's WIRING; whether a turn cap bounds
+    // `run_rounds()`'s loop is `AgentSession`'s own test.
     {
-        // B11: default -- finite, not unbounded.
+        // B11: no choice made -- a named error listing the options, not a silent default.
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .build();
-        check(built.has_value(), "B11 setup: build() succeeds");
-        if (built.has_value()) {
-            check(built->session().max_turns() == std::uint64_t{25},
-                  "default max_turns() is a FINITE value (25), not AgentSession's own raw unbounded "
-                  "(nullopt) default -- the fix for the red-team's live-reproduced hang");
+        check(!built.has_value() && built.error().code == "choice.missing.session",
+              "B11: build() without .choices() fails choice.missing.session (ADR-244 §2.2)");
+        if (!built.has_value()) {
+            check(built.error().message.find("single_trusted_caller") != std::string::npos &&
+                      built.error().message.find("per_request") != std::string::npos,
+                  "B11: the error lists the authority options");
         }
     }
     {
-        // B12: .max_turns(std::nullopt) -- an explicit, informed opt-in to unbounded, still reachable.
+        // B12: unbounded, stated -- an explicit, informed choice, still reachable.
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .max_turns(std::nullopt)
+                         .choices(ae_test::trusted_unbounded())
                          .build();
         check(built.has_value(), "B12 setup: build() succeeds");
         if (built.has_value()) {
             check(!built->session().max_turns().has_value(),
-                  ".max_turns(std::nullopt) genuinely reaches the session as unbounded -- the safe "
-                  "default is overridable, not hardcoded");
+                  ".choices(...unbounded()...) genuinely reaches the session as unbounded");
         }
     }
     {
-        // B13: .max_turns(n) -- a custom finite bound reaches the session unchanged.
+        // B13: a stated finite bound reaches the session unchanged.
         auto built = OpenAiSessionBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .max_turns(3)
+                         .choices(ae_test::trusted(std::nullopt, 3))
                          .build();
         check(built.has_value(), "B13 setup: build() succeeds");
         if (built.has_value()) {
             check(built->session().max_turns() == std::uint64_t{3},
-                  ".max_turns(3) genuinely reaches the session, not silently ignored or clamped");
+                  "a stated max_turns of 3 genuinely reaches the session, not silently ignored or clamped");
         }
     }
 
@@ -543,7 +553,7 @@ int main() {
         // missing its whole history/context slot.
         auto built = ComposedBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(!built.has_value(), "no .providers() call: build() fails");
         if (!built.has_value()) {
             check(built.error().code == "quickstart_builder.no_providers",
@@ -562,7 +572,7 @@ int main() {
                          .providers(std::make_tuple(HistoryProvider<Window<0>>{},
                                                      RequiredArgProvider{"required-arg-text",
                                                                            turn_end_calls}))
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "credential + providers set: build() succeeds even with a "
                                   "non-default-constructible Ms in the pack");
         if (built.has_value()) {
@@ -603,7 +613,7 @@ int main() {
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .providers(std::make_tuple(HistoryProvider<Window<0>>{},
                                                      RequiredArgProvider{"first-engage", counter_a}))
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B17 setup: build() succeeds");
         if (built.has_value()) {
             auto second_engage = built->session().history_provider().engage(std::make_tuple(
@@ -632,7 +642,7 @@ int main() {
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                          .providers(std::make_tuple(RequiredArgProvider{"first", calls_first},
                                                      RequiredArgProvider{"second", calls_second}))
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B18/B19 setup: build() succeeds with two REAL-contribution providers");
         if (built.has_value()) {
             Principal principal{"p-composed-2", ""};
@@ -674,11 +684,11 @@ int main() {
         auto built1 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"session-1", counter1}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         auto built2 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"session-2", counter2}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built1.has_value() && built2.has_value(), "B20 setup: both sessions build() successfully");
         if (built1.has_value() && built2.has_value()) {
             // The exact statement ADR-116 closes -- a real cross-session move through the same public
@@ -726,11 +736,11 @@ int main() {
         auto built1 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"b23-1", counter1}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         auto built2 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"b23-2", counter2}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built1.has_value() && built2.has_value(), "B23 setup: both sessions build() successfully");
         if (built1.has_value() && built2.has_value()) {
             auto smuggler = std::move(built1->session().history_provider());  // move-CONSTRUCTION
@@ -768,11 +778,11 @@ int main() {
         auto built1 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"b24-1", counter1}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         auto built2 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"b24-2", counter2}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built1.has_value() && built2.has_value(), "B24 setup: both sessions build() successfully");
         if (built1.has_value() && built2.has_value()) {
             auto smuggler = std::move(built1->session().history_provider());  // hop 1: move-CONSTRUCTION
@@ -820,7 +830,7 @@ int main() {
             auto built1 = SingleBuilder("gpt-4o-mini")
                               .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                               .providers(std::make_tuple(RequiredArgProvider{"b25-1", counter1}))
-                              .build();
+                              .choices(ae_test::trusted(std::nullopt, 25)).build();
             check(built1.has_value(), "B25 setup: session1 build() succeeds");
             if (built1.has_value()) {
                 addr1 = static_cast<void const*>(&built1->session());
@@ -832,7 +842,7 @@ int main() {
         auto built3 = SingleBuilder("gpt-4o-mini")
                           .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                           .providers(std::make_tuple(RequiredArgProvider{"b25-3", counter3}))
-                          .build();
+                          .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built3.has_value(), "B25 setup: session3 build() succeeds");
         if (built3.has_value()) {
             void const* addr3 = static_cast<void const*>(&built3->session());
@@ -885,7 +895,7 @@ int main() {
             auto built   = SingleBuilder("gpt-4o-mini")
                              .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                              .providers(std::make_tuple(RequiredArgProvider{"self-move", counter}))
-                             .build();
+                             .choices(ae_test::trusted(std::nullopt, 25)).build();
             check(built.has_value(), "B21a setup: build() succeeds");
             if (built.has_value()) {
                 auto& hp = built->session().history_provider();
@@ -979,9 +989,9 @@ int main() {
             SingleBuilder builder("gpt-4o-mini");
             builder.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
                 .providers(std::make_tuple(RequiredArgProvider{"double-build", counter}));
-            auto first = builder.build();
+            auto first = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
             check(first.has_value(), "B21d: first build() call succeeds");
-            auto second = builder.build();
+            auto second = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
             check(!second.has_value(), "B21d: second build() call on the SAME builder fails closed");
             if (!second.has_value()) {
                 check(second.error().code == "quickstart_builder.no_store",
@@ -1071,7 +1081,7 @@ int main() {
         auto built = RawQuickstartSessionBuilder(ScriptedChatClient{})
                          .session_id("s-b26")
                          .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
-                         .build();
+                         .choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B26: build() succeeds with a scripted ChatClientT and no .store() call");
         if (built.has_value()) {
             check(built->session().has_chat_client(),
@@ -1105,9 +1115,9 @@ int main() {
         // an already-moved-from `client_` into a second session instead of failing.
         {
             auto builder = RawQuickstartSessionBuilder(ScriptedChatClient{});
-            auto first   = builder.build();
+            auto first   = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
             check(first.has_value(), "B28 setup: first build() call succeeds");
-            auto second = builder.build();
+            auto second = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
             check(!second.has_value(), "B28: second build() call on the SAME builder fails closed");
             if (!second.has_value()) {
                 check(second.error().code == "raw_quickstart_builder.already_built",
@@ -1127,7 +1137,7 @@ int main() {
         {
             auto builder    = RawQuickstartSessionBuilder<ScriptedChatClient, NoDefaultStore>(
                 ScriptedChatClient{});
-            auto built_b29 = builder.build();
+            auto built_b29 = builder.choices(ae_test::trusted(std::nullopt, 25)).build();
             check(!built_b29.has_value(),
                   "B29: build() fails closed when Store is not default-constructible and .store() was "
                   "never called");
@@ -1138,9 +1148,9 @@ int main() {
         }
 
         // ---- B30: ask_stream() against a provider that throws -- the process survives and the stream
-        // ends FAILED, not closed as if the run had succeeded (decisions/ADR-175 round 3 finding 1).
+        // ends FAILED, not closed as if the run had succeeded (decisions/archive/ADR-175 round 3 finding 1).
         {
-            auto built_b30 = RawQuickstartSessionBuilder(ThrowingChatClient{}).session_id("s-b30").build();
+            auto built_b30 = RawQuickstartSessionBuilder(ThrowingChatClient{}).session_id("s-b30").choices(ae_test::trusted(std::nullopt, 25)).build();
             check(built_b30.has_value(), "B30 setup: a Bundle over a throwing provider builds");
             if (built_b30.has_value()) {
                 auto s = built_b30->ask_stream("hello");
@@ -1159,10 +1169,10 @@ int main() {
 
         // ---- B31: ask_stream() delivers the reply's text with a provider that answers at once. The relay
         // used to exit on the stop request issued as soon as the run returned -- usually mid-sleep, before
-        // relaying anything -- so the stream ended closed and empty (decisions/ADR-175 round 4 finding 4,
+        // relaying anything -- so the stream ended closed and empty (decisions/archive/ADR-175 round 4 finding 4,
         // pre-existing). Five consecutive calls on one Bundle.
         {
-            auto built_b31 = RawQuickstartSessionBuilder(ScriptedChatClient{}).session_id("s-b31").build();
+            auto built_b31 = RawQuickstartSessionBuilder(ScriptedChatClient{}).session_id("s-b31").choices(ae_test::trusted(std::nullopt, 25)).build();
             check(built_b31.has_value(), "B31 setup: a Bundle over the scripted provider builds");
             if (built_b31.has_value()) {
                 int delivered = 0;
@@ -1184,6 +1194,65 @@ int main() {
                                        std::to_string(delivered) + " of 5 calls")
                                           .c_str());
             }
+        }
+    }
+
+    {
+        // B32 (ADR-237 review finding 6): `.runtime(rt)` runs the model client on the HOST's Runtime -- two
+        // sessions built with the same one put their in-flight model streams on it -- while a session built
+        // without it keeps the client's own private Runtime (the host's sees nothing). The endpoint is a
+        // loopback listener that never accepts: the connection waits in its backlog, so each stream stays
+        // in flight until the listener closes.
+#if defined(_WIN32)
+        agentengine::pal::ensure_winsock();
+#endif
+        auto listener = agentengine::pal::tcp_listen(static_cast<std::uint64_t>((127u << 24) | 1u), 0);
+        check(listener.has_value(), "B32 setup: loopback listener");
+        if (listener.has_value()) {
+            std::uint16_t const port = *agentengine::pal::local_port(*listener);
+            agentengine::rt::Runtime host_rt{agentengine::rt::RuntimeConfig{.lanes = 1}};
+            using Builder = quickstart::QuickstartSessionBuilder<quickstart::Provider::openai>;
+            auto make = [&](bool shared) {
+                Builder b("m");
+                b.api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY").endpoint("127.0.0.1", port, "/v1");
+                if (shared) b.runtime(host_rt);
+                return b.choices(ae_test::trusted(std::nullopt, 25)).build();
+            };
+            auto wait_roots = [&](std::size_t n) {
+                for (int i = 0; i < 500 && host_rt.roots_in_flight() != n; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                return host_rt.roots_in_flight() == n;
+            };
+            {
+                auto own = make(false);
+                check(own.has_value(), "B32 setup: a session without .runtime() builds");
+                if (own.has_value()) {
+                    auto s = own->ask_stream("hi");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    check(s.has_value() && host_rt.roots_in_flight() == 0,
+                          "B32 (control): without .runtime(), the stream runs on the client's own Runtime");
+                }
+                auto a = make(true);
+                auto b = make(true);
+                check(a.has_value() && b.has_value(), "B32 setup: two sessions with .runtime() build");
+                if (a.has_value() && b.has_value()) {
+                    auto sa = a->ask_stream("hi");
+                    check(sa.has_value() && wait_roots(1), "B32: the first session's stream runs on the host Runtime");
+                    auto sb = b->ask_stream("hi");
+                    check(sb.has_value() && wait_roots(2),
+                          "B32: ... and the second session's on the SAME Runtime (one reactor, not one per client)");
+                }
+                agentengine::pal::close_fd(*listener);  // ends the waiting connections before teardown
+            }
+            {
+                // The Anthropic constructor differs from OpenAI's after `path_prefix`, so make_primary reaches
+                // its reactor options by a separate branch: compiled and built here, not only for OpenAI.
+                quickstart::QuickstartSessionBuilder<quickstart::Provider::anthropic> b("m");
+                b.api_key_from_env("anthropic-api-key", "AE_TEST_QUICKSTART_KEY").runtime(host_rt);
+                check(b.choices(ae_test::trusted(std::nullopt, 25)).build().has_value(), "B32: an Anthropic session builds on a host Runtime too");
+            }
+            check(wait_roots(0), "B32: the host Runtime is idle once the sessions are gone");
         }
     }
 

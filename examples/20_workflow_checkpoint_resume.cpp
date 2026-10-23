@@ -35,6 +35,7 @@
 #include "agentengine/core/content.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/rt/workflow_checkpoint_manager.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using namespace agentengine::workflow;
@@ -74,8 +75,8 @@ void check(bool cond, char const* what) {
 // needs sign-off. A model-backed planner would fill this same slot -- checkpoint/resume doesn't care
 // what produced the plan.
 [[nodiscard]] ExecutorBody planner_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text_of(in) + " > planned")};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text_of(in) + " > planned")};
     };
 }
 
@@ -151,8 +152,8 @@ int main() {
         std::vector<ExecutorBody> bodies = {planner_body(), {}};  // caller-supplied again, fresh objects
 
         WorkflowSupervisor sup;  // a FRESH supervisor -- the original from above is gone
-        result<bool> resumed = WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
-            reopened, run_id, sup, wf, bodies);
+        result<bool> resumed = agentengine::rt::block_on(WorkflowCheckpointManager<FileSessionStore>::resume_or_start(
+            reopened, run_id, sup, wf, bodies));
         check(resumed.has_value() && *resumed == true,
               "resume_or_start() finds the on-disk checkpoint and resumes instead of starting fresh");
 

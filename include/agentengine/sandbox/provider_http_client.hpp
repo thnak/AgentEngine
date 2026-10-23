@@ -1,5 +1,5 @@
 #pragma once
-// Implements 004-Model-Provider-Plane.md §1/§3 -- Milestone 5 Phase C
+// Implements rfcs/004-Model-Provider-Plane.md §1/§3 -- Milestone 5 Phase C
 // (docs/planning/milestone-5-providers-identity-secrets-breakdown.md): a general-purpose,
 // host-INITIATED HTTPS client for ChatClient backends (004 §3's OpenAI-compatible/Anthropic
 // backends, Phase D/E) to call a real inference API directly.
@@ -42,7 +42,7 @@
 
 namespace agentengine::sandbox {
 
-// decisions/ADR-016-provider-egress-address-policy.md §3.
+// decisions/archive/ADR-016-provider-egress-address-policy.md §3.
 //
 // `tls` is the default everywhere and the only value production code should normally use.
 //
@@ -79,7 +79,7 @@ enum class ProviderTransport {
 // path is untouched and still resolves through `resolve_and_validate`.
 //
 // The injectable-resolver seam itself is unchanged -- the same testability seam
-// `HostEgressProxy::resolver` already establishes (net_egress_proxy.hpp's own comment: "a
+// `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`) already establishes (net_egress_proxy.hpp's own comment: "a
 // testability seam, not a security bypass"). Since ADR-016 it is no longer needed merely to reach a
 // loopback test server (`resolve_host` resolves 127.0.0.1 fine); it remains for tests that want to
 // answer the resolution question WITHOUT a real DNS lookup at all -- e.g. binding an arbitrary

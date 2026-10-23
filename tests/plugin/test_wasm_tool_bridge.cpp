@@ -1,4 +1,4 @@
-// Proves backends/wasm/wasm_tool_bridge.hpp -- decisions/ADR-040-wasm-tool-pipeline-bridge.md.
+// Proves backends/wasm/wasm_tool_bridge.hpp -- decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md.
 // Reuses the same real ae:tool component tests/plugin/test_wasm_backend.cpp already proves
 // (tests/fixtures/wasm_ae_tool_fixture/) but does NOT re-prove WasmBackend's own internals (import
 // verification, capability-kind confusion, wall_ms kill -- all covered there already). This file
@@ -38,7 +38,9 @@
 #include <memory>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/codeact_tool_union.hpp"
+#include "../support/run_task_sync.hpp"
 
 using namespace agentengine;
 using namespace agentengine::wasm;
@@ -140,7 +142,7 @@ int main() {
         SandboxHandle const never_loaded{"nonexistent-handle"};
         EffectContext ctx = make_ctx();
         auto descriptors =
-            wasm_tools_as_descriptors_from(never_created_backend, never_loaded, "bad::id", ctx);
+            wasm_tools_as_descriptors_from(never_created_backend, never_loaded, "bad::id", ctx, approval_mode::never_require);
         AE_CHECK(!descriptors.has_value(), "delimiter guard: a plugin_id containing '::' is rejected");
         if (!descriptors) {
             AE_CHECK(descriptors.error().code == "wasm.tool_name_ambiguous",
@@ -162,7 +164,7 @@ int main() {
     spec.capabilities = CapabilitySet::grant_root(kAllRequiredCapabilities);
     spec.limits.memory_bytes = 64ull * 1024 * 1024;
     EffectContext load_ctx = make_ctx();
-    auto handle = backend->create(spec, load_ctx);
+    auto handle = agentengine::rt::block_on(backend->create(spec, load_ctx));
     AE_CHECK(handle.has_value(), "setup: create() succeeds");
     if (!handle) return 1;
 
@@ -176,14 +178,14 @@ int main() {
     auto loaded = backend->load_component(*handle, manifest, bytes, load_ctx);
     AE_CHECK(loaded.has_value(), "setup: load_component() succeeds");
     if (!loaded) {
-        backend->destroy(*handle);
+        agentengine::rt::block_on(backend->destroy(*handle));
         return 1;
     }
 
     // -- 1. Adaptation shape ---------------------------------------------------------------------
-    auto descriptors = wasm_tools_as_descriptors_from(backend, *handle, "bridge-plugin", load_ctx);
-    AE_CHECK(descriptors.has_value() && descriptors->size() == 7,
-              "adapt: all 7 real fixture tools are adapted into agentengine::ToolDescriptor");
+    auto descriptors = wasm_tools_as_descriptors_from(backend, *handle, "bridge-plugin", load_ctx, approval_mode::never_require);
+    AE_CHECK(descriptors.has_value() && descriptors->size() == 8,
+              "adapt: all 8 real fixture tools are adapted into agentengine::ToolDescriptor");
 
     agentengine::ToolDescriptor const* echo_descriptor = nullptr;
     agentengine::ToolDescriptor const* now_descriptor = nullptr;
@@ -195,6 +197,11 @@ int main() {
     }
     AE_CHECK(echo_descriptor != nullptr && now_descriptor != nullptr,
               "adapt: plugin-qualified names are individually findable");
+    if (descriptors) {
+        bool all_stated = true;
+        for (auto const& d : *descriptors) all_stated = all_stated && d.approval == approval_mode::never_require;
+        AE_CHECK(all_stated, "adapt (ADR-244 slice 4a): every adapted descriptor carries the host's approval mode");
+    }
     if (echo_descriptor) {
         AE_CHECK(echo_descriptor->capability_ceiling.size() == 1 &&
                       std::holds_alternative<cap::ToolCall>(echo_descriptor->capability_ceiling[0]) &&
@@ -206,12 +213,12 @@ int main() {
     }
 
     // -- Build the real, unioned ToolTable (matches the real CodeAct integration point) -----------
-    auto const agent_tools = ToolTable::from_tools<>();
-    auto const skill_tools = ToolTable::from_tools<>();
+    auto const agent_tools = ToolTable::from();
+    auto const skill_tools = ToolTable::from();
     std::vector<agentengine::ToolDescriptor> const empty_mcp_tools;
     auto unioned = descriptors ? union_codeact_tools(agent_tools, skill_tools, empty_mcp_tools, *descriptors)
                                 : result<ToolTable>(std::unexpected(error{failure_class::fatal, "", ""}));
-    AE_CHECK(unioned.has_value() && unioned->descriptors().size() == 7,
+    AE_CHECK(unioned.has_value() && unioned->descriptors().size() == 8,
               "union: wasm-sourced descriptors merge into one bridge-ready ToolTable");
 
     if (unioned) {
@@ -226,7 +233,7 @@ int main() {
             ApprovalDecider const approve;
             ToolInvocationAudit audit;
 
-            ToolResult result = invoke_tool(*unioned, held, req, ctx, approve, &audit);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held, req, ctx, approve, &audit));
             AE_CHECK(!result.is_error, "e2e: echo call succeeds through the real invoke_tool() pipeline");
             AE_CHECK(audit.ok, "e2e: audit records success");
             if (!result.is_error && result.content.size() == 1) {
@@ -260,7 +267,7 @@ int main() {
             req.arguments = json::Value::make_object({{"msg", json::Value::make_string("hello")}});
             ApprovalDecider const approve;
 
-            ToolResult result = invoke_tool(*unioned, held_without_grant, req, ctx, approve, nullptr);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held_without_grant, req, ctx, approve, nullptr));
             AE_CHECK(result.is_error,
                       "i2: missing cap::ToolCall denies the call, even though the wasm instance's own "
                       "operator_grant is fully granted");
@@ -280,7 +287,7 @@ int main() {
             req.arguments = json::Value::make_null();
             ApprovalDecider const approve;
 
-            ToolResult result = invoke_tool(*unioned, held, req, ctx, approve, nullptr);
+            ToolResult result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(*unioned, held, req, ctx, approve, nullptr));
             AE_CHECK(!result.is_error, "now: call succeeds through the real pipeline (Data-content path)");
             if (!result.is_error && result.content.size() == 1) {
                 auto const* data = std::get_if<Data>(&result.content[0].value);
@@ -307,7 +314,7 @@ int main() {
                   "name is rejected, not silently resolved by precedence");
     }
 
-    backend->destroy(*handle);
+    agentengine::rt::block_on(backend->destroy(*handle));
 
     if (g_failures == 0) {
         std::cout << "ALL PASS\n";

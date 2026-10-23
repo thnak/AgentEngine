@@ -20,7 +20,7 @@ title.
 ## 1. Reframing: this is not a new "terminal ContextProvider" concept
 
 Earlier framing in this conversation proposed a brand-new "terminal stage" concept bolted onto
-`ContextProvider`/`assemble_context()`. Re-reading `002-Agent-Model-and-Authoring.md` §5 found this
+`ContextProvider`/`assemble_context()`. Re-reading `rfcs/002-Agent-Model-and-Authoring.md` §5 found this
 is very likely **redundant with something already Judged and partially built**: `Middleware<Ms...>`
 declares four interception points — run, turn, model call, tool call — and the `turn` point's own
 stated contract already matches almost exactly:
@@ -29,8 +29,8 @@ stated contract already matches almost exactly:
 > not widen capabilities (I2)... Deny-capable middleware is how content policy (017) plugs in
 > without the core knowing about content policy."* (002 §5)
 
-The `turn` point is declared-but-unwired (`002-Agent-Model-and-Authoring.md:202-206`, confirmed).
-`017-Safety-and-Content-Governance.md` §4's `ae:filter` `pre_model`/`post_model` points are
+The `turn` point is declared-but-unwired (`rfcs/002-Agent-Model-and-Authoring.md:202-206`, confirmed).
+`rfcs/017-Safety-and-Content-Governance.md` §4's `ae:filter` `pre_model`/`post_model` points are
 *also* declared-but-unimplemented (confirmed: zero hits for filter/Filter under `include/agentengine`).
 **This draft's `turn` point and 017 §4's `pre_model` point are the same gap**, named twice, and
 wiring `Middleware`'s `turn` point (reusing 017 §4's verdict vocabulary — `allow`/`annotate`/
@@ -50,7 +50,7 @@ it is not silently solved here.
 
 Insert the `turn`-point middleware chain in `AgentSession::run_rounds()` immediately after
 `assemble_context()` returns and before the round's model call is constructed. Reuses ADR-033's
-proven composition shape verbatim (`decisions/ADR-033-middleware-model-call-chain.md`), not a new
+proven composition shape verbatim (`decisions/archive/ADR-033-middleware-model-call-chain.md`), not a new
 convention:
 
 ```cpp
@@ -87,7 +87,7 @@ struct TurnContext {
 
 ADR-033's own FATAL finding: a `before_model`/`after_model` hook rewriting response content could
 fabricate/mutate a `ToolCall`, laundering trust through `call_provenance::vendor_structured`
-(`decisions/ADR-033-middleware-model-call-chain.md` §3 finding #1). Fixed via
+(`decisions/archive/ADR-033-middleware-model-call-chain.md` §3 finding #1). Fixed via
 `enforce_backend_tool_call_provenance`, forcing any non-byte-identical `ToolCall` to
 `call_provenance::text_derived` before the wrapper returns.
 

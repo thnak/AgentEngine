@@ -1,5 +1,5 @@
 #pragma once
-// Implements 018-Identity-Authorization-and-Secrets.md §4 as a capability-gated wrapper over a
+// Implements rfcs/018-Identity-Authorization-and-Secrets.md §4 as a capability-gated wrapper over a
 // zeroizing `Secret` buffer, non-copyable, no `std::string` conversion, `Env`/`File` adapters --
 // AgentEngine adds exactly one thing this lower-level seam correctly has no opinion about: a
 // `cap::Secret` capability check (007 §3) at the point of use -- plus AgentEngine's own `SecretRef`/
@@ -46,6 +46,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -160,7 +161,7 @@ public:
             var, [&found](std::string_view chars) { found = make_secret(chars); });
         if (!present || !found) {
             return std::unexpected(error{failure_class::contract, "secret not in environment: " + var,
-                                          "secret.not_found"});
+                                             "secret.not_found"});
         }
         return std::move(*found);
     }
@@ -184,7 +185,7 @@ public:
         std::ifstream f(path, std::ios::binary);
         if (!f) {
             return std::unexpected(error{failure_class::contract, "secret file not found: " + path,
-                                          "secret.not_found"});
+                                             "secret.not_found"});
         }
         std::vector<std::byte> bytes;
         char c;
@@ -278,14 +279,14 @@ namespace secret_detail {
 
 }  // namespace secret_detail
 
-// concept, not a base class (mirrors ChatClient/NetEgressBackend). Kept synchronous
-// (`result<SecretLease>`, not `ae::task<T>`) for the same reason core/chat_client.hpp's ChatClient
-// is -- resolution has no I/O to suspend on (env lookup, a small file read), matching
-// `SecretSource::get()`'s own synchronous shape.
+// concept, not a base class (mirrors ChatClient/NetEgressBackend). `task`-shaped since decisions/archive/ADR-237
+// §5.1 (#172): a store backed by a vault or an OS keystore resolves over the network, so the seam lets it
+// suspend. The stores in this file read env/memory/a small file and complete without suspending.
+// `SecretSource::get()` stays synchronous -- it is the env/file adapter underneath, not the seam.
 template <class T>
 // ae-naming-lint: allow SecretStore — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept SecretStore = requires(T store, SecretRef const& ref, EffectContext& ctx) {
-    { store.resolve(ref, ctx) } -> std::same_as<result<SecretLease>>;
+    { store.resolve(ref, ctx) } -> std::same_as<task<result<SecretLease>>>;
 };
 
 // The real, capability-gated `SecretStore` -- an adapter over ANY `SecretSource`
@@ -297,8 +298,8 @@ class AgentEngineSecretStore {
 public:
     explicit AgentEngineSecretStore(std::unique_ptr<SecretSource> source) : source_(std::move(source)) {}
 
-    [[nodiscard]] result<SecretLease> resolve(SecretRef const& ref, EffectContext& ctx) const {
-        return secret_detail::resolve_via(*source_, ref, ctx);
+    [[nodiscard]] task<result<SecretLease>> resolve(SecretRef ref, EffectContext& ctx) const {
+        co_return secret_detail::resolve_via(*source_, ref, ctx);
     }
 
 private:
@@ -315,17 +316,17 @@ class InMemorySecretStore {
 public:
     void set(std::string name, std::string value) { values_[std::move(name)] = std::move(value); }
 
-    [[nodiscard]] result<SecretLease> resolve(SecretRef const& ref, EffectContext& ctx) const {
+    [[nodiscard]] task<result<SecretLease>> resolve(SecretRef ref, EffectContext& ctx) const {
         if (auto gate = secret_detail::require_secret_capability(ref, ctx); !gate) {
-            return std::unexpected(gate.error());
+            co_return std::unexpected(gate.error());
         }
         auto it = values_.find(ref.name);
         if (it == values_.end()) {
-            return std::unexpected(error{failure_class::contract,
-                                          "no in-memory secret set for '" + ref.name + "'",
-                                          "secret.not_found"});
+            co_return std::unexpected(error{failure_class::contract,
+                                             "no in-memory secret set for '" + ref.name + "'",
+                                             "secret.not_found"});
         }
-        return SecretLease{ref, make_secret(it->second)};
+        co_return SecretLease{ref, make_secret(it->second)};
     }
 
 private:

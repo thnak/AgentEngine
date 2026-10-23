@@ -5,6 +5,7 @@ import { LanguageProvider, useLang, type Lang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { ApiNextSteps } from "./ApiNextSteps";
 import { ApiSidebar } from "./ApiSidebar";
+import { ApiSnippetConventions } from "./ApiSnippetConventions";
 import { ApiToc, type ApiSidebarSection } from "./ApiToc";
 import { Footer } from "./Footer";
 import { Nav } from "./Nav";
@@ -35,7 +36,10 @@ function ApiDetailLayoutInner({
               <span aria-current="page">{t.breadcrumbApi}</span>
             )}
           </nav>
-          <main>{children}</main>
+          <main>
+            {active ? <ApiSnippetConventions /> : null}
+            {children}
+          </main>
         </div>
         <ApiToc sections={sections[lang]} />
       </div>

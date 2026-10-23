@@ -1,12 +1,12 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8c's per-skill tool-scoping mechanism: a skill's
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's per-skill tool-scoping mechanism: a skill's
 // `allowed-tools` frontmatter field (parsed into `SkillsProvider::allowed_tool_names()`,
 // skill_provider.hpp) restricts which tools are offered/invocable this run to the union declared by
 // whichever skills are currently mounted, PLUS a caller-chosen `always_on` base set. This is a
 // deliberate, user-directed departure from the precedent this project surveyed before building it
 // (MAF's fixed three-meta-tool indirection; Anthropic's/OpenAI's "container" model, where the code-
 // execution tool declaration is always static and only the underlying file/skill content varies) --
-// see decisions/ADR-024-skill-scoped-tool-and-mount-wiring.md for the recorded reasoning.
+// see decisions/archive/ADR-024-skill-scoped-tool-and-mount-wiring.md for the recorded reasoning.
 //
 // THE ACTUAL ENFORCEMENT BOUNDARY, READ THIS BEFORE USING THIS HEADER:
 // `core/tool_pipeline.hpp`'s own file-top comment states a run's `ToolTable` is "resolved once into
@@ -23,7 +23,7 @@
 //
 // So: whatever `allowed` set a caller passes -- a fixed, run-frozen union (Skills Phase 2: every
 // RESOLVED skill, unconditionally) or one that changes mid-run as the agent activates skills on demand
-// (Skills Phase 3, decisions/ADR-024's addendum: only currently MOUNTED skills) -- the declaration side
+// (Skills Phase 3, decisions/archive/ADR-024's addendum: only currently MOUNTED skills) -- the declaration side
 // (`ContextContribution.tools`, computed inside a turn's `ContextProvider::on_context`) and the
 // invocation side (whatever table a caller passes to `invoke_tool(...)`/`invoke_agent_tool(...)`) MUST
 // be recomputed from the SAME live state, at the SAME cadence, so they never diverge. A fixed set can

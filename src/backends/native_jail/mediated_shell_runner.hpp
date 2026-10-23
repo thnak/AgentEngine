@@ -1,7 +1,7 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a/§2/§3a -- Milestone 3 Phase E3
+// Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§3a -- Milestone 3 Phase E3
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md, decision 4). A genuinely
-// new `ShellRunner`, carrying forward decisions/ADR-001's Judged Design A finding (whole-script-
+// new `ShellRunner`, carrying forward decisions/archive/ADR-001's Judged Design A finding (whole-script-
 // parses-before-anything-executes) as a design, not copied code -- shell_runner.hpp stays
 // untouched, completely unmodified. Named `MediatedShellRunner`, not `ShellRunner`, specifically to
 // avoid colliding with the untouched spike's own class name in the same `agentengine` namespace
@@ -50,7 +50,14 @@ public:
         : fs_(fs), registry_(registry), mount_id_(std::move(mount_id)), output_cap_bytes_(output_cap_bytes),
           wall_clock_budget_(wall_clock_budget) {}
 
-    [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+    // The `Runner` seam (ADR-237 §5.1, #173): a coroutine over `run_blocking()` that completes without
+    // suspending -- the interpreter itself is synchronous. `state` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+        co_return run_blocking(std::move(request), state, ctx);
+    }
+
+    // The synchronous body. Public for synchronous composition (a `RegisteredRunner` closure).
+    [[nodiscard]] result<ExecOutcome> run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx) {
         if (!request.language.empty() && request.language != "shell") {
             return std::unexpected(error{failure_class::contract,
                                           "MediatedShellRunner cannot run language: " + request.language,

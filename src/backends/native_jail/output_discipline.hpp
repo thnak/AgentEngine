@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §3 items 4/5 ("Output discipline") -- Milestone 3 Phase
+// Implements rfcs/010-Python-Code-Interpreter.md §3 items 4/5 ("Output discipline") -- Milestone 3 Phase
 // F3. Applied to the MODEL-VISIBLE fields of `ExecOutcome` (`stdout_text`, `stderr_text`,
 // `result_repr`) at the boundary where `MediatedPythonRunner`/`MediatedShellRunner::run()` return --
 // a layer ABOVE `ResourceLimits::output_bytes` (008 §2), which is already real, already enforced,

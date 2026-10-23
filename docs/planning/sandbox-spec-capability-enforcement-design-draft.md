@@ -1,17 +1,17 @@
 # Design draft — `SandboxSpec::capabilities` as the real authority behind `mounts`/`net`
 
 **Status:** draft, pre-red-team. Scopes the "capabilities enforcement" item deferred out of
-`decisions/ADR-086-kata-backend-slice-2-enforcement.md` (KataBackend Slice 3), generalized per
+`decisions/archive/ADR-086-kata-backend-slice-2-enforcement.md` (KataBackend Slice 3), generalized per
 project-owner direction (2026-08-24) to cover every mount/net-shaped `SandboxBackend`, not Kata
 alone — see §1 for why a Kata-only fix would itself be a defect.
 
-**Relates to:** `008-Sandbox-and-Isolation.md` §2 (`SandboxSpec`, the "empty-by-default authority"
-contract clause), `007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2), `decisions/ADR-071-native-unsandboxed-process-execution-providers.md` (precedent for a purpose-built capability kind
-instead of overloading an existing one), `decisions/ADR-070-host-configurable-responsibility-boundary.md` (Delegated Decision Seam shape reused here for the empty-capabilities opt-out).
+**Relates to:** `rfcs/008-Sandbox-and-Isolation.md` §2 (`SandboxSpec`, the "empty-by-default authority"
+contract clause), `rfcs/007-Capability-and-Trust-Model.md` (`CapabilitySet`, I2), `decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md` (precedent for a purpose-built capability kind
+instead of overloading an existing one), `decisions/archive/ADR-070-host-configurable-responsibility-boundary.md` (Delegated Decision Seam shape reused here for the empty-capabilities opt-out).
 
 ## 1. The problem
 
-`008-Sandbox-and-Isolation.md` §2 states the contract every `SandboxBackend` must meet:
+`rfcs/008-Sandbox-and-Isolation.md` §2 states the contract every `SandboxBackend` must meet:
 
 > 1. **Empty-by-default authority.** Nothing is reachable that the spec did not grant (**I2**).
 
@@ -23,7 +23,7 @@ That is not what happens. Confirmed by reading every real `SandboxBackend::creat
 
 - `LinuxNativeJailBackend::create()` and the Windows `NativeJailBackend::create()` take
   `spec.mounts`/`spec.net` as trusted input and never read `spec.capabilities` at all.
-- `KataBackend::create()` (Slice 2, `decisions/ADR-086-...md`) enforces `mounts`/`limits`/`net`
+- `KataBackend::create()` (Slice 2, `decisions/archive/ADR-086-...md`) enforces `mounts`/`limits`/`net`
   faithfully against the *spec fields themselves*, but likewise never reads `spec.capabilities`.
 - The only backend that reads `spec.capabilities` at all is `WasmBackend` — and that is a
   structurally different mechanism (WASI component **imports**, gated per-call against a
@@ -199,7 +199,7 @@ disclosed in §7, not hidden.
    construction/attenuation boundary (a blanket "covers every host path" grant defeats the whole
    mechanism), not merely discouraged by comment.
 4. Ordering vs. each backend's own existing checks — does `authorize_spec` running BEFORE
-   `KataBackend`'s comma-injection sanitization (`decisions/ADR-086-...md`'s red-team finding #1)
+   `KataBackend`'s comma-injection sanitization (`decisions/archive/ADR-086-...md`'s red-team finding #1)
    open any window where a malicious path passes capability coverage using one string form and then
    exploits the comma-delimited `ctr --mount` grammar using a different effective path? (Expectation:
    no, since `authorize_spec` only checks coverage, never rewrites the path — but state the
@@ -281,7 +281,7 @@ the "zero existing tests need changes" claim for real) are addressed by this sec
 - Does not retrofit `cap::FsRead`/`FsWrite`/`NetOut` themselves, or the Worktree/mediated-shell/
   mediated-Python call sites that already use them correctly for their own (different) purpose.
 - Does not enforce `ResourceLimits` axes this design doesn't already claim (`cpu_ms`/`pids`/`fds`/
-  `disk_bytes`/`net_bytes`/`quota_bytes` stay exactly as named-gap in `decisions/ADR-086-...md` and
+  `disk_bytes`/`net_bytes`/`quota_bytes` stay exactly as named-gap in `decisions/archive/ADR-086-...md` and
   the Windows/Linux native-jail headers — separate, already-tracked work).
 - Does not address GPU passthrough or `ExecRequest::source` Runner-mediation (separate deferred
   items, unrelated to capability coverage of mounts/net).

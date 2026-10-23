@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.6a — a RAG
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.6a — a RAG
 // corpus's trust scope. Host-declared, never inferred from or overridable by a request (same
 // I2/I3 posture as everything else in this codebase) — `corpus_scope` is set on a
 // `CorpusSource`/mount descriptor at setup time, like `Capabilities<...>` on a `Tool`, never

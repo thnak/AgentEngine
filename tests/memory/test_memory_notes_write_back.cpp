@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-156-agent-notes-write-back.md -- GitHub issue #40's "agent.notes has ZERO
+// Proof for decisions/archive/ADR-156-agent-notes-write-back.md -- GitHub issue #40's "agent.notes has ZERO
 // implementation at all" gap, closed for the write-back half (the "ordinary writes" half needs no new
 // code, see that ADR's own §2/file-top comment on memory_notes_materializer.hpp: agent.files' existing
 // generic open()/file_write already works against any mounted path).
@@ -16,6 +16,7 @@
 
 #include "agentengine/core/memory_provider.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "backends/native_jail/memory_notes_materializer.hpp"
 
 using namespace agentengine;
@@ -45,7 +46,7 @@ int main() {
     rt::InMemoryAppendLogStore ref_store;
     Principal const principal{"p-notes-test", "tenant-a"};
 
-    auto bootstrapped = ensure_memory_worktree(object_store, ref_store, principal);
+    auto bootstrapped = agentengine::rt::block_on(ensure_memory_worktree(object_store, ref_store, principal));
     check(bootstrapped.has_value(), "setup: the memory worktree bootstraps");
 
     cap::FsWrite const inbox_cap{memory_notes_inbox_mount_id(principal), "", std::nullopt, std::nullopt};
@@ -77,8 +78,8 @@ int main() {
             write_file(staging_dir / "todo.txt", "buy milk");
             write_file(staging_dir / "idea.txt", "ship agent.notes");
 
-            auto items = harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
-                                                structural_cap, prepared->second, "run-7", "turn-2");
+            auto items = agentengine::rt::block_on(harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
+                                                structural_cap, prepared->second, "run-7", "turn-2"));
             check(items.has_value(), "R1: harvest_memory_notes succeeds");
             if (!items) {
                 std::fprintf(stderr, "  (R1 harvest error: %s / %s)\n", items.error().code.c_str(),
@@ -103,8 +104,8 @@ int main() {
                 // to the structural area, not just returned in-memory objects. ------------------------
                 cap::FsRead const read_cap{memory_mount_id(principal), "", std::nullopt};
                 Mount const structural_mount = memory_mount(principal);
-                auto ranked = rank_memory_items(object_store, ref_store, structural_mount, read_cap,
-                                                  "milk", 10);
+                auto ranked = agentengine::rt::block_on(rank_memory_items(object_store, ref_store, structural_mount, read_cap,
+                                                  "milk", 10));
                 check(ranked.has_value(), "R2: rank_memory_items succeeds against the structural mount");
                 if (!ranked) {
                     std::fprintf(stderr, "  (R2 error: %s / %s)\n", ranked.error().code.c_str(),
@@ -129,8 +130,8 @@ int main() {
         auto prepared = prepare_memory_notes_mount("notes", host_root, {"work", "input", "out"});
         check(prepared.has_value(), "R3 setup: prepare_memory_notes_mount succeeds");
         if (prepared) {
-            auto items = harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
-                                                structural_cap, prepared->second, "run-8", "turn-0");
+            auto items = agentengine::rt::block_on(harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
+                                                structural_cap, prepared->second, "run-8", "turn-0"));
             check(items.has_value() && items->empty(),
                   "R3: an empty staging directory harvests to zero MemoryItems, not a false positive");
         }
@@ -165,8 +166,8 @@ int main() {
             // structural MemoryItem records committed under <kind>/<id>. If the inbox and the
             // structural area shared a ref, harvest_mount()'s own recursive walk would have picked
             // those up as "files" too.
-            auto items = harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
-                                                structural_cap, prepared->second, "run-9", "turn-0");
+            auto items = agentengine::rt::block_on(harvest_memory_notes(object_store, ref_store, principal, inbox_cap,
+                                                structural_cap, prepared->second, "run-9", "turn-0"));
             check(items.has_value() && items->empty(),
                   "R5: a later turn's harvest sees zero items -- R1's own structural records were "
                   "never visible inside notes-inbox, proving genuine subtree isolation");

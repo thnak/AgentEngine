@@ -1,4 +1,4 @@
-// Milestone 7 Phase F3 (015-Declarative-Agent-Format.md §2, docs/planning/milestone-7-protocol-
+// Milestone 7 Phase F3 (rfcs/015-Declarative-Agent-Format.md §2, docs/planning/milestone-7-protocol-
 // conformance-breakdown.md). Proves `compile_agent_document()` (core/agent_yaml_compiler.hpp)
 // against 015's own §2 example document, and -- the actual I6 property this compiler exists to
 // serve -- against a REAL, hand-written C++ Agent compiled via `register_agent<A>()`, confirming
@@ -33,7 +33,7 @@ struct ResearcherAgent
                 ae::TokenBudget<200000>, ae::Approval<ae::approval_mode::policy_driven>> {
     static constexpr std::string_view name         = "researcher";
     static constexpr std::string_view instructions = "Research the question. Cite sources.\n";
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): optional statics, detected via
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): optional statics, detected via
     // agent_registry.hpp's has_agent_description/has_agent_version concepts.
     static constexpr std::string_view description = "Researches a question and cites sources.";
     static constexpr std::string_view version      = "1.4.0";
@@ -203,18 +203,18 @@ spec:
         ae::ToolRegistry registry;
         auto reg1 = registry.register_tool("web_search", [] {
             ae::ToolDescriptor d;
+            d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
             d.name = "web_search";
-            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
-                return ae::json::Value{};
-            };
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&)
+                -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };
             return d;
         }(), ae::tool_provenance::native);
         auto reg2 = registry.register_tool("code_interpreter", [] {
             ae::ToolDescriptor d;
+            d.approval = ae::approval_mode::never_require;  // ADR-244 slice 4a
             d.name = "code_interpreter";
-            d.invoke = [](ae::json::Value const&, ae::EffectContext&) -> ae::result<ae::json::Value> {
-                return ae::json::Value{};
-            };
+            d.invoke = [](ae::json::Value const&, ae::EffectContext&)
+                -> ae::task<ae::result<ae::json::Value>> { co_return ae::json::Value{}; };
             return d;
         }(), ae::tool_provenance::native);
         check(reg1.has_value() && reg2.has_value(), "F-6b setup: both fixture tools register");

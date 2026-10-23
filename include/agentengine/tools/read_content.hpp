@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §7's "Content reading" catalog entry -- "engine-
+// Implements rfcs/009-Plugin-and-Extension-System.md §7's "Content reading" catalog entry -- "engine-
 // native, not a wrapped library... first on this list because every application needs it on day one
 // and it is the candidate most exposed to [the token-budget] hazard -- it ships built-in rather than
 // deferred to an operator plugin." First shipped candidate off OpenQuestions.md OQ-17's generic tool
@@ -36,6 +36,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/task.hpp"  // ADR-237 §5.2: invoke returns ae::task<result<Reply>>
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/sandbox/net_egress_proxy.hpp"
@@ -158,7 +159,7 @@ namespace read_content_detail {
 // a sandbox file's bytes, so both `invoke_via` (URL) and `invoke_from_sandbox` (path) below funnel
 // through this one function rather than duplicating the threshold/truncate/blob-sink logic per
 // source. Moved here verbatim from the pre-`path`-source `ReadContent::invoke_via` body.
-[[nodiscard]] inline result<ReadContentReply> build_reply(std::string&& body, std::string media_type,
+[[nodiscard]] inline task<result<ReadContentReply>> build_reply(std::string&& body, std::string media_type,
                                                            EffectContext& ctx) {
     ReadContentReply reply;
     reply.total_bytes = body.size();
@@ -169,7 +170,7 @@ namespace read_content_detail {
     if (reply.total_bytes <= threshold) {
         reply.preview = std::move(body);
         reply.truncated = false;
-        return reply;
+        co_return reply;
     }
 
     // Over threshold: the preview is always bounded (never the hazard 006 §7 exists to prevent)
@@ -182,11 +183,11 @@ namespace read_content_detail {
     if (ctx.blob_sink) {
         std::span<std::byte const> const bytes{reinterpret_cast<std::byte const*>(body.data()),
                                                  body.size()};
-        auto blob = ctx.blob_sink(bytes, reply.media_type);
-        if (!blob) return std::unexpected(blob.error());
+        auto blob = co_await ctx.blob_sink(bytes, reply.media_type);
+        if (!blob) co_return std::unexpected(blob.error());
         reply.blob = *blob;
     }
-    return reply;
+    co_return reply;
 }
 
 }  // namespace read_content_detail
@@ -223,16 +224,16 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // before either source-specific path runs. The `url` branch always supplies the real,
     // production `sandbox::HostEgressProxy` (default resolver, the real SSRF blocklist
     // `resolve_and_validate` enforces) -- delegates to `invoke_via` below.
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
         bool const has_url = args.url.has_value();
         bool const has_path = args.path.has_value();
         if (has_url == has_path) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "read_content requires exactly one of 'url' or 'path'",
                                           "read_content.ambiguous_source"});
         }
-        if (has_path) return invoke_from_sandbox(args, ctx);
-        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+        if (has_path) co_return co_await invoke_from_sandbox(args, ctx);
+        co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     // The `path` source: reads one file from the session's own mediated sandbox mount
@@ -240,62 +241,65 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
     // `tools/read_sandbox_file.hpp` already proved end to end. No `Content-Type` header exists for
     // a local file, so `media_type` is always the same generic default `invoke_via` below falls
     // back to when a URL response omits one.
-    [[nodiscard]] static result<Reply> invoke_from_sandbox(Args const& args, EffectContext& ctx) {
+    [[nodiscard]] static task<result<Reply>> invoke_from_sandbox(Args const& args, EffectContext& ctx) {
         if (!ctx.sandbox_fs) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "this session has no sandbox mount yet",
                                           "read_content.no_sandbox"});
         }
         if (!ctx.capabilities) {
-            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+            co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                           "tool.capability_not_held"});
         }
         std::string const mount{read_content_detail::kWorkMount};
         auto granted = ctx.capabilities->find_fs_read(mount, *args.path);
         if (!granted) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "no granted FsRead capability covers '" + *args.path +
                                               "' on the '" + mount + "' mount",
                                           "tool.capability_not_held"});
         }
 
         auto bytes = ctx.sandbox_fs->read_file(*args.path);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         std::string body(reinterpret_cast<char const*>(bytes->data()), bytes->size());
-        return read_content_detail::build_reply(std::move(body), "application/octet-stream", ctx);
+        co_return co_await read_content_detail::build_reply(std::move(body), "application/octet-stream", ctx);
     }
 
     // The actual `url`-source logic, parameterized over the egress backend (`sandbox::
     // NetEgressBackend`, net_egress_proxy.hpp). `invoke()` above always supplies the real
     // `HostEgressProxy`; a test supplies a fake conformer instead -- the SAME testability seam
-    // `HostEgressProxy::resolver`'s own comment already documents ("a test may inject a fake...
+    // `TestEgressProxy::host_resolver` (ADR-241; formerly `HostEgressProxy::resolver`)'s own comment already documents ("a test may inject a fake...
     // production code never constructs a HostEgressProxy with a non-default resolver"), applied
     // one level up so this function's fetch/error-mapping logic is provable without a live network
     // call or tripping the (correct, intentional) loopback/RFC1918 block a real local test server
     // would hit.
+    //
+    // ADR-237 §5.1 (#173): a coroutine, because the egress seam is. `args`, `ctx` and `proxy` must outlive
+    // the returned task -- `invoke()` above awaits it in the same full-expression.
     template <sandbox::NetEgressBackend Proxy>
-    [[nodiscard]] static result<Reply> invoke_via(Args const& args, EffectContext& ctx, Proxy const& proxy) {
+    [[nodiscard]] static task<result<Reply>> invoke_via(Args const& args, EffectContext& ctx, Proxy const& proxy) {
         auto parsed = parse_read_content_url(*args.url);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
 
         if (!ctx.capabilities) {
-            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+            co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                           "tool.capability_not_held"});
         }
         std::string const target = net_out_target_string(*parsed);
         auto granted = ctx.capabilities->find_net_out(target);
         if (!granted) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "no granted NetOut capability covers '" + target + "'",
                                           "tool.capability_not_held"});
         }
 
         sandbox::NetEgressRequest const req{"GET", parsed->path, {}, {}};
-        auto response = proxy.fetch(req, *granted);
-        if (!response) return std::unexpected(response.error());
+        auto response = co_await proxy.fetch(req, *granted, sandbox::egress_call_control(ctx));
+        if (!response) co_return std::unexpected(response.error());
         if (response->status < 200 || response->status >= 300) {
-            return std::unexpected(error{failure_class::transient,
+            co_return std::unexpected(error{failure_class::transient,
                                           "read_content received HTTP status " +
                                               std::to_string(response->status),
                                           "read_content.http_error"});
@@ -309,7 +313,7 @@ struct ReadContent : Tool<ReadContent, Capabilities<>, Approval<approval_mode::n
             }
         }
 
-        return read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
+        co_return co_await read_content_detail::build_reply(std::move(response->body), std::move(media_type), ctx);
     }
 };
 

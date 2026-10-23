@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026-Agent-Facing-
+// Proof for decisions/archive/ADR-154-agent-output-codeact-module.md -- GitHub issue #39, 026-Agent-Facing-
 // Runtime-Surface.md §5's `agent.output` ("Emit structured output conforming to the run's schema",
 // zero capability). Runs a REAL script against the REAL built `agentengine_python_worker.exe`
 // (native_jail_backend.cpp's create_python_worker()/exec_session()), the same harness
@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -45,13 +47,15 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.output.set({'x': 1})\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R1: exec_session() returns a real outcome, not a hang/crash");
         if (out.has_value()) {
@@ -75,14 +79,16 @@ int main() {
         cfg.expose_agent_output = true;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R2 setup: runner initializes with agent.output exposed");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\n"
                           "agent.output.set({'answer': 42, 'note': 'done'})\nprint('script ran')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R2: exec_session() returns a real outcome");
         if (out.has_value()) {
@@ -98,7 +104,7 @@ int main() {
         // ---- R3: last-call-wins -- calling it twice keeps only the SECOND value. -------------------
         ExecRequest req2{"python",
                           "import agent\nagent.output.set('first')\nagent.output.set('second')\n"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         AE_CHECK(out2.has_value(), "R3 setup: exec_session() returns a real outcome");
         if (out2.has_value()) {
             AE_CHECK(out2->structured_output_json == "\"second\"",
@@ -108,7 +114,7 @@ int main() {
         // ---- R4: a script that never calls agent.output.set() leaves it empty -- legitimately
         // absent, the SAME convention result_repr/ask_prompt already use, not "unpopulated." --------
         ExecRequest req3{"python", "x = 1 + 1\n"};
-        auto out3 = runner.run(req3, state, ctx);
+        auto out3 = agentengine::rt::block_on(runner.run(req3, state, ctx));
         AE_CHECK(out3.has_value(), "R4 setup: exec_session() returns a real outcome");
         if (out3.has_value()) {
             AE_CHECK(out3->structured_output_json.empty(),

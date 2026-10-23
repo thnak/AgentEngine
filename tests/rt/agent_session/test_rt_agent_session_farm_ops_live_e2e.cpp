@@ -1,5 +1,5 @@
-// Implements 009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/ADR-065-tool-optimizer-
-// provider.md (a REAL ToolOptimizerProvider, not a stand-in), and 010-Python-Code-Interpreter.md §1a/
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 (multi-skill), decisions/archive/ADR-065-tool-optimizer-
+// provider.md (a REAL ToolOptimizerProvider, not a stand-in), and rfcs/010-Python-Code-Interpreter.md §1a/
 // §2 (a REAL embedded CPython interpreter, native_jail::PythonRunner -- not a canned stand-in), all
 // driven through a real remote model over OpenRouter.
 //
@@ -50,8 +50,11 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/mounted_skills_state.hpp"
@@ -98,8 +101,7 @@ void note(char const* label, std::string const& value) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Was `stealth/ox-alpha`, which is GONE: OpenRouter retires a stealth alias when its testing
@@ -277,7 +279,7 @@ type. Do not guess either value.
 
     SkillSourceDescriptor d;
     d.origin_id = "farm-ops-test";
-    d.load_skills = [resolved]() { return resolved; };
+    d.load_skills = [resolved]() -> task<result<std::vector<SkillSourceResult>>> { co_return resolved; };
     return d;
 }
 
@@ -295,17 +297,17 @@ struct FieldWeatherReply {
 AE_JSON_SCHEMA(FieldWeatherReply, forecast, advice)
 
 struct CheckFieldWeatherTool
-    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckFieldWeatherTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_field_weather";
     static constexpr std::string_view description =
         "Gets today's local weather forecast for a named field, for deciding whether to irrigate or "
         "spray it.";
     using Args = FieldQueryArgs;
     using Reply = FieldWeatherReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_field_weather");
         check_weather_called_log() = true;
-        return Reply{"Clear skies, no rain expected for 3 days, around 34C.",
+        co_return Reply{"Clear skies, no rain expected for 3 days, around 34C.",
                      "No rain in the forecast for " + a.field_name +
                          " -- irrigation may proceed if the field needs it. Check pest pressure "
                          "before deciding on spraying."};
@@ -319,14 +321,14 @@ struct PestPressureReply {
 AE_JSON_SCHEMA(PestPressureReply, level, recommendation)
 
 struct CheckPestPressureTool
-    : Tool<CheckPestPressureTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckPestPressureTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_pest_pressure";
     static constexpr std::string_view description =
         "Gets today's measured pest pressure for a named field, for deciding whether spraying is "
         "warranted.";
     using Args = FieldQueryArgs;
     using Reply = PestPressureReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_pest_pressure");
         check_pest_called_log() = true;
         // Deliberately says NOTHING about weather/forecast -- an earlier version mentioned "the dry
@@ -334,7 +336,7 @@ struct CheckPestPressureTool
         // already learned the forecast, never calling check_field_weather at all, then looping on
         // repeated redundant check_pest_pressure calls instead. This tool answers ONE question
         // (pest pressure) and nothing else, so there is no shortcut around calling the other tool.
-        return Reply{"high", "Aphid pressure on " + a.field_name +
+        co_return Reply{"high", "Aphid pressure on " + a.field_name +
                                   " is high, which alone warrants pesticide treatment. This says "
                                   "nothing about the weather -- check that separately."};
     }
@@ -352,16 +354,16 @@ struct AnimalHealthReply {
 AE_JSON_SCHEMA(AnimalHealthReply, status, notes)
 
 struct CheckAnimalHealthTool
-    : Tool<CheckAnimalHealthTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CheckAnimalHealthTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "check_animal_health";
     static constexpr std::string_view description =
         "Gets today's health status for a named herd or flock, for deciding on its feeding plan.";
     using Args = HerdQueryArgs;
     using Reply = AnimalHealthReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("check_animal_health");
         check_animal_health_called_log() = true;
-        return Reply{"healthy",
+        co_return Reply{"healthy",
                      "No signs of illness in " + a.herd_name + " -- proceed with standard feeding."};
     }
 };
@@ -389,18 +391,18 @@ AE_JSON_SCHEMA(FeedRationReply, ration_kg_per_day, notes)
 }
 
 struct CalculateFeedRationTool
-    : Tool<CalculateFeedRationTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<CalculateFeedRationTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "calculate_feed_ration";
     static constexpr std::string_view description =
         "Computes today's total feed ration (kg) for a named herd or flock, given its animal count "
         "and animal type.";
     using Args = FeedRationArgs;
     using Reply = FeedRationReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    task<result<Reply>> invoke(Args a, EffectContext&) const {
         tool_entry_log().push_back("calculate_feed_ration");
         calculate_feed_ration_called_log() = true;
         double const total = static_cast<double>(a.animal_count) * feed_rate_kg_per_animal(a.animal_type);
-        return Reply{total, a.herd_name + "'s ration is based on " + std::to_string(a.animal_count) +
+        co_return Reply{total, a.herd_name + "'s ration is based on " + std::to_string(a.animal_count) +
                                  " " + a.animal_type + "(s) at the standard per-animal rate."};
     }
 };
@@ -418,7 +420,13 @@ struct MountSkillReply {
 };
 AE_JSON_SCHEMA(MountSkillReply, ok, message)
 
-struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
+// ADR-237 §5.2: instance form. Both tools hold `FarmOpsProvider` and reach its private
+// `real_mount_skill`/`real_execute_code` through the `friend` declarations below; each `invoke` is
+// defined out-of-line, where the provider is complete.
+class FarmOpsProvider;
+
+struct MountSkillTool
+    : Tool<MountSkillTool, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "mount_skill";
     static constexpr std::string_view description =
         "Activate a skill you've seen advertised by name and description, so its full instructions "
@@ -427,13 +435,13 @@ struct MountSkillTool : Tool<MountSkillTool, EffectClass<effect_class::pure>> {
         "tools, then wait for your next turn to use them.";
     using Args = MountSkillArgs;
     using Reply = MountSkillReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmOpsProvider::real_mount_skill().
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "MountSkillTool::invoke() must never run directly -- reached "
-                                      "only through FarmOpsProvider::real_mount_skill()",
-                                      "farm_ops.dead_static_invoke_path"});
-    }
+
+    explicit MountSkillTool(FarmOpsProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmOpsProvider* provider_;
 };
 
 // ================= ToolOptimizerProvider (ADR-065) pool -- scheduling/market tools, NEVER always-on:
@@ -458,17 +466,17 @@ AE_JSON_SCHEMA(ScheduleTaskReply, ok, message)
     return tasks;
 }
 
-struct ScheduleTaskTool : Tool<ScheduleTaskTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ScheduleTaskTool : Tool<ScheduleTaskTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "schedule_task";
     static constexpr std::string_view description =
         "Schedules a farm task (irrigation run, vet visit, harvest, market trip, etc.) to happen in "
         "a given number of days from today.";
     using Args = ScheduleTaskArgs;
     using Reply = ScheduleTaskReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         scheduled_tasks_log().push_back(a.description + " (in " + std::to_string(a.due_in_days) +
                                          " day(s))");
-        return Reply{true, "scheduled: " + a.description};
+        co_return Reply{true, "scheduled: " + a.description};
     }
 };
 
@@ -483,22 +491,22 @@ struct CancelTaskReply {
 };
 AE_JSON_SCHEMA(CancelTaskReply, ok, message)
 
-struct CancelTaskTool : Tool<CancelTaskTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTaskTool : Tool<CancelTaskTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_task";
     static constexpr std::string_view description =
         "Cancels a previously scheduled farm task by its description text.";
     using Args = CancelTaskArgs;
     using Reply = CancelTaskReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         auto& tasks = scheduled_tasks_log();
         auto it = std::find_if(tasks.begin(), tasks.end(), [&](std::string const& t) {
-            return t.find(a.description) != std::string::npos;
+            co_return t.find(a.description) != std::string::npos;
         });
         if (it == tasks.end()) {
-            return Reply{false, "no scheduled task matched: " + a.description};
+            co_return Reply{false, "no scheduled task matched: " + a.description};
         }
         tasks.erase(it);
-        return Reply{true, "cancelled: " + a.description};
+        co_return Reply{true, "cancelled: " + a.description};
     }
 };
 
@@ -521,17 +529,17 @@ AE_JSON_SCHEMA(MarketPriceReply, commodity, price_per_kg)
 }
 
 struct GetMarketPriceTool
-    : Tool<GetMarketPriceTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<GetMarketPriceTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "get_market_price";
     static constexpr std::string_view description =
         "Gets today's local market price per kilogram for a named commodity (e.g. rice, chicken, "
         "pork), for planning a sale.";
     using Args = MarketPriceArgs;
     using Reply = MarketPriceReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         get_market_price_called_log() = true;
         observed_commodity_log() = a.commodity;
-        return Reply{a.commodity, price_per_kg_for(a.commodity)};
+        co_return Reply{a.commodity, price_per_kg_for(a.commodity)};
     }
 };
 
@@ -549,15 +557,15 @@ struct SellOrderReply {
 AE_JSON_SCHEMA(SellOrderReply, ok, message, total_value)
 
 struct PlaceSellOrderTool
-    : Tool<PlaceSellOrderTool, Capabilities<>, EffectClass<effect_class::pure>> {
+    : Tool<PlaceSellOrderTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "place_sell_order";
     static constexpr std::string_view description =
         "Places a sell order for a quantity (kg) of a named commodity at today's market price.";
     using Args = SellOrderArgs;
     using Reply = SellOrderReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         double const total = a.quantity_kg * price_per_kg_for(a.commodity);
-        return Reply{true, "sell order placed: " + std::to_string(a.quantity_kg) + "kg of " + a.commodity,
+        co_return Reply{true, "sell order placed: " + std::to_string(a.quantity_kg) + "kg of " + a.commodity,
                      total};
     }
 };
@@ -581,7 +589,8 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
-struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct ExecuteCodeTool
+    : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effect_class::pure>, CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description =
         "Runs a snippet of real Python code in a sandboxed interpreter and returns what it printed "
@@ -589,14 +598,13 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
         "right -- irrigation volumes, feed totals, sale values -- rather than computing it yourself.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    // ADR-030: unreachable poison -- real logic lives in FarmOpsProvider::real_execute_code(), which
-    // reaches the real, shared, lazily-initialized PythonRunner below.
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal,
-                                      "ExecuteCodeTool::invoke() must never run directly -- reached "
-                                      "only through FarmOpsProvider::real_execute_code()",
-                                      "farm_ops.dead_static_invoke_path"});
-    }
+
+    explicit ExecuteCodeTool(FarmOpsProvider& provider) : provider_(&provider) {}
+
+    task<result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    FarmOpsProvider* provider_;
 };
 
 // Process-lifetime lazy singleton, exactly mirroring test_python_embed_smoke.cpp's own construction
@@ -625,7 +633,7 @@ struct ExecuteCodeTool : Tool<ExecuteCodeTool, Capabilities<>, EffectClass<effec
 // tool-and-skill-related system prompt). ============================================================
 class FarmOpsProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "farm-ops-live-test";
 
     FarmOpsProvider()
@@ -690,12 +698,11 @@ public:
         // can change mid-conversation -- see skill_tool_scoping.hpp's own top comment for why this must
         // stay recomputed at the same cadence AgentSession::run_rounds() rebuilds its ToolTable at.
         std::vector<ToolDescriptor> skill_universe_descriptors = {
-            make_tool_descriptor<CheckFieldWeatherTool>(),
-            make_tool_descriptor<CheckPestPressureTool>(),
-            make_tool_descriptor<CheckAnimalHealthTool>(),
-            make_tool_descriptor<CalculateFeedRationTool>(),
-            make_tool_descriptor_with_invoke<MountSkillTool>(
-                [this](MountSkillArgs a, EffectContext& ctx) { return real_mount_skill(std::move(a), ctx); }),
+            make_tool_descriptor(CheckFieldWeatherTool{}),
+            make_tool_descriptor(CheckPestPressureTool{}),
+            make_tool_descriptor(CheckAnimalHealthTool{}),
+            make_tool_descriptor(CalculateFeedRationTool{}),
+            make_tool_descriptor(MountSkillTool{*this}),
         };
         ToolTable const skill_universe = ToolTable::from_descriptors(std::move(skill_universe_descriptors));
         auto const skill_scoped = scope_tools_to_mounted_skills(
@@ -710,14 +717,17 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form tools above reach these.
+    friend struct MountSkillTool;
+    friend struct ExecuteCodeTool;
+
     [[nodiscard]] ToolTable build_optimizer_agent_tools() {
         std::vector<ToolDescriptor> descriptors = {
-            make_tool_descriptor<ScheduleTaskTool>(),
-            make_tool_descriptor<CancelTaskTool>(),
-            make_tool_descriptor<GetMarketPriceTool>(),
-            make_tool_descriptor<PlaceSellOrderTool>(),
-            make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
+            make_tool_descriptor(ScheduleTaskTool{}),
+            make_tool_descriptor(CancelTaskTool{}),
+            make_tool_descriptor(GetMarketPriceTool{}),
+            make_tool_descriptor(PlaceSellOrderTool{}),
+            make_tool_descriptor(ExecuteCodeTool{*this}),
         };
         return ToolTable::from_descriptors(std::move(descriptors));
     }
@@ -747,7 +757,7 @@ private:
 
         ExecRequest req{"python", a.code, {}};
         ExecState state{};
-        auto outcome = runner.run(req, state, ctx);
+        auto outcome = agentengine::rt::block_on(runner.run(req, state, ctx));
         if (!outcome) return std::unexpected(outcome.error());
 
         ExecuteCodeReply reply;
@@ -792,6 +802,15 @@ static_assert(std::is_default_constructible_v<FarmOpsLiveSession>);
 // is only possible if mount_tool ran first (skill_tool_scoping's own enforcement: an unmounted tool is
 // never declared, so the model could not have called it directly).
 
+// ADR-237 §5.2: out-of-line -- both need `FarmOpsProvider` complete.
+task<result<MountSkillReply>> MountSkillTool::invoke(MountSkillArgs a, EffectContext& ctx) const {
+    co_return provider_->real_mount_skill(std::move(a), ctx);
+}
+
+task<result<ExecuteCodeReply>> ExecuteCodeTool::invoke(ExecuteCodeArgs a, EffectContext& ctx) const {
+    co_return provider_->real_execute_code(std::move(a), ctx);
+}
+
 }  // namespace
 
 int main() {
@@ -835,9 +854,7 @@ int main() {
     // exchange into an artificial failure. std::nullopt makes run_rounds()'s own loop condition
     // (agent_session.hpp: `!max_turns_.has_value() || ...`) genuinely unbounded; a real workflow
     // that DOES have a well-defined shape is exactly where a max_turns budget belongs instead.
-    session.initialize("farm-ops-live-e2e-session", Principal{"live-e2e-principal", ""},
-                        /*token_budget=*/std::nullopt,
-                        /*max_turns=*/std::nullopt);
+    session.initialize("farm-ops-live-e2e-session", Principal{"live-e2e-principal", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/std::nullopt));
     session.set_capabilities(&held);
 
     // ==================== Turn 1: an ordinary greeting -- no tool involved ==========================

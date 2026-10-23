@@ -16,6 +16,7 @@
 #ifdef AGENTENGINE_WITH_HTTPS
 
 #include "agentengine/pal/net.hpp"
+#include "../../support/session_choices.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -31,6 +32,8 @@
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;
@@ -197,8 +200,7 @@ public:
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 }  // namespace
@@ -221,7 +223,7 @@ int main() {
     auto run_against = [&](ScriptedSseServer& server, std::uint32_t retries) {
         using OpenAISession = AgentSession<openai::OpenAIChatClient<InMemorySecretStore>, NoSessionState, NoToolsHistory>;
         OpenAISession session;
-        session.initialize("s-real", Principal{"p", ""});
+        session.initialize("s-real", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
                                      ChatClientCapabilities{}, store, "/v1", sandbox::resolve_host,
                                      std::string{}, std::string{}, std::string{}, std::string{},
@@ -242,7 +244,7 @@ int main() {
         using AnthropicSession =
             AgentSession<anthropic::AnthropicChatClient<InMemorySecretStore>, NoSessionState, NoToolsHistory>;
         AnthropicSession session;
-        session.initialize("s-real-a", Principal{"p", ""});
+        session.initialize("s-real-a", Principal{"p", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client("127.0.0.1", server.port(), "m", SecretRef{"provider-key"},
                                      ChatClientCapabilities{}, store, "/v1", "2023-06-01",
                                      sandbox::resolve_host, std::string{}, std::string{}, std::string{},

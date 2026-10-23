@@ -96,7 +96,7 @@ inline void filter_cross_provider_reasoning(agentengine::ContextContribution& co
 // ADR-177: `failure`, when non-null, receives what the retry decision needs and the flattened
 // `run.stream_incomplete` error below cannot carry -- the stream's OWN error (with its real class and
 // code) and whether ANY update had arrived before it died. Read as data, never from the message text.
-struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
+struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own new vocabulary (decisions/archive/ADR-177-stream-retry-in-session.md §2), 027 not yet updated
     agentengine::error inner;
     bool               any_update_seen = false;
     // Bytes of model output the dead stream delivered (text, reasoning, tool-call arguments). It is what
@@ -133,7 +133,7 @@ struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own
     // stream is abandoned, never half-consumed into a response.
     auto const canceled = [&]() -> agentengine::result<agentengine::ChatResponse> {
         s.cancel();
-        return std::unexpected(agentengine::error{agentengine::failure_class::fatal, "the run was canceled",
+        return std::unexpected(agentengine::error{agentengine::failure_class::canceled, "the run was canceled",  // ADR-237 D6
                                                     "run.canceled"});
     };
     bool any_update_seen = false;
@@ -211,8 +211,12 @@ struct StreamFailure {  // ae-naming-lint: allow StreamFailure — ADR-177's own
             message += ": " + inner.message;
             if (!inner.code.empty()) message += " (" + inner.code + ")";
         }
-        return std::unexpected(agentengine::error{agentengine::failure_class::transient,
-                                                    std::move(message), "run.stream_incomplete"});
+        // ADR-237 D6 -- the one exception: a stream that ended `canceled` keeps `canceled`. Calling it `transient`
+        // would let every outer retry (a spawned child's, a workflow edge's) re-run work someone asked to stop.
+        agentengine::failure_class const klass = inner.klass == agentengine::failure_class::canceled
+                                                     ? agentengine::failure_class::canceled
+                                                     : agentengine::failure_class::transient;
+        return std::unexpected(agentengine::error{klass, std::move(message), "run.stream_incomplete"});
     }
     if (!usage.has_value()) {
         return std::unexpected(

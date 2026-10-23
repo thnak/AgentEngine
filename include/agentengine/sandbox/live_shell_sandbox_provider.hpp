@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-209-persistent-shell-sessions.md §3-§5, §8 (build step 5) --
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §3-§5, §8 (build step 5) --
 // `LiveShellSandboxProvider<Surface, Store, Lifetime>` and its one tool, `shell_exec`: a shell held in this
 // session's own sandbox whose cwd, environment and processes persist from one command to the next.
 //
@@ -95,9 +95,16 @@ AE_JSON_SCHEMA(ShellExecReply, ok, exit_code, output, output_bytes, timed_out, s
                unrecorded_changes_discarded, commit_error, tree_digest, turn_index, skipped_symlinks, image,
                image_digest, image_digest_kind)
 
-// `invoke()` is an unreachable sentinel: dispatch goes through the closure `on_context()` installs.
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, templated on the owning provider type so it
+// can hold it explicitly (the provider is a class template). Its `invoke()` (defined below, where
+// `LiveShellSandboxProvider` is complete) calls the provider's private `shell_exec()` through the
+// `friend` declaration in the class; `CapturesSessionState` keeps it non-backgroundable and
+// non-rerun-comparable exactly as the old `[this]`-capturing closure was. The former static poison
+// `invoke()` sentinel is gone.
+template <class ProviderT>
 struct ShellExecTool
-    : agentengine::Tool<ShellExecTool, agentengine::Capabilities<agentengine::cap::decl::RunCommand>> {
+    : agentengine::Tool<ShellExecTool<ProviderT>, agentengine::Capabilities<agentengine::cap::decl::RunCommand>,
+                        agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "shell_exec";
     static constexpr std::string_view description =
         "Run a command in this session's own persistent, isolated shell. The working directory, exported "
@@ -107,13 +114,12 @@ struct ShellExecTool
     using Args = ShellExecArgs;
     using Reply = ShellExecReply;
 
-    [[nodiscard]] static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "ShellExecTool::invoke() must never run directly -- dispatch goes through the closure "
-            "LiveShellSandboxProvider::on_context() installs.",
-            "live_shell_provider.invoke_unreachable"});
-    }
+    explicit ShellExecTool(ProviderT& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    ProviderT* provider_;
 };
 
 template <PersistentShellSurface Surface, class Store = agentengine::InMemoryWorktreeObjectStore,
@@ -124,7 +130,11 @@ public:
     // Snapshots kept per provider (§5: bounded LRU). The oldest is dropped first.
     static constexpr std::size_t kMaxSnapshots = 256;
 
-    using SurfaceFactory = std::function<Surface()>;
+    // ADR-237 §5.1 (step 37): the surface factory is an ASYNC seam. A `Surface` may be a possibly-remote
+    // environment (ADR-209 -- a container/daemon handshake, not a local object graph), so constructing one
+    // is allowed to suspend: `Surface()` -> `task<Surface>()`. Non-coroutine callers drive it through
+    // `rt::block_on` (the copy-assign below does exactly that for `spawn_child_branch` already).
+    using SurfaceFactory = std::function<agentengine::rt::task<Surface>()>;
 
     // Unbound: contributes no tool. Required to exist for `AgentSession::clear_in_process_state()`.
     LiveShellSandboxProvider() = default;
@@ -133,7 +143,9 @@ public:
     // The binding call. `limits` is REQUIRED (no unbounded default, §8): a zero ceiling, a non-positive
     // deadline or a missing factory is refused before anything changes. A re-bind releases the held
     // environment first.
-    [[nodiscard]] agentengine::result<void> bind_sandbox(
+    // ADR-237 §5.1 (step 37): async, because it awaits the surface factory (above). Same result contract
+    // and same refusal ordering as before -- only the return is a `task` now.
+    [[nodiscard]] agentengine::rt::task<agentengine::result<void>> bind_sandbox(
         agentengine::Ledger<Store>& ledger, agentengine::BranchHandle<Store> branch, agentengine::IdentityHandle owner,
         std::filesystem::path staging_root, agentengine::rt::AsyncQuota<agentengine::BranchCost>& branch_quota,
         agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
@@ -142,14 +154,18 @@ public:
         std::chrono::milliseconds command_deadline, Lifetime lifetime_policy = {},
         LiveShellClock clock = default_live_shell_clock()) {
         auto valid = validate_live_shell_limits(limits);
-        if (!valid.has_value()) return valid;
+        if (!valid.has_value()) co_return valid;
         if (command_deadline.count() <= 0 || !make_surface || !clock) {
-            return std::unexpected(agentengine::error{
+            co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "bind_sandbox needs a positive per-command deadline, a surface factory and a clock",
                 "live_shell_provider.bad_binding"});
         }
-        release_on_destroy();
+        // Both suspension points -- the factory, then closing the old environment (ADR-237 §5.1, #173) -- come
+        // BEFORE any binding member is replaced: a re-entrant bind (or a destroy) while either is suspended sees the
+        // old, whole binding rather than a half-bound object with a dangling closure.
+        auto surface = std::make_unique<Surface>(co_await make_surface());
+        co_await release_held();
         ledger_ = &ledger;
         owner_.emplace(owner);
         branch_quota_ = &branch_quota;
@@ -162,13 +178,18 @@ public:
         lifetime_ = std::move(lifetime_policy);
         clock_ = std::move(clock);
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_.clear();
-        return {};
+        co_return agentengine::result<void>{};
     }
 
     [[nodiscard]] bool is_bound() const noexcept { return runtime_.has_value(); }
+
+    // ADR-244 §2.2 (slice 4a): whether a `shell_exec` call needs approval is the host's choice; the engine makes
+    // none. Unset, the contributed descriptor carries no mode and the session refuses the turn
+    // (`choice.missing.tool.approval`). Configuration, not binding: a re-bind keeps it and a copy carries it.
+    void set_tool_approval(agentengine::approval_mode mode) noexcept { tool_approval_ = mode; }
 
     // Fork/copy (§8.1): a child branch, the same quotas/limits/policy, the snapshots (data, same owner), and NO
     // live environment. A failed fork (BranchCost spent) leaves the copy unbound, never aliased.
@@ -177,10 +198,14 @@ public:
         if (this == &other) return *this;
         release_on_destroy();
         unbind();
+        tool_approval_ = other.tool_approval_;
         if (!other.runtime_.has_value()) return *this;
         auto child = agentengine::rt::block_on(other.runtime_->spawn_child_branch(
             *other.owner_, *other.branch_quota_, other.runtime_->staging_root().parent_path()));
         if (!child.has_value()) return *this;
+        // May throw (block_on is refused on a lane): build it before assigning anything, so a throw leaves this
+        // object unbound rather than partly copied.
+        auto surface = std::make_unique<Surface>(agentengine::rt::block_on(other.make_surface_()));
         ledger_ = other.ledger_;
         owner_ = other.owner_;
         branch_quota_ = other.branch_quota_;
@@ -193,7 +218,7 @@ public:
         lifetime_ = other.lifetime_;
         clock_ = other.clock_;
         runtime_.emplace(std::move(*child));
-        surface_ = std::make_unique<Surface>(make_surface_());
+        surface_ = std::move(surface);
         reset_shell_state();
         snapshots_ = other.snapshots_;
         return *this;
@@ -211,11 +236,10 @@ public:
         agentengine::SessionContext&, agentengine::EffectContext& ctx) {
         agentengine::ContextContribution contribution;
         if (!runtime_.has_value()) co_return contribution;
-        check_lifetime(lifetime_event::context, std::nullopt, &ctx);
-        contribution.tools.push_back(agentengine::make_tool_descriptor_with_invoke<ShellExecTool>(
-            [this](ShellExecArgs args, agentengine::EffectContext& call_ctx) -> agentengine::result<ShellExecReply> {
-                return shell_exec(std::move(args), call_ctx);
-            }));
+        co_await check_lifetime(lifetime_event::context, std::nullopt, &ctx);
+        agentengine::ToolDescriptor d = agentengine::make_tool_descriptor(ShellExecTool<LiveShellSandboxProvider>{*this});
+        d.approval = tool_approval_;  // ShellExecTool is ApprovalChosenByHost
+        contribution.tools.push_back(std::move(d));
         co_return contribution;
     }
 
@@ -227,7 +251,7 @@ public:
     agentengine::task<std::monostate> on_run_end(agentengine::RunEndView view, agentengine::EffectContext& ctx) {
         if (runtime_.has_value()) {
             timers_.run_ended();
-            check_lifetime(lifetime_event::run_end, view.reason, &ctx);
+            co_await check_lifetime(lifetime_event::run_end, view.reason, &ctx);
         }
         co_return std::monostate{};
     }
@@ -262,16 +286,22 @@ public:
     }
 
 private:
-    [[nodiscard]] agentengine::result<ShellExecReply> shell_exec(ShellExecArgs args, agentengine::EffectContext& ctx) {
-        check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
+    // ADR-237 §5.2: the instance-form `ShellExecTool` (declared above) holds this provider explicitly and
+    // calls `shell_exec()` below.
+    template <class> friend struct ShellExecTool;
+
+    // ADR-237 §5.1 (#173): a coroutine, because the surface seam is -- it awaits `run_live()` (which used to be
+    // driven here with `rt::block_on`, refused on a runtime lane) and the lifetime checks that close the surface.
+    [[nodiscard]] agentengine::task<agentengine::result<ShellExecReply>> shell_exec(ShellExecArgs args,
+                                                                                    agentengine::EffectContext& ctx) {
+        co_await check_lifetime(lifetime_event::shell_exec, std::nullopt, &ctx);
         agentengine::IdentityHandle const caller = agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
         if (args.restart.value_or(false)) sync_.desynced = true;
         bool const discard_pending = unrecorded_pending_;
         auto hook = [this, caller](agentengine::Checkpoint const& head) { return open_hook(head, caller); };
         open_attempted_ = false;
-        auto outcome = agentengine::rt::block_on(runtime_->run_live(*surface_, std::move(args.command), caller,
-                                                                    *run_quota_, *storage_quota_, sync_, hook,
-                                                                    deadline_));
+        auto outcome = co_await runtime_->run_live(*surface_, std::move(args.command), caller, *run_quota_,
+                                                   *storage_quota_, sync_, hook, deadline_);
         auto const now = clock_();
         // ADR-209 §15.5 M1: an environment this call opened is bookkept even when the command was then refused
         // (`run_live` returns that refusal as an error after the open). Otherwise no ceiling, policy or
@@ -283,11 +313,11 @@ private:
             report(ctx, agentengine::run_event_kind::sandbox_exec_finished, "create", true, {});
         }
         open_attempted_ = false;
-        if (!outcome.has_value()) return std::unexpected(outcome.error());
+        if (!outcome.has_value()) co_return std::unexpected(outcome.error());
         timers_.used(now);
         // The surface tried to remove it. Going through release() (rather than just marking it closed) keeps a
         // handle whose removal FAILED held and retried at every check point (§15.5).
-        if (outcome->exec.container_lost) release(&ctx);
+        if (outcome->exec.container_lost) co_await release(&ctx);
 
         ShellExecReply reply;
         reply.exit_code = outcome->exec.exit_code;
@@ -326,7 +356,7 @@ private:
             reply.image_digest = std::string(surface_->image_digest());
             reply.image_digest_kind = std::string(agentengine::image_digest_kind_name(surface_->image_digest_kind()));
         }
-        return reply;
+        co_return reply;
     }
 
     // `run_live()`'s open hook: charge one open (owner-only), then name the snapshot to replay for `head`.
@@ -338,22 +368,24 @@ private:
         co_return find_snapshot(head.self_digest);
     }
 
-    void check_lifetime(lifetime_event event, std::optional<agentengine::run_end_reason> reason,
-                        agentengine::EffectContext* ctx) {
-        if (!surface_ || !timers_.is_open()) return;
+    // ADR-237 §5.1 (#173): `check_lifetime()` and `release()` are coroutines, because closing the surface is.
+    [[nodiscard]] agentengine::task<void> check_lifetime(lifetime_event event,
+                                                         std::optional<agentengine::run_end_reason> reason,
+                                                         agentengine::EffectContext* ctx) {
+        if (!surface_ || !timers_.is_open()) co_return;
         auto const view = timers_.view(event, reason, clock_());
-        if (release_pending_ || timers_.should_close(lifetime_, view, limits_)) release(ctx);
+        if (release_pending_ || timers_.should_close(lifetime_, view, limits_)) co_await release(ctx);
     }
 
-    void release(agentengine::EffectContext* ctx) {
-        auto closed = surface_->close();
+    [[nodiscard]] agentengine::task<void> release(agentengine::EffectContext* ctx) {
+        auto closed = co_await surface_->close();
         if (!closed.has_value()) {
             // §8.1: keep the handle, retry at the next check point and in the destructor, never silent.
             release_pending_ = true;
             ++release_failures_;
             if (ctx != nullptr) report(*ctx, agentengine::run_event_kind::sandbox_exec_finished, "release", false,
                                        closed.error().code);
-            return;
+            co_return;
         }
         release_pending_ = false;
         timers_.closed();
@@ -361,10 +393,28 @@ private:
         if (ctx != nullptr) report(*ctx, agentengine::run_event_kind::sandbox_exec_finished, "release", true, {});
     }
 
+    // Releases the held environment before a re-bind (`bind_sandbox`, a coroutine, so it awaits).
+    [[nodiscard]] agentengine::task<void> release_held() {
+        if (!surface_ || !timers_.is_open()) co_return;
+        auto closed = co_await surface_->close();
+        if (!closed.has_value()) ++release_failures_;  // the last net is ADR-139's orphan reaping
+        timers_.closed();
+    }
+
+    // The release the destructor and the assignment operators run. They cannot await, so the close is driven
+    // with `rt::block_on` -- which completes for every in-tree surface, whose `close()` does not suspend.
+    // ADR-237 §4.5 rule 3a (owners close asynchronously) is the real answer and is not built yet; until it is, a
+    // `block_on` refused on a runtime lane counts as a failed release -- the accounting a failed close already
+    // gets -- and is never thrown out of a destructor.
     void release_on_destroy() noexcept {
         if (!surface_ || !timers_.is_open()) return;
-        auto closed = surface_->close();
-        if (!closed.has_value()) ++release_failures_;  // the last net is ADR-139's orphan reaping
+        bool released = false;
+        try {
+            released = agentengine::rt::block_on(surface_->close()).has_value();
+        } catch (...) {
+            released = false;
+        }
+        if (!released) ++release_failures_;  // the last net is ADR-139's orphan reaping
         timers_.closed();
     }
 
@@ -426,6 +476,7 @@ private:
         deadline_ = other.deadline_;
         lifetime_ = std::move(other.lifetime_);
         clock_ = std::move(other.clock_);
+        tool_approval_ = other.tool_approval_;
         runtime_ = std::move(other.runtime_);
         surface_ = std::move(other.surface_);
         sync_ = other.sync_;
@@ -452,6 +503,7 @@ private:
     std::chrono::milliseconds deadline_{0};
     Lifetime lifetime_{};
     LiveShellClock clock_;
+    std::optional<agentengine::approval_mode> tool_approval_;  // ADR-244 slice 4a: the host's, see set_tool_approval()
     std::optional<SandboxRuntime<Store>> runtime_;
     std::unique_ptr<Surface> surface_;
     LiveShellSync sync_;
@@ -464,5 +516,13 @@ private:
     std::uint64_t opens_ = 0;
     std::uint64_t event_seq_ = 0;
 };
+
+// ADR-237 §5.2: out-of-line because it needs `LiveShellSandboxProvider` complete to reach the private
+// `shell_exec()` it befriends.
+template <class ProviderT>
+agentengine::task<agentengine::result<ShellExecReply>> ShellExecTool<ProviderT>::invoke(
+    ShellExecArgs args, agentengine::EffectContext& ctx) const {
+    co_return co_await provider_->shell_exec(std::move(args), ctx);
+}
 
 }  // namespace agentengine

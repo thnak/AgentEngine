@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §5 -- the ON-DISK SHAPE of a workflow checkpoint:
+// Implements rfcs/014-Workflow-and-Orchestration.md §5 -- the ON-DISK SHAPE of a workflow checkpoint:
 // `RunStateRecord` and its parts (`DeliveryRecord`, `ExecutorOutputRecord`, `HeldFanInRecord`,
 // `OpenPortRecord`), their JSON codec, and `encode_run_state_record()`/`decode_run_state_record()`.
 //

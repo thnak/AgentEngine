@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 — the
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.3 — the
 // VectorIndex seam and its core-resident default, `BruteForceCosineIndex` (std-only, zero
 // third-party dependency, CONVENTIONS.md tier 1). ANN (hnswlib) and GPU-accelerated (Vulkan)
 // conformers are opt-in seam backends (`src/backends/*`, tier 2), gated on a real bench against
@@ -26,7 +26,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/worktree_types.hpp"
 
 namespace agentengine {
@@ -39,30 +41,36 @@ struct ScoredId {
     friend bool operator==(ScoredId const&, ScoredId const&) = default;
 };
 
+// decisions/archive/ADR-237 §5.1: ONE dense-index seam for local and remote conformers. It used to be split in two --
+// a synchronous `VectorIndex` for local compute and an async `RemoteVectorIndex` (ADR-180 §2.1) for a network
+// service -- and the split existed only because one side was synchronous. Every method is now `task`-shaped and
+// takes the caller's `EffectContext`: a remote conformer resolves its credential inside each call (never at
+// construction, ADR-063 §2.5) and honours `ctx.cancellation`; a local one (`BruteForceCosineIndex`,
+// `VulkanCosineIndex`) completes without suspending and ignores `ctx`. Callers always `co_await`; there is no
+// `if constexpr` dispatch on the index kind and no `synchronous_leaf` trait.
 template <class T>
 // ae-naming-lint: allow VectorIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 concept VectorIndex =
     requires(T idx, std::vector<std::string> ids, std::vector<std::vector<float>> vecs,
-             std::span<float const> query, std::size_t k, std::string const& id) {
-        { idx.add_batch(ids, vecs) } -> std::same_as<result<void>>;
-        { idx.search(query, k) } -> std::same_as<result<std::vector<ScoredId>>>;
-        // ADR-063 §4 finding 2 ("the design never names a manifest/lookup that lets re-mount
-        // answer 'does this digest already have a stored vector' before calling embed_batch()
-        // again"): a CorpusSource conformer's re-mount path checks this BEFORE re-embedding a
-        // chunk, both to avoid the wasted embedder call and because add_batch() itself rejects a
-        // duplicate id outright (§2.4A's own content-addressed dedup means two DIFFERENT files
-        // producing byte-identical chunk text is expected, not an error condition to propagate).
-        { idx.contains(id) } -> std::same_as<bool>;
+             std::span<float const> query, std::size_t k, std::string const& id, EffectContext& ctx) {
+        { idx.add_batch(ids, vecs, ctx) } -> std::same_as<task<result<void>>>;
+        { idx.search(query, k, ctx) } -> std::same_as<task<result<std::vector<ScoredId>>>>;
+        // ADR-063 §4 finding 2: a CorpusSource re-mount checks this BEFORE re-embedding a chunk, both to avoid
+        // the wasted embedder call and because add_batch() rejects a duplicate id outright (§2.4A's
+        // content-addressed dedup means two DIFFERENT files producing byte-identical chunk text is expected).
+        // For a remote conformer this is a network round-trip per chunk (ADR-180 §7 residual: no batched
+        // "which of these ids exist" call is designed).
+        { idx.contains(id, ctx) } -> std::same_as<task<result<bool>>>;
     };
 
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4 — a REFINEMENT
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.4 — a REFINEMENT
 // of `VectorIndex`, not a requirement on it: closes ADR-063 §7's long-named "vector-index persistence
 // is undesigned" residual (`BruteForceCosineIndex` is in-memory-only; a process restart re-embeds the
 // entire corpus regardless of what a caller's `previous_file_hashes` map claims). A conformer that
 // wants restart-survival implements `snapshot()`/`restore()`; one that doesn't (e.g. a purely
 // ephemeral per-session scratch index, or `VulkanCosineIndex`, ADR-180 §2.6, which is local compute
 // with no durability story of its own either) remains a perfectly valid plain `VectorIndex` without
-// being forced to carry machinery it has no use for. A `RemoteVectorIndex` conformer (ADR-180 §2.5,
+// being forced to carry machinery it has no use for. A remote conformer (ADR-180 §2.5,
 // e.g. `QdrantVectorIndex`) deliberately does NOT implement this concept at all — its durable home
 // IS the remote service by construction, so this concept's own problem (local process memory is not
 // durable) does not apply to it.
@@ -78,8 +86,8 @@ template <class T, class OS>
 concept PersistentVectorIndex =
     VectorIndex<T> && WorktreeObjectStore<OS> &&
     requires(T const& idx, T& mutable_idx, OS& store, Digest const& digest) {
-        { idx.snapshot(store) } -> std::same_as<result<Digest>>;
-        { mutable_idx.restore(store, digest) } -> std::same_as<result<void>>;
+        { idx.snapshot(store) } -> std::same_as<task<result<Digest>>>;
+        { mutable_idx.restore(store, digest) } -> std::same_as<task<result<void>>>;
     };
 
 namespace vector_index_detail {
@@ -227,8 +235,27 @@ struct ByteReader {
 // ae-naming-lint: allow BruteForceCosineIndex — ADR-063: new vocabulary, not yet in 027 §2-4's tables.
 class BruteForceCosineIndex {
 public:
-    [[nodiscard]] result<void> add_batch(std::vector<std::string> const& ids,
-                                          std::vector<std::vector<float>> const& vectors) {
+    // -- the seam (ADR-237 §5.1) -- local compute: completes without suspending; `ctx` is unused.
+    [[nodiscard]] task<result<void>> add_batch(std::vector<std::string> const& ids,
+                                               std::vector<std::vector<float>> const& vectors, EffectContext&) {
+        co_return add_batch_now(ids, vectors);
+    }
+    [[nodiscard]] task<result<std::vector<ScoredId>>> search(std::span<float const> query, std::size_t k,
+                                                             EffectContext&) const {
+        co_return search_now(query, k);
+    }
+    [[nodiscard]] task<result<bool>> contains(std::string const& id, EffectContext&) const {
+        co_return contains_now(id);
+    }
+
+    [[nodiscard]] std::size_t size() const {
+        std::shared_lock lock(mutex_);
+        return entries_.size();
+    }
+
+private:
+    [[nodiscard]] result<void> add_batch_now(std::vector<std::string> const& ids,
+                                             std::vector<std::vector<float>> const& vectors) {
         std::unique_lock lock(mutex_);
         if (ids.size() != vectors.size()) {
             return std::unexpected(error{failure_class::contract,
@@ -275,8 +302,7 @@ public:
         return {};
     }
 
-    [[nodiscard]] result<std::vector<ScoredId>> search(std::span<float const> query,
-                                                         std::size_t k) const {
+    [[nodiscard]] result<std::vector<ScoredId>> search_now(std::span<float const> query, std::size_t k) const {
         std::shared_lock lock(mutex_);
         // Same reject-not-coerce reasoning as add_batch()'s dimension check above, applied to the
         // query side (red-team, 2026-08-19) -- a mismatched-width query would otherwise silently
@@ -302,15 +328,12 @@ public:
         return scored;
     }
 
-    [[nodiscard]] bool contains(std::string const& id) const {
+    [[nodiscard]] bool contains_now(std::string const& id) const {
         std::shared_lock lock(mutex_);
         return entries_.contains(id);
     }
 
-    [[nodiscard]] std::size_t size() const {
-        std::shared_lock lock(mutex_);
-        return entries_.size();
-    }
+public:
 
     // ADR-180 §2.4: writes this index's entire current state as one content-addressed blob via the
     // caller-supplied `object_store` (the same store a corpus mount already writes chunk blobs/records
@@ -318,19 +341,23 @@ public:
     // unchanged index re-snapshots to the IDENTICAL digest (content-addressing's own free dedup), so a
     // caller can snapshot after every mount pass cheaply when nothing actually changed.
     template <WorktreeObjectStore OS>
-    [[nodiscard]] result<Digest> snapshot(OS& object_store) const {
-        std::shared_lock lock(mutex_);
+    [[nodiscard]] task<result<Digest>> snapshot(OS& object_store) const {
         std::vector<std::byte> buf;
-        vector_index_detail::append_bytes(buf, "AEV1");
-        vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(dimension_));
-        vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(order_.size()));
-        for (auto const& id : order_) {
-            auto const& vec = entries_.at(id);
-            vector_index_detail::append_u32(buf, static_cast<std::uint32_t>(id.size()));
-            vector_index_detail::append_bytes(buf, id);
-            for (float f : vec) vector_index_detail::append_f32(buf, f);
+        {
+            // The lock covers building the bytes only -- never the store call (a `std::shared_mutex` must not
+            // span a suspension, decisions/archive/ADR-237 §5.1).
+            std::shared_lock lock(mutex_);
+            vector_index_detail::append_bytes(buf, "AEV1");
+            vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(dimension_));
+            vector_index_detail::append_u64(buf, static_cast<std::uint64_t>(order_.size()));
+            for (auto const& id : order_) {
+                auto const& vec = entries_.at(id);
+                vector_index_detail::append_u32(buf, static_cast<std::uint32_t>(id.size()));
+                vector_index_detail::append_bytes(buf, id);
+                for (float f : vec) vector_index_detail::append_f32(buf, f);
+            }
         }
-        return object_store.put_blob(std::span<std::byte const>(buf.data(), buf.size()));
+        co_return co_await object_store.put_blob(std::span<std::byte const>(buf.data(), buf.size()));
     }
 
     // Replaces this index's ENTIRE current state with what `digest` names — the intended use is a
@@ -351,11 +378,11 @@ public:
     // an entry in that then gets silently discarded) -- the sequential misuse case this finding
     // actually demonstrated is now closed; the race is still open, unchanged, and still named there.
     template <WorktreeObjectStore OS>
-    [[nodiscard]] result<void> restore(OS& object_store, Digest const& digest) {
+    [[nodiscard]] task<result<void>> restore(OS& object_store, Digest digest) {
         {
             std::shared_lock empty_check(mutex_);
             if (!entries_.empty()) {
-                return std::unexpected(error{
+                co_return std::unexpected(error{
                     failure_class::contract,
                     "restore() was called on a non-empty index -- restore() REPLACES an index's "
                     "entire state and is intended for a fresh index at process start, never a "
@@ -365,23 +392,23 @@ public:
             }
         }
 
-        auto bytes = object_store.get_blob(digest);
-        if (!bytes) return std::unexpected(bytes.error());
+        auto bytes = co_await object_store.get_blob(digest);
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         vector_index_detail::ByteReader reader{std::span<std::byte const>(bytes->data(), bytes->size())};
         auto magic = reader.read_bytes(4);
-        if (!magic) return std::unexpected(magic.error());
+        if (!magic) co_return std::unexpected(magic.error());
         if (*magic != "AEV1") {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "vector index snapshot blob has an unrecognized magic header",
                                           "vector_index.snapshot_bad_magic"});
         }
         auto dim = reader.read_u64();
-        if (!dim) return std::unexpected(dim.error());
+        if (!dim) co_return std::unexpected(dim.error());
         auto count = reader.read_u64();
-        if (!count) return std::unexpected(count.error());
+        if (!count) co_return std::unexpected(count.error());
         auto plausible = reader.check_header_plausible(*count, *dim);
-        if (!plausible) return std::unexpected(plausible.error());
+        if (!plausible) co_return std::unexpected(plausible.error());
 
         std::unordered_map<std::string, std::vector<float>> new_entries;
         std::vector<std::string> new_order;
@@ -389,11 +416,11 @@ public:
         new_order.reserve(static_cast<std::size_t>(*count));
         for (std::uint64_t i = 0; i < *count; ++i) {
             auto id_len = reader.read_u32();
-            if (!id_len) return std::unexpected(id_len.error());
+            if (!id_len) co_return std::unexpected(id_len.error());
             auto id = reader.read_bytes(*id_len);
-            if (!id) return std::unexpected(id.error());
+            if (!id) co_return std::unexpected(id.error());
             if (new_entries.contains(*id)) {
-                return std::unexpected(error{failure_class::contract,
+                co_return std::unexpected(error{failure_class::contract,
                                               "vector index snapshot blob contains a duplicate id",
                                               "vector_index.snapshot_duplicate_id"});
             }
@@ -401,9 +428,9 @@ public:
             vec.reserve(static_cast<std::size_t>(*dim));
             for (std::uint64_t d = 0; d < *dim; ++d) {
                 auto f = reader.read_f32();
-                if (!f) return std::unexpected(f.error());
+                if (!f) co_return std::unexpected(f.error());
                 if (!std::isfinite(*f)) {
-                    return std::unexpected(error{failure_class::contract,
+                    co_return std::unexpected(error{failure_class::contract,
                                                   "vector index snapshot blob contains a non-finite component",
                                                   "vector_index.snapshot_non_finite"});
                 }
@@ -417,7 +444,7 @@ public:
         entries_   = std::move(new_entries);
         order_     = std::move(new_order);
         dimension_ = static_cast<std::size_t>(*dim);
-        return {};
+        co_return result<void>{};
     }
 
 private:

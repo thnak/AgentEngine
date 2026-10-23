@@ -49,6 +49,7 @@
 //         times with a fresh pump each round, since a single lucky pass proves little about a
 //         cross-thread-resume hazard.
 
+#include <utility>
 #include <cstdio>
 #include <memory>
 #include <set>
@@ -57,11 +58,13 @@
 #include <vector>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_spawn.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
 
 using agentengine::AgentMetadata;
@@ -124,8 +127,7 @@ void check(bool cond, char const* what) {
 // -- Same drive()/ScriptedChatClient shape test_rt_agent_spawn_child_run.cpp already established --
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct ScriptedOutcome {
@@ -247,9 +249,9 @@ struct PolicyGatedChildTool
     static constexpr std::string_view description = "A policy_driven tool the CHILD itself calls.";
     using Args = PolicyGatedChildArgs;
     using Reply = PolicyGatedChildReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const {
         policy_gated_child_invoked() = true;
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -259,7 +261,7 @@ public:
                                                                               EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<PolicyGatedChildTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(PolicyGatedChildTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -312,6 +314,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(2)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-1", ""};
 
@@ -319,7 +322,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(reply.has_value(), "T1: perform_agent_spawn() succeeds end-to-end");
         if (reply.has_value()) {
             check(reply->output == "helper-said-done",
@@ -350,6 +353,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"some_other_agent", SpawnBudget::mint_root(5)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-2", ""};
 
@@ -357,7 +361,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T2: fails closed -- caller holds no AgentCall grant for \"helper\"");
         if (!reply.has_value()) {
             check(reply.error().code == "agent_spawn.not_available",
@@ -385,6 +389,7 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(0)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-3", ""};
 
@@ -392,7 +397,7 @@ int main() {
         std::uint64_t const    remaining_before = cost_pool.remaining();
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T3: fails closed at max depth (I8)");
         if (!reply.has_value()) {
             check(reply.error().code == "spawn_budget.depth_exhausted",
@@ -419,13 +424,14 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(5)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-4", ""};
 
         agentengine::Ref const caller_ref{"session:caller-t4", ""};
 
         AgentSpawnArgs const args{"helper", "do the sub-task"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
         check(!reply.has_value(), "T4: fails closed -- \"helper\" was never registered");
         if (!reply.has_value()) {
             check(reply.error().code == "agent_spawn.not_available",
@@ -455,12 +461,12 @@ int main() {
         using ParentHistory = ComposedContextProvider<HistoryProvider<Window<0>>,
                                                         AgentSpawnToolProvider<InMemoryAppendLogStore>>;
         AgentSession<ScriptedChatClient, NoSessionState, ParentHistory> parent;
-        parent.initialize("parent-1", Principal{"caller-5", ""});
+        parent.initialize("parent-1", Principal{"caller-5", ""}, ae_test::trusted_unbounded());
         parent.set_capabilities(&caller_held);
         auto engaged = parent.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
-                                                             tracker)));
+                                                             tracker, agentengine::approval_mode::never_require)));
         check(engaged.has_value(), "T5 setup: ComposedContextProvider::engage() succeeds");
 
         parent.emplace_chat_client().set_script({
@@ -494,12 +500,12 @@ int main() {
         // ---- T6: no cap::AgentCall grant at all -> agent.spawn is never even advertised -----------
         CapabilitySet const no_spawn_cap = CapabilitySet::grant_root({});
         AgentSession<ScriptedChatClient, NoSessionState, ParentHistory> unarmed;
-        unarmed.initialize("parent-2", Principal{"caller-6", ""});
+        unarmed.initialize("parent-2", Principal{"caller-6", ""}, ae_test::trusted_unbounded());
         unarmed.set_capabilities(&no_spawn_cap);
         auto engaged2 = unarmed.history_provider().engage(std::make_tuple(
             HistoryProvider<Window<0>>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
-                                                             tracker)));
+                                                             tracker, agentengine::approval_mode::never_require)));
         check(engaged2.has_value(), "T6 setup: engage() succeeds for the unarmed session too");
         unarmed.emplace_chat_client().set_script({{text_response("no-tool-needed"), Usage{1, 1, 0, 0, 0.0}}});
         auto unarmed_response = drive(unarmed.start_run(StartRun{text_message("hello")}));
@@ -626,12 +632,13 @@ int main() {
             CapabilitySet::grant_root({AgentCall{"policy-helper", SpawnBudget::mint_root(2)}});
 
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-t8", ""};
 
         agentengine::Ref const caller_ref{"session:caller-t8", ""};
         AgentSpawnArgs const   args{"policy-helper", "do it"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "T8: perform_agent_spawn() succeeds end-to-end");
         check(policy_gated_child_invoked(),
@@ -664,12 +671,13 @@ int main() {
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({AgentCall{"policy-helper-unwired", SpawnBudget::mint_root(2)}});
         EffectContext ctx;
+        ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"caller-t9", ""};
         agentengine::Ref const caller_ref{"session:caller-t9", ""};
 
         AgentSpawnArgs const args{"policy-helper-unwired", "do it"};
-        auto reply = perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller");
+        auto reply = agentengine::rt::block_on(perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
 
         check(reply.has_value(), "T9: the outer spawn mechanism still succeeds -- the child's own turn "
                                   "loop absorbs the denied tool call as an ordinary tool-result error, "
@@ -677,6 +685,56 @@ int main() {
         check(!policy_gated_child_invoked(),
               "T9: with no policy_decider wired for this target, the child's policy_driven tool call "
               "is denied, never silently auto-approved by default");
+    }
+
+    // ---- T-root: ADR-241 §8.4 -- perform_agent_spawn() hands the child the ROOT run id (G13h child row) -----
+    //      Observed on the ChildSpawnRequest the REAL perform_agent_spawn() builds (the lambda records it before
+    //      moving it into run_child_agent_session), so a mutant that keys the child on the caller's own run id fails.
+    {
+        std::string seen_root = "<not called>";
+        auto make_recording_target = [&seen_root]() {
+            SpawnTargetDescriptor d = make_helper_target("root-recorded");
+            d.run_child = [&seen_root](std::string child_id, ChildSpawnRequest req) {
+                seen_root = req.root_run_id;
+                return run_child_agent_session<ScriptedChatClient>(
+                    std::move(child_id), std::move(req), [](ScriptedChatClient& c) {
+                        c.set_script({{text_response("ok"), Usage{1, 1, 0, 0, 0.0}}});
+                    });
+            };
+            return d;
+        };
+        for (int variant = 0; variant < 2; ++variant) {
+            InMemoryAppendLogStore ref_store;
+            SpawnCostBudget        cost_pool;
+            cost_pool.initialize(10);
+            SpawnPump<InMemoryAppendLogStore> pump(cost_pool, ref_store);
+            SpawnTargetRegistry registry;
+            (void)registry.register_target("root-helper", make_recording_target());
+            SpawnQuota        quota{100};
+            SpawnQuotaTracker tracker;
+            CapabilitySet const caller_held =
+                CapabilitySet::grant_root({AgentCall{"root-helper", SpawnBudget::mint_root(2)}});
+            EffectContext ctx;
+            ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
+            ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
+            ctx.principal    = Principal{"caller-root", ""};
+            ctx.run_id       = "spawner:run:5";
+            if (variant == 0) ctx.root_run_id = "ROOT:run:1";  // a spawned caller: it carries the root of ITS tree
+            agentengine::Ref const caller_ref{"session:caller-root", ""};
+            AgentSpawnArgs const   args{"root-helper", "do it"};
+            auto reply = agentengine::rt::block_on(
+                perform_agent_spawn(args, ctx, registry, pump, quota, tracker, caller_ref, "/caller"));
+            check(reply.has_value(), "T-root setup: perform_agent_spawn() succeeds");
+            if (variant == 0) {
+                check(seen_root == "ROOT:run:1",
+                      "T-root: the child request carries the caller's ROOT run id, not the caller's own run id "
+                      "(nested spawns propagate the root unchanged)");
+            } else {
+                check(seen_root == "spawner:run:5",
+                      "T-root: with no root on the caller's context the child still shares ONE bucket with the "
+                      "caller (its run id), never an empty one");
+            }
+        }
     }
 
     if (g_failures == 0) {

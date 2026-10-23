@@ -1,10 +1,10 @@
 // wit/ae-tool.wit
 //
-// The `ae:tool` world (009-Plugin-and-Extension-System.md §2/§3/§5, 006-Tool-and-Function-Plane.md
+// The `ae:tool` world (rfcs/009-Plugin-and-Extension-System.md §2/§3/§5, rfcs/006-Tool-and-Function-Plane.md
 // §1/§3/§7) -- the contract of record for a WASM component exposing one or more tools (schema +
 // invoke) to the engine.
 //
-// Scope (Milestone 2 task D2, revised by task D3 / decisions/ADR-010-wasm-component-host-manifest-
+// Scope (Milestone 2 task D2, revised by task D3 / decisions/archive/ADR-010-wasm-component-host-manifest-
 // capability-binding.md): the world shape only for D2; D3 is the first host implementation
 // (`src/backends/wasm/wasm_backend.{hpp,cpp}`), built through design->red-team->prove->judge per
 // CLAUDE.md and landed as ADR-010. Narrowed to what an M2 native tool call actually is: synchronous
@@ -19,7 +19,7 @@
 // bundled every host-mediated effect into one `host` interface; ADR-010 §5 F1 found this made
 // per-capability manifest-vs-import verification unstatable, since the Component Model's import
 // granularity is per-*interface*, not per-function, for a linked interface. Split into `base`
-// (ungated) plus one interface per `007-Capability-and-Trust-Model.md` §3 capability kind this host
+// (ungated) plus one interface per `rfcs/007-Capability-and-Trust-Model.md` §3 capability kind this host
 // actually implements (`fs`, `http`, `secrets`, `clock`, `random`). `blob` and `tool-call` stay
 // declared -- 009 §5 lists both as host imports every `ae:tool` plugin may reach for -- but the
 // `tool` world below does not import them: 007's `Capability` variant has no `Blob` kind yet, and

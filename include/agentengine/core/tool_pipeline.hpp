@@ -2,10 +2,10 @@
 // ADR-201 (#120 S5): the function bodies live in src/core/tool_pipeline.cpp, compiled once into
 // agentengine_tool_pipeline; this header keeps every type, every declaration with its comment, and bodies under
 // 6 lines. Bodies were moved verbatim.
-// Implements 006-Tool-and-Function-Plane.md §3 — the ten-step invocation pipeline every tool call
+// Implements rfcs/006-Tool-and-Function-Plane.md §3 — the ten-step invocation pipeline every tool call
 // traverses, as real host machinery (not modeled on Tool itself, core/tool.hpp's own comment).
 //
-// The declaration half (`ToolDescriptor`, `make_tool_descriptor<ToolT>()`, `ToolTable`) lives in
+// The declaration half (`ToolDescriptor`, `make_tool_descriptor(ToolT{})`, `ToolTable`) lives in
 // core/tool_descriptor.hpp, included below; see that file's banner for why the two were split.
 //
 // M2 Phase B scope (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md): a single
@@ -145,11 +145,16 @@ struct IdempotencyKey {
 // "principal" axis), which the prior two-argument shape made structurally impossible; 007 §5's
 // policy engine still does not exist, so nothing here derives a decision from `caller` -- a decider
 // that ignores it behaves exactly as before.
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped -- an approval may need real I/O (a human channel, a
+// policy service), so the seam lets a decider suspend. A decider cannot fail: a throwing body is caught
+// by `task`'s own `unhandled_exception` and rethrown at the caller's `co_await`, exactly how it
+// propagated before. An unset decider is the same fail-closed default, now an immediately-ready task
+// (ADR-070's "unset = today's behaviour").
 // ae-naming-lint: allow ApprovalDecider — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
-using ApprovalDecider = std::function<bool(Principal const& caller, std::string_view tool_name,
-                                            std::string const& canonical_args_json)>;
+using ApprovalDecider = std::function<task<bool>(Principal const& caller, std::string_view tool_name,
+                                                 std::string const& canonical_args_json)>;
 
-// Delegated Decision Seam (decisions/ADR-070-host-configurable-responsibility-boundary.md): a
+// Delegated Decision Seam (decisions/archive/ADR-070-host-configurable-responsibility-boundary.md): a
 // SECOND, optional host seam, consulted ONLY for `approval_mode::policy_driven` -- unlike
 // `ApprovalDecider` above (a binary yes/no over one already-pending call), this lets a host resolve
 // `policy_driven`'s existing fail-closed degrade (file-top comment: "policy_driven degrades to
@@ -166,9 +171,13 @@ using ApprovalDecider = std::function<bool(Principal const& caller, std::string_
 // ADR-192's unattended mode additionally asks it about every call that reaches the decider.
 // `resolve_approval_outcome` below enforces the distinction structurally, not just by convention.
 enum class policy_decision { auto_approve, auto_deny, require_approval };  // ae-naming-lint: allow policy_decision — ADR-070, same idiom as approval_mode/call_provenance
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped, on the same reasoning as `ApprovalDecider` above --
+// a policy consult may reach a network service, so the seam can suspend. It cannot fail; an unset
+// decider is the same fail-closed default, now an immediately-ready task (ADR-070 "unset = today's
+// behaviour").
 // ae-naming-lint: allow PolicyDecider — ADR-070, same idiom as ApprovalDecider above
-using PolicyDecider = std::function<policy_decision(Principal const& caller, ToolDescriptor const& tool,
-                                                     bool arguments_tainted)>;
+using PolicyDecider = std::function<task<policy_decision>(Principal const& caller, ToolDescriptor const& tool,
+                                                          bool arguments_tainted)>;
 
 // Step 10's minimal audit record (016/013's full span shape is out of scope for M2, see file-top
 // comment). Phase F1 adds the call's own idempotency key -- computed unconditionally (it costs one
@@ -220,7 +229,7 @@ namespace tool_pipeline_detail {
 // (`tool.result_oversized_no_sink`) rather than falling back to inlining the oversized result anyway
 // -- inlining exactly what crossed the threshold is the hazard 006 §7 exists to prevent, so silently
 // doing it as a fallback would defeat the whole mechanism the moment a caller forgot to wire a sink.
-[[nodiscard]] result<std::pair<ToolResult, std::size_t>> normalize_success(
+[[nodiscard]] task<result<std::pair<ToolResult, std::size_t>>> normalize_success(
         std::string call_id, json::Value const& reply_value, EffectContext& ctx);
 
 // ADR-023 §6 point 4 / 007 §4 amendment, declassifier (a′): a `text_derived` call auto-declassifies
@@ -256,13 +265,17 @@ namespace tool_pipeline_detail {
 // apart. With `policy` unset (`{}`) this reproduces `tool_call_requires_approval()`'s own boolean
 // exactly -- `needs_decider` wherever that function would have returned `true`, `proceed` otherwise
 // -- so every existing caller that never wires a `PolicyDecider` sees byte-identical behavior.
+//
+// decisions/archive/ADR-237 §5.1 (Phase G): `task`-shaped, because it `co_await`s the now-`task` deciders. It
+// still never fails (both deciders are infallible), so the return is `task<approval_outcome>`, not
+// `task<result<...>>`.
 enum class approval_outcome { proceed, deny, needs_decider };  // ae-naming-lint: allow approval_outcome — ADR-070, same idiom as call_provenance/approval_mode
 
-[[nodiscard]] approval_outcome resolve_approval_outcome(ToolDescriptor const& tool,
-                                                        call_provenance provenance,
-                                                        Principal const& caller,
-                                                        bool arguments_tainted,
-                                                        PolicyDecider const& policy);
+[[nodiscard]] task<approval_outcome> resolve_approval_outcome(ToolDescriptor const& tool,
+                                                              call_provenance provenance,
+                                                              Principal const& caller,
+                                                              bool arguments_tainted,
+                                                              PolicyDecider const& policy);
 
 // ADR-029 needs this outside `invoke_tool()` too, to build a denial `ToolResult` for a pending call
 // a human explicitly rejected (`AgentSession::handle()`'s resume-and-deny path) in exactly the same
@@ -293,7 +306,7 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
     }
 }
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 1 (resolve), 4/7 (authorize+bind),
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5: steps 1 (resolve), 4/7 (authorize+bind),
 // 5 (approve) extracted out of `invoke_tool()` below into their own callable, byte-for-byte the
 // same logic -- so the parallel-batch admission path (`AgentSession`, rt/agent_session.hpp) can
 // share EXACTLY this admission logic rather than carry a second, independently-drifting copy of a
@@ -304,13 +317,13 @@ struct AdmittedCall {
     std::vector<BoundCapability> bound;
 };
 
-[[nodiscard]] result<AdmittedCall> admit_call(ToolTable const& table, CapabilitySet const& held,
-                                              ToolCallRequest const& request,
-                                              Principal const& caller,
-                                              ApprovalDecider const& approve,
-                                              PolicyDecider const& policy);
+[[nodiscard]] task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet const& held,
+                                                    ToolCallRequest const& request,
+                                                    Principal const& caller,
+                                                    ApprovalDecider const& approve,
+                                                    PolicyDecider const& policy);
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5: steps 8 (invoke), 9 (normalize), 10
 // (account) extracted from invoke_tool() below, alongside admit_call() above -- returns the raw
 // outcome without touching any audit bookkeeping, DELIBERATELY: `invoke_tool()`'s own audit
 // measures duration from before admission even starts, while the parallel-batch fan-out path
@@ -324,8 +337,11 @@ struct AdmittedCallOutcome {
     std::size_t bytes = 0;
 };
 
-[[nodiscard]] AdmittedCallOutcome run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
-                                                    EffectContext& ctx, std::vector<BoundCapability>& bound);
+// ADR-237 §5.2: async -- step 8 `co_await`s the tool's `task<result<json::Value>>` invoke. A
+// genuinely-sync caller (a detached background worker, a host edge) drives this with
+// `rt::block_on`; the two callers inside this file drive it with `co_await`.
+[[nodiscard]] task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
+                                                          EffectContext& ctx, std::vector<BoundCapability>& bound);
 
 // ADR-160 §5: a small, shared audit-record builder for the parallel-batch fan-out path only --
 // `invoke_tool()`'s own inline `finish()` closure and `background_task()`'s own closure each keep
@@ -342,20 +358,23 @@ struct AdmittedCallOutcome {
 // regardless of outcome (step 10) -- see the RAII guard below, which is what makes G3 ("a
 // capability handle from call n is unusable in call n+1") true by construction rather than by
 // convention.
-[[nodiscard]] ToolResult invoke_tool(ToolTable const& table, CapabilitySet const& held,
-                                     ToolCallRequest const& request, EffectContext& ctx,
-                                     ApprovalDecider const& approve,
-                                     ToolInvocationAudit* audit_out = nullptr,
-                                     // ADR-070: appended last (this file's own established
-                                     // convention for additive parameters), default `{}` so
-                                     // every existing positional call site -- including the
-                                     // three "already resolved by a human" one-shot-approve
-                                     // sites in rt/agent_session.hpp -- is unaffected and
-                                     // never re-litigates a decision policy_driven already
-                                     // deferred to a real human.
-                                     PolicyDecider const& policy = {});
+//
+// ADR-237 §5.2: async -- `task<ToolResult>`. Engine callers `co_await` it; a genuinely-sync host
+// (an MCP request handler, the native-jail bridge, an example `main`) drives it with `rt::block_on`.
+[[nodiscard]] task<ToolResult> invoke_tool(ToolTable const& table, CapabilitySet const& held,
+                                           ToolCallRequest const& request, EffectContext& ctx,
+                                           ApprovalDecider const& approve,
+                                           ToolInvocationAudit* audit_out = nullptr,
+                                           // ADR-070: appended last (this file's own established
+                                           // convention for additive parameters), default `{}` so
+                                           // every existing positional call site -- including the
+                                           // three "already resolved by a human" one-shot-approve
+                                           // sites in rt/agent_session.hpp -- is unaffected and
+                                           // never re-litigates a decision policy_driven already
+                                           // deferred to a real human.
+                                           PolicyDecider const& policy = {});
 
-// decisions/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
+// decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5 "Batch partitioning". A pure function: given
 // the batch of requests actually being dispatched (the caller has already filtered out anything a
 // hook denied) and the table used to resolve each one, decides whether the batch is fan-out-eligible
 // at all and, if so, partitions it into concurrency classes -- no I/O, no admission, no invocation;
@@ -424,10 +443,13 @@ struct ConcurrencyClass {
 // ae-naming-lint: allow BackgroundTaskCompletion — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using BackgroundTaskCompletion = std::function<void(ToolResult, ToolInvocationAudit)>;
 
-[[nodiscard]] result<void> background_task(ToolTable const& table, CapabilitySet const& held,
-                                           ToolCallRequest const& request, EffectContext ctx,
-                                           ApprovalDecider const& approve,
-                                           std::size_t current_background_count,
-                                           BackgroundTaskCompletion on_complete);
+// ADR-237 §5.2: async -- `task<result<void>>`. The coroutine body performs ONLY the synchronous
+// admission steps (1, 4/7, 5) and then detaches the worker that runs step 8; it never itself parks,
+// so an engine caller `co_await`s it and a genuinely-sync host drives it with `rt::block_on`.
+[[nodiscard]] task<result<void>> background_task(ToolTable const& table, CapabilitySet const& held,
+                                                 ToolCallRequest const& request, EffectContext ctx,
+                                                 ApprovalDecider const& approve,
+                                                 std::size_t current_background_count,
+                                                 BackgroundTaskCompletion on_complete);
 
 }  // namespace agentengine

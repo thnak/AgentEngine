@@ -1,4 +1,4 @@
-// Implements 009-Plugin-and-Extension-System.md §8c's Skills Phase 3 addendum (decisions/ADR-024) --
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's Skills Phase 3 addendum (decisions/archive/ADR-024) --
 // agent-triggered, on-demand skill mounting. Proves two things without a live model or native_jail
 // dependency: (R1) `MountedSkillsState`'s own trivial contract, and (R2) the load-bearing end-to-end
 // chain -- BEFORE any mount, a tool named by a skill's `allowed-tools` is genuinely unreachable via
@@ -13,6 +13,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
 
@@ -52,12 +53,12 @@ AE_JSON_SCHEMA(FakeToolReply, ok)
 
 // EffectClass<pure>, no Capabilities<> -- matches test_tool_table_scoping.cpp's own fixture shape, so
 // this test is entirely about table membership/mount state, not capability-binding mechanics.
-struct FakeTool : Tool<FakeTool, EffectClass<effect_class::pure>> {
+struct FakeTool : Tool<FakeTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fake_tool";
     static constexpr std::string_view description = "A tool a test skill names via allowed-tools.";
     using Args = FakeToolArgs;
     using Reply = FakeToolReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 }  // namespace
@@ -85,11 +86,11 @@ int main() {
         sources.push_back(make_skill_source_descriptor(InlineSkillSource(
             "origin-a", {make_skill_with_tool("test-skill", "fake_tool")})));
         SkillsProvider<> skills(std::move(sources));
-        auto loaded = skills.ensure_loaded();
+        auto loaded = test_support::run_task_sync<result<void>>(skills.ensure_loaded());
         check(loaded.has_value(), "R2 setup: the one-skill source resolves cleanly");
 
         MountedSkillsState mount_state;
-        ToolTable const universe = ToolTable::from_tools<FakeTool>();
+        ToolTable const universe = ToolTable::from(FakeTool{});
         CapabilitySet const held = CapabilitySet::grant_root({});
         EffectContext ctx;
         ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -106,7 +107,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(result.is_error,
                   "R2-before: invoke_tool REJECTS fake_tool while test-skill is unmounted -- a real "
                   "restriction, not a cosmetic one");
@@ -129,7 +130,7 @@ int main() {
                                        json::Value::make_object({{"note", json::Value::make_string("x")}}),
                                        /*arguments_tainted=*/false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(scoped, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(scoped, held, req, ctx, {}, &audit));
             check(!result.is_error,
                   "R2-after: the SAME call to fake_tool succeeds once test-skill is mounted -- the "
                   "unlock is real, through the real pipeline, not a separate code path");

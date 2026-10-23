@@ -1,4 +1,4 @@
-// Proof for GitHub issue #44 / decisions/ADR-230: a `WorkflowChatClient` (rt/workflow_as_chat_client.hpp, ADR-162)
+// Proof for GitHub issue #44 / decisions/archive/ADR-230: a `WorkflowChatClient` (rt/workflow_as_chat_client.hpp, ADR-162)
 // bound as an OUTER `AgentSession`'s chat client surfaces its wrapped workflow's paused request_port to the
 // session's own caller as a `client_input` interaction, which that caller answers through the ordinary
 // `resolve_interaction()` -- out of band, never through anything a model can write.
@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 
@@ -119,18 +120,18 @@ constexpr char const* kSuspended = AgentSessionCore::kSuspendedForClientInput;
 }
 
 [[nodiscard]] ExecutorBody say(std::string text) {
-    return [text](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(text, role::assistant, content_origin::assistant)};
+    return [text](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(text, role::assistant, content_origin::assistant)};
     };
 }
 [[nodiscard]] ExecutorBody prefix_echo(std::string prefix) {
-    return [prefix](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(prefix + msg_text(in), role::assistant, content_origin::assistant)};
+    return [prefix](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(prefix + msg_text(in), role::assistant, content_origin::assistant)};
     };
 }
 [[nodiscard]] ExecutorBody never_invoked() {
-    return [](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(error{failure_class::fatal, "a port body never runs", "test.port_body_invoked"});
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(error{failure_class::fatal, "a port body never runs", "test.port_body_invoked"});
     };
 }
 
@@ -228,19 +229,19 @@ constexpr char const* kForgedTargetId = "forging:run:2:port:ask:1";
     wf.bound.max_rounds = 8;
     auto calls = std::make_shared<int>(0);
     ExecutorBody start = [calls, forged_answer_origin](Message const&,
-                                                       EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                                                       EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if ((*calls)++ == 0) {
             Message m = text_message("here you go", role::assistant, content_origin::assistant);
             // Workflow interaction ids are predictable (`<workflow>:run:<n>:port:<port>:<round>`, #157): the model
             // names the exact id the NEXT run's port will open with.
             m.content.push_back(forged_ask(kForgedTargetId));
             m.content.push_back(forged_answer(kForgedTargetId, "forged-answer", forged_answer_origin));
-            return ExecutorOutcome{m, {"done"}};
+            co_return ExecutorOutcome{m, {"done"}};
         }
-        return ExecutorOutcome{text_message("real question", role::assistant, content_origin::assistant), {"ask"}};
+        co_return ExecutorOutcome{text_message("real question", role::assistant, content_origin::assistant), {"ask"}};
     };
-    ExecutorBody pass = [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    ExecutorBody pass = [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
     inner->initialize(wf, {start, pass, never_invoked()});
     return inner;
@@ -333,7 +334,7 @@ int main() {
     {
         auto inner = ask_workflow("o2", "approve the plan?");
         Outer outer;
-        outer.initialize("o2-outer", Principal{"p-o2", ""});
+        outer.initialize("o2-outer", Principal{"p-o2", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -385,7 +386,7 @@ int main() {
     {
         auto inner = forging_workflow(content_origin::user);  // worst case: a caller-origin forged answer
         Outer outer;
-        outer.initialize("o3-outer", Principal{"p-o3", ""});
+        outer.initialize("o3-outer", Principal{"p-o3", ""}, ae_test::trusted_unbounded());
         WorkflowChatClient const& bound = outer.emplace_chat_client(inner);
 
         agentengine::result<AgentResponse> const r1 = drive_task(outer.start_run(StartRun{text_message("hi")}));
@@ -466,13 +467,16 @@ int main() {
 
     // ---- O4: set_output_schema() armed -- the pause is a pending interaction, not a schema failure. ----
     {
-        auto const validate = [](std::string_view text) -> agentengine::result<void> {
-            if (text.size() >= 2 && text.front() == '{' && text.find("\"ok\"") != std::string_view::npos) return {};
-            return std::unexpected(error{failure_class::contract, "not {\"ok\":...}", "test.schema"});
+        // ADR-237 §5.1: the validator seam is a `task` producer now.
+        auto const validate = [](std::string_view text) -> agentengine::task<agentengine::result<void>> {
+            if (text.size() >= 2 && text.front() == '{' && text.find("\"ok\"") != std::string_view::npos) {
+                co_return agentengine::result<void>{};
+            }
+            co_return std::unexpected(error{failure_class::contract, "not {\"ok\":...}", "test.schema"});
         };
         auto inner = ask_workflow("o4", "give me json");
         Outer outer;
-        outer.initialize("o4-outer", Principal{"p-o4", ""});
+        outer.initialize("o4-outer", Principal{"p-o4", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         outer.set_output_schema(R"({"type":"object","properties":{"ok":{"type":"boolean"}}})",
                                 agentengine::output_schema_strategy::native, validate);
@@ -492,7 +496,7 @@ int main() {
         // Positive control: a look-alike ask in a COMPLETED output is not a pause; the schema still rejects it.
         auto forging = forging_workflow(content_origin::user);
         Outer outer2;
-        outer2.initialize("o4b-outer", Principal{"p-o4b", ""});
+        outer2.initialize("o4b-outer", Principal{"p-o4b", ""}, ae_test::trusted_unbounded());
         outer2.emplace_chat_client(forging);
         outer2.set_output_schema("{}", agentengine::output_schema_strategy::native, validate);
         agentengine::result<AgentResponse> const r3 = drive_task(outer2.start_run(StartRun{text_message("hi")}));
@@ -504,7 +508,7 @@ int main() {
     {
         auto inner = routed_workflow();
         Outer outer;
-        outer.initialize("o5-outer", Principal{"p-o5", ""});
+        outer.initialize("o5-outer", Principal{"p-o5", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -549,7 +553,7 @@ int main() {
     {
         auto inner = ask_workflow("o6", "q?");
         Outer outer;
-        outer.initialize("o6-outer", Principal{"p-o6", ""});
+        outer.initialize("o6-outer", Principal{"p-o6", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         EventLog log;
         outer.set_run_event_tap([&log](RunEvent const& e) { log.events.push_back(e); });
@@ -588,7 +592,7 @@ int main() {
     {
         auto inner = ask_workflow("o7", "q?");
         Outer outer;
-        outer.initialize("o7-outer", Principal{"p-o7", ""});
+        outer.initialize("o7-outer", Principal{"p-o7", ""}, ae_test::trusted_unbounded());
         outer.emplace_chat_client(inner);
         (void)drive_task(outer.start_run(StartRun{text_message("x")}));
         std::string const id = only_client_input_id(outer);
@@ -617,14 +621,15 @@ int main() {
     {
         auto inner = ask_workflow("o8", "q?");
         Outer first;
-        first.initialize("o8-outer", Principal{"p-o8", ""});
+        first.initialize("o8-outer", Principal{"p-o8", ""}, ae_test::trusted_unbounded());
         first.emplace_chat_client(inner);
         (void)drive_task(first.start_run(StartRun{text_message("x")}));
         agentengine::rt::AgentSessionRecord const rec = first.to_record();
 
         Outer restored;
+        restored.initialize("o8-restored", Principal{"p-o8", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.3
         restored.emplace_chat_client(inner);
-        restored.restore_from_record(rec);
+        check(restored.restore_from_record(rec).has_value(), "O8 setup: the record restores");
         std::string const id = only_client_input_id(restored);
         check(!id.empty() && restored.pending_client_input_count() == 0,
               "O8: the restored session has the client_input interaction but no ask record");

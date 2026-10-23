@@ -133,7 +133,7 @@ bool mkdir_p(std::string const& path) {
 // 008 SS9 G2/G3's Linux filesystem/process containment (see linux_native_jail_backend.hpp's own
 // header comment for the full rationale, docs/planning/linux-native-jail-pivot-root-containment-
 // design-draft.md for the design + self-red-team record this implements verbatim, and
-// decisions/ADR-083-linux-native-jail-pivot-root-containment.md for the closing ADR and its real
+// decisions/archive/ADR-083-linux-native-jail-pivot-root-containment.md for the closing ADR and its real
 // build/test evidence). Runs in the child, after the sync-pipe handshake
 // (cgroup membership already confirmed by the parent) and BEFORE `install_seccomp_filter()` --
 // `mount`/`umount2`/`pivot_root` are all in that filter's denylist, so this jail-construction code
@@ -263,14 +263,34 @@ std::string drain_pipe_bounded(int read_fd, std::uint64_t cap_bytes) {
 
 }  // namespace
 
-result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> LinuxNativeJailBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
+    // ADR-244 §2.4: a guest path is the place under the jail root a mount lands, compared by spelling below, so
+    // it must have one spelling: absolute, not the root itself, and free of empty, `.` and `..` components
+    // (`//work` is `/work`; a relative path would be created beside the jail root on the host). Checked before
+    // the grants, so a malformed guest path gets its own error.
+    for (MountSpec const& mount : spec.mounts) {
+        std::string_view const g = mount.guest_path;
+        bool ok = g.size() > 1 && g.front() == '/' && g.back() != '/';
+        for (std::size_t start = 1; ok && start <= g.size();) {
+            std::size_t const end = std::min(g.find('/', start), g.size());
+            std::string_view const part = g.substr(start, end - start);
+            ok = !part.empty() && part != "." && part != "..";
+            start = end + 1;
+        }
+        if (!ok) {
+            return std::unexpected(error{failure_class::policy,
+                                         "sandbox mount guest path '" + mount.guest_path +
+                                             "' is not a normalised absolute path other than '/'",
+                                         "sandbox.guest_path_invalid"});
+        }
+    }
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
-    // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
-    // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
+    // the real authority behind mounts/net -- every mount and egress entry needs a covering grant
+    // (ADR-244 §2.4: unconditionally; see authorize_spec()'s own comment, sandbox.hpp).
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
-    // decisions/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
+    // decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
     // this design's own red-team pass found (finding B3) -- KataBackend::create() already fails
     // closed on any NetPolicy beyond deny_all=true (ADR-086); this backend previously ignored
     // NetPolicy entirely. Independent of capabilities/authorize_spec() above: this backend has no
@@ -282,6 +302,22 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
             "linux_native_jail: NetPolicy with deny_all=false or a nonempty allowlist is not "
             "supported yet -- this backend has no CNI/egress-proxy wired to honor a real allowlist",
             "linux_native_jail.net_allowlist_unsupported"});
+    }
+
+    // Mounts are bound in vector order onto the jail's tmpfs root, so a mount whose guest path is inside (or
+    // contains) another's would mask it -- a later read-only mount hiding a read-write one, or the reverse.
+    // Refused outright, before anything is bound.
+    for (std::size_t i = 0; i < spec.mounts.size(); ++i) {
+        for (std::size_t j = i + 1; j < spec.mounts.size(); ++j) {
+            std::string const& a = spec.mounts[i].guest_path;
+            std::string const& b = spec.mounts[j].guest_path;
+            if (capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a)) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "sandbox mounts '" + a + "' and '" + b + "' overlap; the later one would mask the other",
+                    "sandbox.mount_overlap"});
+            }
+        }
     }
 
     DelegatedRootState root_state = ensure_delegated_root(delegated_cgroup_root_);
@@ -308,7 +344,7 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
     // Host-unique, not just process-unique: PID + a per-process counter. A counter alone collides
     // across DIFFERENT test/host processes sharing this backend's default delegated paths (real,
     // observed directly: two `ctest -j` binaries both minting "linux_native_jail-0" and racing to
-    // `mkdir` the identical cgroup/jail_root directory -- decisions/ADR-083-linux-native-jail-
+    // `mkdir` the identical cgroup/jail_root directory -- decisions/archive/ADR-083-linux-native-jail-
     // pivot-root-containment.md §4). A PID cannot repeat among processes alive at the same instant,
     // so prefixing it closes the collision at its root rather than only papering over it with test
     // serialization (`RUN_SERIAL`, still kept in tests/CMakeLists.txt as defense in depth against a
@@ -324,7 +360,7 @@ result<SandboxHandle> LinuxNativeJailBackend::create(SandboxSpec const& spec, Ef
     return SandboxHandle{id};
 }
 
-result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
+result<ExecOutcome> LinuxNativeJailBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                                   EffectContext&) {
     Instance* inst_ptr = find_instance_locked(handle.opaque_id);
     if (inst_ptr == nullptr) {
@@ -523,7 +559,7 @@ result<ExecOutcome> LinuxNativeJailBackend::exec(SandboxHandle& handle, ExecRequ
     return outcome;
 }
 
-void LinuxNativeJailBackend::destroy(SandboxHandle& handle) {
+void LinuxNativeJailBackend::destroy_blocking(SandboxHandle& handle) {
     // exec() always fully reaps the child (via the wait loop above) before returning, so the
     // cgroup is already empty of live processes by the time destroy() runs -- CgroupLimits'
     // destructor (via erase below) removes the directory, 008 §2 clause 4's teardown for whatever

@@ -59,6 +59,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/rt/append_log_store.hpp"
 #include "agentengine/rt/workflow_run_state_record.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::rt {
 
@@ -190,42 +191,42 @@ struct RewindAuditRecord {
 // ---- Phase 1: PENDING, carrying the real payload -----------------------------------------------
 
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> stage_pending_checkpoint(StoreT& store, std::string_view run_id,
+[[nodiscard]] task<result<void>> stage_pending_checkpoint(StoreT& store, std::string run_id,
                                                      std::uint64_t checkpoint_index,
-                                                     RunStateRecord const& state) {
+                                                     RunStateRecord state) {
     WorkflowCheckpointEntry entry{checkpoint_index, checkpoint_phase::pending, state};
     std::string const text = agentengine::json::dump(checkpoint_entry_to_json(entry));
     std::vector<std::byte> bytes;
     bytes.reserve(text.size());
     for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(workflow_checkpoint_log_id(run_id), std::move(bytes));
-    if (!appended) return std::unexpected(appended.error());
-    return {};
+    auto appended = co_await store.append(workflow_checkpoint_log_id(run_id), std::move(bytes));
+    if (!appended) co_return std::unexpected(appended.error());
+    co_return result<void>{};
 }
 
 // ---- Phase 2: COMMITTED, a bare marker ---------------------------------------------------------
 
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> commit_checkpoint(StoreT& store, std::string_view run_id,
+[[nodiscard]] task<result<void>> commit_checkpoint(StoreT& store, std::string run_id,
                                               std::uint64_t checkpoint_index) {
     WorkflowCheckpointEntry entry{checkpoint_index, checkpoint_phase::committed, RunStateRecord{}};
     std::string const text = agentengine::json::dump(checkpoint_entry_to_json(entry));
     std::vector<std::byte> bytes;
     bytes.reserve(text.size());
     for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(workflow_checkpoint_log_id(run_id), std::move(bytes));
-    if (!appended) return std::unexpected(appended.error());
-    return {};
+    auto appended = co_await store.append(workflow_checkpoint_log_id(run_id), std::move(bytes));
+    if (!appended) co_return std::unexpected(appended.error());
+    co_return result<void>{};
 }
 
 // The convenience most callers want: both phases, in order.
 template <AppendLogStore StoreT>
-[[nodiscard]] result<void> save_retained_checkpoint(StoreT& store, std::string_view run_id,
+[[nodiscard]] task<result<void>> save_retained_checkpoint(StoreT& store, std::string run_id,
                                                      std::uint64_t checkpoint_index,
-                                                     RunStateRecord const& state) {
-    auto r1 = stage_pending_checkpoint(store, run_id, checkpoint_index, state);
-    if (!r1) return r1;
-    return commit_checkpoint(store, run_id, checkpoint_index);
+                                                     RunStateRecord state) {
+    auto r1 = co_await stage_pending_checkpoint(store, run_id, checkpoint_index, state);
+    if (!r1) co_return r1;
+    co_return co_await commit_checkpoint(store, run_id, checkpoint_index);
 }
 
 namespace detail {
@@ -237,10 +238,10 @@ struct CheckpointSlot {
 };
 
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::map<std::uint64_t, CheckpointSlot>> read_checkpoint_slots(
-    StoreT const& store, std::string_view run_id) {
-    auto raw = store.read_from(workflow_checkpoint_log_id(run_id), 0);
-    if (!raw) return std::unexpected(raw.error());
+[[nodiscard]] task<result<std::map<std::uint64_t, CheckpointSlot>>> read_checkpoint_slots(
+    StoreT const& store, std::string run_id) {
+    auto raw = co_await store.read_from(workflow_checkpoint_log_id(run_id), 0);
+    if (!raw) co_return std::unexpected(raw.error());
 
     std::map<std::uint64_t, CheckpointSlot> by_index;  // ordered: oldest-first iteration
     for (std::vector<std::byte> const& bytes : *raw) {
@@ -248,9 +249,9 @@ template <AppendLogStore StoreT>
         text.reserve(bytes.size());
         for (std::byte b : bytes) text.push_back(static_cast<char>(b));
         auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto entry = checkpoint_entry_from_json(*parsed);
-        if (!entry) return std::unexpected(entry.error());
+        if (!entry) co_return std::unexpected(entry.error());
 
         CheckpointSlot& slot = by_index[entry->checkpoint_index];
         if (entry->phase == checkpoint_phase::pending) {
@@ -260,7 +261,7 @@ template <AppendLogStore StoreT>
             slot.has_committed = true;
         }
     }
-    return by_index;
+    co_return by_index;
 }
 
 }  // namespace detail
@@ -269,10 +270,10 @@ template <AppendLogStore StoreT>
 // a fully-committed checkpoint through THIS surface (a dangling pending with no matching committed
 // counts as never, by design -- see file banner).
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::optional<RunStateRecord>> load_latest_retained_checkpoint(
-    StoreT const& store, std::string_view run_id) {
-    auto slots = detail::read_checkpoint_slots(store, run_id);
-    if (!slots) return std::unexpected(slots.error());
+[[nodiscard]] task<result<std::optional<RunStateRecord>>> load_latest_retained_checkpoint(
+    StoreT const& store, std::string run_id) {
+    auto slots = co_await detail::read_checkpoint_slots(store, run_id);
+    if (!slots) co_return std::unexpected(slots.error());
 
     bool          found      = false;
     std::uint64_t best_index = 0;
@@ -283,32 +284,32 @@ template <AppendLogStore StoreT>
             best_index = index;
         }
     }
-    if (!found) return std::optional<RunStateRecord>{};
-    return std::optional<RunStateRecord>{slots->at(best_index).state};
+    if (!found) co_return std::optional<RunStateRecord>{};
+    co_return std::optional<RunStateRecord>{slots->at(best_index).state};
 }
 
 // Every retained checkpoint (both phases durable), oldest first -- 014 §5's "rewind to ANY retained
 // checkpoint," not just the latest.
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::vector<std::pair<std::uint64_t, RunStateRecord>>> retained_checkpoints(
-    StoreT const& store, std::string_view run_id) {
-    auto slots = detail::read_checkpoint_slots(store, run_id);
-    if (!slots) return std::unexpected(slots.error());
+[[nodiscard]] task<result<std::vector<std::pair<std::uint64_t, RunStateRecord>>>> retained_checkpoints(
+    StoreT const& store, std::string run_id) {
+    auto slots = co_await detail::read_checkpoint_slots(store, run_id);
+    if (!slots) co_return std::unexpected(slots.error());
 
     std::vector<std::pair<std::uint64_t, RunStateRecord>> out;
     for (auto const& [index, slot] : *slots) {
         if (slot.has_pending && slot.has_committed) out.emplace_back(index, slot.state);
     }
-    return out;
+    co_return out;
 }
 
 // Every audited rewind for a run, in commit order -- an operator's own review trail, and the thing
 // that makes "every rewind is audited" a checkable claim rather than a promise.
 template <AppendLogStore StoreT>
-[[nodiscard]] result<std::vector<RewindAuditRecord>> read_rewind_audit_log(StoreT const& store,
-                                                                            std::string_view run_id) {
-    auto raw = store.read_from(workflow_rewind_audit_log_id(run_id), 0);
-    if (!raw) return std::unexpected(raw.error());
+[[nodiscard]] task<result<std::vector<RewindAuditRecord>>> read_rewind_audit_log(StoreT const& store,
+                                                                            std::string run_id) {
+    auto raw = co_await store.read_from(workflow_rewind_audit_log_id(run_id), 0);
+    if (!raw) co_return std::unexpected(raw.error());
 
     std::vector<RewindAuditRecord> out;
     out.reserve(raw->size());
@@ -317,12 +318,12 @@ template <AppendLogStore StoreT>
         text.reserve(bytes.size());
         for (std::byte b : bytes) text.push_back(static_cast<char>(b));
         auto parsed = agentengine::json::parse(text);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
         auto rec = rewind_audit_from_json(*parsed);
-        if (!rec) return std::unexpected(rec.error());
+        if (!rec) co_return std::unexpected(rec.error());
         out.push_back(std::move(*rec));
     }
-    return out;
+    co_return out;
 }
 
 // 014 §5: "rewind to any retained checkpoint and re-run forward, optionally with modified state."
@@ -335,12 +336,12 @@ template <AppendLogStore StoreT>
 //
 // Does NOT itself touch a live WorkflowSupervisor -- see file banner.
 template <AppendLogStore StoreT>
-[[nodiscard]] result<RunStateRecord> rewind_workflow(
-    StoreT& store, std::string_view run_id, std::uint64_t to_checkpoint_index,
+[[nodiscard]] task<result<RunStateRecord>> rewind_workflow(
+    StoreT& store, std::string run_id, std::uint64_t to_checkpoint_index,
     std::string operator_id, std::string reason,
     std::optional<RunStateRecord> modified_state = std::nullopt) {
-    auto all = retained_checkpoints(store, run_id);
-    if (!all) return std::unexpected(all.error());
+    auto all = co_await retained_checkpoints(store, run_id);
+    if (!all) co_return std::unexpected(all.error());
 
     std::optional<RunStateRecord> target;
     std::uint64_t                 from_index = 0;
@@ -349,7 +350,7 @@ template <AppendLogStore StoreT>
         if (index > from_index) from_index = index;
     }
     if (!target) {
-        return std::unexpected(
+        co_return std::unexpected(
             agentengine::error{agentengine::failure_class::contract,
                                 "rewind_workflow: no retained checkpoint at the requested index",
                                 "rt.workflow_time_travel.rewind.not_found"});
@@ -367,10 +368,10 @@ template <AppendLogStore StoreT>
     std::vector<std::byte> bytes;
     bytes.reserve(text.size());
     for (char c : text) bytes.push_back(static_cast<std::byte>(c));
-    auto appended = store.append(workflow_rewind_audit_log_id(run_id), std::move(bytes));
-    if (!appended) return std::unexpected(appended.error());
+    auto appended = co_await store.append(workflow_rewind_audit_log_id(run_id), std::move(bytes));
+    if (!appended) co_return std::unexpected(appended.error());
 
-    return modified_state.has_value() ? std::move(*modified_state) : std::move(*target);
+    co_return modified_state.has_value() ? std::move(*modified_state) : std::move(*target);
 }
 
 }  // namespace agentengine::rt

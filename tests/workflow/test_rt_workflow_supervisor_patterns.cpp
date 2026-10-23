@@ -30,6 +30,7 @@
 //
 // MACHINE SAFETY (CLAUDE.md): bounded round counts; sleeps (fan-in ordering probe only) are tens of ms.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ExecutorBody;
@@ -71,8 +73,7 @@ void note(char const* label, std::string const& value) {
 // the whole chain resolves on ONE resume() call in this single-caller test file.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -131,8 +132,8 @@ using agentengine::workflow::validate_workflow;
 // A plain node: appends its name to the incoming (joined) text, routes nowhere.
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](Message const& in,
-                                    agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+                                    agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -140,9 +141,9 @@ using agentengine::workflow::validate_workflow;
 // order, so FI-2 below is proving something a lucky scheduling order could not fake.
 [[nodiscard]] ExecutorBody delayed_appender(std::string name, std::chrono::milliseconds delay) {
     return [name = std::move(name), delay](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (delay.count() > 0) std::this_thread::sleep_for(delay);
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -152,13 +153,13 @@ using agentengine::workflow::validate_workflow;
 [[nodiscard]] ExecutorBody flaky_appender(std::string name, std::uint32_t fail_first_n,
                                           std::shared_ptr<std::atomic<int>> seen) {
     return [name, fail_first_n, seen](Message const& in, agentengine::EffectContext&)
-               -> agentengine::result<ExecutorOutcome> {
+               -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (seen->fetch_add(1) < static_cast<int>(fail_first_n)) {
-            return std::unexpected(agentengine::error{agentengine::failure_class::transient,
+            co_return std::unexpected(agentengine::error{agentengine::failure_class::transient,
                                                         "injected failure in '" + name + "'",
                                                         "test.injected"});
         }
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -166,9 +167,9 @@ using agentengine::workflow::validate_workflow;
 [[nodiscard]] ExecutorBody router_node(std::string name,
                                        std::function<std::vector<std::string>(std::string const&)> chooser) {
     return [name = std::move(name), chooser = std::move(chooser)](
-               Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         std::string const text = all_text_of(in);
-        return ExecutorOutcome{text_message(text + ">" + name), chooser(text)};
+        co_return ExecutorOutcome{text_message(text + ">" + name), chooser(text)};
     };
 }
 
@@ -176,9 +177,9 @@ using agentengine::workflow::validate_workflow;
 // check needs "did this node run, and how many times" rather than just its output.
 [[nodiscard]] ExecutorBody counting(std::shared_ptr<std::atomic<int>> count, ExecutorBody inner) {
     return [count, inner = std::move(inner)](
-               Message const& in, agentengine::EffectContext& ctx) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, agentengine::EffectContext& ctx) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         count->fetch_add(1);
-        return inner(in, ctx);
+        co_return co_await inner(in, ctx);
     };
 }
 
@@ -217,8 +218,8 @@ int main() {
             delayed_appender("w2", std::chrono::milliseconds(5)),
             delayed_appender("w3", std::chrono::milliseconds(25)),
             counting(agg_calls, [](Message const& in,
-                                   agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-                return ExecutorOutcome{
+                                   agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                co_return ExecutorOutcome{
                     text_message(std::to_string(content_count(in)) + ":" + all_text_of(in))};
             }),
         };
@@ -474,13 +475,13 @@ int main() {
         std::vector<ExecutorBody> bodies = {
             appender("writer"),
             [critic_calls](Message const& in,
-                          agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+                          agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 std::string const text = all_text_of(in) + ">critic";
                 // Revise twice, then approve.
                 if (critic_calls->fetch_add(1) < 2) {
-                    return ExecutorOutcome{text_message(text), {"revise"}};
+                    co_return ExecutorOutcome{text_message(text), {"revise"}};
                 }
-                return ExecutorOutcome{text_message(text), {"approve"}};
+                co_return ExecutorOutcome{text_message(text), {"approve"}};
             },
             appender("done"),
         };
@@ -510,9 +511,9 @@ int main() {
 
         std::vector<ExecutorBody> bodies = {
             appender("writer"),
-            [](Message const& in, agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
+            [](Message const& in, agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                 // Never approves.
-                return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {"revise"}};
+                co_return ExecutorOutcome{text_message(all_text_of(in) + ">critic"), {"revise"}};
             },
             appender("done"),
         };
@@ -554,8 +555,8 @@ int main() {
                 inject_failure ? flaky_appender("w2", 1, seen) : appender("w2"),
                 appender("w3"),
                 counting(agg_calls, [](Message const& in, agentengine::EffectContext&)
-                             -> agentengine::result<ExecutorOutcome> {
-                    return ExecutorOutcome{
+                             -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+                    co_return ExecutorOutcome{
                         text_message(std::to_string(content_count(in)) + ":" + all_text_of(in))};
                 }),
             };
@@ -604,14 +605,14 @@ int main() {
             std::vector<ExecutorBody> bodies = {
                 inject_failure
                     ? [seen](Message const& in, agentengine::EffectContext&)
-                          -> agentengine::result<ExecutorOutcome> {
+                          -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                           if (seen->fetch_add(1) < 2) {
-                              return std::unexpected(agentengine::error{
+                              co_return std::unexpected(agentengine::error{
                                   agentengine::failure_class::transient,
                                   "injected failure in 'classify'", "test.injected"});
                           }
                           std::string const text = all_text_of(in);
-                          return ExecutorOutcome{
+                          co_return ExecutorOutcome{
                               text_message(text + ">classify"),
                               {text.find("refund") != std::string::npos ? "billing" : "tech"}};
                       }
@@ -663,10 +664,10 @@ int main() {
             std::vector<ExecutorBody> bodies = {
                 inject_failure ? flaky_appender("writer", 1, seen) : appender("writer"),
                 [critic_calls](Message const& in, agentengine::EffectContext&)
-                    -> agentengine::result<ExecutorOutcome> {
+                    -> agentengine::task<agentengine::result<ExecutorOutcome>> {
                     std::string const text = all_text_of(in) + ">critic";
-                    if (critic_calls->fetch_add(1) < 1) return ExecutorOutcome{text_message(text), {"revise"}};
-                    return ExecutorOutcome{text_message(text), {"approve"}};
+                    if (critic_calls->fetch_add(1) < 1) co_return ExecutorOutcome{text_message(text), {"revise"}};
+                    co_return ExecutorOutcome{text_message(text), {"approve"}};
                 },
                 appender("done"),
             };

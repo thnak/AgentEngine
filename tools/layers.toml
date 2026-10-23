@@ -30,9 +30,12 @@
 "include/agentengine/testing"  = { layer = "TEST", reason = "test-only support" }
 "src/core"                     = { layer = "L2",   reason = "translation units for include/agentengine/core (L2)" }
 "src/rt"                       = { layer = "L0",   reason = "translation units for include/agentengine/rt (L0 by default)" }
+"src/pal"                      = { layer = "L0",   reason = "translation units for include/agentengine/pal (ADR-237 §9 D5: usable_cpus)" }
 "src/trust"                    = { layer = "L1",   reason = "translation units for include/agentengine/trust" }
 "src/sandbox"                  = { layer = "L1",   reason = "translation units for include/agentengine/sandbox" }
 "src/backends"                 = { layer = "L1",   reason = "sandbox backends (CONVENTIONS.md layout: src/backends)" }
+"src/backends/reactor_asio"     = { layer = "L0",   reason = "pal::Reactor's Asio backend (ADR-237 §6.2): implements an L0 pal seam, not a sandbox backend" }
+"src/backends/tls_mbedtls"      = { layer = "L0",   reason = "rt::TlsStream's mbedTLS backend and ADR-013's shared client config (ADR-237 §6.3): L0 I/O, used by the L1 blocking client" }
 "src/backends/vulkan_vector_index" = { layer = "L2", reason = "a VectorIndex conformer (ADR-180), part of the L2 retrieval plane, not a sandbox backend" }
 "src/protocol"                 = { layer = "L2",   reason = "translation units for the L2 model-provider clients under include/agentengine/protocol (ADR-206)" }
 
@@ -54,6 +57,7 @@
 
 # --- core/: trust & isolation (L1) --------------------------------------------------------------
 "include/agentengine/core/effect_context.hpp"            = { layer = "L1", reason = "the I4 attribution/capability parameter carried into every effect (007)" }
+"include/agentengine/core/authority_terms.hpp"            = { layer = "L1", reason = "authority_mode and Expiry, carried by EffectContext (ADR-244 §2.3/§2.4); std only" }
 "include/agentengine/core/fs_walk.hpp"                   = { layer = "L1", reason = "fail-closed host directory walks; direct OS filesystem access" }
 "include/agentengine/core/sharing_mode.hpp"              = { layer = "L1", reason = "worktree sub-worktree sharing modes (025 §3)" }
 "include/agentengine/core/worktree.hpp"                  = { layer = "L1", reason = "worktree umbrella (025): the sandbox's filesystem, part of the isolation environment" }
@@ -116,7 +120,7 @@
 "include/agentengine/protocol/anthropic/chat_client.hpp" = { layer = "L2", reason = "Anthropic ChatClient backend (004 §3): an outbound provider, not a served surface" }
 "include/agentengine/protocol/provider_chat_wire.hpp"    = { layer = "L2", reason = "HTTP plumbing shared by the two ChatClient backends above (ADR-206)" }
 "include/agentengine/protocol/openai/embedder.hpp"       = { layer = "L2", reason = "Embedder conformer (ADR-063 §2.5)" }
-"include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "RemoteVectorIndex conformer (ADR-180 §2.5)" }
+"include/agentengine/protocol/qdrant/vector_index.hpp"   = { layer = "L2", reason = "remote VectorIndex conformer (ADR-180 §2.5)" }
 "include/agentengine/protocol/openai/openrouter_batch_backend.hpp" = { layer = "L2", reason = "BatchBackend conformer (ADR-235 §3.2): an outbound provider, not a served surface" }
 
 # --- src/ -----------------------------------------------------------------------------------------

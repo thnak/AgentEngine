@@ -7,7 +7,7 @@
 // runs given the same input (005 §3's purity rule).
 //
 // 2026-08-23 (docs/planning/2026-08-22-component-role-audit-tracker.md Finding E,
-// decisions/ADR-075-context-budget-fail-closed.md): a contributor exceeding its own declared
+// decisions/archive/ADR-075-context-budget-fail-closed.md): a contributor exceeding its own declared
 // `ContextBudget` used to be proven here as a silent OLDEST-first trim that still returned success.
 // That behavior was replaced with a hard failure (`assemble_context()` itself returns
 // `std::unexpected`) -- this file's over-budget cases below prove the failure, not a trim, and

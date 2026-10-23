@@ -1,4 +1,4 @@
-// ADR-096 (decisions/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
+// ADR-096 (decisions/archive/ADR-096-session-sandbox-lifecycle-context-provider-wiring.md), Design B:
 // proves `SandboxToolProvider` (backends/native_jail/sandbox_tool_provider.hpp) end to end --
 // composition (C1), lazy sandbox construction + `ctx.sandbox_fs` population + `run_shell` tool
 // contribution on `on_context()`, idempotent reuse across a second round (matching C3's premise
@@ -86,8 +86,9 @@ int main() {
 
     // -- Part 1: first on_context() lazily creates the sandbox, contributes run_shell, and --------
     //    populates ctx.sandbox_fs (ADR-096 §2 Design B's central claim) -------------------------
-    SandboxToolProvider provider(scratch_root);
+    SandboxToolProvider provider(scratch_root, agentengine::approval_mode::never_require);
     agentengine::ToolDescriptor first_descriptor;
+    first_descriptor.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     {
         agentengine::EffectContext ctx = make_ctx(agentengine::CapabilitySet::grant_root({}));
         std::vector<agentengine::Message> history;
@@ -123,7 +124,7 @@ int main() {
                 {{"source", json::Value::make_string("echo from-provider > out.txt")}}),
             false};
         agentengine::ToolInvocationAudit audit;
-        auto result = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit));
         check(!result.is_error, "Part 2: run_shell, invoked through the pipeline, succeeds");
         check(audit.ok, "Part 2: audit records success");
 
@@ -160,7 +161,7 @@ int main() {
         agentengine::ToolCallRequest const req{
             "call-2", "run_shell",
             json::Value::make_object({{"source", json::Value::make_string("cat out.txt")}}), false};
-        auto result = agentengine::invoke_tool(table, held, req, call_ctx, nullptr);
+        auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, call_ctx, nullptr));
         check(!result.is_error, "Part 3: a later round's run_shell call succeeds against the SAME "
                                  "sandbox (no new directory was created for it)");
         if (!result.content.empty()) {

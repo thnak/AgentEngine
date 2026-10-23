@@ -17,9 +17,12 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::AgentSessionRecord;
@@ -45,8 +48,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session*.cpp file uses.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -100,7 +102,7 @@ int main() {
     using agentengine::Principal;
 
     AgentSession<OneShotChatClient> session;
-    session.initialize("s-ckpt", Principal{"p-leo", ""});
+    session.initialize("s-ckpt", Principal{"p-leo", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client();
 
     auto r1 = drive(session.start_run(StartRun{user_message("one")}));
@@ -112,13 +114,15 @@ int main() {
     auto saved = drive(save_agent_session_snapshot(session, store));
     check(saved.has_value(), "D1-R1: checkpointing after turn 2 succeeds");
 
-    auto loaded = load_agent_session_snapshot(store, "s-ckpt");
+    auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "s-ckpt"));
     check(loaded.has_value() && loaded->has_value() && (*loaded)->run_counter == 2,
           "D1-R2: the checkpoint's own record carries the run's real position (run_counter=2)");
 
     AgentSession<OneShotChatClient> fresh;
+    // ADR-244 §2.3: the restarted host restates the choices the record ran under.
+    fresh.initialize("s-ckpt", Principal{"p-leo", ""}, ae_test::trusted_unbounded());
     fresh.emplace_chat_client();
-    fresh.restore_from_record(**loaded);
+    check(fresh.restore_from_record(**loaded).has_value(), "D1-R2: the record restores");
     check(fresh.last_run_id() == "s-ckpt:run:2",
           "D1-R3: restoring the checkpoint recovers last_run_id exactly, via the persisted "
           "run_counter, not a re-parsed string");

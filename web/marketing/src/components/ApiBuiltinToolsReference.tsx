@@ -349,7 +349,7 @@ export function ApiBuiltinToolsReference() {
           </RevealItem>
 
           <RevealItem>
-            <CodePanel filename="doc_agent.hpp">
+            <CodePanel filename="your_agent.hpp — the shape, not a file in this repo">
               {highlightCpp(firstPartyCatalogExampleSnippet)}
             </CodePanel>
           </RevealItem>
@@ -370,7 +370,7 @@ export function ApiBuiltinToolsReference() {
                 <a href={gh("include/agentengine/core/builtin_skills.hpp")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                   include/agentengine/core/builtin_skills.hpp
                 </a>
-                <a href={gh("decisions/ADR-106-document-extraction-catalog-candidate-license-substitution.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
+                <a href={gh("decisions/archive/ADR-106-document-extraction-catalog-candidate-license-substitution.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>
                   ADR-106
                 </a>
                 <a href={gh("docs/planning/pdf-text-extraction-design-draft.md")} target="_blank" rel="noreferrer" className="api-cite" style={{ borderTop: "none", paddingTop: 0 }}>

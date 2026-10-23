@@ -89,7 +89,7 @@ result<void> validate_argv_path(std::wstring const& mount_root, std::string cons
             failure_class::policy,
             "argument's containing directory does not already exist inside the worktree mount "
             "(intermediate directories are not created on the caller's behalf -- "
-            "decisions/ADR-071-native-unsandboxed-process-execution-providers.md's named scope "
+            "decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md's named scope "
             "limit): " + parent_handle.error().message,
             "native_process.argv_parent_not_contained"});
     }

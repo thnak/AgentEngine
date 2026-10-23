@@ -7,7 +7,7 @@ issue). Tracked from issue #32's design-pass consolidation.
 
 ## Why this is convenience sugar, not a new primitive
 
-014-Workflow-and-Orchestration.md §3's Planner (Magentic) row is explicit: "the same
+rfcs/014-Workflow-and-Orchestration.md §3's Planner (Magentic) row is explicit: "the same
 cyclic-moderator shape as Group chat/debate, but the moderator maintains a task/progress ledger,
 picks the next participant and decides completion itself, and self-triggers a replan on stall
 detection — round/stall/reset bounds are a safety valve, not the termination contract." §9 Q5

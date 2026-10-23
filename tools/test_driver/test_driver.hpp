@@ -1,5 +1,5 @@
 #pragma once
-// Implements ADR-182 (decisions/ADR-182-agent-test-driver-mcp.md), driver phase 1 (§12's revised
+// Implements ADR-182 (decisions/archive/ADR-182-agent-test-driver-mcp.md), driver phase 1 (§12's revised
 // phase 2): the core of `agentengine_test_driver`, an MCP server over stdio that lets a test agent
 // (a Claude Code sub-agent) drive in-process `rt::AgentSession`s with a scripted model.
 //
@@ -141,12 +141,12 @@ struct TextReply { std::string text; };
 AE_JSON_SCHEMA(TextReply, text)
 
 // Returns its input. Never needs approval.
-struct EchoTool : Tool<EchoTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct EchoTool : Tool<EchoTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo";
     static constexpr std::string_view description = "Returns its text argument unchanged.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{std::move(a.text)}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{std::move(a.text)}; }
 };
 
 // Returns its input, but always needs approval first -- the tool a test uses to exercise the gate.
@@ -157,22 +157,22 @@ struct GatedEchoTool : Tool<GatedEchoTool, Capabilities<>, EffectClass<effect_cl
         "Returns its text argument unchanged. Needs human approval before every call.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{std::move(a.text)}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{std::move(a.text)}; }
 };
 
 // Always fails, so a test can exercise the tool-error path.
-struct FailTool : Tool<FailTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct FailTool : Tool<FailTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "fail";
     static constexpr std::string_view description = "Always fails with the given text as the error message.";
     using Args = TextArgs;
     using Reply = TextReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
-        return std::unexpected(error{failure_class::fatal, std::move(a.text), "test_driver.fail_tool"});
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
+        co_return std::unexpected(error{failure_class::fatal, std::move(a.text), "test_driver.fail_tool"});
     }
 };
 
 [[nodiscard]] inline std::vector<ToolDescriptor> all_test_tool_descriptors() {
-    return ToolTable::from_tools<EchoTool, GatedEchoTool, FailTool>().descriptors();
+    return ToolTable::from(EchoTool{}, GatedEchoTool{}, FailTool{}).descriptors();
 }
 
 // ---- Fixtures (compiled in; ADR-182 §12 C-3) --------------------------------------------------------
@@ -238,10 +238,17 @@ struct Fixture {
 [[nodiscard]] inline bool is_real_tool(std::string_view n) { return n == "run_shell" || n == "read_sandbox_file"; }
 
 // The real tools' declared shape (name, description, schema, ceiling, approval, effect class). The
-// read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. run_shell's invoke is the
-// unreachable stub; the live descriptor comes from the session's sandbox.
+// read_sandbox_file entry is the real tool: it acts only through `ctx.sandbox_fs`. ADR-237 §5.2: run_shell is
+// the owner-less stand-in -- its invoke fails loudly if called, and the live descriptor comes from the
+// session's sandbox.
+// ADR-244 slice 4a: run_shell is ApprovalChosenByHost, and the driver is its host. A run_shell call needs no
+// approval here -- the session's sandbox is the boundary, and the scenarios that exercise approval use gated_echo.
+inline constexpr approval_mode kRunShellApproval = approval_mode::never_require;
+
 [[nodiscard]] inline std::vector<ToolDescriptor> real_tool_standins() {
-    return {make_tool_descriptor<RunShellTool>(), make_tool_descriptor<tools::ReadSandboxFile>()};
+    ToolDescriptor shell = make_tool_descriptor(RunShellTool{});
+    shell.approval = kRunShellApproval;
+    return {std::move(shell), make_tool_descriptor<tools::ReadSandboxFile>({})};
 }
 
 [[nodiscard]] inline CapabilitySet real_tool_grant() {
@@ -371,31 +378,29 @@ private:
     // replaced here becomes an error, which is never compared.
     ToolDescriptor::InvokeFn inner = std::move(d.invoke);
     std::string const name = d.name;
-    d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx) -> result<Value> {
+    d.invoke = [inner = std::move(inner), log, keep_alive, name](Value const& args, EffectContext& ctx)
+                   -> task<result<Value>> {
         ToolExchange x;
         x.tool_name = name;
         x.arguments = json::dump(args);
-        result<Value> out = [&]() -> result<Value> {
-            if (ctx.cancellation.stop_requested()) {
-                return std::unexpected(error{failure_class::resource,
-                                             "the session was cancelled; no further real-tool calls run",
-                                             "test.real_tool_canceled"});
-            }
-            if (log->calls() >= kMaxRealToolCalls) {
-                return std::unexpected(error{failure_class::resource,
-                                             "this session has used all " + std::to_string(kMaxRealToolCalls) +
-                                                 " of its real-tool calls",
-                                             "test.real_tool_call_cap"});
-            }
-            auto previous = ctx.sandbox_exec_sink;
-            ctx.sandbox_exec_sink = [&x, &previous](run_event_kind k, run_event_payload::SandboxExec p) {
-                x.exec_events.push_back(ExecEventRecord{k, p.backend, p.stage, p.ok, p.error_code});
-                if (previous) previous(k, std::move(p));
-            };
-            result<Value> r = inner(args, ctx);
-            ctx.sandbox_exec_sink = std::move(previous);
-            return r;
-        }();
+        if (ctx.cancellation.stop_requested()) {
+            co_return std::unexpected(error{failure_class::canceled,  // ADR-237 D6: stopped on request
+                                         "the session was cancelled; no further real-tool calls run",
+                                         "test.real_tool_canceled"});
+        }
+        if (log->calls() >= kMaxRealToolCalls) {
+            co_return std::unexpected(error{failure_class::resource,
+                                         "this session has used all " + std::to_string(kMaxRealToolCalls) +
+                                             " of its real-tool calls",
+                                         "test.real_tool_call_cap"});
+        }
+        auto previous = ctx.sandbox_exec_sink;
+        ctx.sandbox_exec_sink = [&x, &previous](run_event_kind k, run_event_payload::SandboxExec p) {
+            x.exec_events.push_back(ExecEventRecord{k, p.backend, p.stage, p.ok, p.error_code});
+            if (previous) previous(k, std::move(p));
+        };
+        result<Value> out = co_await inner(args, ctx);
+        ctx.sandbox_exec_sink = std::move(previous);
         if (out) {
             std::string const text = json::dump(*out);
             if (text.size() > kMaxRealToolResultBytes) {
@@ -417,7 +422,7 @@ private:
             x.message = out.error().message;
         }
         log->record(std::move(x));
-        return out;
+        co_return out;
     };
     return d;
 }
@@ -427,9 +432,9 @@ private:
     std::string const name = d.name;
     // ADR-212 §3.5: a replay serves the recording, not the tool, so it cannot stand in for a re-run.
     d.deterministic = false;
-    d.invoke = [log, name](Value const& args, EffectContext& ctx) -> result<Value> {
+    d.invoke = [log, name](Value const& args, EffectContext& ctx) -> task<result<Value>> {
         auto served = log->serve(name, json::dump(args));
-        if (auto const* e = std::get_if<error>(&served)) return std::unexpected(*e);
+        if (auto const* e = std::get_if<error>(&served)) co_return std::unexpected(*e);
         ToolExchange const& x = std::get<ToolExchange>(served);
         std::size_t k = 0;
         for (ExecEventRecord const& ev : x.exec_events) {
@@ -441,8 +446,8 @@ private:
             p.error_code = ev.error_code;
             ctx.sandbox_exec_sink(ev.kind, std::move(p));
         }
-        if (x.is_error) return std::unexpected(error{x.klass, x.message, x.code});
-        return x.result;
+        if (x.is_error) co_return std::unexpected(error{x.klass, x.message, x.code});
+        co_return x.result;
     };
     return d;
 }
@@ -1057,6 +1062,10 @@ overloaded(Fs...) -> overloaded<Fs...>;
     return std::visit(
         overloaded{
             [](rp::Empty const&) { return obj({}); },
+            [](rp::RunStarted const& x) {
+                return obj({{"authority", str(x.authority)}, {"token_budget", str(x.token_budget)},
+                            {"max_turns", str(x.max_turns)}});
+            },
             [](rp::RunFailed const& x) {
                 // ADR-198: `stage` only when set, so a failure whose code says it all keeps its old shape.
                 if (x.stage.empty()) return obj({{"error_code", str(x.error_code)}, {"message", str(x.message)}});
@@ -1405,28 +1414,15 @@ using ToolResultJson = std::variant<Value, ToolError>;
 //   short:   {"text": "...", "tool_calls": [{"name", "arguments" (object|raw string), "call_id"?}]}
 //   exact:   {"content": [{"text": ...} | {"reasoning": ...} | {"tool_call": {"call_id","name","arguments"}}],
 //             "usage": {"input_tokens", "output_tokens"}?}
-//   failure: {"error": {"code", "message", "class"?: transient|policy|contract|resource|fatal}}
+//   failure: {"error": {"code", "message", "class"?: transient|policy|contract|resource|fatal|canceled}}
 // Any shape may carry "request_digest": the digest of the request this turn answers (C8). A model call
 // whose request has another digest fails with test.replay_mismatch instead of consuming the turn.
 // Export writes the exact shape, so item order and raw argument text survive the round trip.
 
-[[nodiscard]] inline std::string_view failure_class_name(failure_class k) noexcept {
-    switch (k) {
-        case failure_class::transient: return "transient";
-        case failure_class::policy: return "policy";
-        case failure_class::contract: return "contract";
-        case failure_class::resource: return "resource";
-        case failure_class::fatal: return "fatal";
-    }
-    return "fatal";
-}
+// ADR-237 D6: core/error.hpp's one spelling, not a copy of it.
+[[nodiscard]] inline std::string_view failure_class_name(failure_class k) noexcept { return failure_class_to_string(k); }
 [[nodiscard]] inline std::optional<failure_class> failure_class_from(std::string_view n) noexcept {
-    if (n == "transient") return failure_class::transient;
-    if (n == "policy") return failure_class::policy;
-    if (n == "contract") return failure_class::contract;
-    if (n == "resource") return failure_class::resource;
-    if (n == "fatal") return failure_class::fatal;
-    return std::nullopt;
+    return failure_class_from_string(n);
 }
 
 template <class V>
@@ -1445,7 +1441,7 @@ template <class V>
     request_digest = get_string(t, "request_digest");
     if (Value const* fe = t.find("error"); fe != nullptr) {
         auto klass = failure_class_from(get_string(*fe, "class").value_or("fatal"));
-        if (!klass) return bad("error.class must be transient|policy|contract|resource|fatal");
+        if (!klass) return bad("error.class must be transient|policy|contract|resource|fatal|canceled");
         return testing::failure_turn(error{*klass, get_string(*fe, "message").value_or("scripted model failure"),
                                            get_string(*fe, "code").value_or("test.scripted_failure")});
     }
@@ -1694,7 +1690,8 @@ namespace workflow_fixture_detail {
 }
 // Joins every text item of the input and appends ">name": what ran, in what order, is visible in the output.
 [[nodiscard]] inline rt::ExecutorBody appender(std::string name) {
-    return [name = std::move(name)](Message const& in, EffectContext&) -> result<rt::ExecutorOutcome> {
+    return [name = std::move(name)](Message const& in,
+                                    EffectContext&) -> rt::task<result<rt::ExecutorOutcome>> {
         std::string out;
         for (ContentItem const& c : in.content) {
             if (auto const* t = std::get_if<Text>(&c.value)) {
@@ -1702,7 +1699,7 @@ namespace workflow_fixture_detail {
                 out += t->text;
             }
         }
-        return rt::ExecutorOutcome{user_message(out + ">" + name)};
+        co_return rt::ExecutorOutcome{user_message(out + ">" + name)};
     };
 }
 
@@ -2764,8 +2761,14 @@ private:
         ds->id = "s" + std::to_string(next_session_++);
         ds->fixture = *fixture;
         Session& session = *ds->session;
-        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"}, fixture->token_budget,
-                           std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun));
+        // ADR-244 §2.2: the driver holds its fixture's grants itself; the fixture's turn cap is capped at
+        // kMaxTurnsPerRun and an unset fixture budget is none, as the fixture format defines.
+        session.initialize(ds->id, Principal{"test-driver/" + fixture->name, "test"},
+                           SessionChoices{AuthoritySource::single_trusted_caller(),
+                                          fixture->token_budget ? Bound<std::uint64_t>::at_most(*fixture->token_budget)
+                                                                : Bound<std::uint64_t>::unbounded(),
+                                          Bound<std::uint64_t>::at_most(
+                                              std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun))});
         if (!fixture->instructions.empty()) session.set_static_instructions(fixture->instructions);
         std::shared_ptr<ModelBackend> backend;
         if (fixture->live) {
@@ -3330,8 +3333,11 @@ private:
         step->session_id = f.name + "/" + executor_id;
         Session& session = *step->session;
         Fixture const defaults;
-        session.initialize(step->session_id, workflow_principal("test-driver/" + step->session_id), defaults.token_budget,
-                           kMaxTurnsPerRun);
+        session.initialize(step->session_id, workflow_principal("test-driver/" + step->session_id),
+                           SessionChoices{AuthoritySource::single_trusted_caller(),
+                                          defaults.token_budget ? Bound<std::uint64_t>::at_most(*defaults.token_budget)
+                                                                : Bound<std::uint64_t>::unbounded(),
+                                          Bound<std::uint64_t>::at_most(kMaxTurnsPerRun)});
         session.set_static_instructions("You are the '" + executor_id + "' step of the " + f.name + " workflow.");
         step->script.emplace();
         std::shared_ptr<ModelBackend> backend = std::make_shared<ScriptedBackend>(*step->script);

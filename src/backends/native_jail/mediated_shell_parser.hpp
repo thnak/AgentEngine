@@ -1,6 +1,6 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a/§2 -- Milestone 3 Phase E3. A genuinely new parser
-// over mediated_shell_grammar.hpp's AST, carrying forward decisions/ADR-001's Judged Design A
+// Implements rfcs/010-Python-Code-Interpreter.md §1a/§2 -- Milestone 3 Phase E3. A genuinely new parser
+// over mediated_shell_grammar.hpp's AST, carrying forward decisions/archive/ADR-001's Judged Design A
 // finding (whole-script-parses-before-anything-executes, bounded arena, shared recursion-depth
 // counter) as a design, not copied code -- shell_parser.{hpp,cpp} stay untouched.
 //

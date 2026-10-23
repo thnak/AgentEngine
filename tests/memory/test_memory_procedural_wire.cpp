@@ -1,4 +1,4 @@
-// Implements decisions/ADR-194-procedural-memory-channel.md -- the WIRE half.
+// Implements decisions/archive/ADR-194-procedural-memory-channel.md -- the WIRE half.
 //
 // test_memory_procedural_channel.cpp proves which SHAPE each route produces (tainted external vs
 // untainted system). This proves what each REAL wire serializer then does with those two shapes, so

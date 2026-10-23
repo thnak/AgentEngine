@@ -1,4 +1,4 @@
-// Implements decisions/ADR-194-procedural-memory-channel.md (resolves 029 §10 Q2's route).
+// Implements decisions/archive/ADR-194-procedural-memory-channel.md (resolves 029 §10 Q2's route).
 //
 // 029 Q2 (2026-08-04) said a learned/procedural instruction may reach the model ONLY as a
 // `ContextContribution.instructions` append. The code does something different: MemoryProvider puts
@@ -26,9 +26,11 @@
 #include <vector>
 
 #include "agentengine/core/memory_provider.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/core/system_channel_fence.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../support/run_task_sync.hpp"
 
 namespace {
@@ -125,7 +127,7 @@ int main() {
     ae::InMemoryWorktreeObjectStore object_store;
     ae::rt::InMemoryAppendLogStore ref_store;
     ae::Principal const principal{"p-learner", ""};
-    AE_CHECK(ae::ensure_memory_worktree(object_store, ref_store, principal).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::ensure_memory_worktree(object_store, ref_store, principal)).has_value(),
              "setup: the memory worktree bootstraps");
 
     ae::Mount const mount = ae::memory_mount(principal);
@@ -138,7 +140,7 @@ int main() {
     procedural.tags    = {"approve"};
     procedural.salience = 0.9f;
     procedural.origin  = ae::MemoryOrigin{ae::memory_source::model_inferred, "run-1", "0", principal};
-    AE_CHECK(ae::write_memory_item(object_store, ref_store, mount, write_cap, procedural).has_value(),
+    AE_CHECK(agentengine::rt::block_on(ae::write_memory_item(object_store, ref_store, mount, write_cap, procedural)).has_value(),
              "setup: a hostile procedural/model_inferred item is written");
 
     Provider provider{object_store, ref_store, mount, read_cap, write_cap, NullSummarizer{}, 4};
@@ -191,7 +193,7 @@ int main() {
             ae::InMemoryWorktreeObjectStore os;
             ae::rt::InMemoryAppendLogStore rs;
             ae::Principal const p{"p-rank", ""};
-            static_cast<void>(ae::ensure_memory_worktree(os, rs, p));
+            static_cast<void>(agentengine::rt::block_on(ae::ensure_memory_worktree(os, rs, p)));
             ae::Mount const m = ae::memory_mount(p);
             ae::cap::FsRead const rd{ae::memory_mount_id(p), "", std::nullopt};
             ae::cap::FsWrite const wr{ae::memory_mount_id(p), "", std::nullopt, std::nullopt};
@@ -201,10 +203,10 @@ int main() {
                 it.content  = "prefer the shorter answer";
                 it.salience = 0.5f;
                 it.origin   = ae::MemoryOrigin{ae::memory_source::model_inferred, "r", "0", p};
-                static_cast<void>(ae::write_memory_item(os, rs, m, wr, it));
+                static_cast<void>(agentengine::rt::block_on(ae::write_memory_item(os, rs, m, wr, it)));
             }
             std::vector<ae::memory_kind> order;
-            auto ranked = ae::rank_memory_items(os, rs, m, rd, "shorter answer", 4);
+            auto ranked = agentengine::rt::block_on(ae::rank_memory_items(os, rs, m, rd, "shorter answer", 4));
             if (ranked) for (auto const& it : *ranked) order.push_back(it.kind);
             return order;
         };
@@ -219,7 +221,7 @@ int main() {
     // ---- Q4 (control): the route 029 Q2 names, through the real AgentSession -------------------
     {
         ae::rt::AgentSession<RecordingClient, ae::rt::NoSessionState, InstructionsFromMemory> session;
-        session.initialize("s-ctrl", principal);
+        session.initialize("s-ctrl", principal, ae_test::trusted_unbounded());
         session.history_provider().text = ae::memory_detail::memory_item_to_labeled_text(procedural);
         RecordingClient& client = session.emplace_chat_client();
         auto run = ae::test_support::run_task_sync<ae::result<ae::rt::AgentResponse>>(

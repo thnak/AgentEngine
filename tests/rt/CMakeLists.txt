@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "rt" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- decisions/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
+# ---- decisions/archive/ADR-066-*.md §7 residual: Message::attribution now survives a round-trip through
 # rt/message_codec.hpp's JSON codec (previously confirmed absent).
 agentengine_add_test(test_message_codec_attribution LIBS agentengine::core agentengine_warnings)
 
@@ -54,12 +54,12 @@ agentengine_add_test(test_rt_session_store LIBS agentengine::core agentengine_wa
 # wired into any live Quark-based code.
 agentengine_add_test(test_rt_thread_pool LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-175 (issue #78) -- a parked coroutine is resumed by its home (the block_on() driving
+# ---- decisions/archive/ADR-175 (issue #78) -- a parked coroutine is resumed by its home (the block_on() driving
 # it, including every ThreadPool job), and AsyncMutex ownership is a holder id. Issue #78's reproduction
 # plus every red-team finding against the intermediate designs. Memory-capped, self-watchdogged.
 agentengine_add_test(test_rt_parked_task_home LIBS agentengine::core agentengine_warnings TIMEOUT 300)
 
-# ---- decisions/ADR-219 (issue #79) -- a host's Resumer: a coroutine driven from a host's own executor
+# ---- decisions/archive/ADR-219 (issue #79) -- a host's Resumer: a coroutine driven from a host's own executor
 # (ScopedResumer) is handed back to it when an AsyncMutex/channel<T> wakes it, never resumed on the
 # waker's foreign thread. Plain std::thread fake executor. Memory-capped, self-watchdogged.
 agentengine_add_test(test_rt_host_resumer LIBS agentengine::core agentengine_warnings TIMEOUT 300)
@@ -73,9 +73,6 @@ agentengine_add_test(test_rt_circuit_breaker LIBS agentengine::core agentengine_
 # stops being a quark::Actor.
 agentengine_add_test(test_rt_async_mutex LIBS agentengine::core agentengine_warnings)
 
-# ---- ADR-064 Design B -- agentengine::rt::drive_leaf_task<T>(), the narrow "leaf task" driver
-# VectorRagContextProvider::recall's invoke uses (include/agentengine/rt/drive_leaf_task.hpp).
-agentengine_add_test(test_rt_drive_leaf_task LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-037 -- agentengine::rt::AppendLogStore, the append-only persistence primitive both
 # rt::WorkflowSupervisor's own time-travel gap and rt::ProjectRegistry's own archived-tail gap name
@@ -108,7 +105,7 @@ agentengine_add_test(test_block_on_exception LIBS agentengine::core agentengine_
 # (<thread>), no Docker/Ledger needed -- agentengine::core alone provides AsyncMutex/task<T>.
 agentengine_add_test(test_rt_block_on LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-168-bounded-reflection-loop.md -- issue #55: run_with_bounded_reflection()
+# ---- decisions/archive/ADR-168-bounded-reflection-loop.md -- issue #55: run_with_bounded_reflection()
 # (rt/bounded_reflection.hpp), a thin outer driver over repeated AgentSession::start_run() calls.
 agentengine_add_test(test_bounded_reflection LIBS agentengine::core agentengine_warnings)
 
@@ -120,3 +117,90 @@ agentengine_add_test(test_console_utf8 LIBS agentengine::core agentengine_warnin
 # Every console wait inside the test is already bounded, but the input half blocks on a real console
 # handle, so a hard ceiling here too: a hung console must fail this leg, never stall it.
 set_tests_properties(test_console_utf8 PROPERTIES TIMEOUT 60)
+
+# ---- ADR-237 implementation step 1: the I/O reactor seam (pal/reactor.hpp), its Asio backend and
+# rt::sleep_until -- resumption on the waiter's home, refusal of homeless wake-ups, two-phase sticky
+# cancellation, shutdown delivering every pending completion.
+agentengine_add_test(test_rt_reactor_timer LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 2: rt::offload / rt::OffloadPool (rt/offload.hpp) -- results delivered to
+# the caller's home, cancel before start / while running, by-value inputs, block_on refused on offload
+# workers, shutdown joining running bodies -- and testing::ManualReactor, the virtual-time test reactor (§8.1).
+agentengine_add_test(test_rt_offload LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_manual_reactor LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 2: TCP streams on the reactor (pal/reactor_tcp.hpp, its Asio backend,
+# rt/tcp.hpp) -- connect/read/write/readiness awaitables resumed on the waiter's home, op-owned buffers,
+# two-phase sticky cancellation reporting the backend's real outcome, descriptor exhaustion as `resource`.
+agentengine_add_test(test_rt_reactor_tcp LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "Processes": child processes on the reactor (pal/reactor_process.hpp, its Asio backend) and
+# rt/process.hpp -- concurrent pipe drains (H-e, gate 4), handle hygiene under 64 concurrent spawns (G4, gate
+# 1d), job/process-group kill on stop and deadline. The child is a tiny, time-bounded helper program.
+add_executable(process_child_helper process_child_helper.cpp)
+target_compile_features(process_child_helper PRIVATE cxx_std_23)
+target_link_libraries(process_child_helper PRIVATE agentengine_warnings)
+agentengine_add_test(test_rt_reactor_process LIBS agentengine::core agentengine_warnings TIMEOUT 300
+  DEFINITIONS "AE_PROCESS_CHILD_HELPER=\"$<TARGET_FILE:process_child_helper>\"")
+add_dependencies(test_rt_reactor_process process_child_helper)
+
+# ---- ADR-237 §6.3 "DNS" / §4.6: rt::resolve on the dedicated DNS offload pool (numeric fast path, cancel with the
+# offload residual) and rt::connect_resolved (ADR-011: resolve once, address policy failing closed, connect to the
+# verified address with a per-attempt deadline). No network: lookups beyond "localhost" go through a test seam.
+agentengine_add_test(test_rt_dns LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "TLS": rt::TlsStream (mbedTLS over a reactor TCP stream) -- handshake/echo on the home thread,
+# certificate and hostname verification on by default, cancellation mid-handshake and mid-read, concurrent read +
+# write. Only with AGENTENGINE_WITH_HTTPS (mbedTLS); the loopback TLS peer and its CA are generated at test time.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_rt_tls
+    LIBS agentengine::rt_tls agentengine::core agentengine_warnings MbedTLS::mbedtls MbedTLS::mbedx509
+      MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
+
+# ---- ADR-237 implementation step 3: lanes and strands (rt/lanes.hpp) -- I1 structural per strand, FIFO within a
+# strand, round-robin across sessions then strands, priority across strands only, block_on refused on lanes, the
+# strand as the home of engine work, final_suspend posting across strands -- and rt::Runtime (rt/runtime.hpp):
+# run / enter(Resumer) / enter(CompletionThread), usable_cpus and the D5 default, shutdown joining every thread.
+agentengine_add_test(test_rt_lanes LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_runtime LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §4.5 rule 2 (impl step 33): rt::Runtime::spawn / rt::RootHandle -- an OWNED root a caller does
+# NOT await (a chat_stream() producer), started without blocking and tracked like a run/enter root.
+agentengine_add_test(test_rt_spawn LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 implementation step 5: structured concurrency (rt/scope.hpp: with_scope / when_all / task_scope -- child
+# strands of the session, join on the owner's strand, failure cancels siblings two-phase, emitted order, the cap, no
+# child outlives its scope), stop callbacks posted to the owning strand (rt/strand_stop_callback.hpp), and holder await
+# chains with AsyncMutex lending / refusal `rt.lock_held_by_ancestor` (rt/await_chain.hpp, rt/async_mutex.hpp).
+agentengine_add_test(test_rt_scope LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+agentengine_add_test(test_rt_lock_chain LIBS agentengine::core agentengine_warnings TIMEOUT 180)
+
+# ---- ADR-237 §6.3 "HTTP/1.1 + SSE": rt/http_wire.hpp (request building, strict head parsing, framing, SSE decoding)
+# and rt/http.hpp (the async client on the reactor) -- plain HTTP against a scripted loopback server on a test thread:
+# round trips on the home thread, chunked decoding, caps, the smuggling class, CRLF injection, address policy, no
+# redirects, idle/overall deadlines as timers, stop mid-body, the consumer-stall deadline, destroyed frames.
+agentengine_add_test(test_rt_http LIBS agentengine::core agentengine_warnings TIMEOUT 300)
+
+# ---- ADR-237 §6.3: the async HTTP client over TLS (rt/http_tls.hpp, rt::TlsStream) against a loopback mbedTLS peer
+# with an in-memory CA, and the field-level SSE differential against the existing provider parsers (which it links).
+# Only with AGENTENGINE_WITH_HTTPS.
+if(AGENTENGINE_WITH_HTTPS)
+  agentengine_add_test(test_rt_https
+    LIBS agentengine::rt_tls agentengine::provider_http_client agentengine::core agentengine_warnings
+      MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto
+    TIMEOUT 300)
+endif()
+
+# ---- ADR-237 §9 D6 / §14.1 (#181) -- the failure_class each rt I/O result maps onto (core/rt_io_error.hpp).
+agentengine_add_test(test_rt_io_error_class LIBS agentengine::core agentengine_warnings)
+if(AGENTENGINE_WITH_HTTPS)
+  # The TLS mapping is header-only (rt/tls.hpp enums/TlsResult); the macro is not propagated by agentengine::core.
+  target_compile_definitions(test_rt_io_error_class PRIVATE AGENTENGINE_WITH_HTTPS)
+endif()
+
+# ---- ADR-241 §8.4 (S2 step 1) -- EffectContext::root_run_id plumbing: every place a run starts hands its calls the
+# ROOT run id the egress proxy's admission buckets will key on (session core, fork_from/clear/restore, the spawn child
+# run, workflow nodes, the MCP server's per-request mint). The background-job owner row is test_rt_background_job_runner.
+agentengine_add_test(test_rt_root_run_id LIBS agentengine::core agentengine_warnings TIMEOUT 120)

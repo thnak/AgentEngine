@@ -16,10 +16,13 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/context_provider.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::StartRun;
@@ -40,8 +43,7 @@ void check(bool cond, char const* what) {
 // Every fixture below co_returns without suspending, as in every other test_rt_agent_session*.cpp.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -140,6 +142,7 @@ using Session = AgentSession<ScriptedChatClient, agentengine::rt::NoSessionState
 
 void tv1_text_answer() {
     Session session;
+    session.initialize("tv", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.2
     session.emplace_chat_client().set_script({text_message(role::assistant, "the answer is forty-two")});
     auto const seen = session.history_provider().seen;
 
@@ -156,6 +159,7 @@ void tv1_text_answer() {
 
 void tv2_tool_round() {
     Session session;
+    session.initialize("tv", agentengine::Principal{"p", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.2
     Message call = text_message(role::assistant, "calling the tool");
     call.content.push_back(agentengine::ContentItem{agentengine::ToolCall{"call-1", "no_such_tool", "{}"}});
     session.emplace_chat_client().set_script({call, text_message(role::assistant, "done after the tool")});

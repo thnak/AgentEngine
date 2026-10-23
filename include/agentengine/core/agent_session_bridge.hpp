@@ -1,6 +1,6 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md §2.1 ("Running an agent", as amended by
-// decisions/ADR-226-agent-run-bridge.md) and the run half of 015 §1's equivalence rule (I6): the bridge
+// Implements rfcs/002-Agent-Model-and-Authoring.md §2.1 ("Running an agent", as amended by
+// decisions/archive/ADR-226-agent-run-bridge.md) and the run half of 015 §1's equivalence rule (I6): the bridge
 // from a declared agent -- `struct A : Agent<A, Policies...>` compiled by `register_agent<A>()`, or a
 // 015 Agent document compiled by `compile_agent_document()` -- to a RUNNING `rt::AgentSession`
 // (issue #46, issue #32 Layer A).
@@ -42,6 +42,7 @@
 //                        consumer exists -- ADR-226 §3 names each one).
 
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstdint>
 #include <functional>
@@ -61,6 +62,7 @@
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/session_builder.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
@@ -174,8 +176,12 @@ static_assert(ContextProvider<AgentToolSurface<>>, "AgentToolSurface must be a C
 // struct may be derived from model output). The agent's own declaration supplies everything else.
 // ae-naming-lint: allow AgentSessionOptions — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 struct AgentSessionOptions {
-    std::string session_id = "s-agent";
-    Principal   principal{"p-agent", ""};
+    // ADR-244 §2.2: no defaults. A shared default identity (formerly "s-agent"/"p-agent") put every bridged
+    // session under one principal, with its approvals and quotas; an empty one fails `choice.missing.session_id`
+    // / `choice.missing.principal`. `choices` has no default constructor, so omitting it does not compile.
+    std::string    session_id;
+    Principal      principal;
+    SessionChoices choices;
 
     // The authority the caller actually holds and is willing to hand this session. Narrowed to the agent's
     // declared `Capabilities<...>` ceiling (`narrow_to_ceiling()` below) -- never widened to it: a ceiling
@@ -192,12 +198,6 @@ struct AgentSessionOptions {
     // inside the ceiling.
     std::vector<Capability> chat_client_grants;
 
-    // 002 §9 Q2 per-run overrides: narrowing only. A value above the agent's compiled bound is REFUSED
-    // (`agent_session.override_widens`), not clamped -- a caller who asked for more than the agent allows
-    // should hear about it.
-    std::optional<std::uint64_t> max_turns;
-    std::optional<std::uint64_t> token_budget;
-
     // Same semantics as `RawQuickstartSessionBuilder::approve_tools()`/`.policy()`: decide among calls that
     // ALREADY need a decision; never make a call need less approval than its tool (or the agent) declares.
     std::optional<std::vector<std::string>> approve_tools;
@@ -212,7 +212,7 @@ template <class ChatClientT>
 // ae-naming-lint: allow AgentBundle — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 using AgentBundle = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentToolSurface<>>;
 
-// decisions/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
+// decisions/archive/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
 // surface -- how the harness (core/harness.hpp) composes ON this bridge instead of a third session-
 // construction path. `AgentBundle<C>` is exactly `AgentBundleWith<C>`.
 template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
@@ -243,9 +243,12 @@ using AgentBundleWith = quickstart::Bundle<ChatClientT, InMemorySecretStore, Age
 
 namespace agent_bind_detail {
 
-using OutputValidator = std::function<result<void>(std::string_view)>;
+// ADR-237 §5.1: asynchronous -- validating a response may need real I/O (a schema server, a judge
+// model), so the seam is a `task` producer. The typed validator `output_validator_for<A>()` below
+// resolves inline and simply returns an immediately-ready task.
+using OutputValidator = std::function<task<result<void>>(std::string_view)>;
 
-// decisions/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
+// decisions/archive/ADR-234: a host-code step over the agent's declared descriptors, applied AFTER the agent-level
 // floors below. The bridge's own callers pass none; the harness passes one that may only make a tool MORE
 // gated (core/harness.hpp's plan-gate coverage), never less -- the bridge cannot check that direction for an
 // arbitrary callable, so this stays in `agent_bind_detail`, not on any public signature.
@@ -316,18 +319,46 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
                                      "agent_session.output_schema_unvalidated"});
     }
 
-    // 002 §9 Q2: narrowing-only overrides, refused rather than clamped.
-    std::uint64_t max_turns = meta.max_turns;
-    if (opts.max_turns.has_value()) {
-        if (*opts.max_turns > meta.max_turns) return std::unexpected(override_widens("max_turns"));
-        max_turns = *opts.max_turns;
+    // ADR-244 §2.2: the session's identity is the caller's, stated.
+    if (opts.session_id.empty()) {
+        return std::unexpected(choice_missing("session_id", std::array<std::string_view, 1>{"a non-empty session id"}));
     }
-    std::optional<std::uint64_t> token_budget = meta.token_budget;
-    if (opts.token_budget.has_value()) {
-        if (meta.token_budget.has_value() && *opts.token_budget > *meta.token_budget) {
-            return std::unexpected(override_widens("token_budget"));
+    if (opts.principal.id.empty()) {
+        return std::unexpected(
+            choice_missing("principal", std::array<std::string_view, 1>{"Principal{id, tenant_id} with a non-empty id"}));
+    }
+
+    // 002 §9 Q2: the caller's turn cap and budget narrow the agent's declaration; one above it is refused
+    // (`agent_session.override_widens`), not clamped -- a caller who asked for more than the agent allows should
+    // hear about it, and `unbounded()` against a declared bound is such a request.
+    // ADR-244 slice 4 makes `AgentMetadata`'s own `max_turns`/`token_budget` required `Bound`s as well.
+    Bound<std::uint64_t> const declared_turns = Bound<std::uint64_t>::at_most(meta.max_turns);
+    Bound<std::uint64_t> const declared_budget = meta.token_budget.has_value()
+                                                     ? Bound<std::uint64_t>::at_most(*meta.token_budget)
+                                                     : Bound<std::uint64_t>::unbounded();
+    if (!declared_turns.covers(opts.choices.max_turns)) return std::unexpected(override_widens("max_turns"));
+    if (!declared_budget.covers(opts.choices.token_budget)) return std::unexpected(override_widens("token_budget"));
+
+    // ADR-244 §2.3 (red-team D14): a per_request session's ceiling is bounded by the agent's declaration, the
+    // same narrowing direction as the turn cap. `no_ceiling()` takes the declared ceiling; a stated ceiling the
+    // declaration does not cover is refused, not clamped. An agent that declares no capabilities (every YAML
+    // agent today) would refuse every authority that holds anything, so it cannot be per_request at all
+    // rather than being pushed to `no_ceiling()`.
+    SessionChoices choices = opts.choices;
+    if (CapabilityCeiling const* asked = opts.choices.authority.ceiling(); asked != nullptr) {
+        if (meta.capability_ceiling.empty()) {
+            return std::unexpected(choice_missing(
+                "capability_ceiling",
+                std::array<std::string_view, 2>{
+                    "declare the agent's capabilities (Capabilities<...>, or `capabilities:` in YAML)",
+                    "SessionChoices{AuthoritySource::single_trusted_caller(), ...}"}));
         }
-        token_budget = opts.token_budget;
+        CapabilitySet declared = CapabilitySet::grant_root(meta.capability_ceiling);
+        if (asked->is_none()) {
+            choices.authority = AuthoritySource::per_request(std::move(declared));
+        } else if (!declared.covers(*asked->set())) {
+            return std::unexpected(override_widens("capability_ceiling"));
+        }
     }
 
     for (Capability const& c : opts.chat_client_grants) {
@@ -340,17 +371,22 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
         }
     }
 
-    // I2: the caller's authority, narrowed to the agent's declaration -- plus the ChatClient's own secrets.
+    // I2: the caller's authority, narrowed to the agent's declaration. The ChatClient's own secrets are held apart
+    // (ADR-244 §2.3, slice 3c): the model call's context only, never this set, which tools and children read.
     std::vector<Capability> held = narrow_to_ceiling(opts.grants, meta.capability_ceiling);
-    held.insert(held.end(), opts.chat_client_grants.begin(), opts.chat_client_grants.end());
     auto capabilities = std::make_unique<CapabilitySet>(CapabilitySet::grant_root(std::move(held)));
 
     ChatClientCapabilities const client_caps = client.capabilities();
 
     auto session = std::make_unique<SessionT>();
-    session->initialize(opts.session_id, opts.principal, token_budget, max_turns);
+    session->initialize(opts.session_id, opts.principal, std::move(choices));
     session->emplace_chat_client(std::move(client));
     session->set_capabilities(capabilities.get());
+    if (!opts.chat_client_grants.empty()) {
+        if (auto set = session->set_chat_client_secrets(opts.chat_client_grants); !set) {
+            return std::unexpected(set.error());
+        }
+    }
 
     std::vector<ToolDescriptor> declared = declared_descriptors(meta);
     if (filter) filter(declared);
@@ -397,12 +433,12 @@ template <class A>
     if constexpr (std::is_void_v<SchemaT>) {
         return {};
     } else {
-        return [](std::string_view text) -> result<void> {
+        return [](std::string_view text) -> task<result<void>> {
             auto parsed = json::parse(text);
-            if (!parsed) return std::unexpected(parsed.error());
+            if (!parsed) co_return std::unexpected(parsed.error());
             auto decoded = schema::from_json<SchemaT>(*parsed);
-            if (!decoded) return std::unexpected(decoded.error());
-            return {};
+            if (!decoded) co_return std::unexpected(decoded.error());
+            co_return result<void>{};
         };
     }
 }
@@ -415,7 +451,7 @@ template <class A>
 template <class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
 [[nodiscard]] result<AgentBundle<ChatClientT>> bind_agent_session(AgentMetadata const& meta, ChatClientT client,
-                                                                  AgentSessionOptions opts = {},
+                                                                  AgentSessionOptions opts,
                                                                   ChatClientRegistry const* registry = nullptr,
                                                                   SandboxBackendRegistry const* sandbox_registry =
                                                                       nullptr) {
@@ -427,7 +463,7 @@ template <class ChatClientT>
 // declares one.
 template <class A, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
-[[nodiscard]] result<AgentBundle<ChatClientT>> make_agent_session(ChatClientT client, AgentSessionOptions opts = {},
+[[nodiscard]] result<AgentBundle<ChatClientT>> make_agent_session(ChatClientT client, AgentSessionOptions opts,
                                                                   ChatClientRegistry const* registry = nullptr,
                                                                   SandboxBackendRegistry const* sandbox_registry =
                                                                       nullptr) {

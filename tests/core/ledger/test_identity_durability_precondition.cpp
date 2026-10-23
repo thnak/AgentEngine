@@ -42,7 +42,9 @@
 
 #include "agentengine/core/file_worktree_object_store.hpp"
 #include "agentengine/core/ledger.hpp"
+#include "agentengine/rt/block_on.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -66,8 +68,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string_view s) {
@@ -99,7 +100,7 @@ int run_owner_role(std::filesystem::path const& objects_dir, std::filesystem::pa
     auto root_r = drive(ledger.create_root_branch(owner, "identity-precondition"));
     if (!root_r.has_value()) return 1;
 
-    auto blob_r = ledger.put_blob_safe(to_bytes(kSecretContent), owner);
+    auto blob_r = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes(kSecretContent), owner));
     if (!blob_r.has_value()) return 1;
 
     Tree tree;
@@ -120,7 +121,7 @@ int run_attacker_role(std::filesystem::path const& objects_dir, std::filesystem:
     IdentityHandle attacker = authority.mint_root("real-attacker");   // the FIRST mint in THIS fresh process
 
     Ledger<FileWorktreeObjectStore> ledger(FileWorktreeObjectStore(objects_dir), ledger_dir);
-    auto blob_r = ledger.get_blob_safe(secret_digest, attacker);
+    auto blob_r = agentengine::rt::block_on(ledger.get_blob_safe(secret_digest, attacker));
 
     std::ofstream out(result_file, std::ios::trunc);
     out << "attacker_id=" << attacker.id() << '\n';

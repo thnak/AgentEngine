@@ -1,4 +1,4 @@
-// Answers decisions/ADR-069-content-triggered-model-response-replay.md §7's own open question with
+// Answers decisions/archive/ADR-069-content-triggered-model-response-replay.md §7's own open question with
 // real evidence for the first time: "whether ADR-067's pre_model mechanism and this ADR's
 // post_model-adjacent mechanism are genuinely non-overlapping... a future pass implementing both
 // together, wired into one real session, must confirm this before either ships." Both are now wired
@@ -8,11 +8,14 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <tuple>
 #include <vector>
 
 #include "agentengine/core/content_replay_gateway.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -33,8 +36,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -89,6 +91,7 @@ struct FixedProvider {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         ToolDescriptor sensitive;
+        sensitive.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
         sensitive.name        = "sensitive_tool";
         sensitive.description = "a tool the turn middleware redacts before the model ever sees it";
         c.tools.push_back(std::move(sensitive));
@@ -135,7 +138,7 @@ int main() {
     };
 
     AgentSession<ContentReplayGateway<ScriptedGatewayInner>, NoSessionState, FixedProvider> session;
-    session.initialize("combo-t1", Principal{"p1", ""});
+    session.initialize("combo-t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
     session.emplace_chat_client(ScriptedGatewayInner{state}, trigger);
 
     std::tuple<RedactingMiddleware> chain{};

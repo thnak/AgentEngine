@@ -1,5 +1,5 @@
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
 // its own subtree" for a DYNAMICALLY-generated child id -- docs/planning/agent-spawn-runtime-design-
 // draft.md §4.3 (item 3 of OpenQuestions.md OQ-14's agent.spawn wiring; 026-Agent-Facing-Runtime-
 // Surface.md §5). `workflow/worktree_scoping.hpp`'s own `mint_executor_worktrees()` is the adapted
@@ -71,6 +71,7 @@
 #include "agentengine/trust/agent_spawn_capability.hpp"  // agentengine::SpawnWorktreeGrant (reused)
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -205,13 +206,13 @@ namespace agent_spawn_worktree_detail {
 // of scope for this file (it would also require re-auditing `mint_child_spawn_capabilities`'s own
 // "append `*worktree_grant.read`" step, item 5, already landed and proven).
 template <rt::AppendLogStore StoreT>
-[[nodiscard]] result<SpawnWorktreeGrant> mint_spawn_worktree(StoreT& ref_store, Ref const& caller_ref,
-                                                              std::string const& child_id,
+[[nodiscard]] task<result<SpawnWorktreeGrant>> mint_spawn_worktree(StoreT& ref_store, Ref caller_ref,
+                                                              std::string child_id,
                                                               sharing_mode mode,
-                                                              CapabilitySet const& caller_held,
-                                                              std::string const& caller_mount_id) {
+                                                              CapabilitySet caller_held,
+                                                              std::string caller_mount_id) {
     auto id_ok = check_child_id(child_id);
-    if (!id_ok) return std::unexpected(id_ok.error());
+    if (!id_ok) co_return std::unexpected(id_ok.error());
 
     std::string const name = agent_spawn_worktree_detail::spawn_mount_id(caller_ref, child_id);
 
@@ -220,10 +221,10 @@ template <rt::AppendLogStore StoreT>
     // sourced from a fresh `allocate_spawn_seq()` value, this should never actually fire in ordinary
     // operation (§9 WT-2) -- it stays as a real, structural check anyway, the identical "defensive
     // even when provably unreachable" posture `check_child_id` above already follows.
-    auto existing = read_ref(ref_store, name);
-    if (!existing) return std::unexpected(existing.error());
+    auto existing = co_await read_ref(ref_store, name);
+    if (!existing) co_return std::unexpected(existing.error());
     if (existing->has_value()) {
-        return std::unexpected(
+        co_return std::unexpected(
             error{failure_class::contract,
                   "a worktree already exists for dynamic-spawn child id '" + child_id +
                       "' under caller ref '" + caller_ref.name +
@@ -231,8 +232,8 @@ template <rt::AppendLogStore StoreT>
                   "agent_spawn_worktree.already_minted"});
     }
 
-    auto sub = create_sub_worktree(ref_store, caller_ref, name, mode);
-    if (!sub) return std::unexpected(sub.error());
+    auto sub = co_await create_sub_worktree(ref_store, caller_ref, name, mode);
+    if (!sub) co_return std::unexpected(sub.error());
 
     SpawnWorktreeGrant grant;
     grant.sub = *sub;
@@ -241,7 +242,7 @@ template <rt::AppendLogStore StoreT>
         // Matches `grant_for()`'s own precedent exactly: `Mount`/`mount_read` have no pinned-digest
         // concept (ADR-032 §5's own named gap, unchanged here) -- a `readonly` sub-worktree still gets
         // a real, correct `SubWorktree` above, just no capability-gated guest-facing view yet.
-        return grant;
+        co_return grant;
     }
 
     grant.mount = Mount{name, sub->backing_ref_name, ""};
@@ -252,7 +253,7 @@ template <rt::AppendLogStore StoreT>
         // genuinely safe, matching `grant_for()`'s identical choice for its own scratch executors.
         grant.read  = cap::FsRead{name, "", std::nullopt};
         grant.write = cap::FsWrite{name, "", std::nullopt, std::nullopt};
-        return grant;
+        co_return grant;
     }
 
     // `branch` (copy-on-write off the caller's CURRENT tree) or `shared` (the SAME live tree) -- both
@@ -260,7 +261,7 @@ template <rt::AppendLogStore StoreT>
     // file from another mount, another turn, another tool); I2-1's fix applies to both identically.
     std::vector<cap::FsRead> const reads = caller_held.fs_read_grants(caller_mount_id);
     if (reads.size() > 1) {
-        return std::unexpected(error{
+        co_return std::unexpected(error{
             failure_class::contract,
             "caller holds more than one distinct cap::FsRead grant on its own mount '" +
                 caller_mount_id +
@@ -275,7 +276,7 @@ template <rt::AppendLogStore StoreT>
 
     std::vector<cap::FsWrite> const writes = caller_held.fs_write_grants(caller_mount_id);
     if (writes.size() > 1) {
-        return std::unexpected(error{
+        co_return std::unexpected(error{
             failure_class::contract,
             "caller holds more than one distinct cap::FsWrite grant on its own mount '" +
                 caller_mount_id +
@@ -288,7 +289,7 @@ template <rt::AppendLogStore StoreT>
                                     writes.front().file_count_cap};
     }
 
-    return grant;
+    co_return grant;
 }
 
 }  // namespace agentengine

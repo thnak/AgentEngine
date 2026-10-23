@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 (the `Embedder`
+// Implements decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §2.2 (the `Embedder`
 // concept, core/embedder.hpp) and §2.5 (the concrete conformer): `OpenAIEmbedder`, one
 // host-configurable class covering BOTH `api.openai.com` AND `api.openrouter.ai` -- exactly
 // mirroring how `OpenAIChatClient` (protocol/openai/chat_client.hpp) already covers both for chat.
@@ -8,9 +8,9 @@
 // falsifiable wording: "host/path_prefix as constructor arguments only, no code branch").
 //
 // Same dependency posture as chat_client.hpp (CONVENTIONS.md's three-tier policy, this file being L4
-// protocol code under `protocol/openai/`): guarded behind `AGENTENGINE_WITH_HTTPS`, reusing
-// `sandbox::perform_provider_https_exchange` (Phase C's host-initiated HTTPS client) for the network
-// exchange and the `SecretStore` seam (`trust/secret.hpp`) for outbound-credential resolution AT THE
+// protocol code under `protocol/openai/`): guarded behind `AGENTENGINE_WITH_HTTPS`, using
+// `provider_wire::exchange_async` (`rt::http` on the reactor, ADR-237 §5.1 / #172 -- it was the blocking
+// `sandbox::perform_provider_https_exchange` before) for the network exchange and the `SecretStore` seam (`trust/secret.hpp`) for outbound-credential resolution AT THE
 // POINT OF USE, never at construction -- `OpenAIEmbedder` holds only a `SecretRef` member, the exact
 // behavioral shape `OpenAIChatClient::chat()` already proves (chat_client.hpp:938-940,
 // `test_chat_client_credential_resolution.cpp`) and ADR-063 §4's red-team pass explicitly confirmed
@@ -25,7 +25,7 @@
 // `Transfer-Encoding: chunked` ORDINARY non-streaming response (confirmed live against a real
 // OpenAI-compatible server, OpenRouter's `api.openrouter.ai` -- not only SSE sends it) happens at
 // the transport layer (`net_egress_proxy.cpp`'s `dechunk_response_body_if_needed`, ADR-011's
-// addendum), so `resp->body` below is already plain by the time `embed_batch()` reads it -- the
+// addendum; `rt::http`'s decoder since #172), so `resp->body` below is already plain by the time `embed_batch()` reads it -- the
 // same reason `OpenAIChatClient::chat()` (chat_client.hpp) reads `resp->body` directly rather than
 // through a per-provider decode. A per-provider decode step used to exist here and in
 // chat_client.hpp/protocol/anthropic/chat_client.hpp; it was retired everywhere the same day
@@ -70,6 +70,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -78,6 +79,8 @@
 #include "agentengine/core/embedder.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/protocol/provider_chat_wire.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -204,13 +207,9 @@ namespace detail {
 template <SecretStore Store>
 class OpenAIEmbedder {
 public:
-    // ADR-064 §2 fact 3, re-verified against this class's own embed_batch() body below every time it
-    // changes: every step is a plain, synchronous, BLOCKING call (store_.resolve(), perform_provider_
-    // https_exchange(), json::parse()) -- the only coroutine keyword used is co_return. This is a
-    // STRONGER property than "only nested task<T> awaits" -- this body never suspends at all, by
-    // inspection -- so driving it via rt::drive_leaf_task() is sound.
-    static constexpr bool synchronous_leaf = true;
-
+    // ADR-237 §5.1 (#172): `embed_batch()` runs its exchange on `rt::http` (`provider_wire::exchange_async`) --
+    // no blocking body, and `ctx.cancellation` reaches the request. A host running many sessions passes its own
+    // `rt::Runtime` through the trailing `ProviderReactorOptions`; otherwise the embedder owns one.
 
     // Parameter order mirrors `OpenAIChatClient`'s own constructor exactly (host/port/model/
     // SecretRef/capabilities/store/path_prefix/resolver/ca_bundle_pem_override/..., transport
@@ -223,7 +222,9 @@ public:
                    EmbedderCapabilities caps, Store const& store, std::string path_prefix = "/v1",
                    detail::Resolver resolver = sandbox::resolve_host,
                    std::string ca_bundle_pem_override = {},
-                   sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
+                   sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls,
+                   // ADR-237 §5.1 (#172): appended last, the chat clients' "never insert earlier" convention.
+                   agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -233,7 +234,19 @@ public:
           path_prefix_(std::move(path_prefix)),
           resolver_(std::move(resolver)),
           ca_bundle_pem_override_(std::move(ca_bundle_pem_override)),
-          transport_(transport) {}
+          transport_(transport),
+          reactor_(std::move(reactor)) {
+        // As the chat clients (ADR-237 §5.1 steps 39-40): no Runtime supplied -> own one, held by unique_ptr so
+        // `reactor_.runtime` survives a move; the ctor's Resolver becomes the reactor's DNS seam unless the caller
+        // named one.
+        if (reactor_.runtime == nullptr) {
+            owned_runtime_   = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
+            reactor_.runtime = owned_runtime_.get();
+        }
+        if (!reactor_.resolver) {
+            reactor_.resolver = agentengine::detail::provider_wire::host_resolver_from(resolver_, port_);
+        }
+    }
 
     [[nodiscard]] EmbedderCapabilities capabilities() const { return capabilities_; }
 
@@ -261,24 +274,17 @@ public:
         // Resolution happens HERE, inside embed_batch(), against EffectContext -- never at
         // construction (004 §1 / 018 §4, the same rule `OpenAIChatClient::chat()` follows,
         // chat_client.hpp:938-940, and ADR-063 §4's red-team pass confirmed sound for this project).
-        auto lease = store_.resolve(api_key_ref_, ctx);
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
         if (!lease) co_return std::unexpected(lease.error());
 
         auto body = detail::build_embeddings_request_body(texts, model_);
         auto req = detail::build_embeddings_http_request(path_prefix_ + "/embeddings",
                                                            lease->reveal_text(), json::dump(body));
-        auto resp = sandbox::perform_provider_https_exchange(host_, port_, req, {}, std::nullopt,
-                                                               resolver_, ca_bundle_pem_override_,
-                                                               transport_);
+        auto resp = co_await exchange(std::move(req), ctx);
         if (!resp) co_return std::unexpected(resp.error());
 
-        // As of 2026-08-19, dechunking happens at the transport layer (`net_egress_proxy.cpp`'s
-        // `dechunk_response_body_if_needed`, ADR-011's addendum) -- `resp->body` is already plain by
-        // the time any caller of the buffered exchange functions sees it. `OpenAIChatClient::chat()`
-        // (chat_client.hpp) reads `resp->body` directly for the identical reason; this mirrors that,
-        // not the file's own now-retired `detail::decoded_response_body()` (removed same day a double-
-        // dechunk regression it caused was found and fixed -- see chat_client.hpp's own comment at its
-        // `chat()` call site).
+        // `rt::http` delivers the decoded body (chunked framing removed by its decoder), as the blocking
+        // exchange's `dechunk_response_body_if_needed` did before it (ADR-011's addendum).
         if (resp->status < 200 || resp->status >= 300) {
             co_return std::unexpected(detail::map_http_status_error(resp->status, resp->body));
         }
@@ -289,6 +295,14 @@ public:
     }
 
 private:
+    // ADR-237 §5.1 (#172): the one provider-plane exchange on `rt::http`; `ctx.cancellation` ends it in flight.
+    // Every status comes back, and is classified by this file's own `map_http_status_error`.
+    [[nodiscard]] task<result<rt::HttpResponse>> exchange(sandbox::NetEgressRequest req, EffectContext& ctx) const {
+        return agentengine::detail::provider_wire::exchange_async(host_, port_, std::move(req), reactor_,
+                                                                  ca_bundle_pem_override_, transport_,
+                                                                  ctx.cancellation);
+    }
+
     std::string host_;
     std::uint16_t port_;
     std::string model_;
@@ -299,6 +313,8 @@ private:
     detail::Resolver resolver_;
     std::string ca_bundle_pem_override_;
     sandbox::ProviderTransport transport_;
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor_;
+    std::unique_ptr<agentengine::rt::Runtime>                  owned_runtime_;  // set only when none was supplied
 };
 
 // `OpenAIEmbedder` is templated on `Store` (identical reason `OpenAIChatClient` is), so a bare

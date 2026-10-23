@@ -1,5 +1,5 @@
 // Implements docs/planning/tool-optimizer-provider-design-draft.md (issue #15) and
-// decisions/ADR-065-tool-optimizer-provider.md. Proves core/tool_optimizer_provider.hpp's
+// decisions/archive/ADR-065-tool-optimizer-provider.md. Proves core/tool_optimizer_provider.hpp's
 // ToolOptimizerProvider:
 //   R1 -- state/tool behavior in isolation, driven entirely through the provider's own real,
 //         production tool-descriptor closures (never a private-method reach-in).
@@ -17,6 +17,7 @@
 //         cadence holds end to end: a newly mount_tool'd tool is NOT on the first outbound
 //         ChatRequest and IS on the second, the turn after mount_tool ran.
 
+#include <utility>
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -24,6 +25,8 @@
 #include <tuple>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "agentengine/core/history_provider.hpp"
 #include "agentengine/core/skill_provider.hpp"
@@ -47,8 +50,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // -- Shared fixtures --------------------------------------------------------------------------
@@ -64,28 +66,29 @@ AE_JSON_SCHEMA(PingReply, ok)
 
 // The agent's own single native tool -- the "agent_tools" source (union_codeact_tools's own first
 // source). Gated exactly like any other universe member unless explicitly passed as always_on.
-struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
+struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "ping";
     static constexpr std::string_view description = "The agent's own tool, offered as always_on.";
     using Args = PingArgs;
     using Reply = PingReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{true}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{true}; }
 };
 
 [[nodiscard]] ToolDescriptor make_fixture_tool(std::string name, std::string description) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name = std::move(name);
     d.description = std::move(description);
     d.effect_class = effect_class::pure;
-    d.invoke = [](json::Value const&, EffectContext&) -> result<json::Value> {
-        return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
+    d.invoke = [](json::Value const&, EffectContext&) -> task<result<json::Value>> {
+        co_return json::Value::make_object({{"echo", json::Value::make_string("ok")}});
     };
     return d;
 }
 
 [[nodiscard]] ToolSourceFetch fetch_one(ToolDescriptor d) {
-    return [d = std::move(d)](EffectContext&) -> result<std::vector<ToolDescriptor>> {
-        return std::vector<ToolDescriptor>{d};
+    return [d = std::move(d)](EffectContext&) -> task<result<std::vector<ToolDescriptor>>> {
+        co_return std::vector<ToolDescriptor>{d};
     };
 }
 
@@ -95,7 +98,7 @@ struct PingTool : Tool<PingTool, EffectClass<effect_class::pure>> {
 [[nodiscard]] result<json::Value> call(ContextContribution const& c, std::string const& tool_name,
                                         json::Value args, EffectContext& ctx) {
     for (ToolDescriptor const& d : c.tools) {
-        if (d.name == tool_name) return d.invoke(args, ctx);
+        if (d.name == tool_name) return test_support::run_task_sync<result<json::Value>>(d.invoke(args, ctx));
     }
     return std::unexpected(error{failure_class::contract,
                                   "no such tool in this contribution: " + tool_name,
@@ -201,7 +204,7 @@ public:
     ThreeWayToolOptimizerProvider()
         : inner_(std::tuple{
               HistoryProvider<Window<0>>{}, SkillsProvider<>(std::vector<SkillSourceDescriptor>{}),
-              ToolOptimizerProvider(ToolTable::from_tools<PingTool>(), no_tool_source(),
+              ToolOptimizerProvider(ToolTable::from(PingTool{}), no_tool_source(),
                                      fetch_one(make_fixture_tool(
                                          "extra_tool", "A plugin-sourced fixture tool.")))}) {}
 
@@ -231,7 +234,7 @@ int main() {
     // ---- R1: state/tool behavior in isolation ---------------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("plugin_tool", "A plugin-sourced fixture tool.")), {"ping"});
 
         auto c1 = on_context_of(provider, session_ctx, ctx);
@@ -279,7 +282,7 @@ int main() {
     // ---- R2: the load-bearing end-to-end proof through the REAL invoke_tool() pipeline -----------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("plugin_tool", "A plugin-sourced fixture tool.")), {"ping"});
 
         // Before any mount: plugin_tool is genuinely unreachable via invoke_tool, not merely
@@ -291,7 +294,7 @@ int main() {
             ToolTable const table = ToolTable::from_descriptors(c->tools);
             ToolCallRequest const req{"call-1", "plugin_tool", json::Value::make_object({}), false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
             check(result.is_error,
                   "R2-before: invoke_tool REJECTS plugin_tool while it is unmounted -- a real "
                   "restriction, not a cosmetic one");
@@ -318,7 +321,7 @@ int main() {
             ToolTable const table = ToolTable::from_descriptors(c->tools);
             ToolCallRequest const req{"call-2", "plugin_tool", json::Value::make_object({}), false, 0};
             ToolInvocationAudit audit;
-            ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+            ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
             check(!result.is_error,
                   "R2-after: the SAME call to plugin_tool succeeds once mounted -- the unlock is "
                   "real, through the real pipeline, not a separate code path");
@@ -328,7 +331,7 @@ int main() {
     // ---- R3: collision rejection -------------------------------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("ping", "a colliding MCP tool")), no_tool_source());
         auto c = on_context_of(provider, session_ctx, ctx);
         check(!c.has_value(), "R3: an MCP tool colliding with the agent's own tool name is rejected");
@@ -338,7 +341,7 @@ int main() {
     }
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("mount_tool", "a colliding MCP tool")), no_tool_source());
         auto c = on_context_of(provider, session_ctx, ctx);
         check(!c.has_value(),
@@ -350,7 +353,7 @@ int main() {
     // ---- R4: search_tools -- read-only, no mutation --------------------------------------------
     {
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(), no_tool_source(),
+            ToolTable::from(PingTool{}), no_tool_source(),
             fetch_one(make_fixture_tool("weather_lookup", "Looks up the current weather.")), {"ping"});
         auto c = on_context_of(provider, session_ctx, ctx);
         check(c.has_value(), "R4 setup: on_context succeeds");
@@ -371,7 +374,7 @@ int main() {
         ToolTable const table = ToolTable::from_descriptors(c->tools);
         ToolCallRequest const req{"call-1", "weather_lookup", json::Value::make_object({}), false, 0};
         ToolInvocationAudit audit;
-        ToolResult const result = invoke_tool(table, held, req, ctx, {}, &audit);
+        ToolResult const result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, {}, &audit));
         check(result.is_error,
               "R4: search_tools is read-only -- weather_lookup is still unmounted/unreachable after "
               "searching for it");
@@ -393,7 +396,7 @@ int main() {
         // description), then confirm mount_tool's error text for an UNRELATED unknown name never
         // echoes it back -- the message is built solely from the caller-supplied args.name.
         ToolOptimizerProvider provider(
-            ToolTable::from_tools<PingTool>(),
+            ToolTable::from(PingTool{}),
             fetch_one(make_fixture_tool("real_tool",
                                          "internal-mcp-host.corp.example:4443 secret-token=xyz")),
             no_tool_source(), {"ping"});
@@ -442,7 +445,7 @@ int main() {
             "'wired into AgentSession's provider slot' claim");
 
         ToolOptSession session;
-        session.initialize("s-tool-optimizer-session", principal);
+        session.initialize("s-tool-optimizer-session", principal, ae_test::trusted_unbounded());
         CapabilitySet const local_held = CapabilitySet::grant_root({});
         session.set_capabilities(&local_held);
         ScriptedCapturingChatClient& client = session.emplace_chat_client();

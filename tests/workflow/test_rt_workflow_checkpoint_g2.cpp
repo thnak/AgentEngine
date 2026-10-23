@@ -1,4 +1,4 @@
-// Implements 014-Workflow-and-Orchestration.md §8 G2 (the promotion gate): "checkpoint/resume: kill
+// Implements rfcs/014-Workflow-and-Orchestration.md §8 G2 (the promotion gate): "checkpoint/resume: kill
 // at each superstep boundary of a 20-node workflow; every resume completes with output identical
 // to the uninterrupted control." ADR-037 task #60 -- SUPERSEDES the old Quark-actor-based
 // test_workflow_checkpoint_g2.cpp, reproven against agentengine::rt::WorkflowSupervisor.
@@ -26,11 +26,13 @@
 // still fans out through rt::ThreadPool internally, but this graph is a pure chain (width 1 per
 // round), so no real parallel fan-out ever occurs here.
 
+#include <utility>
 #include <cstdio>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/rt/workflow_supervisor.hpp"
 
 using agentengine::rt::ContinueWorkflow;
@@ -60,8 +62,7 @@ void check(bool cond, char const* what) {
 // suspension point).
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ContentItem;
@@ -100,8 +101,8 @@ using agentengine::workflow::validate_workflow;
 
 [[nodiscard]] ExecutorBody appender(std::string name) {
     return [name = std::move(name)](Message const& in,
-                                     agentengine::EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
+                                     agentengine::EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{text_message(all_text_of(in) + ">" + name)};
     };
 }
 
@@ -153,7 +154,10 @@ int main() {
         WorkflowSupervisor sup;
         sup.initialize(wf, build_bodies());
         sup.set_checkpoint_hook(
-            [&](std::uint32_t /*round*/, RunStateRecord const& rec) { checkpoints.push_back(rec); });
+            [&](std::uint32_t /*round*/, RunStateRecord rec) -> agentengine::task<void> {
+                checkpoints.push_back(std::move(rec));
+                co_return;
+            });
 
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("in")}));
         check(r.status == workflow_status::completed,

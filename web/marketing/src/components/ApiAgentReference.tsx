@@ -10,8 +10,18 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const AGENT_HEADERS = [
+  "agentengine/core/agent.hpp",
+  "agentengine/core/agent_session_bridge.hpp",
+  "agentengine/core/chat_client.hpp",
+  "agentengine/core/tool.hpp",
+  "agentengine/core/content.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entryById(lang: Lang, id: string) {
@@ -39,6 +49,16 @@ function CiteLink({ id }: { id: string }) {
 const copy = {
   en: {
     eyebrow: "C++ CRTP authoring surface — 002",
+    includesNote: (
+      <>
+        Five headers. <code>core/agent.hpp</code> declares the <code>Agent&lt;Derived, Policies...&gt;</code>{" "}
+        tag and every policy type it takes; <code>core/agent_session_bridge.hpp</code> is{" "}
+        <code>make_agent_session&lt;A&gt;()</code> — the call that turns that declaration into a
+        running session (ADR-226); <code>core/chat_client.hpp</code> is the concept your client must
+        satisfy; <code>core/tool.hpp</code> is what a <code>Tools&lt;...&gt;</code> entry must be;
+        and <code>core/content.hpp</code> gives you <code>Message</code> and <code>Text</code>.
+      </>
+    ),
     headingPrefix: "Agents are",
     headingHighlight: "compile-time policy sets",
     intro: (
@@ -125,14 +145,15 @@ const copy = {
     section3Heading: "Running a turn, for real",
     section3Body: (
       <>
-        Both examples build <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> directly
-        from a <code>ChatClient</code> type, not from a registered{" "}
-        <code>Agent&lt;Derived, Policies...&gt;</code>. <code>register_agent&lt;A&gt;()</code>,
-        described above, validates a policy set into <code>AgentMetadata</code>, but no example in
-        this repo yet constructs a running <code>AgentSession</code> from that validated metadata.
-        Both surfaces are real; they simply aren't wired to each other yet. The fake{" "}
-        <code>JokerChatClient</code> below always answers the same pirate joke, so both examples
-        build and run completely offline: no API key, no network.
+        The two surfaces described above are wired together, and have been since{" "}
+        <code>ADR-226</code>: <code>make_agent_session&lt;A&gt;()</code> runs{" "}
+        <code>register_agent&lt;A&gt;()</code>'s validation and binds the compiled policy set to a
+        real <code>rt::AgentSession</code> — so the declaration <strong>is</strong> what runs. The
+        first example below takes that road. The second takes the other one, constructing{" "}
+        <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> directly from a{" "}
+        <code>ChatClient</code> type, which is what you do when the type-level authoring surface is
+        more machinery than you need. The fake <code>JokerChatClient</code> always answers the same
+        pirate joke, so both examples build and run completely offline: no API key, no network.
       </>
     ),
     section3aEyebrow: "The smallest possible turn",
@@ -149,6 +170,17 @@ const copy = {
   },
   vi: {
     eyebrow: "Bề mặt viết mã CRTP trong C++ — 002",
+    includesNote: (
+      <>
+        Năm header. <code>core/agent.hpp</code> khai báo tag{" "}
+        <code>Agent&lt;Derived, Policies...&gt;</code> cùng mọi kiểu policy mà nó nhận;{" "}
+        <code>core/agent_session_bridge.hpp</code> là <code>make_agent_session&lt;A&gt;()</code> —
+        lệnh gọi biến khai báo đó thành một session đang chạy (ADR-226);{" "}
+        <code>core/chat_client.hpp</code> là concept mà client của bạn phải thỏa mãn;{" "}
+        <code>core/tool.hpp</code> là thứ một mục <code>Tools&lt;...&gt;</code> phải là; và{" "}
+        <code>core/content.hpp</code> cho bạn <code>Message</code> cùng <code>Text</code>.
+      </>
+    ),
     headingPrefix: "Agent là",
     headingHighlight: "tập policy tại thời điểm biên dịch",
     intro: (
@@ -237,15 +269,16 @@ const copy = {
     section3Heading: "Chạy một lượt, thật sự",
     section3Body: (
       <>
-        Cả hai ví dụ đều dựng <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> trực
-        tiếp từ một kiểu <code>ChatClient</code>, không phải từ một{" "}
-        <code>Agent&lt;Derived, Policies...&gt;</code> đã đăng ký.{" "}
-        <code>register_agent&lt;A&gt;()</code>, đã trình bày ở trên, xác thực một tập policy
-        thành <code>AgentMetadata</code>, nhưng chưa có ví dụ nào trong repo này dựng một{" "}
-        <code>AgentSession</code> đang chạy từ metadata đã xác thực đó. Cả hai bề mặt đều có
-        thật; chúng chỉ đơn giản là chưa được đấu nối với nhau. Client giả{" "}
-        <code>JokerChatClient</code> bên dưới luôn trả lời cùng một câu đùa về cướp biển, nên cả
-        hai ví dụ đều build và chạy hoàn toàn offline: không cần API key, không cần mạng.
+        Hai bề mặt ở trên đã được đấu nối với nhau, từ <code>ADR-226</code>:{" "}
+        <code>make_agent_session&lt;A&gt;()</code> chạy phần xác thực của{" "}
+        <code>register_agent&lt;A&gt;()</code> rồi gắn tập policy đã biên dịch vào một{" "}
+        <code>rt::AgentSession</code> thật — nên chính khai báo <strong>là</strong> thứ chạy. Ví
+        dụ đầu tiên bên dưới đi theo con đường đó. Ví dụ thứ hai đi con đường còn lại: dựng{" "}
+        <code>agentengine::rt::AgentSession&lt;ChatClientT&gt;</code> trực tiếp từ một kiểu{" "}
+        <code>ChatClient</code> — cách bạn chọn khi bề mặt viết mã ở mức kiểu là quá nhiều máy móc
+        so với nhu cầu. Client giả <code>JokerChatClient</code> luôn trả lời cùng một câu đùa về
+        cướp biển, nên cả hai ví dụ đều build và chạy hoàn toàn offline: không cần API key, không
+        cần mạng.
       </>
     ),
     section3aEyebrow: "Lượt chạy nhỏ nhất có thể",
@@ -281,6 +314,13 @@ export function ApiAgentReference() {
           <p style={{ marginTop: 16 }}>{t.intro}</p>
           <p className="gs-note" style={{ marginTop: 16 }}>{t.builderNote}</p>
         </div>
+
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={AGENT_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
 
         {/* ---- 1. A compile-time tag ------------------------------------------------------------ */}
         <RevealGroup>

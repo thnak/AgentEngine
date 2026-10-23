@@ -18,6 +18,7 @@
 #include "agentengine/core/mounted_skills_state.hpp"
 #include "agentengine/core/skill_provider.hpp"
 #include "agentengine/core/skill_tool_scoping.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 
@@ -53,12 +54,12 @@ AE_JSON_SCHEMA(CountReply, count)
 
 // EffectClass<pure>, no Capabilities<> -- this example is about tool-table MEMBERSHIP and mount
 // state, not capability-binding mechanics (see 06_capabilities_and_denial.cpp for that).
-struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
+struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "word_count";
     static constexpr std::string_view description = "Counts whitespace-separated words.";
     using Args = CountArgs;
     using Reply = CountReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         int count = 0;
         bool in_word = false;
         for (char c : a.text) {
@@ -66,7 +67,7 @@ struct WordCountTool : Tool<WordCountTool, EffectClass<effect_class::pure>> {
             if (!is_space && !in_word) ++count;
             in_word = !is_space;
         }
-        return Reply{count};
+        co_return Reply{count};
     }
 };
 
@@ -83,10 +84,10 @@ int main() {
     sources.push_back(
         make_skill_source_descriptor(InlineSkillSource("origin-a", {word_count_skill()})));
     SkillsProvider<> skills(std::move(sources));
-    check(skills.ensure_loaded().has_value(), "the word-counter skill source resolves");
+    check(rt::block_on(skills.ensure_loaded()).has_value(), "the word-counter skill source resolves");
 
     MountedSkillsState mount_state;
-    ToolTable const    universe = ToolTable::from_tools<WordCountTool>();
+    ToolTable const    universe = ToolTable::from(WordCountTool{});
     CapabilitySet const held = CapabilitySet::grant_root({});
     EffectContext ctx;
     ctx.capabilities = agentengine::borrow_capabilities(held);
@@ -97,7 +98,7 @@ int main() {
         check(allowed.empty(), "before mount: nothing is unlocked yet");
         ToolTable const     scoped = scope_tools_to_mounted_skills(universe, allowed);
         ToolInvocationAudit audit;
-        ToolResult const    result = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);
+        ToolResult const    result = rt::block_on(invoke_tool(scoped, held, count_call(), ctx, {}, &audit));
         check(result.is_error, "before mount: word_count is genuinely REJECTED by the real pipeline");
         check(audit.error_code == "tool.unknown_name",
               "before mount: rejected as 'unknown tool', not a permission denial -- it isn't in the "
@@ -115,7 +116,7 @@ int main() {
               "after mount: word_count is now named as unlocked");
         ToolTable const     scoped = scope_tools_to_mounted_skills(universe, allowed);
         ToolInvocationAudit audit;
-        ToolResult const    result = invoke_tool(scoped, held, count_call(), ctx, {}, &audit);
+        ToolResult const    result = rt::block_on(invoke_tool(scoped, held, count_call(), ctx, {}, &audit));
         check(!result.is_error, "after mount: the SAME call to word_count now succeeds");
         if (!result.is_error && !result.content.empty()) {
             auto const* data = std::get_if<Data>(&result.content.front().value);

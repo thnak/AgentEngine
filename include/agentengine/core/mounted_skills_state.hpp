@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8c's Phase 3 addendum (decisions/ADR-024) --
+// Implements rfcs/009-Plugin-and-Extension-System.md §8c's Phase 3 addendum (decisions/archive/ADR-024) --
 // on-demand, agent-triggered skill mounting. Distinguishes "resolved" (every configured skill's files
 // are materialized unconditionally at session start, core/skill_provider.hpp's own scope, §8b) from
 // "mounted" (a SUBSET of resolved skills the agent has explicitly activated this run, tracked here).
@@ -14,7 +14,7 @@
 // skills' full body gets re-injected into context. Both of those are already-authorized capabilities
 // the agent is merely CHOOSING to activate, not new ones it is granting itself.
 //
-// PROVENANCE (decisions/ADR-224): every mount records WHO made it -- `skill_mount_origin::model` (the
+// PROVENANCE (decisions/archive/ADR-224): every mount records WHO made it -- `skill_mount_origin::model` (the
 // model's own `mount_skill` call, `mount()`) or `skill_mount_origin::host` (host code acting on its own
 // configuration before the run, `mount_by_host()`, see core/skill_premount.hpp). The two entry points
 // are separate methods rather than one method with an origin argument so that a `mount_skill` tool

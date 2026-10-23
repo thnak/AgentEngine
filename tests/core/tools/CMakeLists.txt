@@ -12,7 +12,7 @@ agentengine_add_test(test_idempotency_key LIBS agentengine::core agentengine_war
 # against a real manually-triggered invoke_tool() re-execution under the same idempotency key.
 agentengine_add_test(test_effect_reexecution LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-197-reject-malformed-tool-arguments.md (issue #105): argument text that is not
+# ---- decisions/archive/ADR-197-reject-malformed-tool-arguments.md (issue #105): argument text that is not
 # valid JSON is refused at 006 §3 step 2 as tool.malformed_arguments, never coerced to {} -- proven
 # with an all-optional-arguments tool through invoke_tool, admit_call, background_task and a real
 # AgentSession round.
@@ -30,7 +30,7 @@ agentengine_add_test(test_approval_resume LIBS agentengine::core agentengine_war
 agentengine_add_test(test_codeact_runner_binding LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-061 §46 prove phase -- ApprovalDecider widened to see the calling Principal, closing R27's
-# `approve_` finding (decisions/ADR-061) ---------------------------------------------------------------
+# `approve_` finding (decisions/archive/ADR-061) ---------------------------------------------------------------
 agentengine_add_test(test_approval_decider_principal LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-054 (gap-4/gap-5 closure) -- ToolRegistry / ToolTable::from_names() (core/tool_registry.hpp).
@@ -39,6 +39,9 @@ agentengine_add_test(test_tool_registry LIBS agentengine::core agentengine_warni
 # ---- Ten-step tool invocation pipeline (M2 Phase B tasks B2/B3, 006 §3, miniature §8 G2) --------
 # Header-only (core/tool_pipeline.hpp), core-tier -- links only agentengine::core.
 agentengine_add_test(test_tool_pipeline LIBS agentengine::core agentengine_warnings)
+
+# ADR-244 §2.2 (slice 4a): a tool's approval mode is a stated choice; an unset descriptor is refused everywhere.
+agentengine_add_test(test_tool_approval_choice LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-158: tool concurrency-exclusivity policy (declared tag only, no pipeline logic yet, ----
 # matching Parallelizable's own existing state -- 006 §8 G4 is still deferred). Header-only.

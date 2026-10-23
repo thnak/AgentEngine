@@ -57,10 +57,13 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using agentengine::rt::AgentSession;
@@ -86,8 +89,7 @@ void check(bool cond, char const* what) {
 // done" loop is safe here. See that file's own comment for the fuller explanation.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -278,7 +280,7 @@ int main() {
     {
         AgentSession<CannedChatClient> session;
         Principal const owner = agentengine::make_embedded_principal("p-owner", "tenant-a");
-        session.initialize("s-match", owner);
+        session.initialize("s-match", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hello"), as_caller(owner)}));
@@ -294,7 +296,7 @@ int main() {
         AgentSession<CannedChatClient> session;
         Principal const owner    = agentengine::make_embedded_principal("p-owner", "tenant-a");
         Principal const stranger = agentengine::make_embedded_principal("p-stranger", "tenant-a");
-        session.initialize("s-mismatch", owner);
+        session.initialize("s-mismatch", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hello"), as_caller(stranger)}));
@@ -316,7 +318,7 @@ int main() {
         AgentSession<CannedChatClient> session;
         Principal const owner        = agentengine::make_embedded_principal("p-shared-id", "tenant-a");
         Principal const other_tenant = agentengine::make_embedded_principal("p-shared-id", "tenant-b");
-        session.initialize("s-cross-tenant", owner);
+        session.initialize("s-cross-tenant", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hello"), as_caller(other_tenant)}));
@@ -332,7 +334,7 @@ int main() {
     {
         AgentSession<CannedChatClient> session;
         Principal const owner = agentengine::make_embedded_principal("p-owner", "tenant-a");
-        session.initialize("s-delegated", owner);
+        session.initialize("s-delegated", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto derived = agentengine::derive_on_behalf_of(owner, "sub-agent-1");
@@ -349,7 +351,7 @@ int main() {
     // --- (5) Omitting `caller` entirely preserves unconditional-admission behavior -------------------
     {
         AgentSession<CannedChatClient> session;
-        session.initialize("s-legacy", Principal{"p-legacy", ""});
+        session.initialize("s-legacy", Principal{"p-legacy", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hello")}));  // no caller asserted
@@ -372,8 +374,8 @@ int main() {
     {
         AgentSession<EchoChatClient> session_x1;
         AgentSession<EchoChatClient> session_x2;
-        session_x1.initialize("s-A", Principal{"p-alice", ""});
-        session_x2.initialize("s-A", Principal{"p-alice", ""});
+        session_x1.initialize("s-A", Principal{"p-alice", ""}, ae_test::trusted_unbounded());
+        session_x2.initialize("s-A", Principal{"p-alice", ""}, ae_test::trusted_unbounded());
         session_x1.emplace_chat_client();
         session_x2.emplace_chat_client();
 
@@ -395,8 +397,8 @@ int main() {
     {
         AgentSession<EchoChatClient> session_a;
         AgentSession<EchoChatClient> session_b;
-        session_a.initialize("s-A", Principal{"p-alice", ""});
-        session_b.initialize("s-B", Principal{"p-bob", ""});
+        session_a.initialize("s-A", Principal{"p-alice", ""}, ae_test::trusted_unbounded());
+        session_b.initialize("s-B", Principal{"p-bob", ""}, ae_test::trusted_unbounded());
         session_a.emplace_chat_client();
         session_b.emplace_chat_client();
 
@@ -441,7 +443,7 @@ int main() {
         static_assert(Policy::is_quarantined(4), "past the bound stays quarantined, never un-quarantines");
 
         AgentSession<AlwaysFailingChatClient> session;
-        session.initialize("s-poison", Principal{"p-remy", ""});
+        session.initialize("s-poison", Principal{"p-remy", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
 
         std::uint32_t consecutive_failures = 0;
@@ -484,7 +486,7 @@ int main() {
     // =================================================================================================
     {
         AgentSession<RecordingChatClient> session;
-        session.initialize("s-run", Principal{"p-dave", ""});
+        session.initialize("s-run", Principal{"p-dave", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("call-1", "get_weather", "{}"), Usage{1, 1, 0, 0, 0.0}},
@@ -529,7 +531,7 @@ int main() {
         // Two different sessions never mint the same run_id for their respective first runs, even
         // though both start their own counter at 1 -- the session_id prefix is what keeps them apart.
         AgentSession<RecordingChatClient> session_other;
-        session_other.initialize("s-run-other", Principal{"p-erin", ""});
+        session_other.initialize("s-run-other", Principal{"p-erin", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client_other = session_other.emplace_chat_client();
         client_other.set_script({{text_response("hi"), Usage{1, 1, 0, 0, 0.0}}});
 

@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md -- a
+// Implements decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md -- a
 // mint-at-runtime SecretStore for a secret that shows up incidentally inside ordinary content
 // (a pasted API key, a tool result echoing a leaked credential), as opposed to trust/secret.hpp's
 // existing declare-then-resolve path for operator-declared config secrets. See that ADR for the
@@ -28,10 +28,10 @@
 // unaudited digest implementation for the same job -- this makes the header link-dependent on the
 // portable `agentengine::hmac` library (CMakeLists.txt), not just `agentengine::core`, unlike
 // `trust/secret.hpp` itself. `agentengine::hmac` builds on both platforms (Windows: CNG/BCrypt;
-// Linux: a from-scratch RFC 2104 construction, decisions/ADR-107-hmac-sha256-linux-parity.md) -- this
+// Linux: a from-scratch RFC 2104 construction, decisions/archive/ADR-107-hmac-sha256-linux-parity.md) -- this
 // WAS a Windows-only link dependency (a real, previously-undiscovered gap: it broke every
 // AGENTENGINE_WITH_HTTPS-gated Linux target touching QuarantineSecretStore, found and disclosed by
-// decisions/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7, closed by ADR-107), now fixed.
+// decisions/archive/ADR-105-sandbox-tool-provider-composed-linux-parity.md §7, closed by ADR-107), now fixed.
 //
 // Fixed here by splitting the concern instead of granting inline: `quarantine()` NEVER mutates any
 // capability set, ever. It records `quarantine_trigger` (how the extraction happened) purely as
@@ -166,18 +166,18 @@ public:
     }
 
     // `SecretStore` concept.
-    [[nodiscard]] result<SecretLease> resolve(SecretRef const& ref, EffectContext& ctx) const {
+    [[nodiscard]] task<result<SecretLease>> resolve(SecretRef ref, EffectContext& ctx) const {
         if (auto gate = secret_detail::require_secret_capability(ref, ctx); !gate) {
-            return std::unexpected(gate.error());
+            co_return std::unexpected(gate.error());
         }
         std::lock_guard<std::mutex> lock(mu_);
         auto it = values_.find(ref.name);
         if (it == values_.end()) {
-            return std::unexpected(error{failure_class::contract,
-                                          "no quarantined secret for '" + ref.name + "'",
-                                          "secret_quarantine.not_found"});
+            co_return std::unexpected(error{failure_class::contract,
+                                             "no quarantined secret for '" + ref.name + "'",
+                                             "secret_quarantine.not_found"});
         }
-        return SecretLease{ref, make_secret(it->second)};
+        co_return SecretLease{ref, make_secret(it->second)};
     }
 
     // HOST-ONLY -- there is no path from any `Tool::invoke()` body (model-reachable code) to this
@@ -239,14 +239,20 @@ AE_JSON_SCHEMA(QuarantineSecretReply, redacted_text)
 
 // Zero-capability management tool -- grants nothing new (006's own `EffectClass`/`Tool` vocabulary
 // is the only precedent this needs; ADR-068 §4 finding 2 corrected an earlier citation to PR18's
-// unmerged `ToolOptimizerProvider` that this file does not repeat). `invoke()` is a dead poison stub;
-// real logic lives in `make_quarantine_secret_tool_descriptor()`'s closure below, reached via
-// `make_tool_descriptor_with_invoke()` -- the same pattern `ToolOptimizerProvider`'s management tools
-// use once/if that PR merges.
+// unmerged `ToolOptimizerProvider` that this file does not repeat).
+//
+// ADR-237 §5.2: a real `Tool<>` conformer now, not a hand-built descriptor with a
+// `make_tool_descriptor_with_invoke([&store]...)` closure. It holds the quarantining store by pointer
+// (the store is owned by the provider, which outlives every descriptor it hands out -- the same
+// provider-outlives-descriptor contract `MemoryProvider::RecallTool` states) and declares
+// `CapturesSessionState`, keeping it non-backgroundable and non-rerun-comparable exactly as its old
+// capturing closure was. The dead static `invoke()` poison stub is gone: the instance `invoke()` IS
+// the one real path.
 //
 // ALWAYS `agent_initiated` -- `text` is a model-supplied argument, never engine-verified content, so
 // nothing minted through this tool is ever grant-eligible (this file's own top comment).
-struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_class::pure>> {
+struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_class::pure>,
+                                    CapturesSessionState, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "quarantine_secret";
     static constexpr std::string_view description =
         "Hide a piece of text you're about to say (e.g. a credential you noticed in a tool result "
@@ -255,30 +261,28 @@ struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_clas
         "Continue using the returned text, not the original.";
     using Args = QuarantineSecretArgs;
     using Reply = QuarantineSecretReply;
-    static result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
-            error{failure_class::fatal,
-                  "QuarantineSecretTool::invoke() must never run directly -- reached only through "
-                  "make_quarantine_secret_tool_descriptor()'s own closure",
-                  "secret_quarantine.dead_static_invoke_path"});
+
+    explicit QuarantineSecretTool(QuarantineSecretStore& store) : store_(&store) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
+        if (args.text.empty()) co_return Reply{args.text};
+        SecretRef const ref = store_->quarantine(args.text, quarantine_trigger::agent_initiated, ctx);
+        co_return Reply{"[quarantined secret: " + ref.name + "]"};
     }
+
+private:
+    QuarantineSecretStore* store_;
 };
 
 [[nodiscard]] inline ToolDescriptor make_quarantine_secret_tool_descriptor(QuarantineSecretStore& store) {
-    return make_tool_descriptor_with_invoke<QuarantineSecretTool>(
-        [&store](QuarantineSecretArgs args, EffectContext& ctx) -> result<QuarantineSecretReply> {
-            if (args.text.empty()) return QuarantineSecretReply{args.text};
-            SecretRef const ref =
-                store.quarantine(args.text, quarantine_trigger::agent_initiated, ctx);
-            return QuarantineSecretReply{"[quarantined secret: " + ref.name + "]"};
-        });
+    return make_tool_descriptor(QuarantineSecretTool{store});
 }
 
 // Wraps `QuarantineSecretStore` as a real `ContextProvider` conformer -- ADR-068's own named residual
 // ("no production call site wires this in yet") closed here structurally: this type can occupy
 // `rt::AgentSession`'s `HistoryProviderT` slot directly, or be composed alongside other contributors
 // via `ComposedContextProvider` (`core/composed_context_provider.hpp`),
-// the SAME real, already-proven composition path `decisions/ADR-066-context-provider-attribution-
+// the SAME real, already-proven composition path `decisions/archive/ADR-066-context-provider-attribution-
 // provenance.md`'s own end-to-end test uses -- no change to `agent_session.hpp` needed for this ADR
 // at all. Contributes exactly one tool (`quarantine_secret`) and no messages/instructions of its own.
 // Owns `store_` by value (not a reference to a caller-owned instance): `ComposedContextProvider`
@@ -289,7 +293,7 @@ struct QuarantineSecretTool : Tool<QuarantineSecretTool, EffectClass<effect_clas
 // already use for their own long-lived, session-scoped state.
 class QuarantineToolProvider {
 public:
-    static constexpr std::string_view name = "quarantine";  // decisions/ADR-066-...md §3
+    static constexpr std::string_view name = "quarantine";  // decisions/archive/ADR-066-...md §3
 
     explicit QuarantineToolProvider(QuarantineAuditHook audit_hook = nullptr)
         : store_(std::move(audit_hook)) {}

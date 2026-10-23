@@ -2,7 +2,7 @@
 """027 naming-lint stub (docs/planning/milestone-0-bootstrap-breakdown.md task 3).
 
 Walks include/agentengine/ and flags every exported (public, top-level-in-`agentengine`) type,
-enum, using-alias, or concept name that does not appear in 027-Vocabulary-and-Naming.md's §2-4
+enum, using-alias, or concept name that does not appear in rfcs/027-Vocabulary-and-Naming.md's §2-4
 canonical-name tables. This is 027 G1 in miniature: "a lint over public headers verifies every
 exported type appears in this RFC's tables; an unlisted public name fails CI."
 
@@ -56,7 +56,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VOCAB_RFC = REPO_ROOT / "027-Vocabulary-and-Naming.md"
+VOCAB_RFC = REPO_ROOT / "rfcs/027-Vocabulary-and-Naming.md"
 SCAN_ROOT = REPO_ROOT / "include" / "agentengine"
 EXCLUDED_DIRS = {
     REPO_ROOT / "include" / "agentengine" / "detail",
@@ -192,7 +192,7 @@ def main() -> int:
         rel = path.relative_to(REPO_ROOT)
         print(f"  {rel}:{line_no}: `{name}`")
     print(
-        "\nEach of these needs either a row in 027-Vocabulary-and-Naming.md §2-4 (027 §8 rule 3), "
+        "\nEach of these needs either a row in rfcs/027-Vocabulary-and-Naming.md §2-4 (027 §8 rule 3), "
         "a rename to the name 027 already lists, or an inline `// ae-naming-lint: allow <Name> — "
         "<reason>` suppression if the deferral is deliberate."
     )

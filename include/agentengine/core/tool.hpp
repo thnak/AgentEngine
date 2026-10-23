@@ -1,5 +1,5 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md — one declaration, one invocation path, one approval
+// Implements rfcs/006-Tool-and-Function-Plane.md — one declaration, one invocation path, one approval
 // model for tools regardless of source (native, WASM plugin, MCP server, remote agent, sandboxed
 // script, composite workflow).
 
@@ -25,12 +25,19 @@ enum class approval_mode { never_require, always_require, policy_driven };  // a
 template <approval_mode M>
 struct Approval {};  // ae-naming-lint: allow Approval — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// decisions/ADR-244-required-choices-step-1b.md §2.2 (slice 4a): the tool's approval mode is the host's, stated
+// where the tool is wired (its provider's constructor), not in the declaration. `make_tool_descriptor` leaves
+// `ToolDescriptor::approval` unset for such a tool; the provider sets it, and a descriptor left unset is refused
+// (`choice.missing.tool.approval`). For engine-shipped tools whose risk depends on the deployment (a shell, a
+// spawn), where a fixed `Approval<M>` would be the engine choosing for the developer.
+struct ApprovalChosenByHost {};  // ae-naming-lint: allow ApprovalChosenByHost — ADR-244
+
 // §5's concurrency claim ("safe to run concurrently with other calls in a batch") -- a declared
 // tag only; M2 proves a single native tool call, never a parallel batch (006 §8 G4 is deferred,
 // see the M2 breakdown's "what's explicitly deferred" list), so this carries no pipeline logic yet.
 struct Parallelizable {};  // ae-naming-lint: allow Parallelizable — pre-existing M0 scaffolding, reconcile at owning milestone
 
-// decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: a DISTINCT, alternative concurrency
+// decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: a DISTINCT, alternative concurrency
 // claim from `Parallelizable` above, not layered on top of it -- a tool declares EITHER bare
 // `Parallelizable` (unconditional: safe alongside every other tool) OR `ExclusivityGroup<Name>`
 // (narrower: safe alongside any call outside group `Name`, but must serialize with any other
@@ -54,7 +61,7 @@ struct ExclusivityGroup {  // ae-naming-lint: allow ExclusivityGroup — ADR-158
 // default every other undeclared policy in this file already has.
 struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b names this concept normatively; 027 has not been updated to list it
 
-// decisions/ADR-212-deterministic-tool-output-declaration.md: "running this again returns the same
+// decisions/archive/ADR-212-deterministic-tool-output-declaration.md: "running this again returns the same
 // thing" -- orthogonal to `EffectClass` below, which says whether running it again is safe. Two
 // successful calls with equal Args, reading equal content through their granted capabilities, return
 // replies whose `schema::to_json` values are `json_value_equal` (ADR-212 §3.2). A declaration only: the
@@ -62,16 +69,25 @@ struct Backgroundable {};  // ae-naming-lint: allow Backgroundable — 006 §6b 
 // an explicit `EffectClass<pure>` (the static_assert in `Tool<>`, §3.3).
 struct Deterministic {};
 
-// decisions/ADR-217-capped-grant-admits-grant-enforcing-tools.md: "this tool enforces the quantity
+// decisions/archive/ADR-217-capped-grant-admits-grant-enforcing-tools.md: "this tool enforces the quantity
 // caps of the capability it is bound to (or of the held grant, via `CapabilitySet::find_fs_read`/
 // `find_fs_write`/`find_net_out`), never a number from its own declaration." With it, admission binds
 // each ceiling entry with `CapabilitySet::bind_clamped()`, so a quota- or size-capped grant admits the
 // tool and the per-call handle carries the grant's cap. Without it (the default) admission keeps
 // `bind()`'s exact `contains()` rule and a capped grant refuses an uncapped declaration -- because a
 // tool that enforces its own declared number (or none) would otherwise run past the grant's cap. Only
-// declare it for a tool whose invoke really reads its caps from the grant; for a
-// `make_tool_descriptor_with_invoke` tool, that is the custom invoke.
+// declare it for a tool whose invoke really reads its caps from the grant -- `RunShellTool` is the
+// shipped example (the mediated shell's own per-operation lookups).
 struct EnforcesGrantedCaps {};  // ae-naming-lint: allow EnforcesGrantedCaps — ADR-217 policy tag; 027 has not been updated to list it
+
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §5.2: "this tool's invoke captures
+// session-scoped state." The explicit declaration `ToolDescriptor::captures_session_state` reads; it is
+// what the now-deleted `make_tool_descriptor_with_invoke` used to set implicitly. A tool with it may not
+// be backgrounded (`background_job_runner`) and is not re-run
+// comparable (`tool_descriptor.hpp`). Deliberately an explicit tag, never derived from "the type is
+// non-empty": deriving it would make every configured tool unbackgroundable (red-team G2), including
+// §5.2's own stateful example.
+struct CapturesSessionState {};  // ae-naming-lint: allow CapturesSessionState — ADR-237 §5.2 policy tag; 027 has not been updated to list it
 
 // Milliseconds, not a std::chrono duration NTTP: chrono durations typically keep their `rep` as a
 // private data member, which disqualifies them as C++20 structural types (the same constraint
@@ -113,6 +129,13 @@ template <approval_mode M>
 struct policy_approval<Approval<M>> {
     static std::optional<approval_mode> get() { return M; }
 };
+// ADR-244 slice 4a: how many approval declarations a policy is -- `Approval<M>` or `ApprovalChosenByHost`.
+template <class Policy>
+struct policy_declares_approval : std::false_type {};
+template <approval_mode M>
+struct policy_declares_approval<Approval<M>> : std::true_type {};
+template <>
+struct policy_declares_approval<ApprovalChosenByHost> : std::true_type {};
 
 template <class Policy>
 struct policy_effect_class {
@@ -166,6 +189,16 @@ struct policy_enforces_granted_caps<EnforcesGrantedCaps> {
     static constexpr bool value = true;
 };
 
+// ADR-237 §5.2.
+template <class Policy>
+struct policy_captures_session_state {
+    static constexpr bool value = false;
+};
+template <>
+struct policy_captures_session_state<CapturesSessionState> {
+    static constexpr bool value = true;
+};
+
 template <class Policy>
 struct policy_is_parallelizable {
     static constexpr bool value = false;
@@ -197,12 +230,16 @@ struct policy_exclusivity_group<ExclusivityGroup<Name>> {
 //
 // Derived provides: static name, static description, nested Args/Reply types -- each paired with
 // an AE_JSON_SCHEMA(Args, ...)/AE_JSON_SCHEMA(Reply, ...) description (json_schema.hpp; JSON
-// Schema 2020-12, 006 §1) -- and `static result<Reply> invoke(Args, EffectContext&)`. `invoke` is
-// synchronous `result<Reply>`, not `ae::task<result<Reply>>` -- `ae::task<T>` stays deferred for M2
-// (decision 2, no gate item this milestone needs real coroutine concurrency to prove).
+// Schema 2020-12, 006 §1) -- and `invoke`. ADR-237 §5.2's form is a non-static **`const`** member
+// `agentengine::task<result<Reply>> invoke(Args, EffectContext&)`: a stateless tool is an empty
+// object, a stateful one holds its injected state (registered by value through `ToolTable::from(...)`
+// or `make_tool_descriptor(ToolT{...})`). `const` because a `Parallelizable` tool called twice in one
+// batch runs two `invoke`s on the same object concurrently (red-team G2), so mutable per-call state
+// lives in the frame. It is the only form: the older `static result<Reply> invoke(Args, EffectContext&)`
+// and its static registration path were deleted (#175; ADR-237 §5.2, "one way to declare a tool").
 template <class Derived, class... Policies>
 struct Tool {
-    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
+    // decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4/§5: `Parallelizable` and
     // `ExclusivityGroup<Name>` are two DIFFERENT, MUTUALLY EXCLUSIVE concurrency claims (MUST-FIX
     // 1) -- declaring both would silently make two contradictory promises about the same tool
     // (unconditionally safe with everyone, vs. safe with everyone except its own group). At most
@@ -235,10 +272,24 @@ struct Tool {
     static_assert(!(kHasParallelizable && kExclusivityGroupCount > 0),
                   "ADR-158: a tool must declare either Parallelizable (unconditional concurrency) "
                   "or ExclusivityGroup<Name> (group-scoped concurrency), never both -- see "
-                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4");
+                  "decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4");
     static_assert(kExclusivityGroupCount <= 1,
                   "ADR-158: a tool may declare at most one ExclusivityGroup<Name> -- see "
-                  "decisions/ADR-158-tool-concurrency-exclusivity-policy.md §5");
+                  "decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §5");
+
+    // ADR-244 §2.2 (slice 4a, red-team D1): whether a call needs approval is a stated choice. A tool without one
+    // used to run unapproved (`never_require` by omission), whatever the agent declared.
+    static constexpr int kApprovalDeclarationCount = [] {
+        int count = 0;
+        ([&count] {
+            if (tool_detail::policy_declares_approval<Policies>::value) ++count;
+        }(), ...);
+        return count;
+    }();
+    static_assert(kApprovalDeclarationCount == 1,
+                  "ADR-244: a tool declares exactly one approval choice -- Approval<approval_mode::never_require>, "
+                  "Approval<approval_mode::always_require>, Approval<approval_mode::policy_driven>, or "
+                  "ApprovalChosenByHost (its provider states the mode)");
 
     // ADR-212 §3.3: `Deterministic` is only ever checked by running the call again, and only a
     // `pure` tool may be re-run freely on another node: `at_most_once` needs operator acknowledgement
@@ -264,7 +315,7 @@ struct Tool {
     }();
     static_assert(!kHasDeterministic || kEffectClass == effect_class::pure,
                   "ADR-212: a Deterministic tool must declare EffectClass<effect_class::pure> -- see "
-                  "decisions/ADR-212-deterministic-tool-output-declaration.md §3.3");
+                  "decisions/archive/ADR-212-deterministic-tool-output-declaration.md §3.3");
 
     [[nodiscard]] static std::string args_schema() {
         return schema::json_schema_of<typename Derived::Args>();
@@ -285,10 +336,10 @@ struct Tool {
         return result;
     }
 
-    // `never_require` if the tool declared no `Approval<...>` -- an explicit, read default, not a
-    // silent one: a tool author who wants approval gating must say so (§4's vocabulary is opt-in).
-    [[nodiscard]] static approval_mode declared_approval() {
-        approval_mode mode = approval_mode::never_require;
+    // ADR-244 slice 4a: the declared `Approval<M>`; nullopt for `ApprovalChosenByHost`, whose provider sets the
+    // descriptor's mode (the static_assert above guarantees exactly one of the two).
+    [[nodiscard]] static std::optional<approval_mode> declared_approval() {
+        std::optional<approval_mode> mode;
         ([&mode] {
             if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = *m;
         }(), ...);
@@ -296,8 +347,7 @@ struct Tool {
     }
 
     // Milestone 4 Phase F4: `at_most_once` if the tool declared no `EffectClass<...>` -- the
-    // conservative default, deliberately the OPPOSITE direction from `declared_approval()`'s own
-    // least-restrictive default. 019 §3's whole point is "never guess" about repeatability; an
+    // conservative default (approval, since ADR-244 slice 4a, has no default at all). 019 §3's whole point is "never guess" about repeatability; an
     // author who forgot to classify a tool must not have it silently treated as safe to re-run
     // (`pure`) -- undeclared defaults to the assumption that re-running it COULD do real-world
     // damage, until the author explicitly says otherwise.
@@ -332,7 +382,16 @@ struct Tool {
         return has;
     }
 
-    // decisions/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
+    // ADR-237 §5.2: `false` unless the tool declared `CapturesSessionState`.
+    [[nodiscard]] static constexpr bool declared_captures_session_state() noexcept {
+        bool has = false;
+        ([&has] {
+            if (tool_detail::policy_captures_session_state<Policies>::value) has = true;
+        }(), ...);
+        return has;
+    }
+
+    // decisions/archive/ADR-158-tool-concurrency-exclusivity-policy.md §4: `std::nullopt` if the tool
     // declared no `ExclusivityGroup<Name>` (including every tool that instead declares bare
     // `Parallelizable`, or declares neither -- both leave this unset). `kExclusivityGroupCount <= 1`
     // is already enforced above, so at most one iteration of this fold ever assigns.

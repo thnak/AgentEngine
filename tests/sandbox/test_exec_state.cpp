@@ -1,4 +1,4 @@
-// Proof for 010-Python-Code-Interpreter.md §3a's `ExecState` ("one instance per session, held by
+// Proof for rfcs/010-Python-Code-Interpreter.md §3a's `ExecState` ("one instance per session, held by
 // the sandbox and passed by reference into whichever Runner executes"), Milestone 3 Phase E1
 // (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md). `PythonRunner`/
 // `ShellRunner` do not exist yet (Phase E2/E3) -- this proves the part of §3a that does not need
@@ -15,6 +15,7 @@
 #include <iostream>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/runner.hpp"
 
 using namespace agentengine;
@@ -35,12 +36,12 @@ int g_failures = 0;
 // Stands in for `ShellRunner`: a `cd` that mutates the shared `ExecState.cwd`, and sets an env var
 // the way `export` would.
 struct MockShellRunner {
-    result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+    task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
         (void)request;
         (void)ctx;
         state.cwd            = "/tmp/from-shell-cd";
         state.env["FROM_SH"] = "1";
-        return ExecOutcome{};
+        co_return ExecOutcome{};
     }
 };
 
@@ -50,14 +51,14 @@ struct MockPythonRunner {
     std::string observed_cwd;
     bool        observed_shell_env = false;
 
-    result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+    task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
         (void)request;
         (void)ctx;
         observed_cwd       = state.cwd;
         observed_shell_env = state.env.contains("FROM_SH");
         state.cwd          = "/tmp/from-python-chdir";
         state.env["FROM_PY"] = "1";
-        return ExecOutcome{};
+        co_return ExecOutcome{};
     }
 };
 
@@ -99,11 +100,11 @@ int main() {
         EffectContext ctx{};
 
         MockShellRunner shell;
-        auto shell_result = shell.run(ExecRequest{"shell", "cd /tmp/from-shell-cd"}, state, ctx);
+        auto shell_result = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cd /tmp/from-shell-cd"}, state, ctx));
         AE_CHECK(shell_result.has_value(), "E1-C3: setup -- the shell mock's cd runs");
 
         MockPythonRunner python;
-        auto python_result = python.run(ExecRequest{"python", "os.getcwd()"}, state, ctx);
+        auto python_result = agentengine::rt::block_on(python.run(ExecRequest{"python", "os.getcwd()"}, state, ctx));
         AE_CHECK(python_result.has_value(), "E1-C3: setup -- the python mock's read runs");
         AE_CHECK(python.observed_cwd == "/tmp/from-shell-cd",
                  "E1-C3: the python mock observes the SAME cwd the shell mock just set -- shared by "
@@ -122,7 +123,7 @@ int main() {
         EffectContext ctx{};
 
         MockPythonRunner python;
-        auto python_result = python.run(ExecRequest{"python", "os.chdir('/tmp/from-python-chdir')"}, state, ctx);
+        auto python_result = agentengine::rt::block_on(python.run(ExecRequest{"python", "os.chdir('/tmp/from-python-chdir')"}, state, ctx));
         AE_CHECK(python_result.has_value(), "E1-C4: setup -- the python mock's chdir runs");
 
         AE_CHECK(state.cwd == "/tmp/from-python-chdir",
@@ -130,7 +131,7 @@ int main() {
                  "call reads it");
 
         MockShellRunner shell;
-        auto shell_result = shell.run(ExecRequest{"shell", "pwd"}, state, ctx);
+        auto shell_result = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "pwd"}, state, ctx));
         AE_CHECK(shell_result.has_value(), "E1-C4: setup -- the shell mock's pwd-equivalent runs");
         // The shell mock always sets its own fixed cwd (it doesn't need to READ cwd to prove this
         // direction) -- what matters is that BEFORE it ran, the state it would have read via `pwd`

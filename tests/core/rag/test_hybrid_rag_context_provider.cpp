@@ -1,4 +1,4 @@
-// Implements decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8
+// Implements decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §2.3/§3 claims 2, 8
 // -- `HybridRagContextProvider` (core/hybrid_rag_context_provider.hpp): RRF fusion is real (neither
 // leg alone determines the fused top-K), citation rendering and the citation-forgery defense are
 // reused VERBATIM from `vector_rag_context_provider.hpp` (not reimplemented), and the `recall` tool
@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 #include "agentengine/core/context_assembly.hpp"
@@ -22,10 +23,17 @@
 #include "agentengine/core/hybrid_rag_context_provider.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/sparse_index.hpp"
+#include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/core/vector_index.hpp"
 #include "agentengine/core/worktree.hpp"
 #include "agentengine/rt/append_log_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "../../support/run_task_sync.hpp"
+#include "../../support/index_sync.hpp"
+
+using agentengine::test_support::sync_add_batch;
+using agentengine::test_support::sync_contains;
+using agentengine::test_support::sync_search;
 
 namespace {
 
@@ -44,7 +52,6 @@ int g_failures = 0;
 // Same deterministic, scripted shape test_vector_rag_context_provider.cpp's MockEmbedder uses.
 class MockEmbedder {
 public:
-    static constexpr bool synchronous_leaf = true;
     [[nodiscard]] ae::EmbedderCapabilities capabilities() const { return {3, 100}; }
 
     ae::task<ae::result<std::vector<std::vector<float>>>> embed_batch(std::vector<std::string> const& texts,
@@ -83,9 +90,9 @@ ae::Message make_msg(ae::role r, std::string text, std::string message_id) {
 ae::result<ae::Ref> bootstrap_corpus_worktree(ae::InMemoryWorktreeObjectStore& object_store,
                                                 ae::rt::InMemoryAppendLogStore& ref_store,
                                                 ae::Mount const& mount) {
-    auto empty = object_store.put_tree(ae::Tree{});
+    auto empty = agentengine::rt::block_on(object_store.put_tree(ae::Tree{}));
     if (!empty) return std::unexpected(empty.error());
-    return ae::commit_ref(ref_store, mount.ref_name, *empty);
+    return agentengine::rt::block_on(ae::commit_ref(ref_store, mount.ref_name, *empty));
 }
 
 // Writes one hand-built chunk into BOTH the dense and sparse index -- the hybrid sibling of
@@ -96,7 +103,7 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
                                      ae::BM25Index& sparse, std::string const& text,
                                      std::string const& source_path, std::size_t line_start,
                                      std::size_t line_end, std::vector<float> const& vec) {
-    auto digest = object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()}));
+    auto digest = agentengine::rt::block_on(object_store.put_blob(std::as_bytes(std::span{text.data(), text.size()})));
     if (!digest) return std::unexpected(digest.error());
 
     ae::CorpusChunkRecord record{};
@@ -105,12 +112,12 @@ ae::result<ae::Digest> write_chunk(ae::InMemoryWorktreeObjectStore& object_store
     record.line_start       = line_start;
     record.line_end         = line_end;
     record.source_file_hash = "test-file-hash";
-    auto written = ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record);
+    auto written = agentengine::rt::block_on(ae::write_corpus_chunk_record(object_store, ref_store, mount, write_cap, record));
     if (!written) return std::unexpected(written.error());
 
-    auto dense_added = dense.add_batch({*digest}, {vec});
+    auto dense_added = sync_add_batch(dense, {*digest}, {vec});
     if (!dense_added) return std::unexpected(dense_added.error());
-    auto sparse_added = sparse.add_batch({*digest}, {text});
+    auto sparse_added = sync_add_batch(sparse, {*digest}, {text});
     if (!sparse_added) return std::unexpected(sparse_added.error());
 
     return digest;
@@ -200,13 +207,47 @@ int main() {
         if (out.has_value() && !out->tools.empty()) {
             ae::json::Value args = ae::json::Value::make_object(
                 {{"query", ae::json::Value::make_string("how do I find dark mode")}});
-            auto invoked = out->tools.front().invoke(args, ctx);
+            auto invoked = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(args, ctx));
             AE_CHECK(invoked.has_value(), "H7: recall(query) invoke succeeds synchronously");
             if (invoked.has_value()) {
                 auto const* results = invoked->find("results");
                 AE_CHECK(results != nullptr && results->is_array() && !results->as_array().empty(),
                          "H8: recall(query) returns a non-empty fused result list");
             }
+        }
+
+        // --- H9: recall goes through the 006 §3 pipeline gated on the CALLER's FsRead, not the
+        // provider's construction-time read_cap_ (ADR-153's must-fix, applied to RAG). Negative and
+        // positive control on the SAME descriptor.
+        if (out.has_value() && !out->tools.empty()) {
+            ae::ToolDescriptor const& recall = out->tools.front();
+            AE_CHECK(recall.captures_session_state,
+                     "H9a: recall is marked captures_session_state (its invoke captures `this`)");
+            AE_CHECK(recall.capability_ceiling.size() == 1 &&
+                         std::holds_alternative<ae::cap::FsRead>(recall.capability_ceiling.front()) &&
+                         std::get<ae::cap::FsRead>(recall.capability_ceiling.front()).mount_id == read_cap.mount_id,
+                     "H9b: recall declares the corpus FsRead as its capability ceiling");
+
+            ae::ToolTable const table = ae::ToolTable::from_descriptors({recall});
+            ae::ToolCallRequest req;
+            req.tool_name = "recall";
+            req.call_id   = "h9-c1";
+            req.arguments = ae::json::Value::make_object(
+                {{"query", ae::json::Value::make_string("how do I find dark mode")}});
+
+            ae::EffectContext denied_ctx{};
+            denied_ctx.principal = principal;
+            auto denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{}));
+            AE_CHECK(denied.is_error,
+                     "H9c: recall is DENIED through invoke_tool() when the caller holds no FsRead "
+                     "on the corpus mount");
+
+            ae::EffectContext allowed_ctx{};
+            allowed_ctx.principal = principal;
+            auto allowed = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
+                                           req, allowed_ctx, ae::ApprovalDecider{}));
+            AE_CHECK(!allowed.is_error,
+                     "H9d: the SAME call SUCCEEDS once the caller holds the matching FsRead");
         }
     }
 
@@ -268,7 +309,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R4
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding R4
     // (2026-09-22): HybridRagContextProvider had no cross-tenant isolation test of its own, even
     // though it reuses the identical Mount/read_cap/VectorIndex-scoping mechanism ADR-063's own
     // C5-R1..R5 proves for VectorRagContextProvider. Mirrors that test's exact "same id, different
@@ -358,7 +399,7 @@ int main() {
     }
 
     // ============================================================================================
-    // decisions/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding M1
+    // decisions/archive/ADR-180-hybrid-retrieval-pluggable-storage-gpu-search.md §4 red-team finding M1
     // (2026-09-22): a degenerate rrf_k (<= -1 for rank 0) must not produce +inf/a corrupted score.
     // ============================================================================================
     {

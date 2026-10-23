@@ -560,8 +560,8 @@ agentengine::result<VulkanCosineIndex> VulkanCosineIndex::create() {
 // ---- Host-side bookkeeping (add_batch/contains/size) -- pure mirror of BruteForceCosineIndex's own
 // shape and validation, no GPU work at all here. -----------------------------------------------------
 
-agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> const& ids,
-                                                          std::vector<std::vector<float>> const& vectors) {
+agentengine::result<void> VulkanCosineIndex::add_batch_now(std::vector<std::string> const& ids,
+                                                              std::vector<std::vector<float>> const& vectors) {
     if (!impl_) return std::unexpected(moved_from_error());
     std::unique_lock lock(impl_->mutex);
     if (ids.size() != vectors.size()) {
@@ -633,7 +633,7 @@ agentengine::result<void> VulkanCosineIndex::add_batch(std::vector<std::string> 
     return {};
 }
 
-bool VulkanCosineIndex::contains(std::string const& id) const {
+bool VulkanCosineIndex::contains_now(std::string const& id) const {
     if (!impl_) return false;  // moved-from: owns nothing, contains nothing
     std::shared_lock lock(impl_->mutex);
     return impl_->entries.contains(id);
@@ -647,8 +647,8 @@ std::size_t VulkanCosineIndex::size() const {
 
 // ---- search(): the one method that actually dispatches to the GPU -----------------------------------
 
-agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::search(std::span<float const> query,
-                                                                                     std::size_t k) const {
+agentengine::result<std::vector<agentengine::ScoredId>> VulkanCosineIndex::search_now(std::span<float const> query,
+                                                                                         std::size_t k) const {
     // unique_lock, not shared_lock: this method must be able to (re)populate the persistent GPU
     // buffer cache below. A real, honest concurrency-vs-performance tradeoff specific to this
     // GPU-backed conformer, unlike BruteForceCosineIndex's own read-concurrent search() -- named here,

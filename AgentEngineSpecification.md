@@ -109,7 +109,7 @@ touches; every one of them is a testable gate, not a slogan.
 ### D1 — Quark is a dependency, not a fork (SUPERSEDED by ADR-037)
 
 Originally: Quark consumed as an **unmodified submodule**, never patched in-tree, with AgentEngine
-mapping its own concepts onto Quark's. **ADR-037 (`decisions/ADR-037-remove-quark-as-core-runtime.md`,
+mapping its own concepts onto Quark's. **ADR-037 (`decisions/archive/ADR-037-remove-quark-as-core-runtime.md`,
 executed 2026-08-13) overturned this decision entirely** — the project owner's reasoning was that an
 agent engine should provide an API to build AI systems the way Microsoft Agent Framework, the OpenAI
 Agents SDK, and Anthropic's own agent patterns do, none of which ship a custom actor/distributed
@@ -129,12 +129,13 @@ Two different problems get two different answers (008, 009, 010):
   language-agnostic; instantiation in microseconds. Ecosystem risk is low because *we* define the
   WIT world and the plugin author compiles to it.
 - **The Python code interpreter and the shell** are `Runner`s (010 §1a) sharing one `ExecState` —
-  a `cd` or an exported variable is visible to both. Python is **embedded native CPython,
-  permanently — one runtime, never a WASM alternative** (010 §2), running under `native-jail` or
-  cluster-managed under `remote`; there is no `microvm` profile (008 §1). **The shell is not a
-  wrapped binary at all** — `ShellRunner` is engine-native code that never resolves a name against a
-  search path; it dispatches to builtins over the worktree or to other registered `Runner`s and
-  `Tool`s, so there is no ambient exec surface to sandbox in the first place (010 §2).
+  a `cd` or an exported variable is visible to both. *Amended by [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R2/R3/R8
+  (2026-10-20):* every agent runs inside a sandbox from a `SandboxBackend` that hosts the worktree.
+  The interpreter is **CPython wherever it runs, never a WASI Python**: embedded under `native-jail`,
+  or the guest's own CPython under the **`microvm`** profile (Kata), which is a first-class option.
+  Under `native-jail` and `wasm` the shell is `ShellRunner`, engine-native code that never resolves a
+  name against a search path; under `microvm` the shell is the guest's real `bash`, and authority is
+  enforced at the VM boundary from the host (ADR-242 R3).
 
 The ecosystem evidence is in [docs/research/2026-standards-landscape.md](docs/research/2026-standards-landscape.md)
 and summarized in 010 §2: as of July 2026 the rich WASM Python ecosystem (NumPy, pandas, SciPy,
@@ -159,8 +160,9 @@ CPython for a differently-capable interpreter.
 
 ### D3 — Authoring surfaces for v1: native C++ and declarative
 
-v1 ships **C++23 CRTP-policy authoring** (002) and the **declarative YAML/JSON format** (015),
-bound by I6. Python and .NET bindings are explicitly deferred, not designed out: the C ABI in 020
+v1 ships **a C++23 API designed for least developer code** (002; CRTP is optional authoring sugar,
+type erasure is fine off measured hot paths, [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R5) and the **declarative YAML/JSON
+format** (015), bound by I6. Python and .NET bindings are explicitly deferred, not designed out: the C ABI in 020
 is the seam they will use — design starts against a small set of stable concepts now, freezing is
 gated on a reference out-of-process consumer (020 §8 Q3, resolved 2026-08-04).
 
@@ -182,7 +184,11 @@ conversation keeps its interpreter *and shell* state — working directory, envi
 in-memory objects — across turns (010 §3a). The isolation boundary that matters is *between
 sessions*, and cross-session reuse is prohibited in every profile.
 
-### D5 — CodeAct is the primary action space, and the environment is unremarkable
+### D5 — CodeAct is the strongest action space, and the environment is unremarkable
+
+> *Amended by [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R3 (2026-10-20):* CodeAct (`execute_code` with the `agent.*` library) is
+> **opt-in**, contributed only by a CodeAct `ContextProvider` the developer attaches; the shell is a
+> separate tier with its own provider. Neither exists unless chosen.
 
 The agent's main way of acting is **writing a program** that calls a host-backed library
 (`agent.tools`, `agent.files`, `agent.memory`, …), not emitting one tool-call JSON object per step
@@ -202,11 +208,11 @@ shell are two `Runner`s (010 §1a) sharing one `ExecState` — the same `cwd` an
 §3a); CodeAct is what that context is *for*. An agent that `cd`s in the shell, reads the result with
 `open()` in Python, and calls a tool from either is operating one ordinary machine, not switching
 between subsystems — that coherence, not any one mechanism alone, is what "unremarkable environment"
-means. It is also why the shell is engine-native rather than a wrapped binary: a real shell's
-name-to-binary resolution is exactly the kind of ambient authority **I2** rules out, so `ShellRunner`
-dispatches only to capability-gated primitives and other `Runner`s/`Tool`s (010 §2) — more to build
-than adopting an existing shell, and the difference between covering a gap and designing the system
-properly.
+means. Under `native-jail` and `wasm`, the shell is engine-native rather than a wrapped binary: a
+real shell's name-to-binary resolution on the host is exactly the kind of ambient authority **I2**
+rules out, so `ShellRunner` dispatches only to capability-gated primitives and other `Runner`s/`Tool`s
+(010 §2). Under `microvm` the shell is a real `bash` inside the guest: its name lookup reaches only
+effects inside the guest, and every path out of the guest is checked from the host (ADR-242 R3).
 
 **This is a prompt-surface decision and never a security mechanism.** Assume the model knows it is
 isolated, assume an attacker tells it, assume it probes — 007 and 008 hold regardless. RFC 026 §8 G4
@@ -237,7 +243,7 @@ architecture detail: containment results must be identical.
 AgentEngine was originally built on top of Quark, a distributed actor engine (mailbox dispatch,
 cluster placement, `Sequential` policy, snapshot/event-sourced persistence) — the vocabulary that
 motivated this document's own earlier title for this section, "The Quark mapping." **ADR-037
-(`decisions/ADR-037-remove-quark-as-core-runtime.md`) removed that dependency entirely**: the
+(`decisions/archive/ADR-037-remove-quark-as-core-runtime.md`) removed that dependency entirely**: the
 project owner's own reasoning was that an agent engine should provide an API to build AI systems,
 the way Microsoft Agent Framework, the OpenAI Agents SDK, and Anthropic's own agent patterns do —
 none of which ship a custom actor/distributed runtime — not carry a distributed-actor-engine's own
@@ -253,14 +259,20 @@ coroutines, no actor engine underneath:
 | Streaming response | `agentengine::stream<T>`, a credit-controlled producer/consumer pair over `rt::channel<T,E>` | `core/stream.hpp`, `rt/channel.hpp` |
 | Session/workflow durability | `rt::SessionStore` (single-slot, overwrite-latest) and `rt::AppendLogStore` (append-only, multi-version) — two distinct contracts for two distinct needs, not one seam doing both. `FileAppendLogStore` serialises appends with an OS file lock and cuts a torn tail, disclosing that a corrupt record mid-file loses what follows it (ADR-195 E32 red team, 2026-09; simplified in ADR-191's proportionality review) | `rt/session_store.hpp`, `rt/append_log_store.hpp`, `src/rt/append_log_file.cpp` |
 | Worktree objects and refs | `rt::AppendLogStore`-backed `Ref` history (content-addressed Blob/Tree storage is, and always was, independent of any actor engine) | `core/worktree.hpp` |
-| Multi-agent workflows | `WorkflowSupervisor`, a plain object driving a superstep loop via `rt::ThreadPool` for real concurrent fan-out | `rt/workflow_supervisor.hpp`, `rt/thread_pool.hpp` |
+| Multi-agent workflows | `WorkflowSupervisor`, a plain object driving a superstep loop; today via `rt::ThreadPool`, moving onto the host-owned `rt::Runtime` (ADR-242 R6, ADR-237) | `rt/workflow_supervisor.hpp`, `rt/thread_pool.hpp` |
 | Tool invocation | An ordinary (possibly coroutine) function call through `tool_pipeline.hpp`'s invoke path — no message send | `core/tool_pipeline.hpp` |
 | Cancellation & deadlines | `std::stop_token` + monotonic deadline propagation (unchanged — this was never actor-specific) | throughout |
 | Failure isolation per unit of work | `rt::ThreadPool::submit()`'s `JobOutcome{faulted, fault_ptr}` containment, not actor-restart supervision | `rt/thread_pool.hpp` |
 | One-session-one-executor (I1) | `rt::AsyncMutex`, acquired for the whole duration of every public async entry point — a runtime-checked guard, not a mailbox's structural exclusivity | `rt/async_mutex.hpp` |
 | OS portability (sockets) | `agentengine::pal` — a small, self-contained, vendored socket PAL (the one slice of Quark's own PAL this project ever used) | `pal/net.hpp` |
 
-**Consequence:** AgentEngine writes no scheduler, no mailbox, no cluster membership, no distributed
+> *Amended by [ADR-242](decisions/ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) R6 (2026-10-20):* AgentEngine **does** now have a scheduler,
+> `rt::Runtime` with lanes and strands (`rt/lanes.hpp`, ADR-237). One host-owned Runtime per process,
+> passed explicitly, is the model; library code creates no threads or private Runtimes, and
+> `rt::ThreadPool`/`block_on` in library paths are being retired. The paragraph below is the
+> original ADR-037 rationale.
+
+**Consequence (as of ADR-037):** AgentEngine writes no scheduler, no mailbox, no cluster membership, no distributed
 persistence engine, and no timer wheel — none of that ever needed reproducing, because none of it
 was load-bearing for a single-process agent SDK in the first place. What *is* reproduced, narrowly,
 is the thin slice of real capability the actor engine happened to also provide: `rt::AsyncMutex` for

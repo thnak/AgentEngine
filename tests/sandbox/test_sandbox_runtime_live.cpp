@@ -26,6 +26,7 @@
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/persistent_shell.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -35,6 +36,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <utility>
 
 using namespace agentengine;
 namespace fs = std::filesystem;
@@ -56,8 +58,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // A "container" that is a private directory plus a fake shell (cwd string, env map). Commands:
@@ -67,13 +68,13 @@ class FakeLiveSurface {
 public:
     explicit FakeLiveSurface(fs::path box) : box_(std::move(box)) {}
 
-    [[nodiscard]] result<void> open(fs::path const& host_dir, ShellSnapshot const* snap) {
+    [[nodiscard]] task<result<void>> open(fs::path host_dir, ShellSnapshot const* snap) {
         ++opens;
         std::error_code ec;
         fs::remove_all(box_, ec);
         fs::create_directories(box_, ec);
         fs::copy(host_dir, box_, fs::copy_options::recursive, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
         cwd_ = "/workspace";
         env_.clear();
         if (snap != nullptr) {
@@ -83,12 +84,12 @@ public:
         }
         live_ = true;
         has_container_ = true;
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<LiveExecOutcome> exec(std::string const& command, std::chrono::milliseconds) {
-        if (!live_) return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
-        if (command == "refuse") return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
+    [[nodiscard]] task<result<LiveExecOutcome>> exec(std::string command, std::chrono::milliseconds) {
+        if (!live_) co_return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
+        if (command == "refuse") co_return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
         ++execs;
         LiveExecOutcome out;
         out.exit_code = 0;
@@ -110,14 +111,14 @@ public:
             out.shell_lost = true;
             out.exit_code = -1;
             out.output = "partial output";
-            return out;
+            co_return out;
         } else if (command == "container_lost") {
             live_ = false;
             has_container_ = false;
             out.container_lost = true;
             out.timed_out = true;
             out.exit_code = -1;
-            return out;
+            co_return out;
         }
         out.output = "ran: " + command + " in " + cwd_;
         out.output_bytes = out.output.size();
@@ -125,24 +126,24 @@ public:
         snap.cwd = cwd_;
         for (auto const& [k, v] : env_) snap.env_set.emplace_back(k, v);
         out.snapshot = snap;
-        return out;
+        co_return out;
     }
 
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
-        if (!has_container_) return std::unexpected(error{failure_class::fatal, "no container", "test.no_container"});
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
+        if (!has_container_) co_return std::unexpected(error{failure_class::fatal, "no container", "test.no_container"});
         auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
-        if (!cleared.has_value()) return std::unexpected(cleared.error());
+        if (!cleared.has_value()) co_return std::unexpected(cleared.error());
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
-        return {};
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<void> close() {
+    [[nodiscard]] task<result<void>> close() {
         live_ = false;
         has_container_ = false;
-        return {};
+        co_return result<void>{};
     }
     [[nodiscard]] bool is_live() const { return live_; }
 
@@ -161,7 +162,7 @@ static_assert(PersistentShellSurface<FakeLiveSurface>);
 
 [[nodiscard]] std::vector<std::string> committed_names(Ledger<>& ledger, Checkpoint const& cp, IdentityHandle who) {
     std::vector<std::string> out;
-    auto tree = ledger.get_tree_safe(cp.tree, who);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(cp.tree, who));
     if (!tree.has_value()) return {"<tree unreadable>"};
     for (auto const& e : tree->entries) out.push_back(e.name);
     std::sort(out.begin(), out.end());

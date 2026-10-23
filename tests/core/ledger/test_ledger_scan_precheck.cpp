@@ -28,7 +28,9 @@
 
 #include "agentengine/core/ledger.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
+#include "agentengine/rt/block_on.hpp"
 
+#include <utility>
 #include <cstdio>
 #include <filesystem>
 #include <random>
@@ -55,8 +57,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] std::vector<std::byte> to_bytes(std::string const& s) {
@@ -77,7 +78,7 @@ void saturate(Ledger<>& ledger, std::string const& bytes, int n, std::string con
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
     for (int i = 0; i < n; ++i) {
         IdentityHandle other = authority.mint_root(label + "-" + std::to_string(i));
-        (void)ledger.put_blob_safe(to_bytes(bytes), other);
+        (void)agentengine::rt::block_on(ledger.put_blob_safe(to_bytes(bytes), other));
     }
 }
 
@@ -117,7 +118,7 @@ int main() {
         check(refused_by_precheck(r),
               "S1 (positive control): default cap, a digest with 64 other roots -- the pre-check refuses the scan" +
                   (r.has_value() ? std::string{" (it succeeded)"} : " (got: " + r.error().message + ")"));
-        check(!ledger.get_blob_safe(*fresh_digest, scanner).has_value(),
+        check(!agentengine::rt::block_on(ledger.get_blob_safe(*fresh_digest, scanner)).has_value(),
               "S1: ... and the scan's other file was not written");
         std::error_code ec;
         fs::remove_all(root, ec);
@@ -134,7 +135,7 @@ int main() {
               "S2: configured cap 1, a digest with 1 other root -- the PRE-CHECK refuses the scan, not a write "
               "partway through" +
                   (r.has_value() ? std::string{" (it succeeded)"} : " (got: " + r.error().message + ")"));
-        check(!ledger.get_blob_safe(*fresh_digest, scanner).has_value(),
+        check(!agentengine::rt::block_on(ledger.get_blob_safe(*fresh_digest, scanner)).has_value(),
               "S2: ... and the scan's other file has no ACL root (nothing written before the refusal)");
         std::error_code ec;
         fs::remove_all(root, ec);
@@ -161,7 +162,7 @@ int main() {
         IdentityHandle sharer = authority.mint_root("precheck-s4-sharer");
         fs::path const root = fresh_dir("ae_precheck_s4");
         Ledger<> ledger;
-        auto const contested = ledger.put_blob_safe(to_bytes("contested content"), sharer);
+        auto const contested = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes("contested content"), sharer));
         saturate(ledger, "contested content", static_cast<int>(Ledger<>::kMaxAclRootsPerDigest) - 1, "precheck-s4");
         bool const saturated = !ledger.would_accept_blob_write(to_bytes("contested content"), scanner);
         bool const shared = contested.has_value() && ledger.mark_digest_shared(*contested, false, sharer).has_value();
@@ -197,7 +198,7 @@ int main() {
                     if (d.has_value()) (void)ledger.mark_digest_shared(*d, false, w);
                 }
                 bool const predicted = ledger.would_accept_blob_write(to_bytes(c), w);
-                bool const actual = ledger.put_blob_safe(to_bytes(c), w).has_value();
+                bool const actual = agentengine::rt::block_on(ledger.put_blob_safe(to_bytes(c), w)).has_value();
                 (actual ? accepts : refusals) += 1;
                 if (predicted != actual && disagreements++ == 0) {
                     first = "cap " + std::to_string(cap) + " step " + std::to_string(step) + ": predicted " +

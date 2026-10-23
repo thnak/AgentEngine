@@ -80,6 +80,7 @@ std::string const kLeak =
 
 [[nodiscard]] std::vector<ToolDescriptor> live_tools() {
     ToolDescriptor t;
+    t.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     t.name = "get_weather";
     return {t};
 }

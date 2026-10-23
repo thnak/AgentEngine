@@ -1,4 +1,4 @@
-// ADR-039 prove phase (decisions/ADR-039-inbound-transport-host-pluggable.md). Proves
+// ADR-039 prove phase (decisions/archive/ADR-039-inbound-transport-host-pluggable.md). Proves
 // trust::principal_from_bearer_claims() -- the canonical BearerTokenClaims -> Principal bridge every
 // host-pluggable transport adapter is expected to call, per ADR-039's red-team finding that this
 // mapping did not exist anywhere and every adapter would otherwise hand-roll its own, inconsistently.

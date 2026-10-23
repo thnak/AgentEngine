@@ -27,6 +27,8 @@
 //       join, so a real regression fails this test instead of hanging the whole suite.
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -51,8 +53,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -125,7 +126,7 @@ public:
     agentengine::task<result<ChatResponse>> chat(ChatRequest, EffectContext&) {
         auto* self = static_cast<AgentSession<ReentrantChatClient>*>(self_);
         AgentSession<ReentrantChatClient> target;
-        target.initialize("reentrant-fork-target", Principal{"reentrant-target-owner", ""});
+        target.initialize("reentrant-fork-target", Principal{"reentrant-target-owner", ""}, ae_test::trusted_unbounded());
         target.fork_from(*self, "reentrant-fork-target-renamed");
         g_reentrant_fork_ran.store(true, std::memory_order_release);
         co_return ChatResponse{text_message("reentrant round complete"), Usage{1, 1, 0, 0, 0.0}};
@@ -147,7 +148,7 @@ int main() {
     // [1] a real two-thread race: fork_from() concurrent with an in-flight, genuinely slow start_run().
     {
         SlowSession source;
-        source.initialize("source-session", Principal{"source-owner", ""});
+        source.initialize("source-session", Principal{"source-owner", ""}, ae_test::trusted_unbounded());
         source.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});
         source.set_capabilities(&held);
@@ -165,7 +166,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
         SlowSession target;
-        target.initialize("target-session-not-yet-forked", Principal{"target-owner", ""});
+        target.initialize("target-session-not-yet-forked", Principal{"target-owner", ""}, ae_test::trusted_unbounded());
         target.fork_from(source, "target-session");
 
         round_thread.join();
@@ -192,7 +193,7 @@ int main() {
     // before this call, so the uncontended fast path applies even when source == *this).
     {
         SlowSession self_fork_session;
-        self_fork_session.initialize("self-fork-session", Principal{"self-fork-owner", ""});
+        self_fork_session.initialize("self-fork-session", Principal{"self-fork-owner", ""}, ae_test::trusted_unbounded());
         self_fork_session.emplace_chat_client();
         std::string const session_id_before = self_fork_session.session_id();
         self_fork_session.fork_from(self_fork_session, "self-fork-session-renamed");
@@ -208,7 +209,7 @@ int main() {
     // this check, not hang the whole test binary.
     {
         ReentrantSession source;
-        source.initialize("reentrant-source", Principal{"reentrant-source-owner", ""});
+        source.initialize("reentrant-source", Principal{"reentrant-source-owner", ""}, ae_test::trusted_unbounded());
         ReentrantChatClient& client = source.emplace_chat_client();
         client.set_self(&source);
         CapabilitySet const held = CapabilitySet::grant_root({});

@@ -1,5 +1,5 @@
 // Milestone 3 Phase E4 (docs/planning/milestone-3-worktree-interpreter-codeact-breakdown.md) --
-// 010-Python-Code-Interpreter.md §9 G2's containment corpus plus G7's import-allowlist "native
+// rfcs/010-Python-Code-Interpreter.md §9 G2's containment corpus plus G7's import-allowlist "native
 // extension not on it" claim, against the REAL `agentengine::native_jail::MediatedPythonRunner`
 // (E2). Every denial is paired with a positive control (022 §5) proving the probe itself is real,
 // not vacuous -- same discipline as test_mediated_python_runner_smoke.cpp.
@@ -44,6 +44,8 @@
 
 #include <windows.h>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -129,7 +131,7 @@ int main() {
         cfg.mount_roots["work"] = scratch_w;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E4-PY setup: MediatedPythonRunner initializes");
 
         ExecState state{};
@@ -137,12 +139,14 @@ int main() {
             {Capability{cap::FsRead{"work", "", std::nullopt}},
              Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // ---- ctypes / winreg: denied via the import allowlist, never reaching the loader --------
         {
             ExecRequest req{"python", "import ctypes"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stderr_text.find("ModuleNotFoundError") != std::string::npos,
                      "E4-PY1: 'import ctypes' is denied by the allowlist (ModuleNotFoundError), "
@@ -150,7 +154,7 @@ int main() {
         }
         {
             ExecRequest req{"python", "import winreg"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stderr_text.find("ModuleNotFoundError") != std::string::npos,
                      "E4-PY2: 'import winreg' (registry probing, Windows' /proc analogue) is "
@@ -161,7 +165,7 @@ int main() {
         // hypothetical one) is denied the same way.
         {
             ExecRequest req{"python", "import array"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stderr_text.find("ModuleNotFoundError") != std::string::npos,
                      "E4-PY3: 'import array' (a real native extension, not on the allowlist) is "
@@ -173,7 +177,7 @@ int main() {
         {
             ExecRequest req{"python", "import os\ntry:\n    os.popen('whoami')\nexcept "
                                        "PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E4-PY4: os.popen raises PermissionError");
         }
@@ -188,7 +192,7 @@ int main() {
                              "    except PermissionError:\n        results.append(name+':DENIED')\n"
                              "    except TypeError:\n        results.append(name+':DENIED')\n"
                              "print(' '.join(results))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "E4-PY5: setup -- the exec/spawn family probe script runs");
             bool any_ran = out.has_value() && out->stdout_text.find(":RAN") != std::string::npos;
             std::printf("  measured: exec/spawn family probe -> %s",
@@ -203,7 +207,7 @@ int main() {
             ExecRequest req{"python", "import os\ntry:\n    os.fork()\n    print('FORK_RAN')\n"
                                        "except AttributeError:\n    print('FORK_ABSENT')\n"
                                        "except PermissionError:\n    print('FORK_DENIED')"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             std::printf("  measured: os.fork() probe -> %s",
                         out.has_value() ? out->stdout_text.c_str() : "(no output)");
             AE_CHECK(out.has_value() && out->stdout_text.find("FORK_RAN") == std::string::npos,
@@ -228,7 +232,7 @@ int main() {
                              "    data = os.read(fd, 64)\n    os.close(fd)\n"
                              "    print('OPEN_RAN:', data)\nexcept PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
                          out->stdout_text.find("OPEN_RAN") == std::string::npos,
                      "E4-PY7: os.open() (the raw, unmediated fd-based open -- distinct from the "
@@ -241,7 +245,7 @@ int main() {
                              "    os.remove(r'" + scratch + "\\inside\\victim.txt')\n"
                              "    print('REMOVE_RAN')\nexcept PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E4-PY8a: os.remove() raises PermissionError");
             AE_CHECK(std::filesystem::exists(scratch + "/inside/victim.txt"),
@@ -253,7 +257,7 @@ int main() {
                              "    os.rename(r'" + scratch + "\\inside\\victim.txt', r'" + scratch +
                              "\\inside\\renamed.txt')\n    print('RENAME_RAN')\n"
                              "except PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E4-PY8b: os.rename() raises PermissionError");
             AE_CHECK(std::filesystem::exists(scratch + "/inside/victim.txt") &&
@@ -266,7 +270,7 @@ int main() {
                              "    os.mkdir(r'" + scratch + "\\inside\\hostile_dir')\n"
                              "    print('MKDIR_RAN')\nexcept PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E4-PY8c: os.mkdir() raises PermissionError");
             AE_CHECK(!std::filesystem::exists(scratch + "/inside/hostile_dir"),
@@ -277,7 +281,7 @@ int main() {
                              "import os\ntry:\n"
                              "    print('LISTDIR_RAN:', os.listdir(r'" + scratch + "\\inside'))\n"
                              "except PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
                          out->stdout_text.find("LISTDIR_RAN") == std::string::npos,
                      "E4-PY8d: os.listdir() raises PermissionError -- the raw, unmediated "
@@ -290,7 +294,7 @@ int main() {
                              "    os.startfile(r'C:\\Windows\\System32\\cmd.exe')\n"
                              "    print('STARTFILE_RAN')\nexcept PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
                          out->stdout_text.find("STARTFILE_RAN") == std::string::npos,
                      "E4-PY8e: os.startfile() (arbitrary program launch via ShellExecuteW) raises "
@@ -312,7 +316,7 @@ int main() {
         {
             ExecRequest req{"python", "with open('/work/inside/victim.txt') as f:\n"
                                        "    print('MEDIATED_READ:', f.read())"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("MEDIATED_READ: UNTOUCHED_SENTINEL") !=
                                              std::string::npos,
                      "E4-PY8f positive control: the mediated open() still reads the real, untouched "
@@ -330,7 +334,7 @@ int main() {
                                        "    s.connect(('169.254.169.254', 80))\n"
                                        "    print('CONNECT_RAN')\nexcept ConnectionRefusedError as e:\n"
                                        "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
                          out->stdout_text.find("CONNECT_RAN") == std::string::npos,
                      "E4-PY7: socket.connect to the cloud-metadata address is denied without a "
@@ -343,7 +347,7 @@ int main() {
             ExecRequest req{"python", "try:\n    open('/work/escape_link/secret.txt', 'r')\n"
                                        "    print('ESCAPE_OK')\nexcept (PermissionError, OSError) "
                                        "as e:\n    print('DENIED:', type(e).__name__, e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos &&
                          out->stdout_text.find("ESCAPE_OK") == std::string::npos,
                      "E4-PY8: open() through a junction crossing the mount boundary is denied "
@@ -360,7 +364,7 @@ int main() {
                 f << "inside content";
             }
             ExecRequest req2{"python", "print('READ:', open('/work/inside_link/ok.txt').read())"};
-            auto out2 = runner.run(req2, state, ctx);
+            auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
             AE_CHECK(out2.has_value() && out2->stdout_text.find("READ: inside content") != std::string::npos,
                      "E4-PY8 positive control: a junction that stays INSIDE the mount is followed, "
                      "not blanket-denied -- E4-PY8's denial above is real containment, not junctions "
@@ -410,7 +414,7 @@ int main() {
                 "leaked = [k for k in g if k not in ('__builtins__', '_ae_internal') and "
                 "k not in wrappers and not k.startswith('__') and callable(g.get(k))]\n"
                 "print('LEAKED_NAMES:', leaked)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "E4-PY9: setup -- the __globals__ introspection probe runs");
             std::printf("  measured: socket.socket.connect.__globals__ callable names -> %s",
                         out.has_value() ? out->stdout_text.c_str() : "(no output)");
@@ -429,7 +433,7 @@ int main() {
         {
             ExecRequest req{"python", "ae_e4_canary = lambda: None\n"
                                        "print('CANARY_VISIBLE:', 'ae_e4_canary' in globals())"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("CANARY_VISIBLE: True") != std::string::npos,
                      "E4-PY9 positive control: globals() introspection itself works and finds a "
                      "real name when one is genuinely present (E4-PY9's empty result above is "

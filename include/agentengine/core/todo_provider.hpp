@@ -1,20 +1,18 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §5's `TodoProvider` provider kind and
-// decisions/ADR-166-todo-provider.md. Closes issue #53 (MAF's Harness bundles a todo/task-list
+// Implements rfcs/005-Sessions-State-and-Memory.md §5's `TodoProvider` provider kind and
+// decisions/archive/ADR-166-todo-provider.md. Closes issue #53 (MAF's Harness bundles a todo/task-list
 // tracking ContextProvider by default; 002/005/006/014 had no equivalent). Builds on the
 // design draft docs/planning/todo-provider-design-draft.md (PR #25) -- red-teamed and implemented
 // here; ADR-166 records what changed from the draft and why.
 //
-// Shape mirrors `MemoryProvider` (core/memory_provider.hpp): a plain (non-CRTP) `ContextProvider`
-// conformer that hand-builds its own `ToolDescriptor`s rather than going through
-// `make_tool_descriptor_with_invoke<ToolT>()` -- same reason MemoryProvider's `recall` tool does,
-// these tools have no separate `Tool<Derived,...>` declaration to draw capability/approval/
-// effect-class metadata from. Unlike `recall`'s invoke closure (which captures copies of the
-// provider's read-only config), these five tools capture `this` directly -- ADR-028's
-// session-scoped-stateful-tools mechanism, `captures_session_state = true` -- because they mutate
-// `items_`/`next_id_`/`ever_used_` on THIS live instance, the one `ComposedContextProvider` keeps
-// alive via `shared_ptr` for the session's lifetime (context_assembly.hpp's `make_context_provider_
-// descriptor()`), not a fresh copy per call.
+// ADR-237 §5.2: the five tools are real `Tool<>` conformers (`todo_detail::Todo*Tool`) holding the
+// shared `TodoState` this provider also holds, contributed through `make_tool_descriptor(ToolT{state_})`.
+// They mutate `items`/`next_id`/`ever_used` on that shared block, so they declare `CapturesSessionState`
+// -- the explicit tag that keeps `captures_session_state = true` (not backgroundable, not
+// rerun-comparable), the same posture ADR-028's flag gave the old `[this]`-capturing closures. Every
+// copy of a `TodoProvider` (e.g. the one `ComposedContextProvider` keeps alive via `shared_ptr`,
+// context_assembly.hpp's `make_context_provider_descriptor()`) shares the SAME `TodoState`, so the
+// tools observe and mutate one live list.
 
 #include <cstddef>
 #include <cstdint>
@@ -107,6 +105,155 @@ struct TodoState {
     bool                                ever_used  = false;
 };
 
+namespace todo_detail {
+
+// ADR-237 §5.2: the five todos_* tools are real `Tool<>` conformers now, not hand-built descriptors
+// with `make_sync_invoke([this]...)` closures. Each holds the shared `TodoState` (the same block every
+// `TodoProvider` copy shares), so `CapturesSessionState` keeps them non-backgroundable and
+// non-rerun-comparable exactly as their old capturing closures were, and the provider contributes them
+// through `make_tool_descriptor(ToolT{state_})`.
+inline constexpr std::size_t kMaxItems       = 200;
+inline constexpr std::size_t kMaxTitleLength = 500;
+
+[[nodiscard]] inline std::string render(TodoState const& state, bool remaining_only) {
+    std::string out;
+    for (auto const& item : state.items) {
+        if (remaining_only && item.completed) continue;
+        out += std::to_string(item.id);
+        out += (item.completed ? ". [x] " : ". [ ] ");
+        out += item.title;
+        out += "\n";
+    }
+    return out;
+}
+
+struct TodoAddTool : Tool<TodoAddTool, Capabilities<>, Approval<approval_mode::never_require>,
+                          CapturesSessionState> {
+    static constexpr std::string_view name        = "todos_add";
+    static constexpr std::string_view description = "Add a new item to the todo list. Returns the new item's id.";
+    using Args  = TodoAddArgs;
+    using Reply = TodoAddReply;
+
+    explicit TodoAddTool(std::shared_ptr<TodoState> s) : state_(std::move(s)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext&) const {
+        if (args.title.empty()) {
+            co_return std::unexpected(
+                error{failure_class::contract, "todo title must not be empty", "todo.empty_title"});
+        }
+        if (args.title.size() > kMaxTitleLength) {
+            co_return std::unexpected(error{
+                failure_class::contract,
+                "todo title exceeds the " + std::to_string(kMaxTitleLength) + "-character limit",
+                "todo.title_too_long"});
+        }
+        if (state_->items.size() >= kMaxItems) {
+            co_return std::unexpected(
+                error{failure_class::resource,
+                      "todo list already holds the maximum of " + std::to_string(kMaxItems) + " items",
+                      "todo.list_full"});
+        }
+        state_->ever_used = true;
+        std::uint64_t const id = state_->next_id++;
+        state_->items.push_back(TodoItem{id, args.title, false});
+        co_return Reply{id};
+    }
+
+private:
+    std::shared_ptr<TodoState> state_;
+};
+
+struct TodoCompleteTool : Tool<TodoCompleteTool, Capabilities<>, Approval<approval_mode::never_require>,
+                               CapturesSessionState> {
+    static constexpr std::string_view name        = "todos_complete";
+    static constexpr std::string_view description = "Mark a todo item complete by id.";
+    using Args  = TodoIdArgs;
+    using Reply = TodoOkReply;
+
+    explicit TodoCompleteTool(std::shared_ptr<TodoState> s) : state_(std::move(s)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext&) const {
+        // ADR-166 red-team finding 3: fails CLOSED with a real error on an unknown id -- never a
+        // silent no-op `{ok:false}` that would hide a bug (a stale/hallucinated id) from the model
+        // rather than surfacing it as something to correct.
+        for (auto& item : state_->items) {
+            if (item.id == args.id) {
+                item.completed = true;
+                co_return Reply{true};
+            }
+        }
+        co_return std::unexpected(
+            error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
+    }
+
+private:
+    std::shared_ptr<TodoState> state_;
+};
+
+struct TodoRemoveTool : Tool<TodoRemoveTool, Capabilities<>, Approval<approval_mode::never_require>,
+                             CapturesSessionState> {
+    static constexpr std::string_view name        = "todos_remove";
+    static constexpr std::string_view description = "Remove a todo item by id.";
+    using Args  = TodoIdArgs;
+    using Reply = TodoOkReply;
+
+    explicit TodoRemoveTool(std::shared_ptr<TodoState> s) : state_(std::move(s)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext&) const {
+        // ADR-166 red-team finding 4: `next_id` is monotonic and never reused (see TodoAddTool), so a
+        // removed id can never collide with a later item's id; this loop cannot mistakenly "revive" a
+        // removed item under a reused id.
+        for (auto it = state_->items.begin(); it != state_->items.end(); ++it) {
+            if (it->id == args.id) {
+                state_->items.erase(it);
+                co_return Reply{true};
+            }
+        }
+        co_return std::unexpected(
+            error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
+    }
+
+private:
+    std::shared_ptr<TodoState> state_;
+};
+
+struct TodoGetRemainingTool : Tool<TodoGetRemainingTool, Capabilities<>,
+                                   Approval<approval_mode::never_require>, EffectClass<effect_class::pure>,
+                                   CapturesSessionState> {
+    static constexpr std::string_view name        = "todos_get_remaining";
+    static constexpr std::string_view description = "List not-yet-completed todo items.";
+    using Args  = TodoNoArgs;
+    using Reply = TodoListReply;
+
+    explicit TodoGetRemainingTool(std::shared_ptr<TodoState> s) : state_(std::move(s)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const {
+        co_return Reply{render(*state_, /*remaining_only=*/true)};
+    }
+
+private:
+    std::shared_ptr<TodoState> state_;
+};
+
+struct TodoGetAllTool : Tool<TodoGetAllTool, Capabilities<>, Approval<approval_mode::never_require>,
+                             EffectClass<effect_class::pure>, CapturesSessionState> {
+    static constexpr std::string_view name        = "todos_get_all";
+    static constexpr std::string_view description = "List every todo item, completed or not.";
+    using Args  = TodoNoArgs;
+    using Reply = TodoListReply;
+
+    explicit TodoGetAllTool(std::shared_ptr<TodoState> s) : state_(std::move(s)) {}
+
+    [[nodiscard]] task<result<Reply>> invoke(Args, EffectContext&) const {
+        co_return Reply{render(*state_, /*remaining_only=*/false)};
+    }
+
+private:
+    std::shared_ptr<TodoState> state_;
+};
+
+}  // namespace todo_detail
+
 // A `ContextProvider` conformer (005 §5). Adaptive by default (draft §1/§4, retained): contributes
 // no `instructions`/`messages` until `todos_add` has fired at least once this session -- an agent
 // that never plans pays nothing, not even the placeholder-empty-list line MAF's `TodoProvider`
@@ -117,7 +264,7 @@ struct TodoState {
 // ae-naming-lint: allow TodoProvider — matches MemoryProvider/HistoryProvider's own established naming
 class TodoProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3.
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3.
     static constexpr std::string_view name = "todo";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
     // ADR-166 red-team finding 1: `items_` is otherwise unbounded -- a malicious or malfunctioning
@@ -126,16 +273,28 @@ public:
     // blow the context-assembly token budget it feeds into. Both bounds are enforced by REJECTING
     // the offending `todos_add` call (006 §3 step 2's "reject, do not coerce" rule), never by
     // silently truncating a title or silently dropping an item.
-    static constexpr std::size_t kMaxItems       = 200;
-    static constexpr std::size_t kMaxTitleLength = 500;
+    // ADR-237 §5.2: the bounds live in `todo_detail` now (the migrated tools enforce them there);
+    // kept here as the public names existing callers/tests read.
+    static constexpr std::size_t kMaxItems       = todo_detail::kMaxItems;
+    static constexpr std::size_t kMaxTitleLength = todo_detail::kMaxTitleLength;
+
+    // ADR-237 §5.2 (N1): the five tools are built ONCE here. They hold the shared `TodoState`, whose
+    // identity never changes, so `on_context()` copies these cached descriptors into its contribution
+    // each turn instead of allocating a fresh `shared_ptr<ToolT>` and re-parsing the arg/reply schemas
+    // every turn. The per-turn copy is only the contribution's own ownership of its tools.
+    TodoProvider() {
+        tools_.reserve(5);
+        tools_.push_back(make_tool_descriptor<todo_detail::TodoAddTool>(todo_detail::TodoAddTool{state_}));
+        tools_.push_back(make_tool_descriptor<todo_detail::TodoCompleteTool>(todo_detail::TodoCompleteTool{state_}));
+        tools_.push_back(make_tool_descriptor<todo_detail::TodoRemoveTool>(todo_detail::TodoRemoveTool{state_}));
+        tools_.push_back(
+            make_tool_descriptor<todo_detail::TodoGetRemainingTool>(todo_detail::TodoGetRemainingTool{state_}));
+        tools_.push_back(make_tool_descriptor<todo_detail::TodoGetAllTool>(todo_detail::TodoGetAllTool{state_}));
+    }
 
     [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext&, EffectContext&) {
         ContextContribution c;
-        c.tools.push_back(make_add_descriptor());
-        c.tools.push_back(make_complete_descriptor());
-        c.tools.push_back(make_remove_descriptor());
-        c.tools.push_back(make_get_remaining_descriptor());
-        c.tools.push_back(make_get_all_descriptor());
+        c.tools = tools_;
 
         if (state_->ever_used) {
             c.instructions = TaintedText{std::string(kGuidance)};
@@ -201,18 +360,6 @@ private:
         return m;
     }
 
-    [[nodiscard]] std::string render(bool remaining_only) const {
-        std::string out;
-        for (auto const& item : state_->items) {
-            if (remaining_only && item.completed) continue;
-            out += std::to_string(item.id);
-            out += (item.completed ? ". [x] " : ". [ ] ");
-            out += item.title;
-            out += "\n";
-        }
-        return out;
-    }
-
     // ADR-166 red-team finding 2: the draft's §3 claim "effect_class::pure ... nothing this tool
     // does reaches an effect that needs attenuation" conflated "needs no capability" with "needs no
     // effect classification" -- those are orthogonal (tool.hpp:73's `effect_class` governs
@@ -221,127 +368,6 @@ private:
     // outcome is unknown) is not safe to treat as a no-op, so they keep `ToolDescriptor`'s
     // conservative default (`effect_class::at_most_once`, never overridden below). Only the two
     // genuinely read-only tools (`todos_get_remaining`/`todos_get_all`) are actually `pure`.
-    [[nodiscard]] ToolDescriptor make_add_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "todos_add";
-        d.description           = "Add a new item to the todo list. Returns the new item's id.";
-        d.approval               = approval_mode::never_require;
-        d.args_schema_json      = schema::json_schema_of<TodoAddArgs>();
-        d.reply_schema_json     = schema::json_schema_of<TodoAddReply>();
-        d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<TodoAddArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            if (args->title.empty()) {
-                return std::unexpected(
-                    error{failure_class::contract, "todo title must not be empty", "todo.empty_title"});
-            }
-            if (args->title.size() > kMaxTitleLength) {
-                return std::unexpected(error{
-                    failure_class::contract,
-                    "todo title exceeds the " + std::to_string(kMaxTitleLength) + "-character limit",
-                    "todo.title_too_long"});
-            }
-            if (state_->items.size() >= kMaxItems) {
-                return std::unexpected(
-                    error{failure_class::resource,
-                          "todo list already holds the maximum of " + std::to_string(kMaxItems) + " items",
-                          "todo.list_full"});
-            }
-            state_->ever_used = true;
-            std::uint64_t const id = state_->next_id++;
-            state_->items.push_back(todo_detail::TodoItem{id, args->title, false});
-            return schema::to_json(TodoAddReply{id});
-        };
-        return d;
-    }
-
-    [[nodiscard]] ToolDescriptor make_complete_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "todos_complete";
-        d.description           = "Mark a todo item complete by id.";
-        d.approval               = approval_mode::never_require;
-        d.args_schema_json      = schema::json_schema_of<TodoIdArgs>();
-        d.reply_schema_json     = schema::json_schema_of<TodoOkReply>();
-        d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<TodoIdArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            // ADR-166 red-team finding 3: fails CLOSED with a real error on an unknown id -- never a
-            // silent no-op `{ok:false}` that would hide a bug (a stale/hallucinated id) from the
-            // model rather than surfacing it as something to correct.
-            for (auto& item : state_->items) {
-                if (item.id == args->id) {
-                    item.completed = true;
-                    return schema::to_json(TodoOkReply{true});
-                }
-            }
-            return std::unexpected(
-                error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
-        };
-        return d;
-    }
-
-    [[nodiscard]] ToolDescriptor make_remove_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "todos_remove";
-        d.description           = "Remove a todo item by id.";
-        d.approval               = approval_mode::never_require;
-        d.args_schema_json      = schema::json_schema_of<TodoIdArgs>();
-        d.reply_schema_json     = schema::json_schema_of<TodoOkReply>();
-        d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<TodoIdArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            // ADR-166 red-team finding 4: `next_id` is monotonic and never reused (see
-            // `make_add_descriptor()` -- `state_->next_id++`), so a removed id can never collide with
-            // a later item's id; this loop cannot mistakenly "revive" a removed item under a reused id.
-            for (auto it = state_->items.begin(); it != state_->items.end(); ++it) {
-                if (it->id == args->id) {
-                    state_->items.erase(it);
-                    return schema::to_json(TodoOkReply{true});
-                }
-            }
-            return std::unexpected(
-                error{failure_class::contract, "no todo item with that id", "todo.unknown_id"});
-        };
-        return d;
-    }
-
-    [[nodiscard]] ToolDescriptor make_get_remaining_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "todos_get_remaining";
-        d.description           = "List not-yet-completed todo items.";
-        d.approval               = approval_mode::never_require;
-        d.effect_class           = effect_class::pure;  // read-only, ADR-166 finding 2
-        d.args_schema_json      = schema::json_schema_of<TodoNoArgs>();
-        d.reply_schema_json     = schema::json_schema_of<TodoListReply>();
-        d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<TodoNoArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            return schema::to_json(TodoListReply{render(/*remaining_only=*/true)});
-        };
-        return d;
-    }
-
-    [[nodiscard]] ToolDescriptor make_get_all_descriptor() {
-        ToolDescriptor d;
-        d.name                  = "todos_get_all";
-        d.description           = "List every todo item, completed or not.";
-        d.approval               = approval_mode::never_require;
-        d.effect_class           = effect_class::pure;  // read-only, ADR-166 finding 2
-        d.args_schema_json      = schema::json_schema_of<TodoNoArgs>();
-        d.reply_schema_json     = schema::json_schema_of<TodoListReply>();
-        d.captures_session_state = true;
-        d.invoke = [this](json::Value const& args_value, EffectContext&) -> result<json::Value> {
-            auto args = schema::from_json<TodoNoArgs>(args_value);
-            if (!args) return std::unexpected(args.error());
-            return schema::to_json(TodoListReply{render(/*remaining_only=*/false)});
-        };
-        return d;
-    }
-
     // ADR-166: `ever_used` flips true the first time `todos_add` succeeds, never resets -- draft
     // §4's adaptive default. Deliberately keyed on "ever used", not "list non-empty":
     // completing/removing every item back to empty must not silently withdraw the guidance an
@@ -349,6 +375,7 @@ private:
     // outstanding work"). ADR-167 moved this and its two siblings into one shared `TodoState` block
     // -- see that struct's own comment for why.
     std::shared_ptr<TodoState> state_ = std::make_shared<TodoState>();
+    std::vector<ToolDescriptor> tools_;  // ADR-237 §5.2 (N1): built once in the constructor above
 };
 
 static_assert(ContextProvider<TodoProvider>, "TodoProvider must satisfy the ContextProvider concept (005 §5)");

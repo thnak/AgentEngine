@@ -1,5 +1,5 @@
 // ADR-102, Phase 5 slice ("ComposedContextProvider<Ms...> real production consumer",
-// decisions/ADR-102-identity-native-sandbox-implementation-phase-1.md §7's own residual): the first
+// decisions/archive/ADR-102-identity-native-sandbox-implementation-phase-1.md §7's own residual): the first
 // real, user-reachable CLI wiring of agentengine::ComposedContextProvider<Ms...> anywhere in this
 // codebase, composing TWO real, independently-shipped ContextProvider conformers into ONE session:
 //
@@ -56,7 +56,7 @@
 //
 // REQUIRES: Windows, a running Docker daemon reachable via the `docker` CLI on PATH, and
 // OPENAI_API_KEY set in the environment. NOT for the reason this comment previously gave
-// (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/ADR-105-sandbox-tool-
+// (SandboxToolProvider's own platform scope -- stale as of ADR-103): decisions/archive/ADR-105-sandbox-tool-
 // provider-composed-linux-parity.md traced the real Linux blocker to this file's use of
 // QuarantineSecretStore (trust/secret_quarantine.hpp), which needs agentengine::trust::hmac_sha256 --
 // a symbol with no Linux implementation at all (ADR-005's own deliberately Windows-only BCrypt/CNG
@@ -152,7 +152,10 @@ int main(int argc, char** argv) {
     MandatorySandboxProvider<DockerExecutionSurface> sandbox_provider;
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
-    SandboxToolProvider shell_provider(shell_scratch_root.string());
+    // ADR-244 slice 4a: this demo's host choice -- neither shell tier asks a human (it installs no approval
+    // decider); the sandboxes are the boundary.
+    sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);
+    SandboxToolProvider shell_provider(shell_scratch_root.string(), agentengine::approval_mode::never_require);
 
     // ---- The session itself, via the already-shipped, already-tested §2b builder ---------------
     using Builder = quickstart::ComposedQuickstartSessionBuilder<
@@ -168,6 +171,11 @@ int main(int argc, char** argv) {
     auto built = Builder(model)
                      .session_id(session_id)
                      .principal(cli_principal)
+                     // ADR-244: stated, not defaulted -- the builders' former 25-turn default, kept; one user
+                     // watches the session and can stop it, so tokens are not capped.
+                     .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
+                                                          agentengine::Bound<std::uint64_t>::unbounded(),
+                                                          agentengine::Bound<std::uint64_t>::at_most(25)})
                      .grant(Capability{cap::FsRead{"work", "", std::nullopt}})
                      .grant(Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}})
                      .grant(Capability{cap::RunCommand{}})

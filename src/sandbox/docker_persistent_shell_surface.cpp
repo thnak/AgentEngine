@@ -1,4 +1,4 @@
-// Implements decisions/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15): the bodies of
+// Implements decisions/archive/ADR-209-persistent-shell-sessions.md §4.2, §4.3, §7 (revision 5 §15): the bodies of
 // include/agentengine/sandbox/docker_persistent_shell_surface.hpp. The design and the rules each body
 // implements are documented at the declarations there.
 
@@ -267,7 +267,7 @@ agentengine::result<dps::ClientReply> DockerPersistentShellSurface::send(std::st
     return dps::parse_client_reply(r.stdout_text, with_base);
 }
 
-agentengine::result<void> DockerPersistentShellSurface::open(std::filesystem::path const& host_dir,
+agentengine::result<void> DockerPersistentShellSurface::open_blocking(std::filesystem::path const& host_dir,
                                                             ShellSnapshot const* snapshot) {
     live_ = false;
     // §4.2: always a FRESH container. A failed destroy keeps the handle (a retry targets the same one) and
@@ -286,7 +286,7 @@ agentengine::result<void> DockerPersistentShellSurface::open(std::filesystem::pa
                                               : docker_.resolve_image_digest_kind(resolved_digest_);
 
     auto const fail = [this](agentengine::error e) -> agentengine::result<void> {
-        (void)close();
+        (void)close_blocking();
         return std::unexpected(std::move(e));
     };
 
@@ -329,7 +329,7 @@ agentengine::result<void> DockerPersistentShellSurface::open(std::filesystem::pa
     return {};
 }
 
-agentengine::result<LiveExecOutcome> DockerPersistentShellSurface::exec(std::string const& command,
+agentengine::result<LiveExecOutcome> DockerPersistentShellSurface::exec_blocking(std::string const& command,
                                                                        std::chrono::milliseconds deadline) {
     if (!is_live()) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract, "no live shell",
@@ -399,7 +399,7 @@ agentengine::result<LiveExecOutcome> DockerPersistentShellSurface::exec(std::str
     return out;
 }
 
-agentengine::result<void> DockerPersistentShellSurface::drain_to(std::filesystem::path const& host_dir) {
+agentengine::result<void> DockerPersistentShellSurface::drain_to_blocking(std::filesystem::path const& host_dir) {
     if (!instance_) {
         return std::unexpected(agentengine::error{agentengine::failure_class::contract,
                                                   "no container to drain", "persistent_shell.no_container"});
@@ -419,7 +419,7 @@ agentengine::result<void> DockerPersistentShellSurface::drain_to(std::filesystem
     return {};
 }
 
-agentengine::result<void> DockerPersistentShellSurface::close() {
+agentengine::result<void> DockerPersistentShellSurface::close_blocking() {
     live_ = false;
     if (!instance_) return {};
     auto destroyed = docker_.destroy(*instance_);

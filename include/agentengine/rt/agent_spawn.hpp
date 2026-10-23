@@ -1,7 +1,7 @@
 #pragma once
 // (Also implements ADR-193: delegated input provenance, lineage, usage charged upward, per-target settings.)
 // Implements docs/planning/agent-spawn-runtime-design-draft.md item 1 (§2, §4.1) --
-// 026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
+// rfcs/026-Agent-Facing-Runtime-Surface.md §5's `agent.spawn` -- OpenQuestions.md OQ-14, named the
 // project's own "sharpest case". This is the REAL, wired, end-to-end call path: a real
 // `Tool<>`-conforming surface a running agent can actually invoke, orchestrating already-landed
 // items 2 (rt/agent_spawn_child_run.hpp's run_child_agent_session), 3
@@ -22,7 +22,7 @@
 // is a separate file's own change -- see `session_builder.hpp`'s own top comment.
 //
 // -- §4.4c SpawnPump, built here (bounded to this file, not a separate design/red-team/prove pass) --
-// (decisions/ADR-175 replaced that drive loop with `rt::block_on()`, and a parked waiter is now posted
+// (decisions/archive/ADR-175 replaced that drive loop with `rt::block_on()`, and a parked waiter is now posted
 // back to its own `block_on()` rather than resumed on the unlocking thread; the reasoning below is the
 // pump's original justification and is left as written.)
 // The design doc's own RC-2/WT-2 findings are real and load-bearing, not merely theoretical: a naive
@@ -48,6 +48,8 @@
 // rt/agent_spawn_child_run.hpp). No new capability-minting logic lives here -- this file is
 // orchestration/wiring plus the one new SpawnPump synchronization primitive §4.4c calls for.
 
+#include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -62,6 +64,7 @@
 #include <utility>
 
 #include "agentengine/core/agent_registry.hpp"        // AgentMetadata
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/agent_spawn_worktree.hpp"  // allocate_spawn_seq, derive_spawn_child_id,
                                                        // check_child_id, mint_spawn_worktree
 #include "agentengine/core/content.hpp"               // Message, ContentItem, Text, role, content_origin
@@ -75,8 +78,8 @@
 #include "agentengine/core/tool_call_extraction.hpp"  // text_of
 #include "agentengine/core/tool_pipeline.hpp"         // make_tool_descriptor_with_invoke
 #include "agentengine/core/worktree.hpp"               // Ref
-#include "agentengine/rt/agent_spawn_child_run.hpp"    // ChildSpawnRequest, run_child_agent_session,
-                                                        // agent_spawn_detail::drive
+#include "agentengine/rt/agent_spawn_child_run.hpp"    // ChildSpawnRequest, run_child_agent_session
+#include "agentengine/rt/block_on.hpp"                 // SpawnPump's worker-thread drive (below)
 #include "agentengine/rt/agent_session.hpp"            // AgentResponse
 #include "agentengine/rt/append_log_store.hpp"         // AppendLogStore concept
 #include "agentengine/rt/spawn_cost_budget.hpp"        // SpawnCostBudget, ConsumeSpawnTokens, SpawnTokenGrant
@@ -114,15 +117,21 @@ struct AgentSpawnReply {
 };
 AE_JSON_SCHEMA(AgentSpawnReply, output, input_tokens, output_tokens, child_id)
 
-// Poison-sentinel CRTP shape, matching ScheduleWakeupTool's own established precedent
-// (rt/agent_session.hpp) exactly -- this static invoke() must never actually run; it exists only so
-// AgentSpawnTool satisfies Tool<Derived,...>'s contract for make_tool_descriptor_with_invoke<...>()
-// to extract Args/Reply/schemas from. No Capabilities<...> policy tag declared here either, for the
-// SAME reason ScheduleWakeupTool declares none: enforcement is a LIVE, per-call, per-agent_id check
-// (perform_agent_spawn()'s own steps [2]/[3] below) a static compile-time ceiling entry cannot
-// express (it would have to name every spawnable agent_id and its own budget at compile time, which
-// the model's own call selects at runtime from a HOST-curated set, not a compile-time-fixed one).
-struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool> {
+// ADR-237 §5.2: an instance-form `Tool<>` conformer now, templated on the provider's own `StoreT` so it
+// can hold the provider explicitly. Its `invoke()` (defined below, where `AgentSpawnToolProvider` and
+// `perform_agent_spawn()` are complete) calls the provider's private `dispatch_agent_spawn()` through
+// the `friend` declaration in the class; `CapturesSessionState` keeps it non-backgroundable and
+// non-rerun-comparable exactly as the old `[this]`-capturing closure was. The former static poison
+// `invoke()` sentinel is gone. No `Capabilities<...>` policy tag declared here, for the SAME reason
+// ScheduleWakeupTool declares none: enforcement is a LIVE, per-call, per-agent_id check
+// (perform_agent_spawn()'s own steps [2]/[3] below) a static compile-time ceiling entry cannot express
+// (it would have to name every spawnable agent_id and its own budget at compile time, which the model's
+// own call selects at runtime from a HOST-curated set, not a compile-time-fixed one).
+template <agentengine::rt::AppendLogStore StoreT>
+class AgentSpawnToolProvider;
+
+template <agentengine::rt::AppendLogStore StoreT>
+struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool<StoreT>, agentengine::CapturesSessionState, agentengine::ApprovalChosenByHost> {
     static constexpr std::string_view name = "agent.spawn";
     static constexpr std::string_view description =
         "Run a sub-agent (from a host-curated, closed set) on the given input and return its "
@@ -130,12 +139,13 @@ struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool> {
         "hold no grant for the named agent.";
     using Args  = AgentSpawnArgs;
     using Reply = AgentSpawnReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::contract,
-            "agent.spawn invoked without its host-bound dispatch closure -- unreachable",
-            "agent_spawn.unreachable_static_invoke"});
-    }
+
+    explicit AgentSpawnTool(AgentSpawnToolProvider<StoreT>& provider) : provider_(&provider) {}
+
+    [[nodiscard]] agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const;
+
+private:
+    AgentSpawnToolProvider<StoreT>* provider_;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -150,9 +160,10 @@ struct AgentSpawnTool : agentengine::Tool<AgentSpawnTool> {
 // performs over a concrete ToolT (core/tool_pipeline.hpp), applied here over a concrete
 // ChatClientT/StateT/HistoryProviderT (item 2's own template parameters). Host-authored ONLY, at
 // registry-build time -- never anything derived from model output (I3).
+// ADR-237 §5.1: `task`-shaped -- the child's whole run is awaited in place, never driven by a nested block_on.
 using ChildRunner =
-    std::function<agentengine::result<agentengine::rt::AgentResponse>(std::string child_id,
-                                                                        ChildSpawnRequest request)>;
+    std::function<agentengine::rt::task<agentengine::result<agentengine::rt::AgentResponse>>(
+        std::string child_id, ChildSpawnRequest request)>;
 
 struct SpawnTargetDescriptor {
     agentengine::AgentMetadata metadata;              // register_agent<TargetAgentType>()'s output
@@ -271,6 +282,19 @@ private:
 // read-then-write, by construction.
 // ---------------------------------------------------------------------------------------------
 
+namespace agent_spawn_detail {
+
+// Drives an `rt::task<T>` to completion from a plain, non-coroutine call site. Used ONLY by `SpawnPump`'s
+// dedicated worker thread below (the serialization point's own blocking drive, a thread that is not a
+// session's executor); the child run itself no longer uses it -- `ChildRunner` is a task awaited in place
+// (ADR-237 §5.1).
+template <class T>
+[[nodiscard]] T drive(agentengine::rt::task<T> t) {
+    return agentengine::rt::block_on(std::move(t));  // ADR-175
+}
+
+}  // namespace agent_spawn_detail
+
 template <agentengine::rt::AppendLogStore StoreT>
 class SpawnPump {
 public:
@@ -361,8 +385,8 @@ private:
             agentengine::derive_spawn_child_id(req.caller_ref, req.caller_principal, seq);
         if (!child_id) return std::unexpected(child_id.error());
 
-        agentengine::result<agentengine::SpawnWorktreeGrant> worktree_grant = agentengine::mint_spawn_worktree(
-            ref_store_, req.caller_ref, *child_id, req.worktree_mode, *req.caller_held, req.caller_mount_id);
+        agentengine::result<agentengine::SpawnWorktreeGrant> worktree_grant = agent_spawn_detail::drive(agentengine::mint_spawn_worktree(
+            ref_store_, req.caller_ref, *child_id, req.worktree_mode, *req.caller_held, req.caller_mount_id));
         if (!worktree_grant) return std::unexpected(worktree_grant.error());
 
         return SpawnMintResult{*grant, *child_id, *worktree_grant};
@@ -389,8 +413,19 @@ private:
 // takes an explicit mount id rather than guessing one from a Ref.
 // ---------------------------------------------------------------------------------------------
 
+// A DROPPED parent (#196, ADR-193 §9, ADR-237 §4.5): a task destroyed while suspended inside the child run is charged
+// the child's spend exactly once (run_child_agent_session's ChargeOnUnwind). What this function consumed BEFORE the child
+// ran is deliberately NOT released: the per-principal quota slot (SpawnQuotaTracker has no release; lifetime-of-process,
+// ADR-193 §4), the SpawnCostBudget token (non-refundable by design, ADR-031) and the minted worktree (the branch may hold
+// the child's committed work, which the caller is entitled to merge or discard -- deleting it on a drop would destroy
+// work, and nothing here knows it is empty). A child that FAILS leaves exactly the same three behind, so a drop is a
+// failed child and a refund on this one path only would make the quota a function of how the caller was cancelled.
+// Accepted residual, pinned by tests/rt/agent_spawn/test_delegation_provenance.cpp R5-S1..S3.
+//
+// A coroutine taking REFERENCE parameters: every argument must outlive the awaited task (all current callers
+// co_await/block_on it within the same full expression).
 template <agentengine::rt::AppendLogStore StoreT>
-[[nodiscard]] agentengine::result<AgentSpawnReply> perform_agent_spawn(
+[[nodiscard]] agentengine::rt::task<agentengine::result<AgentSpawnReply>> perform_agent_spawn(
     AgentSpawnArgs const& args, agentengine::EffectContext& ctx, SpawnTargetRegistry const& registry,
     SpawnPump<StoreT>& pump, SpawnQuota const& quota, SpawnQuotaTracker& quota_tracker,
     agentengine::Ref const& caller_worktree_ref, std::string const& caller_mount_id) {
@@ -399,7 +434,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     // restated here in this function's own contract (§9 I3-2), since the two functions take the
     // ceiling input differently (EffectContext::capabilities* vs. a bound CapabilitySet const&).
     if (!ctx.capabilities) {
-        return std::unexpected(agentengine::error{
+        co_return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
             "agent.spawn requires a real, non-null capability set to attenuate from",
             "agent_spawn.no_capabilities"});
@@ -412,8 +447,22 @@ template <agentengine::rt::AppendLogStore StoreT>
     // ADR-193 round 2: refused BEFORE anything is spent -- this check used to run after the quota slot, the
     // non-refundable SpawnCostBudget token and the worktree were already taken, so a caller with nothing left
     // still burned all three on every refused spawn.
+    // ADR-244 §2.3 (slice 3c): the child runs under the caller's authority source, so a context no session built
+    // (no source) is refused, and a `per_request` caller's expiry is checked at this spawn -- both before anything
+    // is spent. The child's own admission checks the expiry again.
+    if (!ctx.authority_source.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.authority_source", std::array<std::string_view, 1>{
+                                          "the caller's EffectContext::authority_source (set by the session)"}));
+    }
+    if (*ctx.authority_source == agentengine::authority_mode::per_request &&
+        (!ctx.authority_expires_at.has_value() || !ctx.authority_expires_at->live(std::chrono::steady_clock::now()))) {
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+                                                    "agent.spawn: the caller's per-request authority has expired",
+                                                    "agent_spawn.authority_expired"});
+    }
     if (ctx.remaining_token_budget.has_value() && *ctx.remaining_token_budget == 0) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::resource,
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::resource,
                                                     "agent.spawn: the caller's token budget is spent",
                                                     "agent_spawn.caller_budget_exhausted"});
     }
@@ -422,7 +471,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     if (!quota_tracker.try_consume(std::to_string(ctx.principal.tenant_id.size()) + ':' + ctx.principal.tenant_id +
                                        ctx.principal.root_id(),
                                    quota.max_spawns_per_principal)) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::resource,
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::resource,
                                                     "per-principal agent.spawn quota exhausted",
                                                     "agent_spawn.quota_exhausted"});
     }
@@ -433,7 +482,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     // from "it exists but you were never granted it".
     SpawnTargetDescriptor const* target = registry.find(args.agent_id);
     if (!target) {
-        return std::unexpected(agentengine::error{agentengine::failure_class::policy,
+        co_return std::unexpected(agentengine::error{agentengine::failure_class::policy,
                                                     "agent.spawn: unknown or ungranted agent id",
                                                     "agent_spawn.not_available"});
     }
@@ -446,7 +495,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     agentengine::result<agentengine::trust::SpawnBudget> depth =
         agentengine::trust::check_and_consume_spawn_depth(*ctx.capabilities, args.agent_id);
     if (!depth) {
-        return std::unexpected(depth.error());
+        co_return std::unexpected(depth.error());
     }
 
     // -- [3] CEILING ------------------------------------------------------------------------------
@@ -457,7 +506,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     agentengine::result<agentengine::CapabilitySet> const covered =
         ctx.capabilities->attenuate(target->metadata.capability_ceiling);
     if (!covered) {
-        return std::unexpected(covered.error());
+        co_return std::unexpected(covered.error());
     }
 
     // -- [4]/[5] PUMP-ENTER + WORKTREE --------------------------------------------------------------
@@ -474,7 +523,7 @@ template <agentengine::rt::AppendLogStore StoreT>
     agentengine::result<typename SpawnPump<StoreT>::SpawnMintResult> minted_pump =
         pump.submit(std::move(mint_request));
     if (!minted_pump) {
-        return std::unexpected(minted_pump.error());
+        co_return std::unexpected(minted_pump.error());
     }
 
     // -- [6] MINT ---------------------------------------------------------------------------------
@@ -485,7 +534,7 @@ template <agentengine::rt::AppendLogStore StoreT>
         agentengine::trust::mint_child_spawn_capabilities(*ctx.capabilities, target->metadata,
                                                             minted_pump->worktree_grant, *depth);
     if (!child_grant) {
-        return std::unexpected(child_grant.error());
+        co_return std::unexpected(child_grant.error());
     }
 
     // -- [7]/[8] IDENTITY + RUN ---------------------------------------------------------------------
@@ -500,14 +549,29 @@ template <agentengine::rt::AppendLogStore StoreT>
         args.input);
     child_request.capabilities  = child_grant->capabilities;
     child_request.principal     = ctx.principal;
-    child_request.token_budget  = target->child_token_budget;
+    // ADR-241 §8.4: the root run, not this (possibly itself spawned) caller's run. An empty value (a direct host
+    // dispatch with no session) falls back to the caller's own run id, so the child still shares ONE bucket with it.
+    child_request.root_run_id   = ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id;
+    // ADR-244 §2.3 (slice 3c): the child's budget is the tightest of the target's two statements and what the caller
+    // has left; its turn cap is the target's declared one.
     // ADR-193 (red team round 1): never more than the caller has left -- every child had its own full budget, so a
     // tree could spend (children x child budget) past the root's.
     // A spawn with nothing left was refused at [0], before anything was spent. `remaining_token_budget` is
     // recomputed before every sequential call (round 2), so it already reflects every earlier sibling's charge.
-    if (ctx.remaining_token_budget.has_value()) {
-        child_request.token_budget = std::min(target->child_token_budget, *ctx.remaining_token_budget);
+    using BoundU64 = agentengine::Bound<std::uint64_t>;
+    BoundU64 budget = BoundU64::at_most(target->child_token_budget);
+    if (target->metadata.token_budget.has_value()) {
+        budget = BoundU64::tighter(budget, BoundU64::at_most(*target->metadata.token_budget));
     }
+    if (ctx.remaining_token_budget.has_value()) {
+        budget = BoundU64::tighter(budget, BoundU64::at_most(*ctx.remaining_token_budget));
+    }
+    child_request.token_budget = budget;
+    child_request.max_turns    = BoundU64::at_most(target->metadata.max_turns);
+    // ADR-244 §2.3 (slice 3c): the child runs under the caller's source; under `per_request` its one run is admitted
+    // against the caller's expiry. Both are engine-set on `ctx` by the caller's session (I3), never by a tool.
+    child_request.authority_source     = ctx.authority_source;
+    child_request.authority_expires_at = ctx.authority_expires_at;
     // §4.6 (item 6, OQ-16, landed 2026-08-23): the child's OWN manifest, computed from its OWN
     // already-attenuated `child_grant->capabilities` -- never a copy of the caller's own
     // `push_side_summary(*ctx.capabilities)`, which would misrepresent what the child actually holds.
@@ -542,15 +606,15 @@ template <agentengine::rt::AppendLogStore StoreT>
     }
 
     agentengine::result<agentengine::rt::AgentResponse> child_response =
-        target->run_child(minted_pump->child_id, std::move(child_request));
+        co_await target->run_child(minted_pump->child_id, std::move(child_request));
     if (!child_response) {
-        return std::unexpected(child_response.error());
+        co_return std::unexpected(child_response.error());
     }
 
     // -- [9] REPLY --------------------------------------------------------------------------------
     // ADR-193: `usage` is the child's whole run (the stock runner reports `run_usage()`, descendants included); the
     // runner already charged it to the caller's run through `charge_usage`, on success and failure alike.
-    return AgentSpawnReply{agentengine::text_of(child_response->message), child_response->usage.input_tokens,
+    co_return AgentSpawnReply{agentengine::text_of(child_response->message), child_response->usage.input_tokens,
                            child_response->usage.output_tokens, minted_pump->child_id};
 }
 
@@ -568,20 +632,23 @@ template <agentengine::rt::AppendLogStore StoreT>
 template <agentengine::rt::AppendLogStore StoreT>
 class AgentSpawnToolProvider {
 public:
-    // decisions/ADR-066-context-provider-attribution-provenance.md §3 -- every conformer wrapped by
+    // decisions/archive/ADR-066-context-provider-attribution-provenance.md §3 -- every conformer wrapped by
     // ComposedContextProvider needs this (HasContextProviderName), the same "name" convention
     // HistoryProvider<Window<N>>/ScheduleWakeupTool's own precedents already establish.
     static constexpr std::string_view name = "agent_spawn";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
 
+    // `spawn_approval` (ADR-244 slice 4a): whether each `agent_spawn` call needs approval -- required, no default.
     AgentSpawnToolProvider(SpawnTargetRegistry const& registry, SpawnPump<StoreT>& pump,
                             agentengine::Ref caller_worktree_ref, std::string caller_mount_id,
-                            SpawnQuota quota, SpawnQuotaTracker& quota_tracker)
+                            SpawnQuota quota, SpawnQuotaTracker& quota_tracker,
+                            agentengine::approval_mode spawn_approval)
         : registry_(registry),
           pump_(pump),
           caller_worktree_ref_(std::move(caller_worktree_ref)),
           caller_mount_id_(std::move(caller_mount_id)),
           quota_(quota),
-          quota_tracker_(quota_tracker) {}
+          quota_tracker_(quota_tracker),
+          spawn_approval_(spawn_approval) {}
 
     [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::ContextContribution>> on_context(
         agentengine::SessionContext&, agentengine::EffectContext& ctx) {
@@ -591,11 +658,9 @@ public:
         // all, not a per-agent_id scan; the per-target check is the LIVE one inside
         // perform_agent_spawn()'s own step [2].
         if (ctx.capabilities && ctx.capabilities->contains_kind(agentengine::capability_kind::agent_call)) {
-            c.tools.push_back(agentengine::make_tool_descriptor_with_invoke<AgentSpawnTool>(
-                [this](AgentSpawnArgs a, agentengine::EffectContext& call_ctx) {
-                    return perform_agent_spawn(a, call_ctx, registry_, pump_, quota_, quota_tracker_,
-                                                caller_worktree_ref_, caller_mount_id_);
-                }));
+            agentengine::ToolDescriptor d = agentengine::make_tool_descriptor(AgentSpawnTool<StoreT>{*this});
+            d.approval = spawn_approval_;  // ADR-244 slice 4a: AgentSpawnTool is ApprovalChosenByHost
+            c.tools.push_back(std::move(d));
         }
         co_return c;
     }
@@ -605,12 +670,23 @@ public:
     }
 
 private:
+    // ADR-237 §5.2: the instance-form `AgentSpawnTool` (declared above) holds this provider explicitly
+    // and calls `dispatch_agent_spawn()` below -- the old `[this]`-capturing closure's body, unchanged.
+    template <agentengine::rt::AppendLogStore> friend struct AgentSpawnTool;
+    [[nodiscard]] agentengine::rt::task<agentengine::result<AgentSpawnReply>> dispatch_agent_spawn(
+        AgentSpawnArgs const& args, agentengine::EffectContext& ctx) {
+        return perform_agent_spawn(args, ctx, registry_, pump_, quota_, quota_tracker_,
+                                    caller_worktree_ref_, caller_mount_id_);
+    }
+
     SpawnTargetRegistry const& registry_;
     SpawnPump<StoreT>&         pump_;
     agentengine::Ref           caller_worktree_ref_;
     std::string                caller_mount_id_;
     SpawnQuota                 quota_;
     SpawnQuotaTracker&         quota_tracker_;
+    // ADR-244 §2.2 (slice 4a): whether an `agent_spawn` call needs approval -- the host's, stated at construction.
+    agentengine::approval_mode spawn_approval_;
 };
 
 // Item 6 is now landed (see this file's own top comment for the account). Explicitly out of scope,
@@ -618,5 +694,13 @@ private:
 // work, named in the design doc's own §4.6 -- 026 is still Draft, and
 // trust/agent_library_manifest.hpp's own file banner already names this as the next step once it
 // exists.
+
+// ADR-237 §5.2: out-of-line because it needs `AgentSpawnToolProvider` complete to reach the private
+// `dispatch_agent_spawn()` it befriends.
+template <agentengine::rt::AppendLogStore StoreT>
+agentengine::task<agentengine::result<AgentSpawnReply>> AgentSpawnTool<StoreT>::invoke(
+    AgentSpawnArgs args, agentengine::EffectContext& ctx) const {
+    co_return co_await provider_->dispatch_agent_spawn(args, ctx);
+}
 
 }  // namespace agentengine::rt

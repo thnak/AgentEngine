@@ -19,6 +19,8 @@
 #include <fstream>
 #include <string>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
@@ -64,12 +66,12 @@ AE_JSON_SCHEMA(EchoReply, message)
 // matching test_mediated_python_runner_agent_tools.cpp's own EchoTool -- Scenario 2 below only checks
 // that agent.tools/agent.files/agent.data all coexist, not tool-call enforcement (already proven by
 // G1's own test file), so the bridge's capability set is left ungranted deliberately.
-struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>> {
+struct EchoTool : Tool<EchoTool, Capabilities<cap::decl::Entropy>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its message argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static result<Reply> invoke(Args a, EffectContext&) { return Reply{a.message}; }
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.message}; }
 };
 
 }  // namespace
@@ -109,11 +111,13 @@ int main() {
         cfg.expose_agent_files_data = true;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-setup: a MediatedPythonRunner with mount_roots initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
             Capability{cap::FsRead{"input", "", std::nullopt}},
             Capability{cap::FsRead{"work", "", std::nullopt}},
@@ -129,7 +133,7 @@ int main() {
                              "from agent import files\n"
                              "b = files.input('greeting.txt')\n"
                              "print('GOT:', b)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("GOT: b'hello from /input'") != std::string::npos,
                      "G2-I1: agent.files.input reads /input/<name> as real bytes");
         }
@@ -140,7 +144,7 @@ int main() {
                              "from agent import files\n"
                              "files.artifact('result.txt', 'ok from artifact')\n"
                              "print('WROTE')"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("WROTE") != std::string::npos,
                      "G2-I2: agent.files.artifact(str) runs without error");
             std::ifstream check(out_dir / "result.txt", std::ios::binary);
@@ -157,7 +161,7 @@ int main() {
                              "names = sorted(e['name'] for e in entries)\n"
                              "print('NAMES:', names)\n"
                              "print('IS_DIR:', all(e['is_dir'] == False for e in entries))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find("NAMES: ['data.ndjson', 'greeting.txt', 'table.csv']") !=
                              std::string::npos,
@@ -178,7 +182,7 @@ int main() {
                              "print('DATA_DOC:', data.__doc__)\n"
                              "import agent\n"
                              "print('AGENT_DOC:', repr(agent.__doc__))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             std::string files_one_line(agentengine::trust::module_one_line("files"));
             std::string data_one_line(agentengine::trust::module_one_line("data"));
             AE_CHECK(out.has_value() && out->stdout_text.find("FILES_DOC: " + files_one_line) != std::string::npos,
@@ -205,7 +209,7 @@ int main() {
                              "values = list(gen)\n"
                              "print('IS_GEN:', is_gen)\n"
                              "print('VALUES:', values)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("IS_GEN: True") != std::string::npos,
                      "G2-I4a: agent.data.read_json_lines returns a real generator, streamed per line");
             AE_CHECK(out.has_value() &&
@@ -220,7 +224,7 @@ int main() {
                              "from agent import data\n"
                              "rows = list(data.read_csv_rows('/input/table.csv'))\n"
                              "print('ROWS:', rows)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() &&
                          out->stdout_text.find(
                              "ROWS: [['a', 'b', 'c'], ['1', '2', '3'], ['4', '5', '6']]") != std::string::npos,
@@ -234,7 +238,7 @@ int main() {
                              "from agent import data\n"
                              "v = data.read_json('/work/small.json')\n"
                              "print('VALUE:', v)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("VALUE: {'ok': True}") != std::string::npos,
                      "G2-I6: agent.data.read_json reads and parses a whole small file");
         }
@@ -247,7 +251,7 @@ int main() {
                              "    from agent import tools\n"
                              "except ImportError as e:\n"
                              "    print('NO_TOOLS:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("NO_TOOLS") != std::string::npos,
                      "G2-N1: with no tool_bridge configured, agent.tools is absent even though "
                      "agent.files/agent.data are present");
@@ -258,6 +262,8 @@ int main() {
         // never a bypass around the SAME mediation open()/listdir() already enforce.
         {
             EffectContext narrow_ctx{};
+            narrow_ctx.session_nonce = ae_test::kTestSessionNonce;
+            narrow_ctx.principal = ae_test::kTestPrincipal;
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
             narrow_ctx.capabilities = agentengine::borrow_capabilities(narrow_caps);
             ExecRequest req{"python",
@@ -266,7 +272,7 @@ int main() {
                              "    files.list('/input')\n"
                              "except PermissionError as e:\n"
                              "    print('DENIED:', e)"};
-            auto out = runner.run(req, state, narrow_ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, narrow_ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "G2-N2: agent.files.list without a granted FsRead capability raises "
                      "PermissionError -- the real per-call pipeline, never a shortcut");
@@ -283,19 +289,22 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
         cfg.mount_roots["input"] = widen(input_dir);
         cfg.expose_agent_files_data = true;
-        ToolBridgeConfig bridge;
-        bridge.bridged_tools = ToolTable::from_tools<EchoTool>();
-        bridge.capabilities = {};
-        bridge.approved = true;
+        // ADR-244 §2.4: the approval is a required choice -- here a standing approval for the
+        // anonymous test principal these contexts run as.
+        ToolBridgeConfig bridge{.bridged_tools = ToolTable::from(EchoTool{}),
+                         .capabilities  = {},
+                         .approval      = agentengine::native_jail::BridgeApproval::standing_for(ae_test::kTestPrincipal)};
         cfg.tool_bridge = std::move(bridge);
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-coexist: setup -- a runner with BOTH tool_bridge and "
                                     "mount_roots initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", std::nullopt}}});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -307,7 +316,7 @@ int main() {
                          "b = agent.files.input('greeting.txt')\n"
                          "print('FILES_OK:', b == b'hello from /input')\n"
                          "print('AGENT_DOC:', repr(agent.__doc__))"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_TOOLS: True") != std::string::npos,
                  "G2-coexist: agent.tools is present when a tool_bridge is configured");
         AE_CHECK(out.has_value() && out->stdout_text.find("HAS_FILES: True") != std::string::npos,
@@ -350,12 +359,14 @@ int main() {
         // cfg.expose_agent_files_data left at its default false.
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G2-N3: setup -- a runner with mount_roots but no "
                                     "expose_agent_files_data opt-in initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python",
                          "try:\n"
                          "    import agent\n"
@@ -365,7 +376,7 @@ int main() {
                          "    import json\n"
                          "except ImportError as e:\n"
                          "    print('NO_JSON:', e)"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("NO_AGENT") != std::string::npos,
                  "G2-N3a: with mount_roots configured but expose_agent_files_data unset, agent is "
                  "absent -- mount_roots alone never implies the library is exposed");

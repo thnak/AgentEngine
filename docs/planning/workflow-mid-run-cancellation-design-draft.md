@@ -197,7 +197,7 @@ Two SHOULD-FIX refinements, both incorporated:
   a SECOND exhaustive switch over `workflow_status`, missed in the first draft's own file list).
 - `include/agentengine/core/effect_context.hpp` — `EffectContext::cancellation`.
 - `tests/workflow/test_rt_workflow_cancellation.cpp` (new) — the proofs from §5.
-- `decisions/ADR-159-workflow-mid-run-cancellation.md` (once implemented and proven — 159 is the
+- `decisions/archive/ADR-159-workflow-mid-run-cancellation.md` (once implemented and proven — 159 is the
   next free number as of this draft; verify against `decisions/` before committing in case another
   session claimed it concurrently, matching this repo's own established numbering-collision
   recovery pattern).

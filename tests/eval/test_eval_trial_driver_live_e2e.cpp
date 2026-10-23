@@ -1,4 +1,4 @@
-// Live sanity check for decisions/ADR-195-evaluation-harness.md's trial-running harness (§3.0
+// Live sanity check for decisions/archive/ADR-195-evaluation-harness.md's trial-running harness (§3.0
 // items 2-4, §3.2): runs one real B (baseline) trial and one real T (treatment) trial through
 // `run_trial` against a real model, rather than a scripted client. This is the end-to-end
 // verification test_eval_trial_driver.cpp cannot provide on its own -- a scripted client proves
@@ -21,6 +21,8 @@
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include <utility>
 
 using namespace agentengine;
 
@@ -43,8 +45,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 constexpr char const* kSecretName = "eval-trial-live-api-key";

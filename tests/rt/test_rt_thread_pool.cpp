@@ -19,7 +19,7 @@
 //   T5 -- worker_count() reports what the constructor was asked for (explicit count) and falls back to
 //         a real default (>=1) when 0 / omitted.
 //   T6 -- a job that genuinely contends an AsyncMutex while running under ThreadPool waits for the holder
-//         and completes, on its own worker (decisions/ADR-175). History: ADR-064 §7 made such a job fail
+//         and completes, on its own worker (decisions/archive/ADR-175). History: ADR-064 §7 made such a job fail
 //         loudly and destroyed it, instead of looping resume() on a parked handle; issue #78 showed that
 //         destruction could free a frame the releasing thread was already running.
 //         tests/rt/test_rt_parked_task_home.cpp carries the issue #78 reproduction and the rest of ADR-175's
@@ -225,7 +225,7 @@ int main() {
               "T5: explicitly requesting 0 workers still yields a usable (>=1) pool, not an inert one");
     }
 
-    // T6 (rewritten for decisions/ADR-175): a job that genuinely contends an AsyncMutex under ThreadPool
+    // T6 (rewritten for decisions/archive/ADR-175): a job that genuinely contends an AsyncMutex under ThreadPool
     // WAITS for the holder and completes cleanly -- it used to be reported faulted and destroyed, which
     // could free a frame the releasing thread was already running (issue #78). Also: the parked job
     // resumes on its own worker, and the mutex is usable afterwards.

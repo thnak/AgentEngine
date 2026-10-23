@@ -1,9 +1,9 @@
 #pragma once
-// Implements 007-Capability-and-Trust-Model.md §3's `AgentCall<agent>` capability parameter
+// Implements rfcs/007-Capability-and-Trust-Model.md §3's `AgentCall<agent>` capability parameter
 // ("agent id, depth budget") and resolves the depth-bound half of 026-Agent-Facing-Runtime-
 // Surface.md §9 Q1 / OQ-14 (OpenQuestions.md) — whether depth and budget bounds are sufficient
 // against agent.spawn's recursion-and-cost hazard. See
-// decisions/ADR-006-agent-spawn-depth-budget-bound.md for the red-team pass this small prove ran.
+// decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md for the red-team pass this small prove ran.
 //
 // Deliberately NOT a cryptographic token like trust/capability_token.hpp's cross-process bearer
 // token (ADR-005) -- agent.spawn creates a sibling Quark actor within the same engine/cluster, never

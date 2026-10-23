@@ -1,4 +1,4 @@
-// Milestone 5 Phase H1 (018-Identity-Authorization-and-Secrets.md §1's inbound-identity table,
+// Milestone 5 Phase H1 (rfcs/018-Identity-Authorization-and-Secrets.md §1's inbound-identity table,
 // decision 1's own narrowing: only "Embedded / in-process" and "Local CLI" are buildable now
 // without 011/012/013, M7). Before this task, every test hand-built a `Principal{id, tenant_id}`
 // aggregate ad hoc, with no `kind`, no delegation concept, and no shared admission rule anywhere in

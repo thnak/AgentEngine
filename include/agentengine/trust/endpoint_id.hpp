@@ -1,5 +1,5 @@
 #pragma once
-// ADR-061 §13.5/§31.1 (decisions/ADR-061-host-provided-inbound-transport.md): a minted-not-indexed
+// ADR-061 §13.5/§31.1 (decisions/archive/ADR-061-host-provided-inbound-transport.md): a minted-not-indexed
 // endpoint identifier, closing finding T8 -- §8.3's original `EndpointId{std::uint32_t index}` was a
 // dense, guessable index into operator config, uncontained across audience-adjacent resources the
 // moment an index is lied about or misconfigured. This is minted by the operator's own configuration

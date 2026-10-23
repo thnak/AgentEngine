@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's `cap::NativeExec` capability kind (trust/capability.hpp): the host-granted
 // allowlist entry that is the ONLY source of authority for NativeShellProvider/NativeBashProvider/
 // NativePythonProvider/NativeNodeProvider to invoke a real, unsandboxed host executable. ADR-070

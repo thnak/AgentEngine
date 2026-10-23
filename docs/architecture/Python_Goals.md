@@ -1,7 +1,7 @@
 # Python Runtime Integration Goals
 
-**Status:** Living design goals — a one-page summary of properties `010-Python-Code-Interpreter.md`
-and `008-Sandbox-and-Isolation.md` §1b already specify in detail, kept here for onboarding.
+**Status:** Living design goals — a one-page summary of properties `rfcs/010-Python-Code-Interpreter.md`
+and `rfcs/008-Sandbox-and-Isolation.md` §1b already specify in detail, kept here for onboarding.
 
 This document defines the architectural goals for integrating CPython into the execution kernel.
 
@@ -13,7 +13,7 @@ here.
 **This is a summary, not a second spec.** Per `CLAUDE.md`: when this document and an RFC or ADR
 disagree, the RFC/ADR wins — fix this document, never the other way around. Every goal below cites
 where it's actually specified, and several are now backed by real evidence from
-`decisions/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01) — the first
+`decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md`'s prove phase (2026-08-01) — the first
 place in this project a Python-integration claim was tested against a real embedded interpreter
 rather than argued.
 
@@ -241,7 +241,7 @@ Differences introduced by the framework should exist only when required to prese
 Unexpected behavioral differences should be minimized.
 
 **This goal is now backed by the sharpest concrete evidence in this document, and it cuts both
-ways.** `decisions/ADR-002-pythonrunner-embedding-and-mediation.md` §8.9/§10.1 (`OpenQuestions.md`
+ways.** `decisions/archive/ADR-002-pythonrunner-embedding-and-mediation.md` §8.9/§10.1 (`OpenQuestions.md`
 OQ-15) found that "only differ when security requires it" is harder to deliver than it sounds: the
 import-allowlist mechanism gates by module name, and granting `numpy`/`pandas` transitively requires
 also granting `ctypes`/`winreg`/`subprocess` — names a security review would otherwise deny — because

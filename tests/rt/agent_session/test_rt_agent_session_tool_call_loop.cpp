@@ -23,12 +23,15 @@
 #include <memory>
 #include <memory_resource>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/principal.hpp"
 
 using agentengine::rt::AgentSession;
@@ -52,8 +55,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session*.cpp file uses -- every ChatClientT fixture below co_returns immediately.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -88,12 +90,12 @@ AE_JSON_SCHEMA(EchoReply, value)
 // Empty capability ceiling, never_require approval (both defaults) -- always succeeds. Used for R1
 // (convergence), R3 (failure-doesn't-abort, alongside FailingTool), R4/R5 (never-converges).
 struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
-                                     agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                     agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) { return Reply{a.value}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const { co_return Reply{a.value}; }
 };
 
 struct FailingArgs { bool unused = false; };  // AE_JSON_SCHEMA needs >=1 field; args are ignored
@@ -103,13 +105,13 @@ AE_JSON_SCHEMA(FailingReply, unused)
 
 // Always fails at step 8 (invoke) -- R3 proves this doesn't abort the run.
 struct FailingTool : agentengine::Tool<FailingTool, agentengine::Capabilities<>,
-                                        agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                        agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "failing_tool";
     static constexpr std::string_view description = "Always fails.";
     using Args = FailingArgs;
     using Reply = FailingReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
+        co_return std::unexpected(
             agentengine::error{agentengine::failure_class::contract, "scripted failure", "test.scripted_fail"});
     }
 };
@@ -129,14 +131,14 @@ AE_JSON_SCHEMA(WriteReply, unused)
     return invoked;
 }
 struct WriteTool : agentengine::Tool<WriteTool, agentengine::Capabilities<agentengine::cap::decl::FsWrite<"work">>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "write_tool";
     static constexpr std::string_view description = "Writes to the work mount.";
     using Args = WriteArgs;
     using Reply = WriteReply;
-    static agentengine::result<Reply> invoke(WriteArgs, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(WriteArgs, EffectContext&) const {
         write_tool_invoked_log() = true;  // must never fire in R2 -- see that block's assertion
-        return Reply{};
+        co_return Reply{};
     }
 };
 
@@ -148,7 +150,7 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<EchoTool, FailingTool, WriteTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(EchoTool{}, FailingTool{}, WriteTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -266,7 +268,7 @@ int main() {
             ScriptedToolLoopChatClient::make_tool_call_message("c2", "echo_tool", R"({"value":2})"),
             // 3rd chat() call falls through to the script's exhaustion default: plain text.
         });
-        session.initialize("s-r1", Principal{"p", ""});
+        session.initialize("s-r1", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -292,7 +294,7 @@ int main() {
                                                                  call_provenance::text_derived),
             // falls through to plain text next round once the denial is fed back
         });
-        session.initialize("s-r2", Principal{"p", ""});
+        session.initialize("s-r2", Principal{"p", ""}, ae_test::trusted_unbounded());
         // Grant the capability WriteTool needs -- the denial under test must come from step 5
         // (approval), not from step 4 (missing capability), or this wouldn't isolate must-fix #1.
         CapabilitySet const held = CapabilitySet::grant_root(
@@ -319,7 +321,7 @@ int main() {
             ScriptedToolLoopChatClient::make_tool_call_message("c1", "failing_tool", "{}"),
             // falls through to plain text next round -- proving the loop continued past the failure
         });
-        session.initialize("s-r3", Principal{"p", ""});
+        session.initialize("s-r3", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -337,8 +339,7 @@ int main() {
         Session session;
         ScriptedToolLoopChatClient& client = session.emplace_chat_client();
         client.set_always_tool_call("echo_tool");  // always succeeds -- never converges on its own
-        session.initialize("s-r4", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/3);
+        session.initialize("s-r4", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/3));
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 
@@ -359,8 +360,7 @@ int main() {
         Session session;
         ScriptedToolLoopChatClient& client = session.emplace_chat_client();
         client.set_always_tool_call("write_tool");  // needs FsWrite -- denied at step 4 with no grant
-        session.initialize("s-r5", Principal{"p", ""}, /*token_budget=*/std::nullopt,
-                            /*max_turns=*/3);
+        session.initialize("s-r5", Principal{"p", ""}, ae_test::trusted(/*token_budget=*/std::nullopt, /*max_turns=*/3));
         // Deliberately no set_capabilities() call -- capabilities_ stays nullptr.
 
         auto r = drive(session.start_run(StartRun{user_message("go")}));
@@ -384,7 +384,7 @@ int main() {
         client.set_scripted_responses({
             ScriptedToolLoopChatClient::make_tool_call_message("c1", "echo_tool", R"({"value":1})"),
         });
-        session.initialize("s-r6", Principal{"p", ""});
+        session.initialize("s-r6", Principal{"p", ""}, ae_test::trusted_unbounded());
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
 

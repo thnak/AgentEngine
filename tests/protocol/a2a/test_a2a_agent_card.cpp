@@ -1,4 +1,4 @@
-// Milestone 7 Phase D2 (012-A2A-Conformance.md §2.1, docs/research/2026-a2a-and-agui-detail.md §A.3,
+// Milestone 7 Phase D2 (rfcs/012-A2A-Conformance.md §2.1, docs/research/2026-a2a-and-agui-detail.md §A.3,
 // docs/planning/milestone-7-protocol-conformance-breakdown.md). Proves `to_agent_card()`
 // (protocol/a2a/agent_card.hpp) generates an Agent Card from a REAL, `register_agent<A>()`-compiled
 // `AgentMetadata` -- skills derived one-per-tool from the real `ToolTable`, never hand-maintained --
@@ -30,12 +30,12 @@ AE_JSON_SCHEMA(EchoArgs, message)
 struct EchoReply { std::string echoed; };
 AE_JSON_SCHEMA(EchoReply, echoed)
 
-struct EchoTool : ae::Tool<EchoTool> {
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echoes its input back.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 struct SearchArgs { std::string query; };
@@ -43,12 +43,12 @@ AE_JSON_SCHEMA(SearchArgs, query)
 struct SearchReply { std::string result; };
 AE_JSON_SCHEMA(SearchReply, result)
 
-struct SearchTool : ae::Tool<SearchTool> {
+struct SearchTool : ae::Tool<SearchTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "search";
     static constexpr std::string_view description = "Searches for the given query.";
     using Args  = SearchArgs;
     using Reply = SearchReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) { return Reply{"n/a"}; }
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const { co_return Reply{"n/a"}; }
 };
 
 struct TwoToolAgent : ae::Agent<TwoToolAgent, ae::ChatClientId<"anthropic:claude-opus-5">,

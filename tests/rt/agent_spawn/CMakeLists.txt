@@ -2,7 +2,7 @@
 # Added by tests/CMakeLists.txt, which also sets the flags, output directory, working directory and
 # the "rt/agent_spawn" ctest label for every test here (cmake/AgentEngineTests.cmake).
 
-# ---- agent.spawn depth/budget bound (decisions/ADR-006-agent-spawn-depth-budget-bound.md) -------
+# ---- agent.spawn depth/budget bound (decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md) -------
 # Header-only (trust/spawn_budget.hpp), core-tier (std only, no crypto -- in-process, never crosses
 # a process boundary the way trust/capability_token.hpp's ADR-005 token does) -- links only
 # agentengine::core.
@@ -57,6 +57,9 @@ endif()
 # ---- ADR-037 -- agentengine::rt::SpawnCostBudget, the Quark-actor-free replacement for
 # 026 §9 Q1 / OQ-14's SpawnCostBudgetActor (rt::AsyncMutex replaces quark::Actor<Sequential> as the
 # check-and-decrement serialization mechanism).
+# ADR-244 slice 3c (G-C7, G-C2): both spawn paths run the child under the caller's authority source with stated,
+# tightened bounds; reflection carries the authority; the chat client's secrets reach the model call only.
+agentengine_add_test(test_rt_spawn_authority LIBS agentengine::core agentengine::worktree_store agentengine_warnings)
 agentengine_add_test(test_rt_spawn_cost_budget LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-079 §7's TSan residual on SpawnPump (rt/agent_spawn.hpp) -- a portable, test-local

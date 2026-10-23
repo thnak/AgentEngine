@@ -17,9 +17,9 @@ struct DummySandboxBackend {
     static constexpr ProfileTraits traits{1, platform_id::windows_x86_64 | platform_id::linux_x86_64,
                                            cold_start_class::milliseconds};
 
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) { return SandboxHandle{}; }
-    result<ExecOutcome> exec(SandboxHandle&, ExecRequest const&, EffectContext&) { return ExecOutcome{}; }
-    void destroy(SandboxHandle&) {}
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{}; }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) { co_return ExecOutcome{}; }
+    task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 }  // namespace

@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's native_capability_announcer.hpp: composing multiple Native*Provider instances
 // (Shell/Bash/Python/Node) into ONE seeded instructions block + merged tool table, via the EXISTING
 // ComposedContextProvider<Ms...> -- proving reuse actually works for this family, not just that it

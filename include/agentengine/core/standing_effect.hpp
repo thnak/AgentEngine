@@ -1,5 +1,5 @@
 #pragma once
-// Implements 006-Tool-and-Function-Plane.md §6b and 019-Durability-and-Long-Running-Agents.md §2 --
+// Implements rfcs/006-Tool-and-Function-Plane.md §6b and rfcs/019-Durability-and-Long-Running-Agents.md §2 --
 // "One handle shape for three producers -- schedule_wakeup, watch_resource, and background_task all
 // return a StandingEffect handle (unforgeable, like a capability handle, 007 §3.4), with one
 // introspection/kill surface: list_standing_effects()/cancel_standing_effect(handle)." Milestone 7

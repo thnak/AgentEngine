@@ -1,4 +1,4 @@
-// End-to-end proof of decisions/ADR-063-retrieval-augmented-context-provider-shape.md §3 claim 4:
+// End-to-end proof of decisions/archive/ADR-063-retrieval-augmented-context-provider-shape.md §3 claim 4:
 // "a single OpenAIEmbedder, pointed at api.openrouter.ai instead of api.openai.com (host/path_prefix
 // as constructor arguments only, no code branch), successfully embeds text through OpenRouter's real
 // /api/v1/embeddings endpoint -- i.e., no OpenRouter-specific client class is actually required,

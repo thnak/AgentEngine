@@ -1,4 +1,4 @@
-// Proof obligations for decisions/ADR-173-system-channel-taint-fence.md (GitHub issue #61).
+// Proof obligations for decisions/archive/ADR-173-system-channel-taint-fence.md (GitHub issue #61).
 //
 // The defect: `ContentItem::tainted`/`origin` were stamped correctly by every provider that
 // re-presents untrusted text as `role::system` content, and then dropped on the floor by BOTH wire

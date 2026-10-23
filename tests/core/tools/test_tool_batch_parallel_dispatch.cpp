@@ -1,4 +1,4 @@
-// Implements decisions/ADR-160-parallel-tool-batch-scheduler.md §5. `test_tool_batch_partition.cpp`
+// Implements decisions/archive/ADR-160-parallel-tool-batch-scheduler.md §5. `test_tool_batch_partition.cpp`
 // already proves `partition_batch()`'s pure logic in isolation; THIS file is the real, executed proof
 // that `AgentSession::dispatch_tool_calls()` actually runs an eligible batch CONCURRENTLY, end to end,
 // through a real `AgentSession` round -- not merely that it compiles or that the sequential fallback
@@ -29,6 +29,7 @@
 // question whether that scale is CI-practical) -- 64 iterations here, real `AgentSession` round-trips
 // each time.
 
+#include <utility>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -37,6 +38,8 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -84,8 +87,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message user_message(std::string text) {
@@ -179,7 +181,7 @@ public:
                                                                               EffectContext&) {
         ContextContribution c;
         c.messages.assign(ctx.history.begin(), ctx.history.end());
-        c.tools = ToolTable::from_tools<Tools...>().descriptors();
+        c.tools = ToolTable::from(Tools{}...).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -206,31 +208,31 @@ bool wait_up_to(std::atomic<bool> const& flag, std::chrono::milliseconds timeout
 }
 
 struct RendezvousToolA : agentengine::Tool<RendezvousToolA, Capabilities<>,
-                                             EffectClass<effect_class::pure>, Parallelizable> {
+                                             EffectClass<effect_class::pure>, Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "rendezvous_a";
     static constexpr std::string_view description = "Blocks until rendezvous_b has also started.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         g_a_started.store(true, std::memory_order_release);
         if (wait_up_to(g_b_started, std::chrono::milliseconds(2000))) {
             g_a_saw_b.store(true, std::memory_order_release);
         }
-        return Reply{"a"};
+        co_return Reply{"a"};
     }
 };
 struct RendezvousToolB : agentengine::Tool<RendezvousToolB, Capabilities<>,
-                                             EffectClass<effect_class::pure>, Parallelizable> {
+                                             EffectClass<effect_class::pure>, Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "rendezvous_b";
     static constexpr std::string_view description = "Blocks until rendezvous_a has also started.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         g_b_started.store(true, std::memory_order_release);
         if (wait_up_to(g_a_started, std::chrono::milliseconds(2000))) {
             g_b_saw_a.store(true, std::memory_order_release);
         }
-        return Reply{"b"};
+        co_return Reply{"b"};
     }
 };
 
@@ -239,12 +241,12 @@ std::atomic<int> g_group_concurrent{0};
 std::atomic<int> g_group_max_concurrent{0};
 
 struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<effect_class::pure>,
-                                        agentengine::ExclusivityGroup<"db-write">> {
+                                        agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "group_x";
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 1.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         int const now = g_group_concurrent.fetch_add(1, std::memory_order_acq_rel) + 1;
         int prev = g_group_max_concurrent.load(std::memory_order_relaxed);
         while (now > prev &&
@@ -252,16 +254,16 @@ struct GroupToolX : agentengine::Tool<GroupToolX, Capabilities<>, EffectClass<ef
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
         g_group_concurrent.fetch_sub(1, std::memory_order_acq_rel);
-        return Reply{"x"};
+        co_return Reply{"x"};
     }
 };
 struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<effect_class::pure>,
-                                        agentengine::ExclusivityGroup<"db-write">> {
+                                        agentengine::ExclusivityGroup<"db-write">, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "group_y";
     static constexpr std::string_view description = "ExclusivityGroup<db-write> member 2.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         int const now = g_group_concurrent.fetch_add(1, std::memory_order_acq_rel) + 1;
         int prev = g_group_max_concurrent.load(std::memory_order_relaxed);
         while (now > prev &&
@@ -269,7 +271,7 @@ struct GroupToolY : agentengine::Tool<GroupToolY, Capabilities<>, EffectClass<ef
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
         g_group_concurrent.fetch_sub(1, std::memory_order_acq_rel);
-        return Reply{"y"};
+        co_return Reply{"y"};
     }
 };
 
@@ -283,32 +285,32 @@ std::mutex g_completion_mutex;
 std::vector<std::string> g_completion_order;  // cleared before each iteration below
 
 struct DelayToolA : agentengine::Tool<DelayToolA, Capabilities<>, EffectClass<effect_class::pure>,
-                                        Parallelizable> {
+                                        Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "delay_a";
     static constexpr std::string_view description =
             "Waits for delay_b to signal completion, then records its own completion.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         wait_up_to(g_delay_b_done, std::chrono::milliseconds(2000));
         std::lock_guard<std::mutex> lock(g_completion_mutex);
         g_completion_order.push_back("a");
-        return Reply{"a"};
+        co_return Reply{"a"};
     }
 };
 struct DelayToolB : agentengine::Tool<DelayToolB, Capabilities<>, EffectClass<effect_class::pure>,
-                                        Parallelizable> {
+                                        Parallelizable, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "delay_b";
     static constexpr std::string_view description = "Records completion, then signals delay_a.";
     using Args = NoArgs;
     using Reply = TagReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args, EffectContext&) const {
         {
             std::lock_guard<std::mutex> lock(g_completion_mutex);
             g_completion_order.push_back("b");
         }
         g_delay_b_done.store(true, std::memory_order_release);
-        return Reply{"b"};
+        co_return Reply{"b"};
     }
 };
 
@@ -322,7 +324,7 @@ int main() {
         using Session = AgentSession<RecordingChatClient, NoSessionState,
                                        ToolsHistoryProvider<RendezvousToolA, RendezvousToolB>>;
         Session session;
-        session.initialize("rendezvous", owner);
+        session.initialize("rendezvous", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             ScriptedOutcome{multi_tool_call_response(
                                 {{"c1", "rendezvous_a", "{\"ignored\":false}"}, {"c2", "rendezvous_b", "{\"ignored\":false}"}}),
@@ -345,7 +347,7 @@ int main() {
         using Session = AgentSession<RecordingChatClient, NoSessionState,
                                        ToolsHistoryProvider<GroupToolX, GroupToolY>>;
         Session session;
-        session.initialize("group", owner);
+        session.initialize("group", owner, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({
             ScriptedOutcome{
                 multi_tool_call_response({{"c1", "group_x", "{\"ignored\":false}"}, {"c2", "group_y", "{\"ignored\":false}"}}),
@@ -373,7 +375,7 @@ int main() {
             using Session = AgentSession<RecordingChatClient, NoSessionState,
                                            ToolsHistoryProvider<DelayToolA, DelayToolB>>;
             Session session;
-            session.initialize("delay-" + std::to_string(i), owner);
+            session.initialize("delay-" + std::to_string(i), owner, ae_test::trusted_unbounded());
             // delay_a (emitted FIRST, call c1) blocks until delay_b (emitted SECOND, call c2) signals
             // its own completion -- real completion order is DETERMINISTICALLY [b, a] every iteration
             // (see file banner); if dispatch were secretly still sequential, delay_a would run to

@@ -1,4 +1,4 @@
-// Proves decisions/ADR-061-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
+// Proves decisions/archive/ADR-061-host-provided-inbound-transport.md §7's R1/R2/R3 fixes: server-minted
 // task handles are bound to the principal that created them (011 §8a), a non-owner cannot
 // distinguish someone else's task from one that never existed (012 §4), and an inbound A2A message
 // is subject to a real 018 §2 admission check rather than the `StartRun::caller == nullopt`
@@ -10,11 +10,13 @@
 // from "broken for everyone", and would pass against a handler that returns an error
 // unconditionally.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/protocol/a2a/server.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
@@ -35,6 +37,14 @@ namespace a2a  = agentengine::a2a;
 namespace mcp  = agentengine::mcp;
 namespace json = agentengine::json;
 
+// ADR-237: `A2aServer::send_message()` and the `RunStarter` seam are asynchronous now, so this test
+// drives their tasks to completion itself -- the same local helper the other A2A tests use, pending
+// the ADR-237 D7 test-driver rewrite.
+template <class T>
+T drive(ae::rt::task<T> t) {
+    return agentengine::rt::block_on(std::move(t));
+}
+
 struct SlowArgs {
     bool noop;
 };
@@ -46,14 +56,14 @@ AE_JSON_SCHEMA(SlowReply, ok)
 
 // Sleeps long enough that a task is still "working" when the ownership checks below run, so the
 // cancel path is exercised against a live task rather than an already-terminal one.
-struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable> {
+struct SlowBackgroundableTool : ae::Tool<SlowBackgroundableTool, ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "slow_backgroundable";
     static constexpr std::string_view description = "Sleeps, then succeeds.";
     using Args  = SlowArgs;
     using Reply = SlowReply;
-    static ae::result<Reply> invoke(Args, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args, ae::EffectContext&) const {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        return Reply{true};
+        co_return Reply{true};
     }
 };
 
@@ -88,9 +98,9 @@ int main() {
     // Part 1 -- MCP: tasks/get and tasks/cancel are principal-bound (ADR-061 §7 R3).
     // ================================================================================
     {
-        auto const              table = ae::ToolTable::from_tools<SlowBackgroundableTool>();
+        auto const              table = ae::ToolTable::from(SlowBackgroundableTool{});
         ae::CapabilitySet const held  = ae::CapabilitySet::grant_root({ae::cap::Background{8}});
-        mcp::McpServer          server(table, held, ae::ApprovalDecider{}, "binding-test-server");
+        mcp::McpServer          server(table, mcp::McpAuthority::single_trusted_caller(held), ae::ApprovalDecider{}, "binding-test-server");
 
         ae::Principal const alice = ae::make_local_cli_principal("alice", "tenant-a");
         ae::Principal const bob   = ae::make_local_cli_principal("bob", "tenant-a");
@@ -205,23 +215,23 @@ int main() {
         // A `RunStarter` standing in for a session owning `p-owner`, applying the exact predicate
         // `AgentSession::handle()` applies -- reused rather than re-derived, so it cannot drift.
         ae::Principal const session_owner{"p-owner", ""};
-        auto starter = [session_owner](ae::rt::StartRun req) -> ae::result<a2a::RunOutcome> {
+        auto starter = [session_owner](ae::rt::StartRun req) -> ae::rt::task<ae::result<a2a::RunOutcome>> {
             // R2's whole point: `caller` is now always present on the protocol path, so this branch
             // is reachable and meaningful. Previously `A2aServer` sent none and the real
             // `AgentSession` skipped admission entirely.
             if (!req.caller.has_value()) {
-                return std::unexpected(
+                co_return std::unexpected(
                     ae::error{ae::failure_class::policy, "no caller asserted", "test.no_caller"});
             }
             ae::Principal const caller{req.caller->id, req.caller->tenant_id};
             if (!ae::principal_admitted_for(caller, session_owner)) {
-                return std::unexpected(
+                co_return std::unexpected(
                     ae::error{ae::failure_class::policy, "admission denied", "test.admission_denied"});
             }
-            return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
+            co_return a2a::RunOutcome{"s-bind:run:1", ae::rt::AgentResponse{}};
         };
 
-        a2a::A2aServer server(starter, "ctx-bind");
+        a2a::A2aServer server(starter, "ctx-bind", ae::AuthoritySource::single_trusted_caller());
 
         a2a::Message inbound;
         inbound.message_id = "m1";
@@ -234,7 +244,7 @@ int main() {
         ae::rt::SessionCaller const stranger{"mallory", ""};
 
         // --- POSITIVE CONTROL: the owner's message really is admitted and produces a task.
-        auto owned = server.send_message(inbound, owner);
+        auto owned = drive(server.send_message(inbound, owner));
         check(owned.has_value() && owned->status.state == a2a::task_state::completed,
               "R2-POS-1 (positive control): the owning caller's message IS admitted and completes");
         std::string const a2a_task_id = owned.has_value() ? owned->id : std::string{};
@@ -242,7 +252,7 @@ int main() {
         // --- NEGATIVE: a stranger is denied by the real admission check. Before this fix
         // --- `A2aServer` passed no caller at all, so this ran with admission SKIPPED.
         {
-            auto denied = server.send_message(inbound, stranger);
+            auto denied = drive(server.send_message(inbound, stranger));
             check(!denied.has_value() || denied->status.state == a2a::task_state::failed,
                   "R2-NEG-1: a non-owning caller's inbound message does NOT execute as the session "
                   "owner -- 018 §2 admission is really applied on the A2A path");

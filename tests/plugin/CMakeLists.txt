@@ -5,8 +5,8 @@
 # ---- wasmtime C API smoke proof (M2 Phase D task D1, decision 5) -------------------------------
 # Only built when AGENTENGINE_WITH_WASM is explicitly turned ON (root CMakeLists.txt) -- proves the
 # vendored dependency itself links and runs a real WebAssembly module, independent of the real
-# SandboxBackend built further down (D3, decisions/ADR-010-*.md) and its tool-pipeline bridge
-# (decisions/ADR-040-*.md) -- this smoke test predates both and is kept as the narrowest possible
+# SandboxBackend built further down (D3, decisions/archive/ADR-010-*.md) and its tool-pipeline bridge
+# (decisions/archive/ADR-040-*.md) -- this smoke test predates both and is kept as the narrowest possible
 # "does the dependency itself work" check.
 if(AGENTENGINE_WITH_WASM)
   agentengine_add_test(test_wasmtime_smoke LIBS agentengine::wasmtime_vendor)
@@ -18,7 +18,7 @@ if(AGENTENGINE_WITH_WASM)
   # Linux links libwasmtime.a (static) -- see root CMakeLists.txt's AGENTENGINE_WITH_WASM block for
   # why -- so no run-time library path wiring is needed there.
 
-  # ---- wasm SandboxBackend proof (M2 Phase D task D3, decisions/ADR-010-*.md) -------------------
+  # ---- wasm SandboxBackend proof (M2 Phase D task D3, decisions/archive/ADR-010-*.md) -------------------
   # Builds tests/fixtures/wasm_ae_tool_fixture/'s real ae:tool component via cargo-component when
   # that toolchain is present (checked with find_program, never assumed) -- the compiled .wasm is
   # NOT committed to the repo (.gitignore's own "WASM plugin build output" rule, project-wide, not
@@ -58,7 +58,7 @@ if(AGENTENGINE_WITH_WASM)
       ENVIRONMENT "PATH=${AGENTENGINE_WASMTIME_DLL_DIR};$ENV{PATH}")
   endif()
 
-  # ---- wasm tool-pipeline bridge proof (decisions/ADR-040-wasm-tool-pipeline-bridge.md) ----------
+  # ---- wasm tool-pipeline bridge proof (decisions/archive/ADR-040-wasm-tool-pipeline-bridge.md) ----------
   # Wires WasmBackend-discovered tools into the real core/tool_pipeline.hpp ToolTable/invoke_tool --
   # same fixture/toolchain-availability posture as test_wasm_backend above (SKIP, not fail, when
   # cargo-component is unavailable); its own pure-logic wasm_tool_result_to_json() checks still run

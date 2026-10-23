@@ -1,5 +1,5 @@
-// Proof for ADR-032 (decisions/ADR-032-workflow-executor-worktree-scoping.md), closing
-// 014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow executor...
+// Proof for ADR-032 (decisions/archive/ADR-032-workflow-executor-worktree-scoping.md), closing
+// rfcs/014-Workflow-and-Orchestration.md §1's named gap ("nothing states whether a workflow executor...
 // gets its own sub-worktree, inherits the caller's, or shares one") using 025-Worktree-and-Virtual-
 // Filesystem.md §3's `SubWorktree`/`sharing_mode` primitive.
 //
@@ -12,6 +12,7 @@
 
 #include "agentengine/workflow/graph.hpp"
 #include "agentengine/workflow/worktree_scoping.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using namespace agentengine::workflow;
@@ -45,11 +46,11 @@ std::string string_of(std::vector<std::byte> const& bytes) {
 }
 
 Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    return *store.put_blob(bytes_of(content));
+    return *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 Executor make_executor(std::string id, sharing_mode mode) {
@@ -76,7 +77,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-1", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-1", root));
         AE_CHECK(parent.has_value(), "M1: setup parent commit succeeds");
 
         Workflow wf;
@@ -84,7 +85,7 @@ int main() {
         wf.executors = {make_executor("a", sharing_mode::branch), make_executor("b", sharing_mode::shared),
                         make_executor("c", sharing_mode::scratch), make_executor("d", sharing_mode::readonly)};
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(grants.has_value() && grants->size() == 4, "M1: mint succeeds, one grant per executor");
 
         AE_CHECK((*grants)[0].mount.has_value() && (*grants)[0].read.has_value() &&
@@ -112,14 +113,14 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto seed = blob_of(obj_store, "seed");
         auto root = tree_of(obj_store, {{"seed.txt", seed, false}});
-        auto parent = commit_ref(ref_store, "wf:run-2", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-2", root));
         AE_CHECK(parent.has_value(), "M2: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("alpha", sharing_mode::branch), make_executor("beta", sharing_mode::branch)};
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(grants.has_value(), "M2: mint succeeds");
         auto const& ga = (*grants)[0];
         auto const& gb = (*grants)[1];
@@ -127,18 +128,18 @@ int main() {
         AE_CHECK(ga.mount->ref_name != gb.mount->ref_name,
                  "M2: the two branch siblings back onto DIFFERENT refs (true divergence, not aliasing)");
 
-        auto write = mount_write(obj_store, ref_store, *ga.mount, *ga.write, "alpha_only.txt", bytes_of("alpha wrote this"));
+        auto write = agentengine::rt::block_on(mount_write(obj_store, ref_store, *ga.mount, *ga.write, "alpha_only.txt", bytes_of("alpha wrote this")));
         AE_CHECK(write.has_value(), "M2: writing through alpha's own mount succeeds");
 
-        auto read_back_through_own = mount_read(obj_store, ref_store, *ga.mount, *ga.read, "alpha_only.txt");
+        auto read_back_through_own = agentengine::rt::block_on(mount_read(obj_store, ref_store, *ga.mount, *ga.read, "alpha_only.txt"));
         AE_CHECK(read_back_through_own.has_value() && string_of(*read_back_through_own) == "alpha wrote this",
                  "M2 (positive control): alpha's write IS visible reading back through alpha's own mount");
 
-        auto read_through_sibling = mount_read(obj_store, ref_store, *gb.mount, *gb.read, "alpha_only.txt");
+        auto read_through_sibling = agentengine::rt::block_on(mount_read(obj_store, ref_store, *gb.mount, *gb.read, "alpha_only.txt"));
         AE_CHECK(!read_through_sibling.has_value(),
                  "M2: alpha's write is INVISIBLE reading through beta's mount -- isolated, not aliased");
 
-        auto parent_after = read_ref(ref_store, "wf:run-2");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-2"));
         AE_CHECK(parent_after.has_value() && parent_after->has_value() &&
                      (*parent_after)->tree_digest == root,
                  "M2: neither sibling's write moved the shared parent ref");
@@ -152,24 +153,24 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-3", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-3", root));
         AE_CHECK(parent.has_value(), "M3: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("writer", sharing_mode::shared), make_executor("reader", sharing_mode::shared)};
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(grants.has_value(), "M3: mint succeeds");
         auto const& gw = (*grants)[0];
         auto const& gr = (*grants)[1];
         AE_CHECK(gw.mount->mount_id != gr.mount->mount_id && gw.mount->ref_name == gr.mount->ref_name,
                  "M3: distinct mount ids, but the SAME backing ref -- that is what makes them 'shared'");
 
-        AE_CHECK(mount_write(obj_store, ref_store, *gw.mount, *gw.write, "note.txt", bytes_of("hello"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *gw.mount, *gw.write, "note.txt", bytes_of("hello")))
                      .has_value(),
                  "M3: writing through writer's mount succeeds");
-        auto seen_by_reader = mount_read(obj_store, ref_store, *gr.mount, *gr.read, "note.txt");
+        auto seen_by_reader = agentengine::rt::block_on(mount_read(obj_store, ref_store, *gr.mount, *gr.read, "note.txt"));
         AE_CHECK(seen_by_reader.has_value() && string_of(*seen_by_reader) == "hello",
                  "M3: reader's mount sees writer's write immediately -- true cross-visibility");
     }
@@ -182,17 +183,17 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-4", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-4", root));
         AE_CHECK(parent.has_value(), "M4: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("x", sharing_mode::branch), make_executor("y", sharing_mode::branch)};
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(grants.has_value(), "M4: mint succeeds");
 
-        auto cross = mount_write(obj_store, ref_store, *(*grants)[1].mount, *(*grants)[0].write, "f.txt",
-                                 bytes_of("x"));
+        auto cross = agentengine::rt::block_on(mount_write(obj_store, ref_store, *(*grants)[1].mount, *(*grants)[0].write, "f.txt",
+                                 bytes_of("x")));
         AE_CHECK(!cross.has_value() && cross.error().code == "worktree.mount_capability_mismatch",
                  "M4: executor x's capability is rejected against executor y's Mount");
     }
@@ -206,16 +207,16 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto preexisting = blob_of(obj_store, "pre-existing parent content");
         auto root = tree_of(obj_store, {{"already_here.txt", preexisting, false}});
-        auto parent = commit_ref(ref_store, "wf:run-5", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-5", root));
         AE_CHECK(parent.has_value(), "M5: setup parent commit with pre-existing content succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("late_joiner", sharing_mode::branch)};
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(grants.has_value(), "M5: mint succeeds");
 
-        auto seen = mount_read(obj_store, ref_store, *(*grants)[0].mount, *(*grants)[0].read, "already_here.txt");
+        auto seen = agentengine::rt::block_on(mount_read(obj_store, ref_store, *(*grants)[0].mount, *(*grants)[0].read, "already_here.txt"));
         AE_CHECK(seen.has_value() && string_of(*seen) == "pre-existing parent content",
                  "M5: a fresh branch sees the parent's PRE-EXISTING content, not an empty view");
     }
@@ -226,13 +227,13 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-6", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-6", root));
         AE_CHECK(parent.has_value(), "M6: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("evil/../escape", sharing_mode::branch)};
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(!grants.has_value() && grants.error().code == "worktree_scoping.executor_id_contains_slash",
                  "M6: an executor id containing '/' is rejected, independent of validate_workflow");
     }
@@ -243,26 +244,26 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-7", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-7", root));
         AE_CHECK(parent.has_value(), "M7: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("solo", sharing_mode::branch)};
 
-        auto first = mint_executor_worktrees(ref_store, *parent, wf);
+        auto first = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(first.has_value(), "M7: first mint succeeds");
-        AE_CHECK(mount_write(obj_store, ref_store, *(*first)[0].mount, *(*first)[0].write, "progress.txt",
-                             bytes_of("in progress"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *(*first)[0].mount, *(*first)[0].write, "progress.txt",
+                             bytes_of("in progress")))
                      .has_value(),
                  "M7: writing through the first mint's grant succeeds");
 
-        auto second = mint_executor_worktrees(ref_store, *parent, wf);
+        auto second = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(!second.has_value() && second.error().code == "worktree_scoping.already_minted",
                  "M7: a second mint for the same parent ref fails closed instead of re-branching over it");
 
         auto still_there =
-            mount_read(obj_store, ref_store, *(*first)[0].mount, *(*first)[0].read, "progress.txt");
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, *(*first)[0].mount, *(*first)[0].read, "progress.txt"));
         AE_CHECK(still_there.has_value() && string_of(*still_there) == "in progress",
                  "M7: the rejected second mint did NOT clobber the first mint's already-written content");
     }
@@ -275,38 +276,38 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-8", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-8", root));
         AE_CHECK(parent.has_value(), "M8: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("branchy", sharing_mode::branch), make_executor("sharey", sharing_mode::shared)};
 
-        auto minted = mint_executor_worktrees(ref_store, *parent, wf);
+        auto minted = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(minted.has_value(), "M8: initial mint succeeds");
-        AE_CHECK(mount_write(obj_store, ref_store, *(*minted)[0].mount, *(*minted)[0].write, "before_restart.txt",
-                             bytes_of("written before the simulated restart"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *(*minted)[0].mount, *(*minted)[0].write, "before_restart.txt",
+                             bytes_of("written before the simulated restart")))
                      .has_value(),
                  "M8: writing before the simulated restart succeeds");
 
         // Simulate a process restart: nothing survives except `ref_store`/`obj_store` (both durable
         // stores) -- no `ExecutorWorktreeGrant` from `minted` is reused below.
-        auto resumed = resume_executor_worktrees(ref_store, *parent, wf);
+        auto resumed = agentengine::rt::block_on(resume_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(resumed.has_value(), "M8: resume succeeds after the simulated restart");
         AE_CHECK((*resumed)[0].mount->ref_name == (*minted)[0].mount->ref_name,
                  "M8: the resumed branch grant backs onto the SAME ref the original mint created");
 
-        auto still_there = mount_read(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].read,
-                                       "before_restart.txt");
+        auto still_there = agentengine::rt::block_on(mount_read(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].read,
+                                       "before_restart.txt"));
         AE_CHECK(still_there.has_value() && string_of(*still_there) == "written before the simulated restart",
                  "M8: the resumed grant sees the write made before the restart -- continuation, not a fresh branch");
 
-        AE_CHECK(mount_write(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].write, "after_restart.txt",
-                             bytes_of("written after"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].write, "after_restart.txt",
+                             bytes_of("written after")))
                      .has_value(),
                  "M8: writing through the resumed grant succeeds");
-        auto both_present = mount_read(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].read,
-                                       "before_restart.txt");
+        auto both_present = agentengine::rt::block_on(mount_read(obj_store, ref_store, *(*resumed)[0].mount, *(*resumed)[0].read,
+                                       "before_restart.txt"));
         AE_CHECK(both_present.has_value(),
                  "M8: the pre-restart file is still there after a post-restart write -- true accumulation");
 
@@ -321,15 +322,15 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-9", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-9", root));
         AE_CHECK(parent.has_value(), "M9: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("critic", sharing_mode::readonly)};
-        AE_CHECK(mint_executor_worktrees(ref_store, *parent, wf).has_value(), "M9: initial mint succeeds");
+        AE_CHECK(agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf)).has_value(), "M9: initial mint succeeds");
 
-        auto resumed = resume_executor_worktrees(ref_store, *parent, wf);
+        auto resumed = agentengine::rt::block_on(resume_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(!resumed.has_value() &&
                      resumed.error().code == "worktree_scoping.readonly_resume_unsupported",
                  "M9: resuming a readonly executor fails closed with the documented residual code");
@@ -341,14 +342,14 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "wf:run-10", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-10", root));
         AE_CHECK(parent.has_value(), "M10: setup parent commit succeeds");
 
         Workflow wf;
         wf.id = "g";
         wf.executors = {make_executor("never_minted", sharing_mode::branch)};
 
-        auto resumed = resume_executor_worktrees(ref_store, *parent, wf);
+        auto resumed = agentengine::rt::block_on(resume_executor_worktrees(ref_store, *parent, wf));
         AE_CHECK(!resumed.has_value() && resumed.error().code == "worktree_scoping.resume_not_minted",
                  "M10: resuming an executor with no prior mint fails closed");
     }

@@ -14,6 +14,8 @@
 #include "agentengine/protocol/mcp/mcp_tool_bridge.hpp"
 #include "agentengine/protocol/mcp/server.hpp"
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
+
 namespace {
 
 int g_failures = 0;
@@ -34,24 +36,24 @@ struct AgentOwnArgs { std::string text; };
 AE_JSON_SCHEMA(AgentOwnArgs, text)
 struct AgentOwnReply { std::string text; };
 AE_JSON_SCHEMA(AgentOwnReply, text)
-struct AgentOwnTool : ae::Tool<AgentOwnTool> {
+struct AgentOwnTool : ae::Tool<AgentOwnTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "agent_own_tool";
     static constexpr std::string_view description = "One of the agent's own declared tools.";
     using Args = AgentOwnArgs;
     using Reply = AgentOwnReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 struct SkillUnlockedArgs { std::string text; };
 AE_JSON_SCHEMA(SkillUnlockedArgs, text)
 struct SkillUnlockedReply { std::string text; };
 AE_JSON_SCHEMA(SkillUnlockedReply, text)
-struct SkillUnlockedTool : ae::Tool<SkillUnlockedTool> {
+struct SkillUnlockedTool : ae::Tool<SkillUnlockedTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "skill_unlocked_tool";
     static constexpr std::string_view description = "A tool a mounted skill's allowed-tools names.";
     using Args = SkillUnlockedArgs;
     using Reply = SkillUnlockedReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 // Reused for both "distinct name" fixtures AND the collision fixtures below -- a second tool
@@ -61,37 +63,37 @@ struct CollidingArgs { std::string text; };
 AE_JSON_SCHEMA(CollidingArgs, text)
 struct CollidingReply { std::string text; };
 AE_JSON_SCHEMA(CollidingReply, text)
-struct CollidingWithAgentOwnTool : ae::Tool<CollidingWithAgentOwnTool> {
+struct CollidingWithAgentOwnTool : ae::Tool<CollidingWithAgentOwnTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "agent_own_tool";  // deliberately same as AgentOwnTool
     static constexpr std::string_view description = "Collides with AgentOwnTool's own name.";
     using Args = CollidingArgs;
     using Reply = CollidingReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.text}; }
 };
 
 struct McpEchoArgs { std::string text; };
 AE_JSON_SCHEMA(McpEchoArgs, text)
 struct McpEchoReply { std::string text; };
 AE_JSON_SCHEMA(McpEchoReply, text)
-struct McpEchoTool : ae::Tool<McpEchoTool> {
+struct McpEchoTool : ae::Tool<McpEchoTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mcp_echo_tool";
     static constexpr std::string_view description = "An MCP-server-side tool, reached via a real round trip.";
     using Args = McpEchoArgs;
     using Reply = McpEchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{"mcp said: " + a.text}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{"mcp said: " + a.text}; }
 };
 
 struct McpAlwaysFailsArgs { bool noop; };
 AE_JSON_SCHEMA(McpAlwaysFailsArgs, noop)
 struct McpAlwaysFailsReply { bool ok; };
 AE_JSON_SCHEMA(McpAlwaysFailsReply, ok)
-struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool> {
+struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "mcp_always_fails";
     static constexpr std::string_view description = "Always returns an MCP execution error.";
     using Args = McpAlwaysFailsArgs;
     using Reply = McpAlwaysFailsReply;
-    static ae::result<Reply> invoke(McpAlwaysFailsArgs, ae::EffectContext&) {
-        return std::unexpected(ae::error{ae::failure_class::contract, "deliberate MCP-side failure",
+    ae::task<ae::result<Reply>> invoke(McpAlwaysFailsArgs, ae::EffectContext&) const {
+        co_return std::unexpected(ae::error{ae::failure_class::contract, "deliberate MCP-side failure",
                                           "test.deliberate_failure"});
     }
 };
@@ -101,8 +103,8 @@ struct McpAlwaysFailsTool : ae::Tool<McpAlwaysFailsTool> {
 int main() {
     // ---- U1: agent tools alone (empty skill/mcp sources) pass through unchanged -------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from();
         auto unioned = ae::union_codeact_tools(agent_tools, skill_tools);
         check(unioned.has_value() && unioned->descriptors().size() == 1,
               "U1: agent tools alone, with no skill/mcp tools, pass through as the whole union");
@@ -113,8 +115,8 @@ int main() {
 
     // ---- U2: three distinct-named sources merge into one table, all three present -----------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<SkillUnlockedTool>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from(SkillUnlockedTool{});
         std::vector<ae::ToolDescriptor> mcp_tools;
         {
             ae::ToolDescriptor d;
@@ -136,8 +138,8 @@ int main() {
     // ---- U3: a name collision between the agent's own tools and skill-unlocked tools is a hard ----
     // ---- error, never a silent precedence order --------------------------------------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<AgentOwnTool>();
-        auto const skill_tools = ae::ToolTable::from_tools<CollidingWithAgentOwnTool>();
+        auto const agent_tools = ae::ToolTable::from(AgentOwnTool{});
+        auto const skill_tools = ae::ToolTable::from(CollidingWithAgentOwnTool{});
         auto unioned = ae::union_codeact_tools(agent_tools, skill_tools);
         check(!unioned.has_value(),
               "U3: a tool name declared by both the agent's own tools and a mounted skill is "
@@ -151,8 +153,8 @@ int main() {
     // ---- U4: the same collision check applies to the skill/MCP pair, not only the agent/skill -----
     // ---- pair ---------------------------------------------------------------------------------------
     {
-        auto const agent_tools = ae::ToolTable::from_tools<>();
-        auto const skill_tools = ae::ToolTable::from_tools<SkillUnlockedTool>();
+        auto const agent_tools = ae::ToolTable::from();
+        auto const skill_tools = ae::ToolTable::from(SkillUnlockedTool{});
         std::vector<ae::ToolDescriptor> mcp_tools;
         {
             ae::ToolDescriptor d;
@@ -171,20 +173,24 @@ int main() {
     // ---- ToolDescriptor.invoke actually round-trips through the real MCP pipeline, both success ---
     // ---- and isError:true -----------------------------------------------------------------------
     {
-        auto const server_table = ae::ToolTable::from_tools<McpEchoTool, McpAlwaysFailsTool>();
+        auto const server_table = ae::ToolTable::from(McpEchoTool{}, McpAlwaysFailsTool{});
         ae::CapabilitySet const held;
-        mcp::McpServer server(server_table, held, ae::ApprovalDecider{}, "codeact-union-test-server");
+        mcp::McpServer server(server_table, mcp::McpAuthority::single_trusted_caller(held), ae::ApprovalDecider{}, "codeact-union-test-server");
         // ADR-061 §7 R3: `dispatch()` now requires the principal the request established, so the
         // task store can be bound to it. Named explicitly rather than defaulted -- there is
         // deliberately no defaulted overload, since a default is what made the A2A admission path
         // fail open.
         ae::Principal const kCaller = ae::make_local_cli_principal("codeact-union-test", "test-tenant");
-        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req) {
-            return server.dispatch(req, kCaller);
+        mcp::RequestSender sender = [&server, &kCaller](mcp::JsonRpcRequest const& req)
+            -> ae::task<mcp::JsonRpcResponse> {
+            co_return server.dispatch(req, kCaller);
         };
         auto client = std::make_shared<mcp::McpClient>(sender, "codeact-union-test-client");
 
-        auto descriptors = mcp::mcp_tools_as_descriptors(client);
+        // ADR-237 §5.1: the adapter is a `task` producer now; its body never parks (the sender
+        // drives the in-process server synchronously), so the shared test driver is enough.
+        auto descriptors = ae::test_support::run_task_sync<ae::result<std::vector<ae::ToolDescriptor>>>(
+            mcp::mcp_tools_as_descriptors(client, ae::approval_mode::never_require));
         check(descriptors.has_value() && descriptors->size() == 2,
               "U5: mcp_tools_as_descriptors() lists both real MCP-side tools");
 
@@ -197,6 +203,9 @@ int main() {
             }
             check(echo_descriptor != nullptr && fails_descriptor != nullptr,
                   "U5: both descriptors are individually findable by their real MCP tool names");
+            bool all_stated = true;
+            for (auto const& d : *descriptors) all_stated = all_stated && d.approval == ae::approval_mode::never_require;
+            check(all_stated, "U5 (ADR-244 slice 4a): every adapted descriptor carries the host's approval mode");
             check(echo_descriptor && echo_descriptor->capability_ceiling.size() == 1 &&
                       std::holds_alternative<ae::cap::ToolCall>(echo_descriptor->capability_ceiling[0]) &&
                       std::get<ae::cap::ToolCall>(echo_descriptor->capability_ceiling[0]).tool_name ==
@@ -206,8 +215,8 @@ int main() {
 
             ae::EffectContext ctx{};
             if (echo_descriptor) {
-                auto called = echo_descriptor->invoke(
-                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(echo_descriptor->invoke(
+                    json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx));
                 check(called.has_value(), "U5: invoking the adapted descriptor succeeds");
                 if (called) {
                     auto const* text_field = called->find("text");
@@ -220,8 +229,8 @@ int main() {
             }
 
             if (fails_descriptor) {
-                auto called = fails_descriptor->invoke(
-                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx);
+                auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(fails_descriptor->invoke(
+                    json::Value::make_object({{"noop", json::Value::make_bool(true)}}), ctx));
                 check(!called.has_value(),
                       "U6: an MCP-side isError:true surfaces as a real pipeline error through the "
                       "adapted descriptor's invoke, never a silently successful empty result");

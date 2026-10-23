@@ -5,12 +5,12 @@ worktree-isolation + machine-safety — see §9 for the full finding-by-finding 
 implemented, no code written against this document. This is the base a later `prove → judge` pass
 turns into `decisions/ADR-0NN-*.md`, per `decisions/README.md`'s required shape.
 
-**Relates to:** `026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn`), OpenQuestions.md OQ-14
+**Relates to:** `rfcs/026-Agent-Facing-Runtime-Surface.md` §5 (`agent.spawn`), OpenQuestions.md OQ-14
 (named `agent.spawn` the project's own "sharpest case"; its cost/depth halves are separately
-Judged in `decisions/ADR-006-agent-spawn-depth-budget-bound.md` and
-`decisions/ADR-031-spawn-cost-budget-actor-primitive.md`, both real, tested, and **zero callers**)
+Judged in `decisions/archive/ADR-006-agent-spawn-depth-budget-bound.md` and
+`decisions/archive/ADR-031-spawn-cost-budget-actor-primitive.md`, both real, tested, and **zero callers**)
 and OQ-16 (`trust/agent_library_manifest.hpp`, real, tested, **zero callers**).
-`decisions/ADR-059-invoke-agent-tool-capability-attenuation.md` is the closest prior art for §5
+`decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md` is the closest prior art for §5
 below and is reused, not re-derived, wherever this document says so explicitly.
 
 ---
@@ -239,7 +239,7 @@ touches.
 
 ```cpp
 #pragma once
-// Implements 026-Agent-Facing-Runtime-Surface.md §5 (agent.spawn) / OpenQuestions.md OQ-14's
+// Implements rfcs/026-Agent-Facing-Runtime-Surface.md §5 (agent.spawn) / OpenQuestions.md OQ-14's
 // "sharpest case" — the real, wired call path ADR-006/ADR-031 were proven standalone against but
 // never connected to. See docs/planning/agent-spawn-runtime-design-draft.md for the full design.
 
@@ -439,7 +439,7 @@ to falsify (formerly open question 3, §7); it is now closed by construction, no
 
 ```cpp
 #pragma once
-// Implements 025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
+// Implements rfcs/025-Worktree-and-Virtual-Filesystem.md §3's "a session may run several agents, each on
 // its own subtree" for a DYNAMICALLY-generated child id — workflow/worktree_scoping.hpp's own
 // mint_executor_worktrees() only works for statically-known ids drawn from a whole Workflow graph
 // (ADR-032 §5); this is the same POLICY + MINTING layer, keyed by one freshly-generated id instead.

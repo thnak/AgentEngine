@@ -25,6 +25,7 @@
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include "../../support/crt_fail_fast.hpp"
 #include "../../support/memory_cap.hpp"
@@ -35,7 +36,9 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 
+#include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -64,8 +67,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 [[nodiscard]] bool container_exists(std::string const& id) {
@@ -110,13 +112,13 @@ using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
     auto tool = tool_of(p);  // an on_context per call: each is a "turn" boundary as far as the provider can tell
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"});
     EffectContext ctx = owner_ctx();
-    auto out = tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string(command)}}), ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<ShellExecReply>(*out);
 }
 
 [[nodiscard]] bool tree_has(Ledger<>& ledger, std::string const& tree, IdentityHandle who, std::string const& name) {
-    auto t = ledger.get_tree_safe(tree, who);
+    auto t = agentengine::rt::block_on(ledger.get_tree_safe(tree, who));
     return t.has_value() &&
            std::any_of(t->entries.begin(), t->entries.end(), [&](auto const& e) { return e.name == name; });
 }
@@ -161,9 +163,16 @@ int main() {
 
     auto bind = [&](Provider& p, std::string const& name, std::string const& image, std::chrono::milliseconds deadline) {
         auto root = drive(ledger.create_root_branch(owner, name));
-        return p.bind_sandbox(ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
-                              LiveShellLimits{30min, 2h, 100},
-                              [image] { return DockerPersistentShellSurface(image, box()); }, deadline);
+        // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory); drive it here
+        // so this lambda keeps its own synchronous `result<void>` shape for its call sites.
+        p.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
+        return agentengine::rt::block_on(p.bind_sandbox(
+            ledger, std::move(*root), owner, dir / name, branch_q, run_q, storage_q, open_q,
+            LiveShellLimits{30min, 2h, 100},
+            [image]() -> agentengine::rt::task<DockerPersistentShellSurface> {
+                co_return DockerPersistentShellSurface(image, box());
+            },
+            deadline));
     };
 
     // ---- L1, L2, L3, L4, L5

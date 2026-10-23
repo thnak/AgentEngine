@@ -3,8 +3,8 @@
 // file's own Stages A/B/D, ADR-002/003's carried-forward findings: the Layer-0 keep-set, the
 // isolated=1/site_import=0 embedding shape, "gate by module name before any loader runs") into the
 // process this design's ADR moves real CPython execution into. See mediated_python_runner.hpp's own
-// (now much shorter) file header for what changed and why; see 008-Sandbox-and-Isolation.md §1b/§3
-// and 010-Python-Code-Interpreter.md §2/§6 for the spec this whole worker-process split implements.
+// (now much shorter) file header for what changed and why; see rfcs/008-Sandbox-and-Isolation.md §1b/§3
+// and rfcs/010-Python-Code-Interpreter.md §2/§6 for the spec this whole worker-process split implements.
 //
 // The load-bearing difference from the code this was relocated from: `Internal_call_tool`/
 // `Internal_open`/`Internal_listdir`/`Internal_do_connect` no longer call host-side C++ directly
@@ -57,11 +57,11 @@ struct WorkerInitConfig {
                                                               // unchanged from mediated_python_runner.hpp
     bool expose_agent_files_data = false;
     bool expose_agent_ask = false;
-    // decisions/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output` (zero capability,
+    // decisions/archive/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output` (zero capability,
     // same opt-in-per-module shape `expose_agent_ask` above already establishes for another
     // zero-capability module -- a session may hold no reason to want it even though it costs nothing).
     bool expose_agent_output = false;
-    // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress` (zero capability).
+    // decisions/archive/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress` (zero capability).
     bool expose_agent_progress = false;
     std::uint64_t output_cap_bytes = 0;       // 0 -> this engine's own default (output_discipline.hpp)
     std::string agent_tools_module_source;    // empty -> agent.tools is not bridged this session
@@ -81,7 +81,7 @@ struct WorkerExecResult {
     std::string stderr_text;
     std::string result_repr;   // meaningful only when klass == "ok"
     std::string ask_prompt;    // meaningful only when klass == "ask_pending"
-    // decisions/ADR-154-agent-output-codeact-module.md: JSON-encoded value from `agent.output.set(...)`,
+    // decisions/archive/ADR-154-agent-output-codeact-module.md: JSON-encoded value from `agent.output.set(...)`,
     // meaningful only when klass == "ok" -- empty means never called, same convention as result_repr.
     std::string structured_output_json;
 };

@@ -36,6 +36,9 @@
 #include <vector>
 
 #include "agentengine/protocol/openai/chat_client.hpp"
+#include "agentengine/rt/block_on.hpp"
+#include "agentengine/rt/dns.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secret.hpp"
 #include "../../support/run_task_sync.hpp"
@@ -471,6 +474,81 @@ int main() {
                   "socket, decodes and delivers through ae::stream<T> in order with 0 loss");
             check(s.terminal() == stream_terminal::closed,
                   "chat_stream(): the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat_stream() on the REACTOR (ADR-237 §5.1, step 34): the same canned SSE response, but the
+    //      producer is an OWNED root on a rt::Runtime (rt::Runtime::spawn) instead of a detached thread ---
+    {
+        std::string const sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi \"}}]}\n\n"
+                                 "data: {\"choices\":[{\"delta\":{\"content\":\"there!\"}}]}\n\n"
+                                 "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                                 "data: [DONE]\n\n";
+        TlsCannedServer server(leaf, http_response(sse, /*chunked=*/true));
+        check(server.ok(), "chat_stream()+reactor: test server started");
+        if (server.ok()) {
+            rt::Runtime                        rt{rt::RuntimeConfig{.lanes = 2}};
+            openai::detail::ReactorOptions     rops;
+            rops.runtime  = &rt;
+            rops.resolver = [](std::string const&) {
+                pal::ResolveOutcome o;
+                o.addresses.push_back(pal::IpAddress::loopback_v4());
+                return o;
+            };
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem,
+                                             /*http_referer=*/{}, /*x_title=*/{}, /*end_user_id=*/{},
+                                             std::nullopt, sandbox::ProviderTransport::tls,
+                                             /*scan_response_format_leaks=*/false, /*session_id=*/{}, rops);
+            store.set("openai-api-key", "sk-test-value");
+
+            stream<ChatResponseUpdate> s = client.chat_stream(request_asking("hi"), ctx);
+            std::vector<std::string>   received;
+            while (!s.done()) {
+                while (auto update = s.next()) {
+                    auto const* text = std::get_if<Text>(&update->delta.value);
+                    if (text) received.push_back(text->text);
+                }
+                if (!s.done()) std::this_thread::yield();
+            }
+            check(received.size() == 2 && received[0] == "Hi " && received[1] == "there!",
+                  "chat_stream()+reactor: the same chunked SSE response, driven by an owned root on the "
+                  "reactor (rt::Runtime::spawn, no detached thread), decodes and delivers in order with 0 loss");
+            check(s.terminal() == stream_terminal::closed,
+                  "chat_stream()+reactor: the stream reaches the success terminal");
+        }
+    }
+
+    // ---- chat() on the REACTOR (ADR-237 §5.1, step 35): the buffered exchange runs on rt::http -----
+    {
+        std::string const body = R"({"choices":[{"index":0,"finish_reason":"stop",)"
+                                  R"("message":{"role":"assistant","content":"hello from the reactor"}}],)"
+                                  R"("usage":{"prompt_tokens":7,"completion_tokens":4}})";
+        TlsCannedServer server(leaf, http_response(body));
+        check(server.ok(), "chat()+reactor: test server started");
+        if (server.ok()) {
+            rt::Runtime                    rt{rt::RuntimeConfig{.lanes = 2}};
+            openai::detail::ReactorOptions  rops;
+            rops.runtime  = &rt;
+            rops.resolver = [](std::string const&) {
+                pal::ResolveOutcome o;
+                o.addresses.push_back(pal::IpAddress::loopback_v4());
+                return o;
+            };
+            openai::OpenAIChatClient client("localhost", server.port(), "gpt-5", SecretRef{"openai-api-key"},
+                                             ChatClientCapabilities{}, store, "/v1", fake_resolver, leaf.cert_pem,
+                                             /*http_referer=*/{}, /*x_title=*/{}, /*end_user_id=*/{},
+                                             std::nullopt, sandbox::ProviderTransport::tls,
+                                             /*scan_response_format_leaks=*/false, /*session_id=*/{}, rops);
+            store.set("openai-api-key", "sk-test-value");
+
+            auto resp = rt::block_on(client.chat(request_asking("hi"), ctx));
+            check(resp.has_value(), "chat()+reactor: a real TLS round-trip on the reactor succeeds");
+            if (resp.has_value() && !resp->message.content.empty()) {
+                auto const* t = std::get_if<Text>(&resp->message.content.front().value);
+                check(t != nullptr && t->text == "hello from the reactor",
+                      "chat()+reactor: the buffered body parses over rt::http, no blocking body");
+            }
         }
     }
 

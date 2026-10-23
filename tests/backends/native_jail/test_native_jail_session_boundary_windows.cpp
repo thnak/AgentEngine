@@ -1,7 +1,7 @@
-// 008-Sandbox-and-Isolation.md §9 G7 -- "a guest instance is never reused across sessions or
+// rfcs/008-Sandbox-and-Isolation.md §9 G7 -- "a guest instance is never reused across sessions or
 // principals; a canary written in session A is unreachable from session B on every profile,
 // including under pooling and snapshot-restore. Positive control: a deliberately shared pool is
-// caught." Traced as a real, previously-untracked gap in decisions/ADR-082-native-jail-promotion-
+// caught." Traced as a real, previously-untracked gap in decisions/archive/ADR-082-native-jail-promotion-
 // gate-008-9.md §4 (unlike G5/G6, G7 was absent from M2 Phase C's own "what's deferred" list
 // entirely -- no test existed anywhere for this claim before this file).
 //
@@ -11,7 +11,7 @@
 // the gate's own text imagines. What this file proves instead is the load-bearing claim ADR-082 §4
 // left as an argument, not a fact: that two independently-created worker instances are genuinely
 // separate OS processes with genuinely separate CPython interpreter state, not merely "no pooling
-// code happens to run today." Since decisions/ADR-081-jailed-python-worker-process-slice-1.md moved
+// code happens to run today." Since decisions/archive/ADR-081-jailed-python-worker-process-slice-1.md moved
 // the interpreter into its own OS process per worker, this is now a real KERNEL-ENFORCED boundary
 // (two processes cannot share heap memory), not a language-level argument about missing code paths
 // -- this file is the first test to actually exercise that.
@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <string>
 
+#include "../../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/runner.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
@@ -60,30 +62,32 @@ int main() {
     MediatedPythonConfig cfg_a;
     cfg_a.python_home = AE_PYTHON_HOME;
     MediatedPythonRunner runner_a(cfg_a, backend);
-    AE_CHECK(runner_a.initialize().has_value(), "setup: session A's jailed worker initializes");
+    AE_CHECK(ae_test::initialize_runner(runner_a).has_value(), "setup: session A's jailed worker initializes");
 
     MediatedPythonConfig cfg_b;
     cfg_b.python_home = AE_PYTHON_HOME;
     MediatedPythonRunner runner_b(cfg_b, backend);
-    AE_CHECK(runner_b.initialize().has_value(), "setup: session B's jailed worker initializes");
+    AE_CHECK(ae_test::initialize_runner(runner_b).has_value(), "setup: session B's jailed worker initializes");
 
     ExecState state_a{};
     ExecState state_b{};
     EffectContext ctx{};
+    ctx.session_nonce = ae_test::kTestSessionNonce;
+    ctx.principal = ae_test::kTestPrincipal;
 
     static constexpr char kCanaryValue[] = "leak_should_not_cross_sessions_98765";
 
     // ---- 1: plant the canary in session A. ------------------------------------------------------
     {
         std::string src = std::string("session_a_canary = '") + kCanaryValue + "'";
-        auto out = runner_a.run(ExecRequest{"python", src}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", src}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                   "1: session A plants its own canary");
     }
 
     // ---- 2: positive control -- A reads its own canary back, BEFORE B ever runs. -----------------
     {
-        auto out = runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok &&
                       out->stdout_text.find(kCanaryValue) != std::string::npos,
                   "2 (non-vacuousness): session A sees its own canary -- the persistence mechanism "
@@ -92,7 +96,7 @@ int main() {
 
     // ---- 3: G7 itself -- session B must NOT see session A's canary. ------------------------------
     {
-        auto out = runner_b.run(ExecRequest{"python", "print(session_a_canary)"}, state_b, ctx);
+        auto out = agentengine::rt::block_on(runner_b.run(ExecRequest{"python", "print(session_a_canary)"}, state_b, ctx));
         // A NameError inside the worker is a normal, well-formed exec_response (klass=ok, a Python
         // traceback on stderr), not an exec_session()-level failure -- the same shape G-Q2's own
         // memory-bomb case (test_native_jail_python_worker_slice1.cpp) already established for an
@@ -111,7 +115,7 @@ int main() {
 
     // ---- 4: positive control -- A STILL sees its own canary, AFTER B's probe. --------------------
     {
-        auto out = runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx);
+        auto out = agentengine::rt::block_on(runner_a.run(ExecRequest{"python", "print(session_a_canary)"}, state_a, ctx));
         AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok &&
                       out->stdout_text.find(kCanaryValue) != std::string::npos,
                   "4 (non-vacuousness): session A STILL sees its own canary after B's own probe -- "

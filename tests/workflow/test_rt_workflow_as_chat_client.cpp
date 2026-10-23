@@ -50,6 +50,7 @@
 // own max_rounds bound; the polling sleep is 2ms, same tens-of-ms scale as this codebase's other
 // stream-drain tests.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -57,6 +58,8 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/trust/principal.hpp"
@@ -209,44 +212,44 @@ struct DrainResult {
 [[nodiscard]] ExecutorBody envelope_decoding_start(std::shared_ptr<int> decoded_count,
                                                     std::shared_ptr<std::vector<std::string>> decoded_texts) {
     return [decoded_count, decoded_texts](
-               Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
         if (in.content.size() != 1) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::contract, "expected exactly one envelope item", "test.bad_envelope"});
         }
         auto const* custom = std::get_if<Custom>(&in.content[0].value);
         if (custom == nullptr ||
             custom->type_id != "agentengine.workflow_chat_client_history") {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::contract, "expected the history envelope Custom item",
                       "test.bad_envelope_type"});
         }
         auto parsed = agentengine::json::parse(custom->payload_json);
         if (!parsed || !parsed->is_array()) {
-            return std::unexpected(error{failure_class::contract, "envelope payload is not a JSON array",
+            co_return std::unexpected(error{failure_class::contract, "envelope payload is not a JSON array",
                                           "test.bad_envelope_payload"});
         }
         int count = 0;
         for (auto const& item_json : parsed->as_array()) {
             auto m = agentengine::rt::message_from_json(item_json);
-            if (!m) return std::unexpected(m.error());
+            if (!m) co_return std::unexpected(m.error());
             ++count;
             for (auto const& item : m->content) decoded_texts->push_back(text_of(item));
         }
         *decoded_count = count;
-        return ExecutorOutcome{text_message("decoded:" + std::to_string(count))};
+        co_return ExecutorOutcome{text_message("decoded:" + std::to_string(count))};
     };
 }
 
 [[nodiscard]] ExecutorBody echo_body() {
-    return [](Message const& in, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 
 [[nodiscard]] ExecutorBody never_invoked_body() {
-    return [](Message const&, EffectContext&) -> agentengine::result<ExecutorOutcome> {
-        return std::unexpected(
+    return [](Message const&, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return std::unexpected(
             error{failure_class::fatal, "a request_port node's own body must never be invoked",
                   "test.port_body_invoked"});
     };
@@ -268,8 +271,7 @@ struct DrainResult {
 // own agent_executor_detail::drive(), test_rt_agent_workflow_executor.cpp's own identical local copy).
 template <class T>
 [[nodiscard]] T drive_task(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Extracts {interaction_id, ask} from an ask-signal ContentItem the adapter pushed.
@@ -559,13 +561,13 @@ int main() {
         EffectContext ctx_with_sink{};
         ctx_with_sink.tool_result_byte_threshold = 8;
         ctx_with_sink.blob_sink = [](std::span<std::byte const>,
-                                      std::string const& media_type) -> agentengine::result<agentengine::BlobRef> {
+                                      std::string const& media_type) -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
             agentengine::BlobRef blob;
             blob.digest = "test-digest";
             blob.media_type = media_type;
             blob.size = 0;
             blob.store = "test-store";
-            return blob;
+            co_return blob;
         };
 
         // A fresh WorkflowSupervisor instance -- the T8-no-sink attempt above never actually started a
@@ -603,7 +605,7 @@ int main() {
     // ---- T10 (ADR-163): a real agent-kind node's real usage reaches the terminal push exactly. ----
     {
         ScriptedSession session;
-        session.initialize("t10", Principal{"p10", ""});
+        session.initialize("t10", Principal{"p10", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_message("agent-answer"), Usage{100, 50, 0, 0, 0.0}}});
 
@@ -637,7 +639,7 @@ int main() {
     // ---- T11: the reported delta is per-CALL, not cumulative, across a suspend/resume round-trip. ----
     {
         ScriptedSession session;
-        session.initialize("t11", Principal{"p11", ""});
+        session.initialize("t11", Principal{"p11", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script(
             {{text_message("agent-answer"), Usage{100, 50, 0, 0, 0.0}}});
 
@@ -698,7 +700,7 @@ int main() {
         // (a) the wrapped graph has a real agent-kind node.
         {
             ScriptedSession inner_session;
-            inner_session.initialize("t12a-inner", Principal{"p12a-inner", ""});
+            inner_session.initialize("t12a-inner", Principal{"p12a-inner", ""}, ae_test::trusted_unbounded());
             inner_session.emplace_chat_client().set_script(
                 {{text_message("inner-agent-answer"), Usage{7, 3, 0, 0, 0.0}}});
 
@@ -712,7 +714,7 @@ int main() {
             inner->initialize(wf, {agent_session_as_executor_body(inner_session)});
 
             AgentSession<WorkflowChatClient> outer;
-            outer.initialize("t12a-outer", Principal{"p12a-outer", ""});
+            outer.initialize("t12a-outer", Principal{"p12a-outer", ""}, ae_test::trusted_unbounded());
             outer.emplace_chat_client(inner);
 
             agentengine::result<AgentResponse> const r =
@@ -742,7 +744,7 @@ int main() {
             inner->initialize(wf, {echo_body()});
 
             AgentSession<WorkflowChatClient> outer;
-            outer.initialize("t12b-outer", Principal{"p12b-outer", ""});
+            outer.initialize("t12b-outer", Principal{"p12b-outer", ""}, ae_test::trusted_unbounded());
             outer.emplace_chat_client(inner);
 
             agentengine::result<AgentResponse> const r =

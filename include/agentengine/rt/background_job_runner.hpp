@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-181-durable-cancellable-background-jobs.md, phase 1 (§10 "Revised build
+// Implements decisions/archive/ADR-181-durable-cancellable-background-jobs.md, phase 1 (§10 "Revised build
 // phases"): the in-memory core of `rt::BackgroundJobRunner`, the host-owned runner that replaces
 // `tool_pipeline.hpp::background_task()`'s one-detached-thread-per-task shape (006 §6b).
 //
@@ -74,6 +74,7 @@
 #include "agentengine/core/tool_descriptor.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session_trust.hpp"  // detail::force_tainted
+#include "agentengine/rt/block_on.hpp"             // ADR-237 §5.2: drive the async tool invoke
 #include "agentengine/trust/capability.hpp"
 #include "agentengine/trust/principal.hpp"
 #include "agentengine/trust/secure_random.hpp"
@@ -106,6 +107,10 @@ inline constexpr std::string_view kToolCanceledNoEffect = "tool.canceled_no_effe
 struct BackgroundJobOwner {
     std::string   session_id;
     std::string   run_id;      // the run that submitted it, if any
+    // ADR-241 §8.4 (S2 step 1): the ROOT run that submitter serves, copied by the runner into the job's
+    // `EffectContext::root_run_id`, so a job's egress charges the root run's admission bucket. Host-set (the
+    // submitter copies its own context's value); empty falls back to `run_id` at admission.
+    std::string   root_run_id;
     std::uint64_t turn_index = 0;
 };
 
@@ -309,7 +314,7 @@ inline void emit(std::shared_ptr<Core> const& core, std::vector<BackgroundJobEve
                 for (auto const& b : job.bound) b.revoke();  // never invoked: step 10 happens here
                 job.result = tool_pipeline_detail::make_error_result(
                     job.spec.request.call_id,
-                    error{failure_class::policy, "background job canceled before it started",
+                    error{failure_class::canceled, "background job canceled before it started",  // ADR-237 D6 (was policy)
                           std::string(kToolCanceledNoEffect)});
                 drop = finish_locked(*core, job, background_job_state::canceled);
                 events.push_back(make_event(job, background_job_event_kind::state_changed));
@@ -387,7 +392,7 @@ public:
                                           "background_job.approval_not_attested"});
         }
         if (spec.cascade_from.stop_requested()) {
-            return std::unexpected(error{failure_class::policy,
+            return std::unexpected(error{failure_class::canceled,  // ADR-237 D6 (was policy)
                                           "the run this job would belong to was already canceled",
                                           "background_job.parent_canceled"});
         }
@@ -541,7 +546,7 @@ public:
                 job.stop.request_stop();
                 for (auto const& b : job.bound) b.revoke();
                 job.result = tool_pipeline_detail::make_error_result(
-                    job.spec.request.call_id, error{failure_class::transient, "background job runner shut down",
+                    job.spec.request.call_id, error{failure_class::canceled, "background job runner shut down",  // ADR-237 D6
                                                     std::string(kToolCanceledNoEffect)});
                 drops.push_back(finish_locked(*core_, job, background_job_state::canceled));
                 events.push_back(make_event(job, background_job_event_kind::state_changed));
@@ -631,6 +636,7 @@ private:
         ctx.capabilities       = std::make_shared<CapabilitySet const>(job.spec.capabilities);
         ctx.bound_capabilities = &job.bound;
         ctx.run_id             = job.spec.owner.run_id;
+        ctx.root_run_id        = job.spec.owner.root_run_id;  // ADR-241 §8.4
         ctx.turn_index         = job.spec.owner.turn_index;
         ctx.cancellation       = job.stop.get_token();
         ctx.idempotency_key    = job.idempotency_key;
@@ -660,7 +666,11 @@ private:
         // escape (std::terminate would take the host down), so one is converted to a failure.
         result<json::Value> invoked = std::unexpected(error{failure_class::fatal, "not invoked", "background_job.not_invoked"});
         try {
-            invoked = job.spec.tool.invoke(job.spec.request.arguments, ctx);
+            // ADR-237 §5.2: `invoke` is async; drive it on this worker thread (a job worker, never a lane,
+            // so `block_on` is allowed). A coroutine that throws is rethrown by `block_on` into the catch
+            // below, exactly as a throwing synchronous tool was before §5.2 (#175: this was
+            // `rt::drive_leaf_task`, which reported such a throw as a transient `rt.leaf_task_faulted`).
+            invoked = rt::block_on(job.spec.tool.invoke(job.spec.request.arguments, ctx));
         } catch (std::exception const& e) {
             invoked = std::unexpected(error{failure_class::fatal, std::string("background job tool threw: ") + e.what(),
                                              "background_job.tool_threw"});
@@ -680,7 +690,21 @@ private:
             error_code = invoked.error().code;
             result_out = tool_pipeline_detail::make_error_result(call_id, invoked.error());
         } else {
-            auto normalized = tool_pipeline_detail::normalize_success(call_id, *invoked, ctx);
+            // ADR-237 5.1 (#187): `blob_sink` is async (and is never wired on a job's allowlisted ctx, so
+            // this resolves without suspending); driven with `block_on` like `invoke` above. This step sits
+            // outside that try block, so a fault is translated here exactly as `invoke`'s catch does.
+            auto drive_normalize = [&]() -> result<std::pair<ToolResult, std::size_t>> {
+                try {
+                    return rt::block_on(tool_pipeline_detail::normalize_success(call_id, *invoked, ctx));
+                } catch (std::exception const& e) {
+                    return std::unexpected(error{failure_class::fatal, std::string("background job tool threw: ") + e.what(),
+                                                  "background_job.tool_threw"});
+                } catch (...) {
+                    return std::unexpected(error{failure_class::fatal, "background job tool threw a non-exception",
+                                                  "background_job.tool_threw"});
+                }
+            };
+            auto normalized = drive_normalize();
             if (!normalized) {
                 error_code = normalized.error().code;
                 result_out = tool_pipeline_detail::make_error_result(call_id, normalized.error());

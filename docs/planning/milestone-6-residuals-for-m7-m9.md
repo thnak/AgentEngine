@@ -77,14 +77,14 @@ items 1-3 above, M6's breakdown doc does not say which later milestone picks thi
 "deferred."
 
 **Superseded note (ADR-037, 2026-08-13):** the "Quark has real `cluster.hpp`/`membership.hpp`/
-`placement.hpp`, so this is not impossible" reasoning above no longer holds — `decisions/ADR-037-
+`placement.hpp`, so this is not impossible" reasoning above no longer holds — `decisions/archive/ADR-037-
 remove-quark-as-core-runtime.md` removed Quark as a dependency entirely, and `agentengine::rt::` has
 no cluster/membership/placement mechanism of any kind. Before M9 can pick this gate up, it needs a
 real cluster substrate built from scratch, not "stand up a harness against Quark's existing one" —
 a materially larger scope than this note originally assumed. Left named as a real, larger gap for
 whoever scopes M9, not silently narrowed back to the original estimate.
 
-**Resolved here:** `020-Configuration-and-Hosting.md` §3a's hosting-shape table names a **Cluster**
+**Resolved here:** `rfcs/020-Configuration-and-Hosting.md` §3a's hosting-shape table names a **Cluster**
 hosting shape explicitly — "N nodes over Quark's cluster (010/021/026) with sessions placed by
 HRW/VirtualBins" (historical: 020 itself now marks this row as design intent only, not currently
 buildable post-ADR-037) — as one of five shapes 020 covers, and 020 is an **M9** RFC. A ≥3-node

@@ -1,4 +1,4 @@
-// Proves decisions/ADR-226-agent-run-bridge.md (002 §2.1 as amended; issue #46, issue #32 Layer A):
+// Proves decisions/archive/ADR-226-agent-run-bridge.md (002 §2.1 as amended; issue #46, issue #32 Layer A):
 // core/agent_session_bridge.hpp's make_agent_session<A>() / bind_agent_session() turn a DECLARED agent
 // into a running rt::AgentSession whose behaviour is the declared policy set -- every check below drives
 // a real start_run() through the bridge against the strict ScriptedChatClient (testing/), no network.
@@ -35,6 +35,8 @@
 #include <vector>
 
 #include "agentengine/core/agent.hpp"
+#include "../../support/agent_options.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/agent_registry.hpp"
 #include "agentengine/core/agent_session_bridge.hpp"
 #include "agentengine/core/agent_yaml_compiler.hpp"
@@ -78,45 +80,45 @@ std::atomic<int> g_echo_calls{0};
 std::atomic<int> g_read_calls{0};
 std::atomic<int> g_hidden_calls{0};
 
-struct EchoTool : ae::Tool<EchoTool> {  // never_require, no capabilities
+struct EchoTool : ae::Tool<EchoTool, ae::Approval<ae::approval_mode::never_require>> {  // never_require, no capabilities
     static constexpr std::string_view name        = "echo";
     static constexpr std::string_view description = "Echo the message back.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_echo_calls;
-        return Reply{"echo: " + a.message};
+        co_return Reply{"echo: " + a.message};
     }
 };
 
-struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>> {
+struct ReadDocTool : ae::Tool<ReadDocTool, ae::Capabilities<ae::cap::decl::FsRead<"docs">>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_doc";
     static constexpr std::string_view description = "Read a document from the docs mount.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_read_calls;
-        return Reply{"doc: " + a.message};
+        co_return Reply{"doc: " + a.message};
     }
 };
 
-struct ParTool : ae::Tool<ParTool, ae::Parallelizable> {
+struct ParTool : ae::Tool<ParTool, ae::Parallelizable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "par";
     static constexpr std::string_view description = "A tool that declares Parallelizable.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) { return Reply{a.message}; }
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const { co_return Reply{a.message}; }
 };
 
 // Never declared by any agent below -- the "undeclared tool" of P2/P3.
-struct HiddenTool : ae::Tool<HiddenTool> {
+struct HiddenTool : ae::Tool<HiddenTool, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name        = "hidden";
     static constexpr std::string_view description = "Not part of any agent's declaration.";
     using Args  = EchoArgs;
     using Reply = EchoReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_hidden_calls;
-        return Reply{a.message};
+        co_return Reply{a.message};
     }
 };
 
@@ -236,12 +238,6 @@ ae::testing::ScriptedTurn call_turn(std::string tool, std::string call_id, ae::U
     return tool_calls_turn({ScriptedToolCall{std::move(call_id), std::move(tool), R"({"message":"hi"})"}}, usage);
 }
 
-ae::AgentSessionOptions opts_with(std::vector<ae::Capability> grants) {
-    ae::AgentSessionOptions o;
-    o.grants = std::move(grants);
-    return o;
-}
-
 ae::Capability docs_read() { return ae::cap::FsRead{"docs", "", std::nullopt}; }
 
 // A compact, comparable rendering of one model request: every message's role and text, then every
@@ -258,7 +254,7 @@ std::string render(ae::ChatRequest const& req) {
         }
     }
     for (ae::ToolDescriptor const& d : req.tools) {
-        out += "tool:" + d.name + ":" + std::to_string(static_cast<int>(d.approval)) + ":" +
+        out += "tool:" + d.name + ":" + std::to_string(d.approval ? static_cast<int>(*d.approval) : -1) + ":" +
                (d.parallelizable ? "p" : "s") + ":" + std::to_string(d.capability_ceiling.size()) + "|";
     }
     return out;
@@ -269,7 +265,7 @@ class ShadowingInner {
 public:
     [[nodiscard]] ae::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext&, ae::EffectContext&) {
         ae::ContextContribution c;
-        c.tools.push_back(ae::make_tool_descriptor<HiddenTool>());
+        c.tools.push_back(ae::make_tool_descriptor(HiddenTool{}));
         c.tools.back().name = "echo";
         co_return c;
     }
@@ -287,7 +283,7 @@ int main() {
                            call_turn("read_doc", "c-read"), text_turn("done")});
         int const echo_before = g_echo_calls, hidden_before = g_hidden_calls, read_before = g_read_calls;
 
-        auto bundle = ae::make_agent_session<Helper>(client, opts_with({docs_read()}));
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({docs_read()}));
         check(bundle.has_value(), "P1 setup: make_agent_session<Helper>() binds");
         if (bundle.has_value()) {
             auto r = bundle->run("please help");
@@ -327,8 +323,7 @@ int main() {
         int const read_before = g_read_calls;
         // The caller grants nothing the tool needs: FsWrite(docs) and FsRead(private) are both outside the
         // ceiling (which declares only FsRead(docs)), so neither may reach the session.
-        auto bundle = ae::make_agent_session<Helper>(
-            client, opts_with({ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt},
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>({ae::cap::FsWrite{"docs", "", std::nullopt, std::nullopt},
                                ae::cap::FsRead{"private", "", std::nullopt}}));
         check(bundle.has_value(), "P4 setup: binds");
         if (bundle.has_value()) {
@@ -344,8 +339,7 @@ int main() {
             check(g_read_calls == read_before, "P4: ReadDocTool::invoke never ran");
         }
         // A broad grant (the whole mount) narrowed to what the agent declared.
-        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{},
-                                                    opts_with({ae::cap::FsRead{"docs", "", std::uint64_t{4096}}}));
+        auto broad = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>({ae::cap::FsRead{"docs", "", std::uint64_t{4096}}}));
         check(broad.has_value() && broad->capabilities().size() == 1 &&
                   broad->capabilities().contains(ae::cap::FsRead{"docs", "", std::uint64_t{4096}}),
               "P4: a grant the ceiling covers is kept with its own (tighter) size cap");
@@ -361,7 +355,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push(looping());
-        auto bundle = ae::make_agent_session<Helper>(client);
+        auto bundle = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>());
         if (bundle.has_value()) {
             auto r = bundle->run("loop");
             check(!r.has_value() && r.error().code == "run.max_turns_exceeded",
@@ -373,15 +367,15 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(looping());
-        ae::AgentSessionOptions lower;
-        lower.max_turns = 1;
+        ae::AgentSessionOptions lower = ae_test::declared_options<Helper>();
+        lower.choices.max_turns = ae::Bound<std::uint64_t>::at_most(1);
         auto narrowed = ae::make_agent_session<Helper>(c2, lower);
         if (narrowed.has_value()) {
             (void)narrowed->run("loop");
             check(h2.call_count() == 1, "P5 control: a lower per-run override (1) takes effect");
         }
-        ae::AgentSessionOptions higher;
-        higher.max_turns = 10;
+        ae::AgentSessionOptions higher = ae_test::declared_options<Helper>();
+        higher.choices.max_turns = ae::Bound<std::uint64_t>::at_most(10);
         auto widened = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher);
         check(!widened.has_value() && widened.error().code == "agent_session.override_widens",
               "P5: an override above the declared MaxTurns is refused, not clamped");
@@ -392,7 +386,7 @@ int main() {
         ScriptedChatClient over;
         ScriptedChatClient over_h = over;
         (void)over_h.push(text_turn("expensive", ae::Usage{40, 20, 0, 0, 0.0}));
-        auto b1 = ae::make_agent_session<Helper>(over);
+        auto b1 = ae::make_agent_session<Helper>(over, ae_test::declared_options<Helper>());
         if (b1.has_value()) {
             auto r = b1->run("go");
             check(!r.has_value() && r.error().code == "run.token_budget_exceeded",
@@ -401,7 +395,7 @@ int main() {
         ScriptedChatClient under;
         ScriptedChatClient under_h = under;
         (void)under_h.push(text_turn("cheap", ae::Usage{10, 10, 0, 0, 0.0}));
-        auto b2 = ae::make_agent_session<Helper>(under);
+        auto b2 = ae::make_agent_session<Helper>(under, ae_test::declared_options<Helper>());
         if (b2.has_value()) {
             auto r = b2->run("go");
             check(r.has_value(), "P6 control: a run spending 20 tokens converges");
@@ -409,16 +403,16 @@ int main() {
         ScriptedChatClient tight;
         ScriptedChatClient tight_h = tight;
         (void)tight_h.push(text_turn("cheap", ae::Usage{10, 10, 0, 0, 0.0}));
-        ae::AgentSessionOptions lower;
-        lower.token_budget = 15;
+        ae::AgentSessionOptions lower = ae_test::declared_options<Helper>();
+        lower.choices.token_budget = ae::Bound<std::uint64_t>::at_most(15);
         auto b3 = ae::make_agent_session<Helper>(tight, lower);
         if (b3.has_value()) {
             auto r = b3->run("go");
             check(!r.has_value() && r.error().code == "run.token_budget_exceeded",
                   "P6: a lower per-run token_budget (15) takes effect");
         }
-        ae::AgentSessionOptions higher;
-        higher.token_budget = 1000;
+        ae::AgentSessionOptions higher = ae_test::declared_options<Helper>();
+        higher.choices.token_budget = ae::Bound<std::uint64_t>::at_most(1000);
         auto b4 = ae::make_agent_session<Helper>(ScriptedChatClient{}, higher);
         check(!b4.has_value() && b4.error().code == "agent_session.override_widens",
               "P6: an override above the declared TokenBudget is refused");
@@ -430,7 +424,7 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push({call_turn("echo", "c-g"), text_turn("done")});
-        auto gated = ae::make_agent_session<GatedHelper>(client);
+        auto gated = ae::make_agent_session<GatedHelper>(client, ae_test::declared_options<GatedHelper>());
         if (gated.has_value()) {
             auto r = gated->run("go");
             check(r.has_value(), "P7 setup: the run converges after the denial");
@@ -446,7 +440,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push({call_turn("echo", "c-a"), text_turn("done")});
-        ae::AgentSessionOptions approve;
+        ae::AgentSessionOptions approve = ae_test::declared_options<GatedHelper>();
         approve.approve_tools = std::vector<std::string>{"echo"};
         auto approved = ae::make_agent_session<GatedHelper>(c2, approve);
         if (approved.has_value()) {
@@ -457,7 +451,7 @@ int main() {
         ScriptedChatClient c3;
         ScriptedChatClient h3 = c3;
         (void)h3.push({call_turn("echo", "c-d"), text_turn("done")});
-        auto plain = ae::make_agent_session<Helper>(c3);
+        auto plain = ae::make_agent_session<Helper>(c3, ae_test::declared_options<Helper>());
         if (plain.has_value()) {
             (void)plain->run("go");
             ToolOutcome o = tool_outcome(plain->session(), "c-d");
@@ -471,7 +465,7 @@ int main() {
         ScriptedChatClient c1;
         ScriptedChatClient h1 = c1;
         (void)h1.push(text_turn("ok"));
-        auto seq = ae::make_agent_session<Helper>(c1);
+        auto seq = ae::make_agent_session<Helper>(c1, ae_test::declared_options<Helper>());
         if (seq.has_value()) (void)seq->run("go");
         auto r1 = h1.requests();
         check(!r1.empty() && find_tool(r1[0], "par") && !find_tool(r1[0], "par")->parallelizable,
@@ -479,7 +473,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("ok"));
-        auto par = ae::make_agent_session<ParallelHelper>(c2);
+        auto par = ae::make_agent_session<ParallelHelper>(c2, ae_test::declared_options<ParallelHelper>());
         if (par.has_value()) (void)par->run("go");
         auto r2 = h2.requests();
         check(!r2.empty() && find_tool(r2[0], "par") && find_tool(r2[0], "par")->parallelizable,
@@ -491,7 +485,7 @@ int main() {
         ScriptedChatClient c1;
         ScriptedChatClient h1 = c1;
         (void)h1.push(text_turn(R"({"verdict":"yes","score":3})"));
-        auto good = ae::make_agent_session<SchemaAgent>(c1);
+        auto good = ae::make_agent_session<SchemaAgent>(c1, ae_test::declared_options<SchemaAgent>());
         if (good.has_value()) {
             auto r = good->run("judge");
             check(r.has_value() && r->structured_output_json.has_value(),
@@ -500,7 +494,7 @@ int main() {
         ScriptedChatClient c2;
         ScriptedChatClient h2 = c2;
         (void)h2.push(text_turn("not json at all"));
-        auto bad = ae::make_agent_session<SchemaAgent>(c2);
+        auto bad = ae::make_agent_session<SchemaAgent>(c2, ae_test::declared_options<SchemaAgent>());
         if (bad.has_value()) {
             auto r = bad->run("judge");
             check(!r.has_value() && r.error().code == "run.output_schema_validation_failed",
@@ -509,15 +503,38 @@ int main() {
         auto meta = ae::register_agent<SchemaAgent>();
         check(meta.has_value(), "P9 setup: SchemaAgent registers");
         if (meta.has_value()) {
-            auto bound = ae::bind_agent_session(*meta, ScriptedChatClient{});
+            auto bound = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta));
             check(!bound.has_value() && bound.error().code == "agent_session.output_schema_unvalidated",
                   "P9: binding the schema agent's bare metadata refuses rather than running unvalidated");
         }
     }
 
+    // ---- P9b: the typed validator producer on its own ------------------------------------------------------------
+    // P9 exercises `output_validator_for<A>()` only THROUGH a bound session. This pins the producer's own
+    // behaviour -- including the error PROVENANCE (a malformed parse vs. a schema mismatch, which P9's single
+    // "not json at all" reply cannot tell apart) -- so ADR-237 §5.1's async conversion of the
+    // `agent_bind_detail::OutputValidator` seam cannot move it silently.
+    {
+        auto validator = ae::agent_bind_detail::output_validator_for<SchemaAgent>();
+        check(static_cast<bool>(validator), "P9b: an OutputSchema<T> agent produces a validator");
+
+        auto ok = ae::rt::block_on(validator(R"({"verdict":"yes","score":3})"));
+        check(ok.has_value(), "P9b: valid schema-shaped JSON passes");
+
+        auto malformed = ae::rt::block_on(validator("not json at all"));
+        check(!malformed.has_value(), "P9b: malformed JSON is rejected at the parse layer");
+
+        auto mismatch = ae::rt::block_on(validator(R"({"verdict":"yes"})"));  // required int "score" absent
+        check(!mismatch.has_value(),
+              "P9b: JSON missing a required field is rejected at the from_json layer, not the parse layer");
+
+        auto none = ae::agent_bind_detail::output_validator_for<NoClientAgent>();
+        check(!none, "P9b: an agent declaring no OutputSchema<T> produces NO validator");
+    }
+
     // ---- P10: validation at bind time ---------------------------------------------------------------------------
     {
-        auto none = ae::make_agent_session<NoClientAgent>(ScriptedChatClient{});
+        auto none = ae::make_agent_session<NoClientAgent>(ScriptedChatClient{}, ae_test::declared_options<NoClientAgent>());
         check(!none.has_value() && none.error().code == "agent.chat_client_id_missing",
               "P10: an agent without ChatClientId<...> is refused");
         auto meta = ae::register_agent<Helper>();
@@ -525,31 +542,35 @@ int main() {
         if (meta.has_value()) {
             ae::AgentMetadata edited = *meta;
             edited.capability_ceiling.clear();  // read_doc now needs a capability the ceiling lacks
-            auto b = ae::bind_agent_session(edited, ScriptedChatClient{});
+            auto b = ae::bind_agent_session(edited, ScriptedChatClient{}, ae_test::declared_options(edited));
             check(!b.has_value() && b.error().code == "agent.capability_ceiling_exceeded",
                   "P10: bind re-validates metadata -- a ceiling no longer covering a declared tool is refused");
-            auto ok = ae::bind_agent_session(*meta, ScriptedChatClient{});
+            auto ok = ae::bind_agent_session(*meta, ScriptedChatClient{}, ae_test::declared_options(*meta));
             check(ok.has_value(), "P10 control: the unedited metadata binds");
         }
     }
 
     // ---- P11: chat_client_grants ----------------------------------------------------------------------------------
     {
-        ae::AgentSessionOptions o;
+        ae::AgentSessionOptions o = ae_test::declared_options<Helper>();
         o.chat_client_grants = {ae::cap::Schedule{std::chrono::seconds{60}, 1}};
         auto refused = ae::make_agent_session<Helper>(ScriptedChatClient{}, o);
         check(!refused.has_value() && refused.error().code == "agent_session.chat_client_grant_not_secret",
               "P11: a non-secret capability cannot ride in through chat_client_grants");
-        ae::AgentSessionOptions s;
+        ae::AgentSessionOptions s = ae_test::declared_options<Helper>();
         s.chat_client_grants = {ae::cap::Secret{"api-key", std::chrono::seconds{0}}};
         auto ok = ae::make_agent_session<Helper>(ScriptedChatClient{}, s);
-        check(ok.has_value() && ok->capabilities().contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
-              "P11 control: the ChatClient's own secret reaches the session");
+        // ADR-244 §2.3 (slice 3c): held for the model call only -- never in the run's authority, which tools read.
+        check(ok.has_value() && ok->session().chat_client_secrets() != nullptr &&
+                  ok->session().chat_client_secrets()->contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
+              "P11 control: the ChatClient's own secret reaches the session, as the chat client's");
+        check(ok.has_value() && !ok->capabilities().contains(ae::cap::Secret{"api-key", std::chrono::seconds{0}}),
+              "P11: the ChatClient's secret is not in the run's authority (ADR-244 §2.3)");
     }
 
     // ---- P12: recorded fields -------------------------------------------------------------------------------------
     {
-        auto b = ae::make_agent_session<Helper>(ScriptedChatClient{});
+        auto b = ae::make_agent_session<Helper>(ScriptedChatClient{}, ae_test::declared_options<Helper>());
         if (b.has_value()) {
             auto const& md = b->session().metadata();
             check(md.at("agent.name") == "helper" && md.at("agent.version") == "2.0.0" &&
@@ -563,18 +584,18 @@ int main() {
         ScriptedChatClient client;
         ScriptedChatClient handle = client;
         (void)handle.push({text_turn("one"), text_turn("two")});
-        auto b = ae::make_agent_session<Helper>(client);
+        auto b = ae::make_agent_session<Helper>(client, ae_test::declared_options<Helper>());
         if (b.has_value()) {
             check(b->run("first").has_value(), "P13 control: the bound session runs");
             b->session().clear_in_process_state();
-            b->session().initialize("s-reused", ae::Principal{"p-agent", ""});  // max_turns/budget now unset
+            b->session().initialize("s-reused", ae::Principal{"p-agent", ""}, ae_test::trusted_unbounded());  // max_turns/budget now unset
             auto r = b->run("second");
             check(!r.has_value() && r.error().code == "agent_tool_surface.not_bound",
                   "P13: a cleared agent session refuses to run tool-less and unbudgeted");
             check(handle.call_count() == 1, "P13: no model call was made by the refused run");
         }
         ae::AgentToolSurface<ShadowingInner> surface;
-        (void)surface.bind(ae::ToolTable::from_tools<EchoTool>());
+        (void)surface.bind(ae::ToolTable::from(EchoTool{}));
         std::vector<ae::Message> history;
         ae::Principal principal{"p", ""};
         ae::SessionContext sc{"s", principal, history};
@@ -588,15 +609,15 @@ int main() {
                       "AgentToolSurface must be move-only (ADR-226 R9)");
         // ... and a moved-from surface fails closed rather than running empty.
         ae::AgentToolSurface<> source;
-        (void)source.bind(ae::ToolTable::from_tools<EchoTool>());
+        (void)source.bind(ae::ToolTable::from(EchoTool{}));
         ae::AgentToolSurface<> target = std::move(source);
         check(target.bound() && target.tools().descriptors().size() == 1, "P13: a move carries the bound tool set");
         auto from_moved = ae::rt::block_on(source.on_context(sc, ec));  // NOLINT(bugprone-use-after-move)
         check(!from_moved.has_value() && from_moved.error().code == "agent_tool_surface.not_bound",
               "P13: the moved-from surface fails closed");
         ae::AgentToolSurface<> twice;
-        (void)twice.bind(ae::ToolTable::from_tools<EchoTool>());
-        auto again = twice.bind(ae::ToolTable::from_tools<HiddenTool>());
+        (void)twice.bind(ae::ToolTable::from(EchoTool{}));
+        auto again = twice.bind(ae::ToolTable::from(HiddenTool{}));
         check(!again.has_value() && again.error().code == "agent_tool_surface.already_bound",
               "P13: the declared tool set cannot be rebound");
     }
@@ -604,7 +625,7 @@ int main() {
     // ---- P14: I6 -- the declarative document runs identically through the same bridge -----------------------------
     {
         ae::ToolRegistry registry;
-        (void)registry.register_tool("echo", ae::make_tool_descriptor<EchoTool>(), ae::tool_provenance::native);
+        (void)registry.register_tool("echo", ae::make_tool_descriptor(EchoTool{}), ae::tool_provenance::native);
         auto parsed = ae::yaml::parse(kEquivDoc);
         check(parsed.has_value(), "P14 setup: the document parses");
         ae::result<ae::AgentMetadata> doc_meta =
@@ -623,13 +644,13 @@ int main() {
         ScriptedChatClient doc_h = doc_client;
         (void)doc_h.push(script());
 
-        auto native = ae::make_agent_session<EquivAgent>(native_client);
+        auto native = ae::make_agent_session<EquivAgent>(native_client, ae_test::declared_options<EquivAgent>());
         if (!doc_meta.has_value()) {
             check(false, "P14 setup: cannot continue without the compiled document");
             std::fprintf(stderr, "test_agent_session_bridge: FAIL\n");
             return 1;
         }
-        auto declarative = ae::bind_agent_session(*doc_meta, doc_client);
+        auto declarative = ae::bind_agent_session(*doc_meta, doc_client, ae_test::declared_options(*doc_meta));
         check(native.has_value() && declarative.has_value(), "P14 setup: both forms bind");
         if (native.has_value() && declarative.has_value()) {
             auto rn = native->run("compare");

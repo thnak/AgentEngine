@@ -1,5 +1,5 @@
 #pragma once
-// Implements 014-Workflow-and-Orchestration.md §7 (Visualization and introspection): "The graph is
+// Implements rfcs/014-Workflow-and-Orchestration.md §7 (Visualization and introspection): "The graph is
 // data: it renders (Mermaid/DOT), it validates [Phase A], it diffs across versions... A workflow
 // that cannot be drawn is a workflow nobody can review." Milestone 6 Phase G
 // (docs/planning/milestone-6-multi-agent-orchestration-breakdown.md).

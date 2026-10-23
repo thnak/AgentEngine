@@ -1,4 +1,4 @@
-// Design -> red-team -> prove -> judge for decisions/ADR-071-native-unsandboxed-process-execution-
+// Design -> red-team -> prove -> judge for decisions/archive/ADR-071-native-unsandboxed-process-execution-
 // providers.md's native_worktree_bridge.hpp: the argv path-shaped-argument validator that keeps
 // worktree confinement mandatory for NativeShellProvider/NativeBashProvider/NativePythonProvider/
 // NativeNodeProvider even though the OS sandbox jail is optional. Every negative-result claim below

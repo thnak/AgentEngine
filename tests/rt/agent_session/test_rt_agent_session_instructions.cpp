@@ -1,4 +1,4 @@
-// Gap-16/21 fix (2026-08-14, decisions/ADR-042-*.md): proves `ContextContribution::instructions`
+// Gap-16/21 fix (2026-08-14, decisions/archive/ADR-042-*.md): proves `ContextContribution::instructions`
 // (now `std::optional<TaintedText>`, context_provider.hpp) actually reaches the model as a real
 // `role::system` `Message` -- before this fix it was read by `assemble_context()` and then never
 // referenced again, silently dropped (2026-08-10 gap audit #16). Also proves the taint discipline:
@@ -21,9 +21,12 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/agent_library_manifest.hpp"
 
 using agentengine::rt::AgentSession;
@@ -45,8 +48,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -151,7 +153,7 @@ int main() {
     // T1: instructions present -> a real role::system Message, prepended, correctly marked.
     {
         AgentSession<RecordingChatClient, NoSessionState, InstructionsProvider> session;
-        session.initialize("t1", Principal{"p1", ""});
+        session.initialize("t1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().text_to_wrap = "be concise";
         RecordingChatClient& client = session.emplace_chat_client();
 
@@ -195,7 +197,7 @@ int main() {
     // `.instructions` in production yet, per the 2026-08-14 grounding pass).
     {
         AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
-        session.initialize("t2", Principal{"p1", ""});
+        session.initialize("t2", Principal{"p1", ""}, ae_test::trusted_unbounded());
         RecordingChatClient& client = session.emplace_chat_client();
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
@@ -215,7 +217,7 @@ int main() {
     // ContextContribution is honored (run_rounds() re-invokes on_context() every iteration).
     {
         AgentSession<RecordingChatClient, NoSessionState, InstructionsProvider> session;
-        session.initialize("t3", Principal{"p1", ""}, std::nullopt, /*max_turns=*/2);
+        session.initialize("t3", Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/2));
         session.history_provider().text_to_wrap = "round text";
         RecordingChatClient& client = session.emplace_chat_client();
 
@@ -232,7 +234,7 @@ int main() {
     // one role::system message, unconditionally untainted, containing the exact text set.
     {
         AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
-        session.initialize("t4", Principal{"p1", ""});
+        session.initialize("t4", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.set_static_instructions("static text");
         RecordingChatClient& client = session.emplace_chat_client();
 
@@ -259,7 +261,7 @@ int main() {
     // matching the "already established, already safe" precedent named in agent_session.hpp).
     {
         AgentSession<RecordingChatClient, NoSessionState, InstructionsProvider> session;
-        session.initialize("t5", Principal{"p1", ""});
+        session.initialize("t5", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.history_provider().text_to_wrap = "from provider";
         session.set_static_instructions("from static");
         RecordingChatClient& client = session.emplace_chat_client();
@@ -293,7 +295,7 @@ int main() {
         CapabilitySet granted_with_spawn =
             CapabilitySet::grant_root({capability_from_kind(capability_kind::agent_call)});
         AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
-        session.initialize("t6", Principal{"p1", ""});
+        session.initialize("t6", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.set_static_instructions(push_side_summary(granted_with_spawn));
         RecordingChatClient& client = session.emplace_chat_client();
 
@@ -317,7 +319,7 @@ int main() {
         // (output/progress) still legitimately produce a non-empty summary.
         CapabilitySet granted_without_spawn = CapabilitySet::grant_root({});
         AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session2;
-        session2.initialize("t7", Principal{"p1", ""});
+        session2.initialize("t7", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session2.set_static_instructions(push_side_summary(granted_without_spawn));
         RecordingChatClient& client2 = session2.emplace_chat_client();
 
@@ -346,7 +348,7 @@ int main() {
     // instructions` message instead of at the end.
     {
         AgentSession<RecordingChatClient, NoSessionState, NoInstructionsProvider> session;
-        session.initialize("t8", Principal{"p1", ""});
+        session.initialize("t8", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.set_static_instructions("static text");
         RecordingChatClient& client = session.emplace_chat_client();
 

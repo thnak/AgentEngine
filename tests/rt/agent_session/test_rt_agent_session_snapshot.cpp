@@ -31,8 +31,10 @@
 #include <vector>
 
 #include "agentengine/rt/agent_session.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/channel.hpp"
 #include "agentengine/rt/session_store.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::AgentSessionRecord;
@@ -63,8 +65,7 @@ void check(bool cond, char const* what) {
 // to observe an in-flight state, not a run-to-completion helper.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -148,7 +149,7 @@ int main() {
     // P1: to_record()/restore_from_record() round-trips identity + run position.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p1", Principal{"p1", "tenant-y"});
+        session.initialize("p1", Principal{"p1", "tenant-y"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
         check(ran.has_value(), "P1 setup: the run converges");
@@ -161,8 +162,9 @@ int main() {
         check(!rec.deleted, "P1: a live session's record is not a tombstone");
 
         AgentSession<OneShotChatClient> restored;
+        restored.initialize("restore-target", Principal{"restore-target", ""}, ae_test::trusted_unbounded());  // ADR-244 §2.3
         restored.emplace_chat_client();
-        restored.restore_from_record(rec);
+        check(restored.restore_from_record(rec).has_value(), "P1: the record restores");
         check(restored.session_id() == "p1", "P1: restore_from_record() restores session_id");
         check(restored.principal().id == "p1" && restored.principal().tenant_id == "tenant-y",
               "P1: restore_from_record() restores the principal");
@@ -175,7 +177,7 @@ int main() {
     // SessionStore conformer.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p2", Principal{"p2", "tenant-x"});
+        session.initialize("p2", Principal{"p2", "tenant-x"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         InMemorySessionStore store;
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
@@ -184,8 +186,8 @@ int main() {
         auto saved = drive(save_agent_session_snapshot(session, store));
         check(saved.has_value(), "P2: save_agent_session_snapshot() succeeds");
 
-        auto loaded = load_agent_session_snapshot(store, "p2");
-        check(loaded.has_value() && loaded->has_value(), "P2: load_agent_session_snapshot() finds it");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "p2"));
+        check(loaded.has_value() && loaded->has_value(), "P2: agentengine::rt::block_on(load_agent_session_snapshot()) finds it");
         if (loaded.has_value() && loaded->has_value()) {
             AgentSessionRecord const& rec = **loaded;
             check(rec.session_id == "p2", "P2: the loaded record's session_id round-trips");
@@ -197,10 +199,10 @@ int main() {
         // P2b (ported from test_agent_session_snapshot.cpp, now retired): a second save() under the
         // same id overwrites the latest state -- the store's own single-slot, overwrite-latest
         // contract, exercised through save_agent_session_snapshot() specifically rather than assumed.
-        session.initialize("p2", Principal{"p2-renamed", "tenant-x"});
+        session.initialize("p2", Principal{"p2-renamed", "tenant-x"}, ae_test::trusted_unbounded());
         auto saved_again = drive(save_agent_session_snapshot(session, store));
         check(saved_again.has_value(), "P2b setup: a second snapshot under the same id succeeds");
-        auto loaded_again = load_agent_session_snapshot(store, "p2");
+        auto loaded_again = agentengine::rt::block_on(load_agent_session_snapshot(store, "p2"));
         check(loaded_again.has_value() && loaded_again->has_value() &&
                   (*loaded_again)->principal_id == "p2-renamed",
               "P2b: recovery returns the LATEST snapshot, not the first one");
@@ -209,7 +211,7 @@ int main() {
     // P3: loading a session id that was never saved returns std::nullopt, not an error.
     {
         InMemorySessionStore store;
-        auto loaded = load_agent_session_snapshot(store, "never-existed");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "never-existed"));
         check(loaded.has_value() && !loaded->has_value(),
               "P3: an id that was never saved reports std::nullopt, not a failure");
     }
@@ -222,7 +224,7 @@ int main() {
     {
         struct ScratchState { int notes = 0; };
         AgentSession<OneShotChatClient, ScratchState> session;
-        session.initialize("p4", Principal{"p4", "tenant-p4"});
+        session.initialize("p4", Principal{"p4", "tenant-p4"}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         session.state().notes = 42;
         session.metadata()["k"] = "v";
@@ -246,7 +248,7 @@ int main() {
         check(session.metadata().empty(), "P4: metadata is cleared");
         check(session.last_run_id().empty(), "P4: run identity is cleared");
 
-        auto loaded = load_agent_session_snapshot(store, "p4");
+        auto loaded = agentengine::rt::block_on(load_agent_session_snapshot(store, "p4"));
         check(loaded.has_value() && !loaded->has_value(),
               "P4: post-delete load returns std::nullopt -- indistinguishable from never-existed, "
               "matching the original's own 'no residue' read-path property");
@@ -255,7 +257,7 @@ int main() {
     // P5: checkpoint_if_due()'s cadence gate.
     {
         AgentSession<OneShotChatClient> session;
-        session.initialize("p5", Principal{"p5", ""});
+        session.initialize("p5", Principal{"p5", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client();
         InMemorySessionStore store;
         auto ran = drive(session.start_run(StartRun{user_message("hi")}));
@@ -264,12 +266,12 @@ int main() {
         auto below_threshold = drive(checkpoint_if_due<CheckpointCadence<3>>(session, store, 1));
         check(below_threshold.has_value() && !*below_threshold,
               "P5: below the cadence threshold, checkpoint_if_due() reports false (skipped)");
-        check(!store.exists("p5"), "P5: a skipped checkpoint writes nothing to the store");
+        check(!agentengine::rt::block_on(store.exists("p5")), "P5: a skipped checkpoint writes nothing to the store");
 
         auto at_threshold = drive(checkpoint_if_due<CheckpointCadence<3>>(session, store, 3));
         check(at_threshold.has_value() && *at_threshold,
               "P5: at the cadence threshold, checkpoint_if_due() reports true (written)");
-        check(store.exists("p5"), "P5: a due checkpoint actually writes a record to the store");
+        check(agentengine::rt::block_on(store.exists("p5")), "P5: a due checkpoint actually writes a record to the store");
     }
 
     // P6: the in-flight guard -- snapshot_record() queues behind a genuinely in-flight start_run()
@@ -278,7 +280,7 @@ int main() {
     {
         auto gate = agentengine::rt::make_channel<int>(1);
         AgentSession<SuspendingChatClient> session;
-        session.initialize("p6", Principal{"p6", ""});
+        session.initialize("p6", Principal{"p6", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client(std::move(gate.consumer));
 
         // Explicitly agentengine::rt::task<T> here, NOT the bare `task` alias (which this file's own
@@ -287,6 +289,7 @@ int main() {
         // agentengine::rt::AgentSession members and return agentengine::rt::task<T>.
         agentengine::rt::task<agentengine::result<AgentResponse>> run_task =
             session.start_run(StartRun{user_message("hi")});
+        // #178: deliberate step-driving (observes a suspended state)
         run_task.resume();
         check(!run_task.done(),
               "P6: start_run() is genuinely in flight (parked inside chat() on the gate), not finished");

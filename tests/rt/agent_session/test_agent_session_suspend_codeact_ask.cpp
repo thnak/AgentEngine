@@ -1,5 +1,5 @@
-// Prove phase for decisions/ADR-057-agent-ask-suspend-without-deadlock.md's Design B
-// (abort-and-replay): `agent.ask()` (026-Agent-Facing-Runtime-Surface.md §5) suspends the round it
+// Prove phase for decisions/archive/ADR-057-agent-ask-suspend-without-deadlock.md's Design B
+// (abort-and-replay): `agent.ask()` (rfcs/026-Agent-Facing-Runtime-Surface.md §5) suspends the round it
 // runs inside, and a host-driven resolve/replay cycle
 // (`rt::AgentSession::resolve_interaction()`'s new `codeact_ask` branch) resumes it against a real
 // embedded CPython interpreter -- not a stand-in. Style/structure deliberately mirrors
@@ -42,11 +42,15 @@
 #include <memory_resource>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "../../support/python_runner_grants.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/capability.hpp"
 #include "backends/native_jail/mediated_python_runner.hpp"
 #include "../../support/crt_fail_fast.hpp"
@@ -76,8 +80,7 @@ void check(bool cond, char const* what) {
 // test_rt_agent_session_suspend_approval.cpp's own drive<T>() already documents.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -124,20 +127,27 @@ struct ExecuteCodeReply {
 };
 AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
 
-struct ExecuteCodeTool : agentengine::Tool<ExecuteCodeTool,
-                                             agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
-                                                                        agentengine::cap::decl::FsWrite<"work">>,
-                                             agentengine::EffectClass<agentengine::effect_class::at_most_once>> {
+// ADR-237 §5.2: instance form -- holds the provider and reaches its private `real_execute_code`
+// through the `friend` declaration below; `invoke` is defined out-of-line.
+class CodeActHistoryProvider;
+
+struct ExecuteCodeTool
+    : agentengine::Tool<ExecuteCodeTool,
+                          agentengine::Capabilities<agentengine::cap::decl::FsRead<"work">,
+                                                     agentengine::cap::decl::FsWrite<"work">>,
+                          agentengine::EffectClass<agentengine::effect_class::at_most_once>,
+                          agentengine::CapturesSessionState, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "execute_code";
     static constexpr std::string_view description = "Execute Python code in this session's real interpreter.";
     using Args = ExecuteCodeArgs;
     using Reply = ExecuteCodeReply;
-    static agentengine::result<Reply> invoke(Args, EffectContext&) {
-        return std::unexpected(agentengine::error{
-            agentengine::failure_class::fatal,
-            "ExecuteCodeTool::invoke() must never run directly in this test -- only through "
-            "CodeActHistoryProvider::real_execute_code()", "test.dead_static_invoke_path"});
-    }
+
+    explicit ExecuteCodeTool(CodeActHistoryProvider& provider) : provider_(&provider) {}
+
+    task<agentengine::result<Reply>> invoke(Args, EffectContext&) const;
+
+private:
+    CodeActHistoryProvider* provider_;
 };
 
 // -- A trivial second tool for B6's multi-call round ------------------------------------------------
@@ -153,14 +163,14 @@ AE_JSON_SCHEMA(NoopReply, label)
 }
 
 struct NoopTool : agentengine::Tool<NoopTool, agentengine::Capabilities<>,
-                                      agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                      agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "noop_tool";
     static constexpr std::string_view description = "Does nothing; a second tool for B6's multi-call round.";
     using Args = NoopArgs;
     using Reply = NoopReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         noop_tool_invoked_log() = true;
-        return Reply{a.label};
+        co_return Reply{a.label};
     }
 };
 
@@ -179,32 +189,34 @@ public:
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
         std::vector<agentengine::ToolDescriptor> descriptors = {
-            agentengine::make_tool_descriptor_with_invoke<ExecuteCodeTool>(
-                [this](ExecuteCodeArgs a, EffectContext& ctx) { return real_execute_code(std::move(a), ctx); }),
+            agentengine::make_tool_descriptor(ExecuteCodeTool{*this}),
         };
-        if (include_noop_tool_) descriptors.push_back(agentengine::make_tool_descriptor<NoopTool>());
+        if (include_noop_tool_) descriptors.push_back(agentengine::make_tool_descriptor(NoopTool{}));
         c.tools = std::move(descriptors);
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
 
 private:
+    // ADR-237 §5.2: the instance-form ExecuteCodeTool above reaches this.
+    friend struct ExecuteCodeTool;
+
     // Byte-for-byte the same mapping ADR-057 §9 specifies for `real_execute_code()`
     // (tools/cli_chat.cpp) -- copied here rather than shared, matching this test file's own
     // "no cross-file coupling" precedent for the fixture code around it.
-    [[nodiscard]] result<ExecuteCodeReply> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
+    [[nodiscard]] task<result<ExecuteCodeReply>> real_execute_code(ExecuteCodeArgs a, EffectContext& ctx) {
         ExecRequest req{a.language.empty() ? "python" : a.language, a.code, ctx.codeact_preseeded_answers};
-        auto outcome = runner_->run(req, exec_state_, ctx);
-        if (!outcome) return std::unexpected(outcome.error());
+        auto outcome = co_await runner_->run(req, exec_state_, ctx);
+        if (!outcome) co_return std::unexpected(outcome.error());
         if (outcome->klass == exec_outcome_class::ask_pending) {
-            return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
+            co_return std::unexpected(error{failure_class::contract, outcome->ask_prompt, "codeact.ask_pending"});
         }
         ExecuteCodeReply reply;
         reply.ok = (outcome->klass == exec_outcome_class::ok);
         reply.stdout_text = outcome->stdout_text;
         reply.stderr_text = outcome->stderr_text;
         reply.result_repr = outcome->result_repr;
-        return reply;
+        co_return reply;
     }
 
     MediatedPythonRunner* runner_ = nullptr;
@@ -333,6 +345,12 @@ using Session = AgentSession<ScriptedChatClient, NoSessionState, CodeActHistoryP
     return cfg;
 }
 
+// ADR-237 §5.2: out-of-line -- needs `CodeActHistoryProvider` complete.
+task<agentengine::result<ExecuteCodeReply>> ExecuteCodeTool::invoke(ExecuteCodeArgs a,
+                                                                   EffectContext& ctx) const {
+    co_return co_await provider_->real_execute_code(std::move(a), ctx);
+}
+
 }  // namespace
 
 int main() {
@@ -345,11 +363,12 @@ int main() {
     // nothing folds into history yet. ----------------------------------------------------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B1-setup: runner initializes cleanly");
 
         Session session;
-        session.initialize("b1", Principal{"p", ""});
+        session.initialize("b1", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B1-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "execute_code",
@@ -397,11 +416,12 @@ int main() {
     // ---- B2: a fresh StartRun while a codeact_ask interaction is open is rejected -------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B2-setup: runner initializes cleanly");
 
         Session session;
-        session.initialize("b2", Principal{"p", ""});
+        session.initialize("b2", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B2-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         session.emplace_chat_client().set_script(
             {{tool_call_response("c1", "execute_code", execute_code_args("import agent\nagent.ask('q')")),
@@ -428,11 +448,12 @@ int main() {
     // ---- B3: resolving with an answer re-runs the script; a deterministic prefix survives replay ---
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B3-setup: runner initializes cleanly");
 
         Session session;
-        session.initialize("b3", Principal{"p", ""});
+        session.initialize("b3", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B3-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -485,11 +506,12 @@ int main() {
     // ---- B4: two sequential agent.ask() calls in one script -- same interaction_id, updated prompt -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B4-setup: runner initializes cleanly");
 
         Session session;
-        session.initialize("b4", Principal{"p", ""});
+        session.initialize("b4", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B4-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -551,11 +573,12 @@ int main() {
     // ---- B5 (positive control): no agent.ask() call -- one round, no regression --------------------
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B5-setup: runner initializes cleanly");
 
         Session session;
-        session.initialize("b5", Principal{"p", ""});
+        session.initialize("b5", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B5-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
@@ -578,13 +601,14 @@ int main() {
     // ---- B6: execute_code + another tool call in one round, execute_code ask-pends -- fails closed -
     {
         MediatedPythonRunner runner(make_cfg(), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B6-setup: runner initializes cleanly");
 
         noop_tool_invoked_log() = false;
 
         Session session;
-        session.initialize("b6", Principal{"p", ""});
+        session.initialize("b6", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B6-setup: runner initializes cleanly");
         session.history_provider().configure(&runner, /*include_noop_tool=*/true);
         session.emplace_chat_client().set_script(
             {{two_tool_call_response("c1", "execute_code", execute_code_args("import agent\nagent.ask('q')"),
@@ -621,11 +645,12 @@ int main() {
         std::filesystem::path const marker = work_dir / "marker.txt";
 
         MediatedPythonRunner runner(make_cfg(work_dir.wstring()), backend);
-        auto init = runner.initialize();
-        check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
 
         Session session;
-        session.initialize("b7", Principal{"p", ""});
+        session.initialize("b7", Principal{"p", ""}, ae_test::trusted_unbounded());
+        // ADR-244 §2.4: the runner is created for this session, so the session exists first.
+        auto init = ae_test::initialize_runner(runner, session.session_nonce());
+        check(init.has_value(), "B7-setup: runner initializes cleanly with a real 'work' mount");
         session.history_provider().configure(&runner, /*include_noop_tool=*/false);
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({

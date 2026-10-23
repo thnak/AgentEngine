@@ -8,7 +8,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <mutex>
+#include <algorithm>
+#include <cwchar>
 #include <optional>
+#include <random>
 #include <unordered_set>
 #include <vector>
 
@@ -122,26 +125,194 @@ std::wstring build_minimal_environment_block() {
     return &*profile;
 }
 
-// Correction (2026-08-23, independent red-team pass, REAL GAP finding): `AppContainerProfile::
-// grant_path()` is explicitly documented as additive, non-idempotent -- "callers grant each mount
-// exactly once." `create_python_worker()`'s read-only grants on the worker binary directory,
-// `python_home`, and `extra_sys_path` are host-DEPLOYMENT-fixed paths, identical across every
-// session, not session-scoped mount paths -- calling `grant_path()` on them from every session
-// creation appended a fresh, redundant ACE to the SAME shared profile's DACL every time, growing it
-// without bound over a long-running host's lifetime purely from ordinary session churn (no attack
-// needed). Deduped here, matching `shared_profile()`'s own "one profile, reused across sessions"
-// lifetime model one field over -- a path is granted at most once for the life of this process.
-[[nodiscard]] result<void> grant_ro_deduped(AppContainerProfile const& profile, std::wstring const& path) {
-    if (path.empty()) return {};
-    static std::mutex granted_mutex;
-    static std::unordered_set<std::wstring> granted;
+// ADR-244 §2.4: the key a path is compared under -- the directory's own identity, not its spelling. The final
+// path (`GetFinalPathNameByHandleW`) resolves 8.3 short names, `\\?\` prefixes, junctions and case, so two
+// spellings of one directory get one key. A path that cannot be opened keys by its spelling; its grant fails
+// later anyway.
+[[nodiscard]] std::string identity_key(std::wstring const& path) {
+    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return sandbox_detail::host_path_key(narrow(path));
+    std::wstring final_path(MAX_PATH, L'\0');
+    DWORD n = GetFinalPathNameByHandleW(h, final_path.data(), static_cast<DWORD>(final_path.size()), VOLUME_NAME_DOS);
+    if (n >= final_path.size()) {
+        final_path.resize(n + 1);
+        n = GetFinalPathNameByHandleW(h, final_path.data(), static_cast<DWORD>(final_path.size()), VOLUME_NAME_DOS);
+    }
+    CloseHandle(h);
+    if (n == 0 || n >= final_path.size()) return sandbox_detail::host_path_key(narrow(path));
+    final_path.resize(n);
+    if (final_path.starts_with(L"\\\\?\\UNC\\")) {
+        final_path = L"\\\\" + final_path.substr(8);
+    } else if (final_path.starts_with(L"\\\\?\\")) {
+        final_path = final_path.substr(4);
+    }
+    return sandbox_detail::host_path_key(narrow(final_path));
+}
 
-    std::lock_guard<std::mutex> guard(granted_mutex);
-    if (granted.contains(path)) return {};
-    auto result = profile.grant_path(path, /*read_write=*/false);
-    if (!result.has_value()) return result;
-    granted.insert(path);
+// ADR-244 §2.4: a deployment path (the worker's directory, `python_home`, an `extra_sys_path` entry) is never
+// writable by any sandbox, in this process or another. Three layers:
+//   1. This process: the ledger below refuses a read-write mount and a deployment path that overlap, in either
+//      order, by directory identity. It is permanent for the process: a directory a sandbox could once write
+//      may hold what it wrote.
+//   2. Other processes, after the fact: a deployment path whose DACL gives write to the profile SID or to any
+//      capability SID (a live or crashed sandbox's grant, or one an older engine made on the shared SID) is
+//      refused.
+//   3. Other processes, later: every deployment path carries an allow ACE for a marker capability SID that no
+//      token ever holds (it grants nothing). A read-write mount whose DACL names it -- the path is, or lies
+//      inside, some process's deployment path -- is refused.
+// Not covered, disclosed in ADR-244 §6: a read-write mount strictly inside a deployment path made before that path
+// was first recorded (no layer sees below the path), and one over an ancestor made by another process while a
+// worker using the path is alive.
+class GrantLedger {
+public:
+    [[nodiscard]] result<void> admit(std::vector<std::string> const& deployment, std::vector<std::string> const& writable) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        for (std::string const& w : writable) {
+            for (std::string const& d : deployment) {
+                if (overlaps(w, d)) return refuse(w);
+            }
+            for (std::string const& d : deployment_) {
+                if (overlaps(w, d)) return refuse(w);
+            }
+        }
+        for (std::string const& d : deployment) {
+            for (std::string const& w : writable_) {
+                if (overlaps(d, w)) return refuse(d);
+            }
+        }
+        deployment_.insert(deployment.begin(), deployment.end());
+        writable_.insert(writable.begin(), writable.end());
+        return {};
+    }
+
+private:
+    [[nodiscard]] static bool overlaps(std::string const& a, std::string const& b) {
+        return capability_detail::path_prefix_covers(a, b) || capability_detail::path_prefix_covers(b, a);
+    }
+    [[nodiscard]] static result<void> refuse(std::string const& key);
+
+    std::mutex                      mutex_;
+    std::unordered_set<std::string> deployment_;
+    std::unordered_set<std::string> writable_;
+};
+
+[[nodiscard]] result<void> refuse_deployment(std::string const& where, std::string const& why) {
+    return std::unexpected(ae::error{
+        failure_class::policy,
+        "a read-write mount and an interpreter deployment path overlap at '" + where + "' (" + why +
+            "); deployment paths are never writable by a sandbox",
+        "sandbox.deployment_path_writable"});
+}
+
+result<void> GrantLedger::refuse(std::string const& key) { return refuse_deployment(key, "this process"); }
+
+[[nodiscard]] GrantLedger& grant_ledger() {
+    static GrantLedger ledger;
+    return ledger;
+}
+
+// The marker capability SID of layer 3. Derived from a fixed name, so every process derives the same SID.
+[[nodiscard]] result<PSID> deployment_marker_sid() {
+    static std::mutex marker_mutex;
+    static std::optional<OwnedSid> marker;
+    std::lock_guard<std::mutex> guard(marker_mutex);
+    if (!marker.has_value()) {
+        auto derived = OwnedSid::derive_capability(L"agentengine.native-jail.deployment-path");
+        if (!derived.has_value()) return std::unexpected(derived.error());
+        marker.emplace(std::move(*derived));
+    }
+    return marker->get();
+}
+
+// A fresh capability SID for one sandbox's read-write mounts, from a random name.
+[[nodiscard]] result<OwnedSid> fresh_rw_sid() {
+    std::random_device rd;
+    std::wstring name = L"agentengine.native-jail.rw.";
+    for (int i = 0; i < 4; ++i) {
+        wchar_t chunk[9];
+        std::swprintf(chunk, 9, L"%08x", static_cast<unsigned>(rd()));
+        name += chunk;
+    }
+    return OwnedSid::derive_capability(name);
+}
+
+// Grants every mount of an already-authorized spec. `deployment` lists the paths that must never be writable
+// (empty for a plain sandbox). Everything is checked before anything is granted.
+[[nodiscard]] result<void> grant_spec_mounts(AppContainerProfile const& profile, SandboxSpec const& spec,
+                                             std::vector<std::wstring> const& deployment, RwGrants& rw,
+                                             std::wstring& cwd) {
+    auto marker = deployment_marker_sid();
+    if (!marker.has_value()) return std::unexpected(marker.error());
+
+    std::vector<std::wstring> ro_paths;
+    std::vector<std::wstring> rw_paths;
+    for (MountSpec const& mount : spec.mounts) {
+        if (!std::holds_alternative<std::string>(mount.source)) {
+            return std::unexpected(ae::error{
+                failure_class::policy,
+                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet "
+                "(M2 Phase C scope gap -- host paths only)",
+                "native_jail.blob_mount_unsupported",
+            });
+        }
+        (mount.read_write ? rw_paths : ro_paths).push_back(widen(std::get<std::string>(mount.source)));
+    }
+
+    // Layer 3: a read-write mount over (or inside) any process's deployment path.
+    for (std::wstring const& path : rw_paths) {
+        auto marked = dacl_names(path, *marker);
+        if (marked.has_value() && *marked) return refuse_deployment(narrow(path), "it is a recorded deployment path");
+    }
+    // Layer 2: a deployment path some sandbox can already write.
+    for (std::wstring const& path : deployment) {
+        auto writer = appcontainer_writer(path, profile.sid());
+        if (!writer.has_value()) return std::unexpected(writer.error());
+        if (writer->has_value()) {
+            return refuse_deployment(narrow(path), "its DACL gives write to " + narrow(**writer) +
+                                            "; remove that entry with icacls /remove");
+        }
+    }
+    // Layer 1.
+    std::vector<std::string> deployment_keys;
+    std::vector<std::string> writable_keys;
+    for (std::wstring const& path : deployment) deployment_keys.push_back(identity_key(path));
+    for (std::wstring const& path : rw_paths) writable_keys.push_back(identity_key(path));
+    if (auto admitted = grant_ledger().admit(deployment_keys, writable_keys); !admitted) return admitted;
+
+    for (std::wstring const& path : deployment) {
+        if (auto r = grant_sid_path(path, *marker, /*read_write=*/false); !r) return r;
+    }
+    for (std::wstring const& path : ro_paths) {
+        if (auto r = profile.grant_path(path, /*read_write=*/false); !r) return r;
+    }
+    if (!rw_paths.empty()) {
+        auto sid = fresh_rw_sid();
+        if (!sid.has_value()) return std::unexpected(sid.error());
+        rw.sid = std::move(*sid);
+        for (std::wstring const& path : rw_paths) {
+            // The profile SID reads (traverse included); only this sandbox's capability SID writes.
+            if (auto r = profile.grant_path(path, /*read_write=*/false); !r) return r;
+            if (auto r = grant_sid_path(path, rw.sid->get(), /*read_write=*/true); !r) return r;
+            rw.paths.push_back(path);
+        }
+        cwd = rw_paths.front();
+    }
     return {};
+}
+
+// The capability list for a launch: the sandbox's read-write SID, when it has one.
+[[nodiscard]] SECURITY_CAPABILITIES launch_capabilities(PSID app_container, RwGrants const& rw,
+                                                        SID_AND_ATTRIBUTES& slot) {
+    SECURITY_CAPABILITIES sec_cap{};
+    sec_cap.AppContainerSid = app_container;
+    if (rw.sid.has_value()) {
+        slot.Sid = rw.sid->get();
+        slot.Attributes = SE_GROUP_ENABLED;
+        sec_cap.Capabilities = &slot;
+        sec_cap.CapabilityCount = 1;
+    }
+    return sec_cap;
 }
 
 // Bounded pipe drain: reads until EOF (the write end closes once the child -- the only other
@@ -174,14 +345,14 @@ std::string drain_pipe_bounded(HANDLE read_handle, std::uint64_t cap_bytes) {
 
 }  // namespace
 
-result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectContext&) {
+result<SandboxHandle> NativeJailBackend::create_blocking(SandboxSpec const& spec, EffectContext&) {
     // docs/planning/sandbox-spec-capability-enforcement-design-draft.md (Slice 3): capabilities are
     // the real authority behind mounts/net, checked FIRST -- a no-op for every caller that doesn't
     // hold a SandboxMount/SandboxNetOut grant (see authorize_spec()'s own comment, sandbox.hpp).
     if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
         return std::unexpected(authorized.error());
     }
-    // decisions/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
+    // decisions/archive/ADR-087-sandbox-spec-capability-enforcement.md: closes a real per-backend divergence
     // this design's own red-team pass found (finding B3) -- KataBackend::create() already fails
     // closed on any NetPolicy beyond deny_all=true (ADR-086); this backend previously ignored
     // NetPolicy entirely. Independent of capabilities/authorize_spec() above: this backend has no
@@ -201,19 +372,8 @@ result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectC
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
 
-    for (MountSpec const& mount : spec.mounts) {
-        if (!std::holds_alternative<std::string>(mount.source)) {
-            return std::unexpected(ae::error{
-                failure_class::policy,
-                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet "
-                "(M2 Phase C scope gap -- host paths only)",
-                "native_jail.blob_mount_unsupported",
-            });
-        }
-        std::wstring host_path = widen(std::get<std::string>(mount.source));
-        auto granted = (*profile)->grant_path(host_path, mount.read_write);
-        if (!granted.has_value()) return std::unexpected(granted.error());
-        if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
+    if (auto granted = grant_spec_mounts(**profile, spec, {}, instance->rw, instance->cwd); !granted.has_value()) {
+        return std::unexpected(granted.error());
     }
 
     auto job_created = instance->job.create(spec.limits);
@@ -225,7 +385,7 @@ result<SandboxHandle> NativeJailBackend::create(SandboxSpec const& spec, EffectC
     return SandboxHandle{id};
 }
 
-result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest const& request,
+result<ExecOutcome> NativeJailBackend::exec_blocking(SandboxHandle& handle, ExecRequest const& request,
                                              EffectContext&) {
     Instance* inst_ptr = find_instance_locked(handle.opaque_id);
     if (inst_ptr == nullptr) {
@@ -277,10 +437,8 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
         return win32_error("CreateFileW(NUL)", failure_class::fatal, "native_jail.nul_stdin_open_failed");
     }
 
-    SECURITY_CAPABILITIES sec_cap{};
-    sec_cap.AppContainerSid = (*profile)->sid();
-    sec_cap.Capabilities = nullptr;
-    sec_cap.CapabilityCount = 0;
+    SID_AND_ATTRIBUTES rw_slot{};
+    SECURITY_CAPABILITIES sec_cap = launch_capabilities((*profile)->sid(), inst.rw, rw_slot);
 
     // Correction (2026-08-23, independent red-team pass, BLOCKING finding, AC-S1 falsified by
     // execution): this attribute list used to be 2 entries (SECURITY_CAPABILITIES,
@@ -401,7 +559,7 @@ result<ExecOutcome> NativeJailBackend::exec(SandboxHandle& handle, ExecRequest c
     return outcome;
 }
 
-void NativeJailBackend::destroy(SandboxHandle& handle) {
+void NativeJailBackend::destroy_blocking(SandboxHandle& handle) {
     // Jailed-Python-worker design: a per_session Python worker gets an orderly teardown FIRST (stop
     // the watchdog thread, best-effort `shutdown` handshake, bounded wait) -- the ordinary per_exec
     // path below (erase -> JobObjectLimits dtor -> KILL_ON_JOB_CLOSE) is still the unconditional
@@ -448,14 +606,8 @@ void NativeJailBackend::erase_instance_locked(std::string const& id) {
     instances_.erase(id);
 }
 
-result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
-    auto profile = shared_profile();
-    if (!profile.has_value()) return std::unexpected(profile.error());
-    return grant_ro_deduped(**profile, path);
-}
-
 // ================================================================================================
-// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/ADR-081-jailed-python-worker-
+// Jailed-Python-worker surface (008 §1b/§3, 010 §2/§6 -- decisions/archive/ADR-081-jailed-python-worker-
 // process-slice-1.md is the ADR superseding this file's former "Correction (2026-08-23)" comment on
 // the header). See native_jail_backend.hpp's own comments for the per-field rationale; this section
 // is the design's §4-§8a made concrete.
@@ -463,7 +615,10 @@ result<void> NativeJailBackend::grant_ro_path_once(std::wstring const& path) {
 
 namespace {
 namespace wp = ::agentengine::native_jail::worker_protocol;
+std::atomic<void (*)()> g_test_post_terminate_hook{nullptr};
 }  // namespace
+
+void NativeJailBackend::set_test_post_terminate_hook(void (*fn)()) { g_test_post_terminate_hook.store(fn); }
 
 void NativeJailBackend::terminate_worker(Instance& inst) {
     if (!inst.worker.has_value()) return;
@@ -519,8 +674,11 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
         // port, unlike a design that only drained inside exec()'s own wait_or_kill().
         if (auto polled = inst.job.poll_memory_limit_once();
             polled.has_value() && *polled == job_kill_reason::memory_limit) {
+            // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+            // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+            ws.kill_reason.store(job_kill_reason::memory_limit, std::memory_order_release);
             TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000003));
-            ws.kill_reason.store(job_kill_reason::memory_limit);
+            if (auto h = g_test_post_terminate_hook.load()) h();
             ws.alive.store(false);
         }
 
@@ -529,8 +687,11 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
             case watchdog_phase::awaiting_init:
             case watchdog_phase::call_active:
                 if (now >= ws.phase_deadline) {
+                    // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+                    // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+                    ws.kill_reason.store(job_kill_reason::wall_clock_timeout, std::memory_order_release);
                     TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000001));
-                    ws.kill_reason.store(job_kill_reason::wall_clock_timeout);
+                    if (auto h = g_test_post_terminate_hook.load()) h();
                     ws.alive.store(false);
                 }
                 break;
@@ -546,11 +707,14 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
                     std::uint64_t const budget_100ns =
                         static_cast<std::uint64_t>(ws.session_config.idle_cpu_budget_ms.count()) * 10'000ULL;
                     if (cpu_since_window_start > budget_100ns) {
+                        // Reason FIRST (release): a blocked ReadFile in exec_session() returns the instant the worker dies,
+                        // possibly before this thread runs again; it must already see the host-sourced reason (I3).
+                        ws.kill_reason.store(job_kill_reason::process_limit, std::memory_order_release);
                         TerminateJobObject(inst.job.native_handle(), static_cast<UINT>(0xE0000004));
+                        if (auto h = g_test_post_terminate_hook.load()) h();
                         // job_kill_reason has no dedicated "background CPU budget exceeded" member --
                         // process_limit is repurposed here (unused for any other kill reason on this
                         // path), matching the final spec §6's own note.
-                        ws.kill_reason.store(job_kill_reason::process_limit);
                         ws.alive.store(false);
                     } else if (now - ws.idle_window_start_time >= ws.session_config.idle_cpu_window_ms) {
                         ws.idle_window_start_time = now;
@@ -574,19 +738,6 @@ void NativeJailBackend::session_watchdog_loop(Instance& inst) {
 result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const& spec,
                                                                 PythonWorkerSessionConfig session,
                                                                 EffectContext&) {
-    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §6 finding B1: this is a
-    // SEPARATE mount-granting entry point from create() above (MediatedPythonRunner::initialize()
-    // calls this, never create()) -- the mechanism's own red-team pass found it would otherwise be
-    // silently unenforced on the one path that matters most in production (the mediated Python
-    // interpreter's real host-directory mounts). A no-op for every caller that doesn't hold a
-    // SandboxMount/SandboxNetOut grant, identical to create()'s own call above.
-    if (auto authorized = authorize_spec(spec); !authorized.has_value()) {
-        return std::unexpected(authorized.error());
-    }
-
-    auto profile = shared_profile();
-    if (!profile.has_value()) return std::unexpected(profile.error());
-
     if (session.worker_exe_path.empty()) {
         return std::unexpected(ae::error{
             failure_class::contract,
@@ -597,37 +748,52 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         });
     }
 
+    // ADR-244 §2.4: the deployment paths the worker needs just to start (its own directory, python_home,
+    // extra_sys_path) are ordinary read-only mounts at their own path, checked against the same grants as
+    // every other mount -- there is no separate, unchecked grant path any more. They are recorded in the
+    // grant ledger first, so no read-write mount (here or in any later sandbox) can overlap them.
+    SandboxSpec effective = spec;
+    std::vector<std::wstring> deployment;
+    deployment.push_back(std::filesystem::path(session.worker_exe_path).parent_path().wstring());
+    if (!session.python_home.empty()) deployment.push_back(session.python_home);
+    for (std::wstring const& p : session.extra_sys_path) {
+        if (!p.empty()) deployment.push_back(p);
+    }
+    for (std::wstring const& path : deployment) {
+        effective.mounts.push_back(MountSpec{.source = narrow(path), .guest_path = narrow(path), .read_write = false});
+    }
+
+    // The relay opens files under `session.mount_roots` on the host side, so each root must be one of the
+    // checked read-write mounts, never a path that reached the worker some other way.
+    for (auto const& [id, root] : session.mount_roots) {
+        std::string const key = sandbox_detail::host_path_key(narrow(root));
+        bool const mounted = std::ranges::any_of(spec.mounts, [&](MountSpec const& m) {
+            return m.read_write && std::holds_alternative<std::string>(m.source) &&
+                   sandbox_detail::host_path_key(std::get<std::string>(m.source)) == key;
+        });
+        if (!mounted) {
+            return std::unexpected(ae::error{failure_class::contract,
+                                             "mount root '" + id + "' is not among the spec's read-write mounts",
+                                             "native_jail.mount_root_not_mounted"});
+        }
+    }
+
+    // docs/planning/sandbox-spec-capability-enforcement-design-draft.md §6 finding B1: this is a
+    // SEPARATE mount-granting entry point from create() above (MediatedPythonRunner::initialize()
+    // calls this, never create()), so it runs the same unconditional check, over every mount and
+    // deployment path, before anything is granted.
+    if (auto authorized = authorize_spec(effective); !authorized.has_value()) {
+        return std::unexpected(authorized.error());
+    }
+
+    auto profile = shared_profile();
+    if (!profile.has_value()) return std::unexpected(profile.error());
+
     auto instance = std::make_unique<Instance>();
     instance->limits = spec.limits;
-
-    for (MountSpec const& mount : spec.mounts) {
-        if (!std::holds_alternative<std::string>(mount.source)) {
-            return std::unexpected(ae::error{
-                failure_class::policy,
-                "MountSpec::source as a BlobRef is not supported by NativeJailBackend yet",
-                "native_jail.blob_mount_unsupported",
-            });
-        }
-        std::wstring host_path = widen(std::get<std::string>(mount.source));
-        auto granted = (*profile)->grant_path(host_path, mount.read_write);
-        if (!granted.has_value()) return std::unexpected(granted.error());
-        if (mount.read_write && instance->cwd.empty()) instance->cwd = host_path;
-    }
-
-    // The worker binary and the interpreter deployment paths (python_home/extra_sys_path) are NOT
-    // SandboxSpec mounts -- they are host deployment config the worker process needs read+execute
-    // access to just to START, not guest-visible session data -- so they get their own grant_path()
-    // calls here (008 §2's mount contract, applied one layer up from ordinary guest mounts).
-    auto grant_ro = [&](std::wstring const& path) -> result<void> {
-        return grant_ro_deduped(**profile, path);
-    };
-    {
-        std::filesystem::path exe_dir = std::filesystem::path(session.worker_exe_path).parent_path();
-        if (auto g = grant_ro(exe_dir.wstring()); !g.has_value()) return std::unexpected(g.error());
-    }
-    if (auto g = grant_ro(session.python_home); !g.has_value()) return std::unexpected(g.error());
-    for (auto const& p : session.extra_sys_path) {
-        if (auto g = grant_ro(p); !g.has_value()) return std::unexpected(g.error());
+    if (auto granted = grant_spec_mounts(**profile, effective, deployment, instance->rw, instance->cwd);
+        !granted.has_value()) {
+        return std::unexpected(granted.error());
     }
 
     auto job_created = instance->job.create(spec.limits);
@@ -653,10 +819,8 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
     SetHandleInformation(down_write.h, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(up_read.h, HANDLE_FLAG_INHERIT, 0);
 
-    SECURITY_CAPABILITIES sec_cap{};
-    sec_cap.AppContainerSid = (*profile)->sid();
-    sec_cap.Capabilities = nullptr;
-    sec_cap.CapabilityCount = 0;
+    SID_AND_ATTRIBUTES rw_slot{};
+    SECURITY_CAPABILITIES sec_cap = launch_capabilities((*profile)->sid(), instance->rw, rw_slot);
 
     HANDLE inherit_list[2] = {down_read.h, up_write.h};
 
@@ -781,7 +945,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         // Broken pipe: either the worker crashed on its own or the watchdog already killed it
         // (awaiting_init's own deadline, or a memory-limit notification during startup).
         ws.alive.store(false);
-        job_kill_reason const reason = ws.kill_reason.load();
+        job_kill_reason const reason = ws.kill_reason.load(std::memory_order_acquire);
         stop_watchdog(*instance);
         close_worker_handles(*instance);
         return std::unexpected(ae::error{
@@ -889,7 +1053,7 @@ void NativeJailBackend::dispatch_worker_query(Instance& inst, json::Value const&
     } else if (kind == wp::kQueryFileClose && payload != nullptr) {
         fields = dispatch_file_close(ws, *payload);
     } else if (kind == wp::kQueryProgress && payload != nullptr) {
-        // decisions/ADR-155-agent-progress-codeact-module.md. `ctx` here is the SAME EffectContext
+        // decisions/archive/ADR-155-agent-progress-codeact-module.md. `ctx` here is the SAME EffectContext
         // `exec_session()` was called with -- which, because `execute_code` itself is invoked as an
         // ordinary tool through one of `rt/agent_session.hpp`'s three real `invoke_tool()` call sites
         // (ADR-060 §2), already has `report_progress` bound to that call's own live
@@ -994,7 +1158,7 @@ result<ExecOutcome> NativeJailBackend::exec_session(SandboxHandle const& handle,
             // Broken pipe -- the worker died. Classify from the watchdog's own observed kill_reason
             // (a real, external signal), never from anything the worker itself claimed (I3).
             ws.alive.store(false);
-            job_kill_reason const reason = ws.kill_reason.load();
+            job_kill_reason const reason = ws.kill_reason.load(std::memory_order_acquire);
             outcome = ExecOutcome{};
             outcome.klass = reason == job_kill_reason::wall_clock_timeout ? exec_outcome_class::timeout
                              : reason == job_kill_reason::memory_limit    ? exec_outcome_class::oom

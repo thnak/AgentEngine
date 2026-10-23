@@ -1,5 +1,5 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a, §3a — the Runner concept and ExecState. Named
+// Implements rfcs/010-Python-Code-Interpreter.md §1a, §3a — the Runner concept and ExecState. Named
 // `Runner`, deliberately not `Executor` (027 §5 — that word already means a workflow graph node).
 
 #include <string>
@@ -7,6 +7,7 @@
 
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 #include "agentengine/sandbox/sandbox.hpp"
 
 namespace agentengine {
@@ -61,16 +62,12 @@ private:
 // neither is declared here — each is a seam backend (CONVENTIONS tier 2) with its own
 // implementation, not core vocabulary.
 //
-// Return type is constrained to `result<ExecOutcome>` (synchronous) rather than `ae::task<T>` — the
-// coroutine type CONVENTIONS.md/027 name as the eventual real signature (`core/task.hpp`; no longer
-// gated on anything since ADR-037 -- `ae::task<T>` is a plain `agentengine::rt::task<T>` alias, zero
-// Quark dependency) — because this header hasn't been migrated to it yet, not because the type is
-// unavailable. Once it is, this constraint becomes `-> std::same_as<ae::task<result<ExecOutcome>>>`
-// and every conforming `run()` changes with it — tracked here rather than left as a silently
-// unconstrained `requires`.
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): `run` returns `ae::task<result<ExecOutcome>>`. A runner may be
+// remote or may park (an interpreter behind a worker process, a runner on another host), so the seam can
+// suspend. `state` and `ctx` are borrowed and must outlive the returned task; callers await it in place.
 template <class T>
 concept Runner = requires(T runner, ExecRequest request, ExecState& state, EffectContext& ctx) {
-    { runner.run(request, state, ctx) } -> std::same_as<result<ExecOutcome>>;
+    { runner.run(request, state, ctx) } -> std::same_as<task<result<ExecOutcome>>>;
 };
 
 } // namespace agentengine

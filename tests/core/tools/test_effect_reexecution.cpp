@@ -13,6 +13,7 @@
 #include <string>
 
 #include "agentengine/core/tool_pipeline.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -33,12 +34,12 @@ struct PureReply {
 };
 AE_JSON_SCHEMA(PureReply, x)
 
-struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengine::effect_class::pure>> {
+struct PureTool : agentengine::Tool<PureTool, agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     [[maybe_unused]] static constexpr std::string_view name = "pure_tool";
     [[maybe_unused]] static constexpr std::string_view description = "A read-only, side-effect-free tool.";
     using Args = PureArgs;
     using Reply = PureReply;
-    static agentengine::result<Reply> invoke(Args a, agentengine::EffectContext&) { return Reply{a.x}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, agentengine::EffectContext&) const { co_return Reply{a.x}; }
 };
 
 struct PaymentArgs {
@@ -51,21 +52,21 @@ struct PaymentReply {
 AE_JSON_SCHEMA(PaymentReply, charged)
 
 // Deliberately declares NO EffectClass -- proving the conservative default applies.
-struct UndeclaredTool : agentengine::Tool<UndeclaredTool> {
+struct UndeclaredTool : agentengine::Tool<UndeclaredTool, agentengine::Approval<agentengine::approval_mode::never_require>> {
     [[maybe_unused]] static constexpr std::string_view name = "undeclared_tool";
     [[maybe_unused]] static constexpr std::string_view description = "A tool that forgot to classify itself.";
     using Args = PaymentArgs;
     using Reply = PaymentReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 struct MakePaymentTool
-    : agentengine::Tool<MakePaymentTool, agentengine::EffectClass<agentengine::effect_class::at_most_once>> {
+    : agentengine::Tool<MakePaymentTool, agentengine::EffectClass<agentengine::effect_class::at_most_once>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "make_payment";
     static constexpr std::string_view description = "019 §3's own example of a must-not-repeat effect.";
     using Args = PaymentArgs;
     using Reply = PaymentReply;
-    static agentengine::result<Reply> invoke(Args, agentengine::EffectContext&) { return Reply{true}; }
+    agentengine::task<agentengine::result<Reply>> invoke(Args, agentengine::EffectContext&) const { co_return Reply{true}; }
 };
 
 agentengine::EffectContext make_ctx() {
@@ -109,14 +110,14 @@ int main() {
     // --- A real manually-triggered re-execution: invoke_tool() twice under the SAME idempotency
     // key (a manual rewind-and-replay), gated by authorize_reexecution() BEFORE the second call --
     {
-        auto const table = agentengine::ToolTable::from_tools<MakePaymentTool>();
+        auto const table = agentengine::ToolTable::from(MakePaymentTool{});
         agentengine::CapabilitySet held;
         auto args = *json::parse(R"({"account":"acct-1"})");
         auto ctx = make_ctx();
 
         agentengine::ToolCallRequest req{"call-1", "make_payment", args, false, /*call_index=*/0};
         agentengine::ToolInvocationAudit audit1;
-        auto first = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit1);
+        auto first = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit1));
         check(!first.is_error, "F4-R7 setup: the first (original) execution succeeds");
 
         // Rewind: attempt to re-run the EXACT SAME call (same key) without an operator ack first.
@@ -133,7 +134,7 @@ int main() {
         check(gate_with_ack.has_value(), "F4-R9: with an operator ack, re-execution is authorized");
 
         agentengine::ToolInvocationAudit audit2;
-        auto second = agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit2);
+        auto second = agentengine::test_support::run_task_sync<agentengine::ToolResult>(agentengine::invoke_tool(table, held, req, ctx, nullptr, &audit2));
         check(!second.is_error, "F4-R10: the acknowledged re-execution itself still runs correctly");
         check(audit2.idempotency_key == audit1.idempotency_key,
               "F4-R11: the re-execution carries the SAME idempotency key as the original -- it is "

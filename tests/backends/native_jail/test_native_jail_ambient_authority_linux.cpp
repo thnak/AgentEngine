@@ -1,5 +1,5 @@
 // Milestone 2 Phase C, task C5 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
-// 008-Sandbox-and-Isolation.md SS9 G3 -- "a probe guest enumerating filesystem, network, env, and
+// rfcs/008-Sandbox-and-Isolation.md SS9 G3 -- "a probe guest enumerating filesystem, network, env, and
 // processes finds exactly the granted set and nothing else, on each backend." This is the Linux
 // half against the real LinuxNativeJailBackend (C2).
 //
@@ -14,6 +14,8 @@
 // Requires a delegated cgroup v2 root and CAP_SYS_ADMIN, same as C2/C3's Linux tests -- run via
 // tests/helpers/cgroup_v2_test_setup.sh.
 
+#include "../../support/sandbox_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -144,17 +146,19 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
         spec.limits.output_bytes = 64 * 1024;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5-Linux env: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native", .source = hostile_child_cmd("probe_env")};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5-Linux env: contained exec() returns a result");
             if (outcome.has_value()) {
                 bool leaked = outcome->stdout_text.find(kCanaryName) != std::string::npos;
@@ -165,7 +169,7 @@ int main() {
                           "the launching host process set (008 SS9 G3, no ambient authority; "
                           "LinuxNativeJailBackend's fixed envp already made this true)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same canary, same probe, unsandboxed -- proves the canary-detection
@@ -190,18 +194,20 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 5000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5-Linux net: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{.language = "native",
                              .source = hostile_child_cmd("probe_net " + std::to_string(port))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5-Linux net: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_net stdout=" << outcome->stdout_text;
@@ -210,7 +216,7 @@ int main() {
                           "configured interface (not even loopback brought up), so it cannot reach "
                           "a host loopback listener (008 SS9 G3)");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         // Positive control: same probe, unsandboxed -- must actually connect.
@@ -242,19 +248,21 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(
             MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        ae_test::grant_listed_mounts(spec);
         agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
+        ae_test::grant_listed_mounts(spec);
         spec.limits.wall_ms = 3000;
         spec.limits.memory_bytes = 32ull * 1024 * 1024;
         spec.limits.pids = 4;
         spec.limits.output_bytes = 4096;
 
-        auto handle = backend.create(spec, ctx);
+        auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "C5-Linux proc: create() succeeds");
         if (handle.has_value()) {
             ExecRequest req{
                 .language = "native",
                 .source = hostile_child_cmd("probe_proc " + std::to_string(canary_pid))};
-            auto outcome = backend.exec(*handle, req, ctx);
+            auto outcome = agentengine::rt::block_on(backend.exec(*handle, req, ctx));
             AE_CHECK(outcome.has_value(), "C5-Linux proc: contained exec() returns a result");
             if (outcome.has_value()) {
                 std::cout << "  measured: contained probe_proc stdout=" << outcome->stdout_text;
@@ -270,7 +278,7 @@ int main() {
                           "sees at least itself) -- proves the containment above is real "
                           "namespace-local scoping, not /proc failing to mount at all");
             }
-            backend.destroy(*handle);
+            agentengine::rt::block_on(backend.destroy(*handle));
         }
 
         kill(canary_pid, SIGKILL);

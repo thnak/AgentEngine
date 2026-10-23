@@ -1,7 +1,7 @@
 #pragma once
-// Implements 010-Python-Code-Interpreter.md §1a/§2/§3a/§9 G7 -- Milestone 3 Phase E2's `PythonRunner`
+// Implements rfcs/010-Python-Code-Interpreter.md §1a/§2/§3a/§9 G7 -- Milestone 3 Phase E2's `PythonRunner`
 // (embedded CPython under native-jail, satisfying `sandbox/runner.hpp`'s `Runner` concept), REBUILT
-// as an IPC CLIENT by the jailed-Python-worker design (008-Sandbox-and-Isolation.md §1b/§3,
+// as an IPC CLIENT by the jailed-Python-worker design (rfcs/008-Sandbox-and-Isolation.md §1b/§3,
 // 010 §2/§6 -- the ADR superseding native_jail_backend.hpp's former "Correction (2026-08-23)"
 // comment, which asserted the CPython-interpreter/host-filesystem-boundary gap was closed by a
 // mechanism that turned out never to touch NativeJailBackend at all; it did not close the gap, and
@@ -38,6 +38,7 @@
 // `python_worker_mediation.hpp`'s identical note; this redesign did not touch that decision.
 
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -86,9 +87,9 @@ struct MediatedPythonConfig {
     // `mount_roots`/`tool_bridge` rather than derived from them.
     bool expose_agent_files_data = false;
     bool expose_agent_ask = false;
-    // decisions/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output`.
+    // decisions/archive/ADR-154-agent-output-codeact-module.md, 026 §5's `agent.output`.
     bool expose_agent_output = false;
-    // decisions/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`.
+    // decisions/archive/ADR-155-agent-progress-codeact-module.md, 026 §5's `agent.progress`.
     bool expose_agent_progress = false;
 
     // Milestone 3 Phase F3 (010 §3 items 4/5): the per-session output-discipline cap.
@@ -125,16 +126,34 @@ public:
     MediatedPythonRunner(MediatedPythonRunner&&) = delete;
     MediatedPythonRunner& operator=(MediatedPythonRunner&&) = delete;
 
+    // The read-only and read-write `cap::SandboxMount`s a host grant must hold for `initialize()` to
+    // succeed with `config` (ADR-244 §2.4): each `mount_roots` entry read-write at its guest path, and
+    // the worker's directory, `python_home` and every `extra_sys_path` entry read-only at their own
+    // path. A listing for the host to read and pass to `CapabilitySet::grant_root` itself -- the runner
+    // never grants anything it derives from configuration.
+    [[nodiscard]] static std::vector<cap::SandboxMount> required_mounts(MediatedPythonConfig const& config);
+
     // Spawns the jailed worker process (NativeJailBackend::create_python_worker()) and blocks for its
-    // `init_response`. Must be called exactly once, before `run()`.
-    [[nodiscard]] result<void> initialize();
+    // `init_response`. Must be called exactly once, before `run()`. ADR-244 §2.4: the worker has no
+    // caller at creation, so the host states the authority explicitly -- every mount and deployment path
+    // is checked against `host_grant` -- and `ctx` receives the "create" audit row.
+    [[nodiscard]] result<void> initialize(CapabilitySet const& host_grant, EffectContext& ctx);
 
     [[nodiscard]] bool ok() const { return initialized_; }
+    [[nodiscard]] MediatedPythonConfig const& config() const noexcept { return config_; }
 
     // Satisfies `Runner` (sandbox/runner.hpp) -- byte-identical signature to before this redesign.
     // Delegates to `NativeJailBackend::exec_session()`, which owns exec_seq/single-flight/watchdog
     // concerns entirely; this method is now just the Runner-shaped forwarding call.
-    [[nodiscard]] result<ExecOutcome> run(ExecRequest request, ExecState& state, EffectContext& ctx);
+    //
+    // ADR-237 §5.1 (#173): the seam is now a coroutine over `run_blocking()` (the forwarding call itself),
+    // completing without suspending; `state` and `ctx` must outlive the returned task.
+    [[nodiscard]] task<result<ExecOutcome>> run(ExecRequest request, ExecState& state, EffectContext& ctx) {
+        co_return run_blocking(std::move(request), state, ctx);
+    }
+
+    // The synchronous body. Public for synchronous composition (a `RegisteredRunner` closure).
+    [[nodiscard]] result<ExecOutcome> run_blocking(ExecRequest request, ExecState& state, EffectContext& ctx);
 
     // Reconfigures `agent.tools` on the ALREADY-running worker (NativeJailBackend::refresh_python_tools()).
     [[nodiscard]] result<void> refresh_agent_tools(ToolBridgeConfig config);
@@ -144,6 +163,11 @@ private:
     NativeJailBackend& backend_;
     bool initialized_ = false;
     SandboxHandle handle_;
+    // ADR-244 §2.4: one runner per session, enforced here. The first run binds the session nonce it
+    // came from; any other session, and any later incarnation of the same one (after a clear, restore or
+    // fork), is refused -- the interpreter's globals belong to the session that created them.
+    std::mutex bind_mutex_;
+    std::optional<SessionNonce> bound_session_;
 };
 
 } // namespace agentengine::native_jail

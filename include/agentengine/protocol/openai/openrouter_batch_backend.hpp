@@ -1,6 +1,6 @@
 #pragma once
 
-// decisions/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter conformer of the `BatchBackend`
+// decisions/archive/ADR-235-batch-inference-coalescing.md §3.2: the OpenRouter conformer of the `BatchBackend`
 // seam (core/batch_backend.hpp). OpenRouter's Batch API went GA on 2026-09-22
 // (docs/research/2026-10-02-batch-inference-provider-limits.md); this speaks its `/api/v1/batches`
 // surface with the OpenAI chat-completions item shape, reusing `openai::detail::build_request_body` /
@@ -22,10 +22,15 @@
 // reasoning effort, no client-interaction answers. Anything else runs synchronously, where the
 // synchronous client's own capability gates apply -- never a batched request whose parameters the
 // vendor might silently drop (ADR-235 §7). Widening this needs live proof per parameter.
+//
+// ADR-237 §5.1: every vendor call is a buffered exchange on `rt::http` (`exchange_json_async`, the same one
+// `OpenAIChatClient::chat()` uses) -- no blocking socket. With no `rt::Runtime` supplied the backend owns one,
+// exactly as the chat clients do; a host running many sessions passes its own.
 
 #ifdef AGENTENGINE_WITH_HTTPS
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +39,7 @@
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/protocol/openai/chat_client.hpp"
 #include "agentengine/protocol/provider_chat_wire.hpp"
+#include "agentengine/rt/runtime.hpp"
 #include "agentengine/sandbox/provider_http_client.hpp"
 #include "agentengine/trust/secret.hpp"
 
@@ -70,7 +76,9 @@ public:
     OpenRouterBatchBackend(std::string host, std::uint16_t port, std::string model, SecretRef api_key_ref,
                            Store const& store, std::string path_prefix = "/api/v1",
                            detail::Resolver resolver = sandbox::resolve_host, std::string ca_bundle_pem_override = {},
-                           sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls)
+                           sandbox::ProviderTransport transport = sandbox::ProviderTransport::tls,
+                           // ADR-237 §5.1: appended last, the chat clients' "never insert earlier" convention.
+                           agentengine::detail::provider_wire::ProviderReactorOptions reactor = {})
         : host_(std::move(host)),
           port_(port),
           model_(std::move(model)),
@@ -79,7 +87,18 @@ public:
           path_prefix_(std::move(path_prefix)),
           resolver_(std::move(resolver)),
           ca_bundle_pem_override_(std::move(ca_bundle_pem_override)),
-          transport_(transport) {}
+          transport_(transport),
+          reactor_(std::move(reactor)) {
+        // As OpenAIChatClient: no Runtime supplied -> own one, held by unique_ptr so `reactor_.runtime` survives a
+        // move; the ctor's Resolver becomes the reactor's DNS seam unless the caller named one.
+        if (reactor_.runtime == nullptr) {
+            owned_runtime_   = std::make_unique<agentengine::rt::Runtime>(agentengine::rt::RuntimeConfig{});
+            reactor_.runtime = owned_runtime_.get();
+        }
+        if (!reactor_.resolver) {
+            reactor_.resolver = agentengine::detail::provider_wire::host_resolver_from(resolver_, port_);
+        }
+    }
 
     [[nodiscard]] std::string group_key() const override {
         // The credential REFERENCE is part of the key (ADR-235 §3.2): a restored run never polls a job
@@ -97,47 +116,49 @@ public:
         return detail::openrouter_batch_admit(request, model_);
     }
 
-    [[nodiscard]] result<std::string> submit(std::vector<BatchItemRequest> const& items, EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
-        if (!lease) return std::unexpected(lease.error());
+    [[nodiscard]] task<result<std::string>> submit(std::vector<BatchItemRequest> const& items,
+                                                   EffectContext& ctx) override {
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
+        if (!lease) co_return std::unexpected(lease.error());
         auto body = detail::build_openrouter_batch_body(model_, items);
-        if (!body) return std::unexpected(body.error());
+        if (!body) co_return std::unexpected(body.error());
         auto req = detail::openrouter_batch_request("POST", path_prefix_ + "/batches", lease->reveal_text(),
                                                     json::dump(*body));
-        auto parsed = exchange(req);
-        if (!parsed) return std::unexpected(parsed.error());
-        return detail::parse_openrouter_batch_id(*parsed);
+        auto parsed = co_await exchange(std::move(req), ctx);
+        if (!parsed) co_return std::unexpected(parsed.error());
+        co_return detail::parse_openrouter_batch_id(*parsed);
     }
 
-    [[nodiscard]] result<BatchPoll> poll(std::string const& job_id, EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
-        if (!lease) return std::unexpected(lease.error());
+    [[nodiscard]] task<result<BatchPoll>> poll(std::string const& job_id, EffectContext& ctx) override {
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
+        if (!lease) co_return std::unexpected(lease.error());
         auto req = detail::openrouter_batch_request("GET", path_prefix_ + "/batches/" + job_id, lease->reveal_text(), {});
-        auto parsed = exchange(req);
-        if (!parsed) return std::unexpected(parsed.error());
-        return detail::parse_openrouter_batch_object(*parsed, "openai:" + model_);
+        auto parsed = co_await exchange(std::move(req), ctx);
+        if (!parsed) co_return std::unexpected(parsed.error());
+        co_return detail::parse_openrouter_batch_object(*parsed, "openai:" + model_);
     }
 
-    [[nodiscard]] result<void> cancel(std::string const&, EffectContext&) override {
-        return std::unexpected(error{failure_class::contract,
-                                     "OpenRouter's Batch API has no cancel endpoint; the job runs to its terminal "
-                                     "state (release() can purge it afterwards)",
-                                     "openrouter_batch.cancel_unsupported"});
+    [[nodiscard]] task<result<void>> cancel(std::string const&, EffectContext&) override {
+        co_return std::unexpected(error{failure_class::contract,
+                                        "OpenRouter's Batch API has no cancel endpoint; the job runs to its terminal "
+                                        "state (release() can purge it afterwards)",
+                                        "openrouter_batch.cancel_unsupported"});
     }
 
-    [[nodiscard]] result<void> release(std::string const& job_id, EffectContext& ctx) override {
-        auto lease = store_.resolve(api_key_ref_, ctx);
-        if (!lease) return std::unexpected(lease.error());
+    [[nodiscard]] task<result<void>> release(std::string const& job_id, EffectContext& ctx) override {
+        auto lease = co_await store_.resolve(api_key_ref_, ctx);
+        if (!lease) co_return std::unexpected(lease.error());
         auto req = detail::openrouter_batch_request("DELETE", path_prefix_ + "/batches/" + job_id, lease->reveal_text(), {});
-        auto parsed = exchange(req);
-        if (!parsed) return std::unexpected(parsed.error());
-        return {};
+        auto parsed = co_await exchange(std::move(req), ctx);
+        if (!parsed) co_return std::unexpected(parsed.error());
+        co_return result<void>{};
     }
 
 private:
-    [[nodiscard]] result<json::Value> exchange(sandbox::NetEgressRequest const& req) const {
-        return agentengine::detail::provider_wire::exchange_json("openrouter", host_, port_, req, resolver_,
-                                                                 ca_bundle_pem_override_, transport_);
+    // `ctx.cancellation` stops an in-flight exchange, as it does for `OpenAIChatClient::chat()`.
+    [[nodiscard]] task<result<json::Value>> exchange(sandbox::NetEgressRequest req, EffectContext& ctx) const {
+        return detail::exchange_json_async("openrouter", host_, port_, std::move(req), reactor_,
+                                           ca_bundle_pem_override_, transport_, ctx.cancellation);
     }
 
     std::string host_;
@@ -149,6 +170,8 @@ private:
     detail::Resolver resolver_;
     std::string ca_bundle_pem_override_;
     sandbox::ProviderTransport transport_;
+    agentengine::detail::provider_wire::ProviderReactorOptions reactor_;
+    std::unique_ptr<agentengine::rt::Runtime>                  owned_runtime_;  // set only when none was supplied
 };
 
 }  // namespace agentengine::openai

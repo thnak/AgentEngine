@@ -28,10 +28,13 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/tool.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::ResolveInteraction;
@@ -58,8 +61,7 @@ void check(bool cond, char const* what) {
 // why the distinction matters.
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::ChatClientCapabilities;
@@ -160,7 +162,7 @@ int main() {
     // S1: a no-tool-call round converges immediately.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("s1", Principal{"p1", ""});
+        session.initialize("s1", Principal{"p1", ""}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_response("hello"), Usage{2, 3, 0, 0, 0.0}}});
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
@@ -178,7 +180,7 @@ int main() {
     // S2: a tool-call round invokes the tool for real, then a SECOND round converges.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("s2", Principal{"p2", ""});
+        session.initialize("s2", Principal{"p2", ""}, ae_test::trusted_unbounded());
         ScriptedChatClient& client = session.emplace_chat_client();
         client.set_script({
             {tool_call_response("call-1", "get_weather", "{}"), Usage{1, 1, 0, 0, 0.0}},
@@ -202,7 +204,7 @@ int main() {
     // WITHOUT ever reaching the ChatClientT.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("s3", Principal{"owner", "tenant-a"});
+        session.initialize("s3", Principal{"owner", "tenant-a"}, ae_test::trusted_unbounded());
         session.emplace_chat_client().set_script({{text_response("should never be seen"), Usage{1, 1, 0, 0, 0.0}}});
 
         StartRun req{user_message("hi")};
@@ -218,7 +220,7 @@ int main() {
     // S4: token budget -- a run whose usage exceeds the configured ceiling fails closed.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("s4", Principal{"p4", ""}, /*token_budget=*/10);
+        session.initialize("s4", Principal{"p4", ""}, ae_test::trusted(/*token_budget=*/10));
         session.emplace_chat_client().set_script({{text_response("expensive"), Usage{8, 8, 0, 0, 0.0}}});
 
         auto outcome = drive(session.start_run(StartRun{user_message("hi")}));
@@ -231,7 +233,7 @@ int main() {
     // reached, rather than looping forever.
     {
         AgentSession<ScriptedChatClient> session;
-        session.initialize("s5", Principal{"p5", ""}, std::nullopt, /*max_turns=*/3);
+        session.initialize("s5", Principal{"p5", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/3));
         session.emplace_chat_client().set_script({
             {tool_call_response("c1", "get_weather", "{}"), Usage{1, 1, 0, 0, 0.0}},
         });  // repeats forever -- always a tool call, never converges

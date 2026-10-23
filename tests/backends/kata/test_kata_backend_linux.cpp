@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <string>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
 
@@ -50,7 +51,7 @@ int main() {
     EffectContext ctx = make_ctx();
     SandboxSpec spec;
 
-    auto handle = backend.create(spec, ctx);
+    auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     check(handle.has_value(), "create(): a real Kata sandbox (cloud-hypervisor) starts successfully");
     if (!handle.has_value()) {
         std::fprintf(stderr, "create() error: %s\n", handle.error().message.c_str());
@@ -61,7 +62,7 @@ int main() {
     ExecRequest uname_req;
     uname_req.language = "shell";
     uname_req.source = "uname -r";
-    auto uname_out = backend.exec(*handle, uname_req, ctx);
+    auto uname_out = agentengine::rt::block_on(backend.exec(*handle, uname_req, ctx));
     check(uname_out.has_value() && uname_out->klass == exec_outcome_class::ok,
           "exec(): `uname -r` succeeds inside the guest");
     if (uname_out.has_value()) {
@@ -74,14 +75,14 @@ int main() {
     ExecRequest write_req;
     write_req.language = "shell";
     write_req.source = "echo kata_state_probe > /tmp/kata_probe_file";
-    auto write_out = backend.exec(*handle, write_req, ctx);
+    auto write_out = agentengine::rt::block_on(backend.exec(*handle, write_req, ctx));
     check(write_out.has_value() && write_out->klass == exec_outcome_class::ok,
           "exec(): writing a state file inside the guest succeeds");
 
     ExecRequest read_req;
     read_req.language = "shell";
     read_req.source = "cat /tmp/kata_probe_file";
-    auto read_out = backend.exec(*handle, read_req, ctx);
+    auto read_out = agentengine::rt::block_on(backend.exec(*handle, read_req, ctx));
     check(read_out.has_value() && read_out->klass == exec_outcome_class::ok,
           "exec(): reading the state file back succeeds");
     if (read_out.has_value()) {
@@ -96,7 +97,7 @@ int main() {
     ExecRequest fail_req;
     fail_req.language = "shell";
     fail_req.source = "exit 7";
-    auto fail_out = backend.exec(*handle, fail_req, ctx);
+    auto fail_out = agentengine::rt::block_on(backend.exec(*handle, fail_req, ctx));
     check(fail_out.has_value() && fail_out->klass == exec_outcome_class::crash,
           "exec(): a nonzero guest exit code is classified as exec_outcome_class::crash");
 
@@ -106,15 +107,15 @@ int main() {
         SandboxHandle bogus{"never-created"};
         ExecRequest req;
         req.source = "echo unreachable";
-        auto bogus_out = fresh_backend.exec(bogus, req, ctx);
+        auto bogus_out = agentengine::rt::block_on(fresh_backend.exec(bogus, req, ctx));
         check(!bogus_out.has_value() && bogus_out.error().code == "kata_backend.unknown_handle",
               "exec(): an unknown handle fails closed with kata_backend.unknown_handle");
     }
 
-    backend.destroy(*handle);
+    agentengine::rt::block_on(backend.destroy(*handle));
     // destroy() is void by the SandboxBackend concept -- no direct observable here beyond "did not
     // crash"; a second destroy() on the same (now-erased) handle must also be a safe no-op.
-    backend.destroy(*handle);
+    agentengine::rt::block_on(backend.destroy(*handle));
     check(true, "destroy(): idempotent, a second call on an already-destroyed handle does not crash");
 
     if (g_failures == 0) {

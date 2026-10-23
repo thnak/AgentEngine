@@ -1,10 +1,9 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row -- the PDF
+// Implements rfcs/009-Plugin-and-Extension-System.md §7's "Document extraction" catalog row -- the PDF
 // text-layer slice, per ADR-106 (PDFium, BSD-3-Clause, not poppler/mupdf) and
 // docs/planning/pdf-text-extraction-design-draft.md (Revision 7, closed after six real red-team
-// rounds). First real, host-reachable slice of that design; earlier work on this branch landed
-// NativeJailBackend::grant_ro_path_once() alone (native_jail_backend.hpp), the small, PDFium-
-// independent primitive this file's Windows half now actually uses.
+// rounds). First real, host-reachable slice of that design. (Its Windows half used to grant its paths through
+// `NativeJailBackend::grant_ro_path_once()`, outside any capability check; ADR-244 §2.4 removed that.)
 //
 // ISOLATION (S3a): PDFium never links into this process. The actual decode runs in a dedicated,
 // per-call child process (agentengine_pdf_worker, pdf_worker_main.cpp), spawned via the SAME
@@ -23,12 +22,12 @@
 // SCRATCH FILE (S3a(ii)): the host still does the capability check and the read (inheriting
 // `ReadContent`'s own already-shipped, already-accepted `FileSystemAdapter::read_file()` size gap --
 // explicitly NOT a new defect this file introduces). The fetched bytes are written to a per-call
-// file inside ONE fixed scratch directory. Windows: that directory is granted to the shared
-// AppContainer profile exactly once via `grant_ro_path_once()` (real, measured dedup -- see that
-// method's own test). Linux: `LinuxNativeJailBackend::exec()`'s mount namespace is already private
-// and per-call/torn-down-with-the-child (round-6 red-team's own finding -- no AppContainer-shaped
-// cross-session exposure exists there at all), so the scratch directory is an ordinary
-// `SandboxSpec.mounts` read-only bind, no dedup mechanism needed.
+// file inside ONE fixed scratch directory. ADR-244 §2.4: on both platforms that directory and the worker's
+// own are ordinary read-only `SandboxSpec.mounts`, checked against the calling session's `cap::SandboxMount`
+// grants (`required_grants()` lists them for the host). Windows: the backend's mount step grants each
+// read-only path to the shared AppContainer profile once (deduplicated, ADR-004 finding 9). Linux:
+// `LinuxNativeJailBackend::exec()`'s mount namespace is private and per call (round-6 red-team's own
+// finding), so the bind goes with the child.
 //
 // LINUX TOOLCHAIN MOUNTS -- a real, disclosed residual, not a design choice this file can avoid:
 // `LinuxNativeJailBackend::exec()` hardcodes `execve("/bin/sh", {"/bin/sh", "-c", command, ...})`
@@ -107,6 +106,12 @@ AE_JSON_SCHEMA(ExtractPdfTextReply, preview, truncated, total_bytes, total_page_
 
 namespace extract_pdf_text_detail {
 
+// A path as UTF-8 (`path::string()` is the ANSI code page under MSVC, while mounts and the backend use UTF-8).
+[[nodiscard]] inline std::string utf8_path(std::filesystem::path const& p) {
+    auto const u8 = p.u8string();
+    return std::string(u8.begin(), u8.end());
+}
+
 inline constexpr std::uint64_t kDefaultPreviewByteCap = 8000;  // mirrors read_content_detail's own
 
 // Must match pdf_worker_main.cpp's own constants exactly (kMagic/kKindMeta/kKindPage) -- see this
@@ -161,7 +166,7 @@ struct ParsedPages {
 // Source-agnostic threshold/blob-promotion -- a deliberate, small, standalone copy of
 // read_content_detail::build_reply's own logic (see this file's own top comment on why this stays
 // standalone rather than sharing ReadContent's helper).
-[[nodiscard]] inline result<ExtractPdfTextReply> build_reply(ParsedPages&& parsed, EffectContext& ctx) {
+[[nodiscard]] inline task<result<ExtractPdfTextReply>> build_reply(ParsedPages&& parsed, EffectContext& ctx) {
     std::string joined;
     for (auto const& page_text : parsed.pages) {
         joined += page_text;
@@ -178,7 +183,7 @@ struct ParsedPages {
     if (reply.total_bytes <= threshold) {
         reply.preview = std::move(joined);
         reply.truncated = false;
-        return reply;
+        co_return reply;
     }
 
     reply.preview = joined.substr(0, static_cast<std::size_t>(threshold));
@@ -186,41 +191,43 @@ struct ParsedPages {
     if (ctx.blob_sink) {
         std::span<std::byte const> const bytes{reinterpret_cast<std::byte const*>(joined.data()),
                                                  joined.size()};
-        auto blob = ctx.blob_sink(bytes, "text/plain");
-        if (!blob) return std::unexpected(blob.error());
+        auto blob = co_await ctx.blob_sink(bytes, "text/plain");
+        if (!blob) co_return std::unexpected(blob.error());
         reply.blob = *blob;
     }
-    return reply;
+    co_return reply;
 }
 
 // ---- Fetching bytes for the two sources -- own minimal copy of ReadContent's pattern ----
 
+// ADR-237 §5.1 (#173): a coroutine, because the egress seam is. Every argument must outlive the task;
+// each caller awaits it in the same full-expression.
 template <sandbox::NetEgressBackend Proxy>
-[[nodiscard]] result<std::string> fetch_via_url(std::string const& url, EffectContext& ctx,
-                                                 Proxy const& proxy) {
+[[nodiscard]] task<result<std::string>> fetch_via_url(std::string const& url, EffectContext& ctx,
+                                                       Proxy const& proxy) {
     auto parsed = parse_read_content_url(url);
-    if (!parsed) return std::unexpected(parsed.error());
+    if (!parsed) co_return std::unexpected(parsed.error());
     if (!ctx.capabilities) {
-        return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+        co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                       "tool.capability_not_held"});
     }
     std::string const target = net_out_target_string(*parsed);
     auto granted = ctx.capabilities->find_net_out(target);
     if (!granted) {
-        return std::unexpected(error{failure_class::policy,
+        co_return std::unexpected(error{failure_class::policy,
                                       "no granted NetOut capability covers '" + target + "'",
                                       "tool.capability_not_held"});
     }
     sandbox::NetEgressRequest const req{"GET", parsed->path, {}, {}};
-    auto response = proxy.fetch(req, *granted);
-    if (!response) return std::unexpected(response.error());
+    auto response = co_await proxy.fetch(req, *granted, sandbox::egress_call_control(ctx));
+    if (!response) co_return std::unexpected(response.error());
     if (response->status < 200 || response->status >= 300) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "extract_pdf_text received HTTP status " +
                                           std::to_string(response->status),
                                       "extract_pdf_text.http_error"});
     }
-    return std::move(response->body);
+    co_return std::move(response->body);
 }
 
 [[nodiscard]] inline result<std::string> fetch_via_path(std::string const& path, EffectContext& ctx) {
@@ -254,6 +261,38 @@ template <sandbox::NetEgressBackend Proxy>
 #else
     return std::filesystem::path("/tmp/agentengine_pdf_scratch");
 #endif
+}
+
+// ADR-244 §2.4: every path the worker's sandbox needs, as read-only mounts at their own path. The one list
+// both `invoke_worker()` mounts and `required_grants()` reports, so the two cannot drift. On Linux the jail
+// runs `/bin/sh -c`, so a shell and the dynamic linker must be reachable (a disclosed residual, not a
+// hardened guest-path scheme).
+[[nodiscard]] inline std::vector<MountSpec> worker_mounts() {
+    std::vector<MountSpec> out;
+    auto add = [&out](std::string path) {
+        out.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false});
+    };
+#if !defined(_WIN32)
+    for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {
+        std::error_code ec;
+        if (std::filesystem::exists(dir, ec) && !ec) add(dir);
+    }
+#endif
+    // The worker binary's own directory also holds pdfium.dll on Windows (copied at build time), which no
+    // default AppContainer ACE covers (ADR-004 §6 finding 1).
+    add(utf8_path(std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path()));
+    add(utf8_path(scratch_dir()));
+    return out;
+}
+
+// The caller's own `cap::SandboxMount` grants, and nothing else from its set: the authority the worker's
+// spec is checked against (never more than the caller holds; a null set holds nothing).
+[[nodiscard]] inline CapabilitySet caller_mount_grants(EffectContext const& ctx) {
+    std::vector<Capability> grants;
+    if (ctx.capabilities) {
+        for (cap::SandboxMount const& g : ctx.capabilities->sandbox_mount_grants()) grants.push_back(g);
+    }
+    return CapabilitySet::grant_root(std::move(grants));
 }
 
 // pid + a process-local monotonic counter -- collision-safety across CONCURRENT calls within one
@@ -293,9 +332,46 @@ inline constexpr std::uint64_t kWorkerMemoryBytes = 256ull * 1024 * 1024;
 inline constexpr std::uint32_t kWorkerPids = 4;
 inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
 
+// ADR-237 §5.1 (#173): the `SandboxBackend` seam is `task`-shaped, so `invoke_worker()` is a coroutine. These two
+// keep each call inside its own ADR-170 event bracket, exactly as the immediately-invoked lambdas they replace
+// did: the scope closes (and reports) before the next stage starts.
+template <class Backend>
+[[nodiscard]] task<result<SandboxHandle>> bracketed_create(Backend& backend, SandboxSpec const& spec,
+                                                           EffectContext& ctx, std::string const& exec_id,
+                                                           std::string backend_name) {
+    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "create");
+    auto h = co_await backend.create(spec, ctx);
+    if (!h) {
+        scope.failed(h.error().code);
+        co_return h;
+    }
+    scope.succeeded();
+    co_return h;
+}
+
+template <class Backend>
+[[nodiscard]] task<result<ExecOutcome>> bracketed_exec(Backend& backend, SandboxHandle& handle,
+                                                       ExecRequest const& req, EffectContext& ctx,
+                                                       std::string const& exec_id, std::string backend_name) {
+    SandboxExecScope scope(ctx, exec_id, std::move(backend_name), "exec");
+    auto o = co_await backend.exec(handle, req, ctx);
+    if (!o) {
+        scope.failed(o.error().code);
+    } else if (o->klass != exec_outcome_class::ok) {
+        // A worker that ran but did not exit cleanly is NOT a successful exec on this channel,
+        // even though `backend.exec()` returned a value -- the caller below turns exactly this
+        // into an error, and reporting it as `ok` here would make the event stream disagree with
+        // the tool result a UI shows next to it.
+        scope.failed("extract_pdf_text.worker_failed");
+    } else {
+        scope.succeeded();
+    }
+    co_return o;
+}
+
 #if defined(_WIN32)
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+[[nodiscard]] inline task<result<std::string>> invoke_worker(std::string_view mode,
                                                          std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     // Process-wide by construction: shared_profile()/the AppContainer SID underneath NativeJailBackend
@@ -306,19 +382,11 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     // is real, separately-scoped host-integration work per the design draft's own S3a "not decided").
     static native_jail::NativeJailBackend backend;
 
-    auto granted = backend.grant_ro_path_once(scratch_dir().wstring());
-    if (!granted) return std::unexpected(granted.error());
-    // The worker binary's own directory (also holds pdfium.dll, copied there at build time) is NOT
-    // covered by any Windows default AppContainer ACE the way a curated set of real OS paths is
-    // (ADR-004 §6 finding 1) -- an ordinary build-output directory needs its own explicit grant, the
-    // same reason create_python_worker() grants its own exe_dir separately from ordinary
-    // SandboxSpec.mounts (native_jail_backend.cpp).
-    std::filesystem::path const worker_dir =
-        std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path();
-    auto worker_dir_granted = backend.grant_ro_path_once(worker_dir.wstring());
-    if (!worker_dir_granted) return std::unexpected(worker_dir_granted.error());
-
+    // ADR-244 §2.4: the worker's paths are ordinary read-only mounts, checked against the calling session's
+    // own grants (`required_grants()` lists them for the host) -- no separate, unchecked grant path.
     SandboxSpec spec;
+    spec.mounts = worker_mounts();
+    spec.capabilities = caller_mount_grants(ctx);
     spec.limits.wall_ms = kWorkerWallMs;
     spec.limits.memory_bytes = kWorkerMemoryBytes;
     spec.limits.pids = kWorkerPids;
@@ -330,73 +398,35 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     // about), `exec()` is the worker run itself. `exec_id` correlates all four events of one
     // extraction. See extract_pdf_text_detail::next_exec_id() for why the id is process-unique.
     std::string const exec_id = next_exec_id();
-    result<SandboxHandle> handle = [&] {
-        SandboxExecScope scope(ctx, exec_id, "native-jail", "create");
-        auto h = backend.create(spec, ctx);
-        if (!h) {
-            scope.failed(h.error().code);
-            return h;
-        }
-        scope.succeeded();
-        return h;
-    }();
-    if (!handle) return std::unexpected(handle.error());
+    result<SandboxHandle> handle = co_await bracketed_create(backend, spec, ctx, exec_id, "native-jail");
+    if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
-                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
+                                 std::string(mode) + " \"" + utf8_path(pdf_file) + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    result<ExecOutcome> outcome = [&] {
-        SandboxExecScope scope(ctx, exec_id, "native-jail", "exec");
-        auto o = backend.exec(*handle, req, ctx);
-        if (!o) {
-            scope.failed(o.error().code);
-        } else if (o->klass != exec_outcome_class::ok) {
-            // A worker that ran but did not exit cleanly is NOT a successful exec on this channel,
-            // even though `backend.exec()` returned a value -- the caller below turns exactly this
-            // into an error, and reporting it as `ok` here would make the event stream disagree with
-            // the tool result a UI shows next to it.
-            scope.failed("extract_pdf_text.worker_failed");
-        } else {
-            scope.succeeded();
-        }
-        return o;
-    }();
-    backend.destroy(*handle);
-    if (!outcome) return std::unexpected(outcome.error());
+    result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "native-jail");
+    co_await backend.destroy(*handle);
+    if (!outcome) co_return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "the pdf worker did not complete normally (class=" +
                                           std::to_string(static_cast<int>(outcome->klass)) + ")",
                                       "extract_pdf_text.worker_failed"});
     }
-    return std::move(outcome->stdout_text);
+    co_return std::move(outcome->stdout_text);
 }
 
 #else  // Linux
 
-[[nodiscard]] inline result<std::string> invoke_worker(std::string_view mode,
+[[nodiscard]] inline task<result<std::string>> invoke_worker(std::string_view mode,
                                                          std::filesystem::path const& pdf_file,
                                                          EffectContext& ctx) {
     static native_jail::LinuxNativeJailBackend backend;
 
+    // ADR-244 §2.4: the same checked-mount shape as the Windows branch above.
     SandboxSpec spec;
-    // Toolchain mounts -- see this file's own top comment: LinuxNativeJailBackend::exec() hardcodes
-    // `/bin/sh -c`, so a working shell + dynamic linker must be reachable inside the jail. Real,
-    // disclosed residual, not a security-hardened guest_path scheme.
-    for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {
-        std::error_code ec;
-        if (std::filesystem::exists(dir, ec) && !ec) {
-            spec.mounts.push_back(
-                MountSpec{.source = std::string(dir), .guest_path = dir, .read_write = false});
-        }
-    }
-    std::filesystem::path const worker_dir =
-        std::filesystem::path(AE_PDF_WORKER_EXE_PATH).parent_path();
-    spec.mounts.push_back(MountSpec{
-        .source = worker_dir.string(), .guest_path = worker_dir.string(), .read_write = false});
-    std::filesystem::path const scratch = scratch_dir();
-    spec.mounts.push_back(MountSpec{
-        .source = scratch.string(), .guest_path = scratch.string(), .read_write = false});
+    spec.mounts = worker_mounts();
+    spec.capabilities = caller_mount_grants(ctx);
 
     spec.limits.wall_ms = kWorkerWallMs;
     spec.limits.memory_bytes = kWorkerMemoryBytes;
@@ -407,42 +437,22 @@ inline constexpr std::uint64_t kWorkerOutputBytes = 1024 * 1024;
     // parallel here so the two platform bodies stay diffable, which is this function's own
     // established convention.
     std::string const exec_id = next_exec_id();
-    result<SandboxHandle> handle = [&] {
-        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "create");
-        auto h = backend.create(spec, ctx);
-        if (!h) {
-            scope.failed(h.error().code);
-            return h;
-        }
-        scope.succeeded();
-        return h;
-    }();
-    if (!handle) return std::unexpected(handle.error());
+    result<SandboxHandle> handle = co_await bracketed_create(backend, spec, ctx, exec_id, "linux-native-jail");
+    if (!handle) co_return std::unexpected(handle.error());
 
     std::string const cmdline = "\"" + std::string(AE_PDF_WORKER_EXE_PATH) + "\" " +
-                                 std::string(mode) + " \"" + pdf_file.string() + "\"";
+                                 std::string(mode) + " \"" + utf8_path(pdf_file) + "\"";
     ExecRequest const req{.language = "native", .source = cmdline};
-    result<ExecOutcome> outcome = [&] {
-        SandboxExecScope scope(ctx, exec_id, "linux-native-jail", "exec");
-        auto o = backend.exec(*handle, req, ctx);
-        if (!o) {
-            scope.failed(o.error().code);
-        } else if (o->klass != exec_outcome_class::ok) {
-            scope.failed("extract_pdf_text.worker_failed");
-        } else {
-            scope.succeeded();
-        }
-        return o;
-    }();
-    backend.destroy(*handle);
-    if (!outcome) return std::unexpected(outcome.error());
+    result<ExecOutcome> outcome = co_await bracketed_exec(backend, *handle, req, ctx, exec_id, "linux-native-jail");
+    co_await backend.destroy(*handle);
+    if (!outcome) co_return std::unexpected(outcome.error());
     if (outcome->klass != exec_outcome_class::ok) {
-        return std::unexpected(error{failure_class::transient,
+        co_return std::unexpected(error{failure_class::transient,
                                       "the pdf worker did not complete normally (class=" +
                                           std::to_string(static_cast<int>(outcome->klass)) + ")",
                                       "extract_pdf_text.worker_failed"});
     }
-    return std::move(outcome->stdout_text);
+    co_return std::move(outcome->stdout_text);
 }
 
 #endif
@@ -467,33 +477,34 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
     using Args = ExtractPdfTextArgs;
     using Reply = ExtractPdfTextReply;
 
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
-        return invoke_via(args, ctx, sandbox::HostEgressProxy{});
+    // ADR-237 §5.2 instance form: a coroutine, because the egress seam it reaches is (§5.1, #173).
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
+        co_return co_await invoke_via(args, ctx, sandbox::HostEgressProxy{});
     }
 
     // Parameterized over the egress backend, same testability seam ReadContent::invoke_via already
     // establishes -- invoke() above always supplies the real HostEgressProxy; a test supplies a fake
     // conformer instead.
     template <sandbox::NetEgressBackend Proxy>
-    [[nodiscard]] static result<Reply> invoke_via(Args const& args, EffectContext& ctx,
+    [[nodiscard]] static task<result<Reply>> invoke_via(Args const& args, EffectContext& ctx,
                                                     Proxy const& proxy) {
         bool const has_url = args.url.has_value();
         bool const has_path = args.path.has_value();
         if (has_url == has_path) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "extract_pdf_text requires exactly one of 'url' or 'path'",
                                           "extract_pdf_text.ambiguous_source"});
         }
 
-        auto bytes = has_url ? extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
-                              : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
-        if (!bytes) return std::unexpected(bytes.error());
+        result<std::string> bytes = has_url ? co_await extract_pdf_text_detail::fetch_via_url(*args.url, ctx, proxy)
+                                             : extract_pdf_text_detail::fetch_via_path(*args.path, ctx);
+        if (!bytes) co_return std::unexpected(bytes.error());
 
         std::filesystem::path const dir = extract_pdf_text_detail::scratch_dir();
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         if (ec) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "failed to create the pdf scratch directory: " + ec.message(),
                                           "extract_pdf_text.scratch_dir_failed"});
         }
@@ -501,27 +512,27 @@ struct ExtractPdfText : Tool<ExtractPdfText, Capabilities<>, Approval<approval_m
         {
             std::ofstream out(file, std::ios::binary | std::ios::trunc);
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to open the pdf scratch file for writing",
                                               "extract_pdf_text.scratch_write_failed"});
             }
             out.write(bytes->data(), static_cast<std::streamsize>(bytes->size()));
             if (!out) {
-                return std::unexpected(error{failure_class::resource,
+                co_return std::unexpected(error{failure_class::resource,
                                               "failed to write the pdf scratch file",
                                               "extract_pdf_text.scratch_write_failed"});
             }
         }
 
-        auto raw_output = extract_pdf_text_detail::invoke_worker("text", file, ctx);
+        auto raw_output = co_await extract_pdf_text_detail::invoke_worker("text", file, ctx);
         std::filesystem::remove(file, ec);  // best-effort cleanup regardless of outcome below
 
-        if (!raw_output) return std::unexpected(raw_output.error());
+        if (!raw_output) co_return std::unexpected(raw_output.error());
 
         auto parsed = extract_pdf_text_detail::parse_worker_output(*raw_output);
-        if (!parsed) return std::unexpected(parsed.error());
+        if (!parsed) co_return std::unexpected(parsed.error());
 
-        return extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
+        co_return co_await extract_pdf_text_detail::build_reply(std::move(*parsed), ctx);
     }
 };
 
@@ -617,6 +628,17 @@ more call would fetch it -- that call does not exist.
     }();
 
     return make_skill_source_descriptor(InlineSkillSource("extract-pdf-text", std::move(resolved)));
+}
+
+// ADR-244 §2.4: the read-only `cap::SandboxMount` grants a session must hold for `extract_pdf_text` (and its
+// siblings that share this worker) to run. A listing for the host to read and grant; the tool never grants
+// itself anything. Note the scratch directory is fixed and shared by every session in the process.
+[[nodiscard]] inline std::vector<cap::SandboxMount> required_grants() {
+    std::vector<cap::SandboxMount> out;
+    for (MountSpec const& m : extract_pdf_text_detail::worker_mounts()) {
+        out.push_back(cap::SandboxMount{std::get<std::string>(m.source), m.guest_path, /*read_write=*/false});
+    }
+    return out;
 }
 
 }  // namespace agentengine::tools

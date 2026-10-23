@@ -1,5 +1,5 @@
 // Proof for docs/planning/agent-spawn-runtime-design-draft.md §4.3 (item 3 of OpenQuestions.md
-// OQ-14's agent.spawn wiring; 026-Agent-Facing-Runtime-Surface.md §5) --
+// OQ-14's agent.spawn wiring; rfcs/026-Agent-Facing-Runtime-Surface.md §5) --
 // core/agent_spawn_worktree.hpp's `allocate_spawn_seq`/`derive_spawn_child_id`/`check_child_id`/
 // `mint_spawn_worktree`. Style/structure mirrors tests/workflow/test_workflow_worktree_scoping.cpp (this
 // project's own closest precedent -- proving each named red-team finding stays fixed, not merely
@@ -58,6 +58,7 @@
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/rt/agent_spawn_child_run.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using namespace agentengine;
 using InMemoryStore = agentengine::rt::InMemoryAppendLogStore;
@@ -90,11 +91,11 @@ std::string string_of(std::vector<std::byte> const& bytes) {
 }
 
 Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    return *store.put_blob(bytes_of(content));
+    return *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 }  // namespace
@@ -105,7 +106,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t1", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t1", root));
         AE_CHECK(parent.has_value(), "T1: setup parent commit succeeds");
 
         CapabilitySet const caller_held =
@@ -118,7 +119,7 @@ int main() {
             auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
             AE_CHECK(child_id.has_value(), "T1: derive_spawn_child_id succeeds");
             auto grant =
-                mint_spawn_worktree(ref_store, *parent, *child_id, mode, caller_held, "/caller");
+                agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *child_id, mode, caller_held, "/caller"));
             AE_CHECK(grant.has_value(), "T1: mint_spawn_worktree succeeds for this mode");
             if (!grant) continue;
             if (mode == sharing_mode::readonly) {
@@ -137,7 +138,7 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto preexisting = blob_of(obj_store, "pre-existing parent content");
         auto root = tree_of(obj_store, {{"already_here.txt", preexisting, false}});
-        auto parent = commit_ref(ref_store, "session:parent-t2", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t2", root));
         AE_CHECK(parent.has_value(), "T2: setup parent commit succeeds");
 
         CapabilitySet const caller_held =
@@ -147,20 +148,20 @@ int main() {
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
         AE_CHECK(child_id.has_value(), "T2 setup: derive_spawn_child_id succeeds");
-        auto grant = mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
-                                          "/caller");
+        auto grant = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
+                                          "/caller"));
         AE_CHECK(grant.has_value(), "T2 setup: mint succeeds");
 
-        auto seen = mount_read(obj_store, ref_store, *grant->mount, *grant->read, "already_here.txt");
+        auto seen = agentengine::rt::block_on(mount_read(obj_store, ref_store, *grant->mount, *grant->read, "already_here.txt"));
         AE_CHECK(seen.has_value() && string_of(*seen) == "pre-existing parent content",
                  "T2: a fresh branch-mode child sees the CALLER's pre-existing content, copy-on-write");
 
-        AE_CHECK(mount_write(obj_store, ref_store, *grant->mount, *grant->write, "child_only.txt",
-                              bytes_of("child wrote this"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *grant->mount, *grant->write, "child_only.txt",
+                              bytes_of("child wrote this")))
                      .has_value(),
                  "T2: writing through the child's own mount succeeds");
 
-        auto parent_after = read_ref(ref_store, "session:parent-t2");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "session:parent-t2"));
         AE_CHECK(parent_after.has_value() && parent_after->has_value() &&
                      (*parent_after)->tree_digest == root,
                  "T2: the child's write never moved the CALLER's own ref -- true isolation");
@@ -175,7 +176,7 @@ int main() {
         auto workspace_tree = tree_of(obj_store, {{"a.txt", in_scope, false}});
         auto scratch_tree = tree_of(obj_store, {{"unrelated.json", out_scope, false}});
         auto root = tree_of(obj_store, {{"workspace", workspace_tree, true}, {"scratch", scratch_tree, true}});
-        auto parent = commit_ref(ref_store, "session:parent-t3", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t3", root));
         AE_CHECK(parent.has_value(), "T3 setup: parent commit succeeds");
 
         // The caller holds a grant scoped to "/workspace" ONLY -- nothing broader.
@@ -185,20 +186,20 @@ int main() {
 
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
-        auto grant = mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
-                                          "/caller");
+        auto grant = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
+                                          "/caller"));
         AE_CHECK(grant.has_value(), "T3 setup: mint succeeds");
         AE_CHECK(grant.has_value() && grant->read.has_value() && grant->read->path_prefix == "workspace",
                  "T3: the minted FsRead is REMAPPED to the caller's own 'workspace' scope, not \"\"");
         AE_CHECK(grant.has_value() && grant->write.has_value() && grant->write->path_prefix == "workspace",
                  "T3: the minted FsWrite is likewise remapped, not uncapped");
 
-        auto in_scope_read = mount_read(obj_store, ref_store, *grant->mount, *grant->read, "workspace/a.txt");
+        auto in_scope_read = agentengine::rt::block_on(mount_read(obj_store, ref_store, *grant->mount, *grant->read, "workspace/a.txt"));
         AE_CHECK(in_scope_read.has_value() && string_of(*in_scope_read) == "in workspace",
                  "T3: a path INSIDE the caller's own scope is readable through the child's grant");
 
         auto out_of_scope_read =
-            mount_read(obj_store, ref_store, *grant->mount, *grant->read, "scratch/unrelated.json");
+            agentengine::rt::block_on(mount_read(obj_store, ref_store, *grant->mount, *grant->read, "scratch/unrelated.json"));
         AE_CHECK(!out_of_scope_read.has_value() &&
                      out_of_scope_read.error().code == "worktree.mount_path_outside_capability",
                  "T3 (C6b): a path OUTSIDE the caller's own scope is REJECTED even though it is "
@@ -211,15 +212,15 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t4", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t4", root));
         AE_CHECK(parent.has_value(), "T4 setup: parent commit succeeds");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root({});  // holds nothing at all
 
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
-        auto grant = mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
-                                          "/caller");
+        auto grant = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch, caller_held,
+                                          "/caller"));
         AE_CHECK(grant.has_value(), "T4 setup: mint still succeeds (mount is minted regardless)");
         AE_CHECK(grant.has_value() && grant->mount.has_value(), "T4: the mount itself still exists");
         AE_CHECK(grant.has_value() && !grant->read.has_value() && !grant->write.has_value(),
@@ -232,7 +233,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t5", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t5", root));
         AE_CHECK(parent.has_value(), "T5 setup: parent commit succeeds");
 
         CapabilitySet const two_reads =
@@ -241,7 +242,7 @@ int main() {
         auto seq1 = allocate_spawn_seq();
         auto id1 = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq1);
         auto grant1 =
-            mint_spawn_worktree(ref_store, *parent, *id1, sharing_mode::branch, two_reads, "/caller");
+            agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *id1, sharing_mode::branch, two_reads, "/caller"));
         AE_CHECK(!grant1.has_value() && grant1.error().code == "agent_spawn_worktree.ambiguous_caller_grant",
                  "T5: two distinct FsRead grants on the caller's own mount -- refuses to guess, fails "
                  "closed rather than silently dropping one");
@@ -252,7 +253,7 @@ int main() {
         auto seq2 = allocate_spawn_seq();
         auto id2 = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq2);
         auto grant2 =
-            mint_spawn_worktree(ref_store, *parent, *id2, sharing_mode::branch, two_writes, "/caller");
+            agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *id2, sharing_mode::branch, two_writes, "/caller"));
         AE_CHECK(!grant2.has_value() && grant2.error().code == "agent_spawn_worktree.ambiguous_caller_grant",
                  "T5: the identical ambiguity check applies to FsWrite too");
     }
@@ -270,10 +271,10 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t6", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t6", root));
         CapabilitySet const caller_held = CapabilitySet::grant_root({});
-        auto rejected = mint_spawn_worktree(ref_store, *parent, "not/hex", sharing_mode::branch,
-                                             caller_held, "/caller");
+        auto rejected = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, "not/hex", sharing_mode::branch,
+                                             caller_held, "/caller"));
         AE_CHECK(!rejected.has_value() && rejected.error().code == "agent_spawn_worktree.child_id_invalid",
                  "T6: mint_spawn_worktree itself rejects an invalid child id before minting anything");
     }
@@ -283,8 +284,8 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent_a = commit_ref(ref_store, "session:parent-t7-a", root);
-        auto parent_b = commit_ref(ref_store, "session:parent-t7-b", root);
+        auto parent_a = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t7-a", root));
+        auto parent_b = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t7-b", root));
         AE_CHECK(parent_a.has_value() && parent_b.has_value(), "T7 setup: both parent commits succeed");
 
         Principal const p1{"caller-1", ""};
@@ -313,17 +314,17 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent_x = commit_ref(ref_store, "session:parent-t8-x", root);
-        auto parent_y = commit_ref(ref_store, "session:parent-t8-y", root);
+        auto parent_x = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t8-x", root));
+        auto parent_y = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t8-y", root));
         AE_CHECK(parent_x.has_value() && parent_y.has_value(), "T8 setup: both parent commits succeed");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root({});
         std::string const shared_child_id = "deadbeefcafef00d";
 
-        auto grant_x = mint_spawn_worktree(ref_store, *parent_x, shared_child_id, sharing_mode::branch,
-                                            caller_held, "/caller");
-        auto grant_y = mint_spawn_worktree(ref_store, *parent_y, shared_child_id, sharing_mode::branch,
-                                            caller_held, "/caller");
+        auto grant_x = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent_x, shared_child_id, sharing_mode::branch,
+                                            caller_held, "/caller"));
+        auto grant_y = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent_y, shared_child_id, sharing_mode::branch,
+                                            caller_held, "/caller"));
         AE_CHECK(grant_x.has_value() && grant_y.has_value(),
                  "T8: minting the SAME child_id under two DIFFERENT caller refs both succeed "
                  "independently -- no collision");
@@ -339,23 +340,23 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t9", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t9", root));
         AE_CHECK(parent.has_value(), "T9 setup: parent commit succeeds");
 
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({cap::FsWrite{"/caller", "", std::nullopt, std::nullopt}});
         std::string const child_id = "0000000000000009";
 
-        auto first = mint_spawn_worktree(ref_store, *parent, child_id, sharing_mode::branch, caller_held,
-                                          "/caller");
+        auto first = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, child_id, sharing_mode::branch, caller_held,
+                                          "/caller"));
         AE_CHECK(first.has_value(), "T9: the first mint succeeds");
-        AE_CHECK(mount_write(obj_store, ref_store, *first->mount, *first->write, "progress.txt",
-                              bytes_of("in progress"))
+        AE_CHECK(agentengine::rt::block_on(mount_write(obj_store, ref_store, *first->mount, *first->write, "progress.txt",
+                              bytes_of("in progress")))
                      .has_value(),
                  "T9: writing through the first mint's grant succeeds");
 
-        auto second = mint_spawn_worktree(ref_store, *parent, child_id, sharing_mode::branch, caller_held,
-                                           "/caller");
+        auto second = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, child_id, sharing_mode::branch, caller_held,
+                                           "/caller"));
         AE_CHECK(!second.has_value() && second.error().code == "agent_spawn_worktree.already_minted",
                  "T9: a second mint for the SAME child_id fails closed instead of re-branching over it");
     }
@@ -365,7 +366,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root = tree_of(obj_store, {});
-        auto parent = commit_ref(ref_store, "session:parent-t10", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t10", root));
         AE_CHECK(parent.has_value(), "T10 setup: parent commit succeeds");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root(
@@ -386,7 +387,7 @@ int main() {
                 auto id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
                 if (!id) return;
                 auto grant =
-                    mint_spawn_worktree(ref_store, *parent, *id, sharing_mode::branch, caller_held, "/caller");
+                    agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *id, sharing_mode::branch, caller_held, "/caller"));
                 std::lock_guard<std::mutex> lock(results_mutex);
                 if (grant.has_value()) {
                     ++successes;
@@ -421,7 +422,7 @@ int main() {
         InMemoryWorktreeObjectStore obj_store;
         auto seeded = blob_of(obj_store, "seeded by the caller before spawning");
         auto root = tree_of(obj_store, {{"note.txt", seeded, false}});
-        auto parent = commit_ref(ref_store, "session:parent-t11", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "session:parent-t11", root));
         AE_CHECK(parent.has_value(), "T11 setup: parent commit succeeds");
 
         CapabilitySet const caller_held = CapabilitySet::grant_root(
@@ -430,8 +431,8 @@ int main() {
         auto seq = allocate_spawn_seq();
         auto child_id = derive_spawn_child_id(*parent, Principal{"caller-1", ""}, seq);
         AE_CHECK(child_id.has_value(), "T11 setup: derive_spawn_child_id succeeds");
-        auto worktree_grant = mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch,
-                                                    caller_held, "/caller");
+        auto worktree_grant = agentengine::rt::block_on(mint_spawn_worktree(ref_store, *parent, *child_id, sharing_mode::branch,
+                                                    caller_held, "/caller"));
         AE_CHECK(worktree_grant.has_value(), "T11 setup: item 3's real mint_spawn_worktree succeeds");
 
         // Item 5 (already landed): thread the REAL worktree grant through mint_child_spawn_capabilities
@@ -457,7 +458,9 @@ int main() {
         req.input        = input_msg;
         req.capabilities = minted->capabilities;
         req.principal     = Principal{"caller-1", ""};
-        req.max_turns     = 5;
+        req.max_turns     = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
+        req.authority_source = agentengine::authority_mode::single_trusted_caller;
 
         struct ScriptedChatClient {
             struct State {
@@ -492,11 +495,11 @@ int main() {
         static_assert(agentengine::ChatClient<ScriptedChatClient>);
 
         std::shared_ptr<ScriptedChatClient::State> observed;
-        auto response = rt::run_child_agent_session<ScriptedChatClient>(
+        auto response = rt::block_on(rt::run_child_agent_session<ScriptedChatClient>(
             "child-t11", std::move(req), [&](ScriptedChatClient& c) {
                 c.state_->mount_id_to_check = child_mount_id;
                 observed                    = c.shared_state();
-            });
+            }));
         AE_CHECK(response.has_value(),
                  "T11: run_child_agent_session() drives a fresh child, wired with the real worktree "
                  "grant, to completion");
@@ -510,7 +513,7 @@ int main() {
         // read the content the caller seeded before spawning, through the child's own granted mount.
         if (worktree_grant->mount.has_value() && worktree_grant->read.has_value()) {
             auto read_through_child_grant =
-                mount_read(obj_store, ref_store, *worktree_grant->mount, *worktree_grant->read, "note.txt");
+                agentengine::rt::block_on(mount_read(obj_store, ref_store, *worktree_grant->mount, *worktree_grant->read, "note.txt"));
             AE_CHECK(read_through_child_grant.has_value() &&
                          string_of(*read_through_child_grant) == "seeded by the caller before spawning",
                      "T11: the child's own minted FsRead grant actually WORKS -- reads the caller's "

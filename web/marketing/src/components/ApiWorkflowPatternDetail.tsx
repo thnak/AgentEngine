@@ -385,7 +385,7 @@ function buildPanes(lang: "en" | "vi"): Record<PatternId, PatternPane> {
           <div className="flow-loop-note" style={{ marginTop: 14 }}>{gcLoopNote}</div>
         </>
       ),
-      code: <CodePanel filename="workflow/graph.hpp">{highlightCpp(workflowGroupChatSnippet)}</CodePanel>,
+      code: <CodePanel filename="an illustrative graph — not a file in this repo">{highlightCpp(workflowGroupChatSnippet)}</CodePanel>,
       code2Note: en
         ? "The generalized shape above, run for real: examples/15_group_chat_and_planner.cpp's offline Group Chat half. (Its live counterpart, with a real model as moderator, is examples/16_group_chat_live.cpp.)"
         : "Hình dạng tổng quát ở trên, chạy thật: nửa Group Chat offline của examples/15_group_chat_and_planner.cpp. (Phiên bản trực tiếp với model thật làm moderator là examples/16_group_chat_live.cpp.)",

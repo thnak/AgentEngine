@@ -32,9 +32,17 @@ import { useLang } from "../i18n/LanguageContext";
 import { ui } from "../i18n/ui";
 import { highlightCpp } from "../lib/highlightCpp";
 import { ApiDiagnosticNote } from "./ApiDiagnosticNote";
+import { ApiIncludes } from "./ApiIncludes";
 import { ApiTable } from "./ApiTable";
 import { CodePanel } from "./CodePanel";
 import { RevealGroup, RevealItem } from "./Reveal";
+
+// Verified by devsim/verify-includes: every path here is compiled by the gate.
+const TRUST_HEADERS = [
+  "agentengine/trust/capability.hpp",
+  "agentengine/sandbox/sandbox.hpp",
+  "agentengine/rt/agent_session.hpp",
+];
 import type { Lang } from "../i18n/LanguageContext";
 
 function entryById(lang: Lang, id: string) {
@@ -82,6 +90,16 @@ const copy = {
     eyebrow: "007/008 — Trust & Isolation (L1)",
     headingPrefix: "Capabilities are the only way to",
     headingHighlight: "reach an effect",
+    includesNote: (
+      <>
+        Three headers. <code>trust/capability.hpp</code> is the authority vocabulary —{" "}
+        <code>Capability</code>, <code>CapabilitySet</code>, and the <code>cap::</code> payloads
+        you declare and grant; <code>sandbox/sandbox.hpp</code> is the{" "}
+        <code>SandboxBackend</code> concept and <code>SandboxProfile</code>; and{" "}
+        <code>rt/agent_session.hpp</code> is where a set is actually installed, via{" "}
+        <code>set_capabilities()</code>.
+      </>
+    ),
     intro: (
       <>
         I2 — no ambient authority — enforced by the type system, not by discipline: there is no
@@ -567,6 +585,16 @@ const copy = {
     eyebrow: "007/008 — Trust & Isolation (L1)",
     headingPrefix: "Capability là cách duy nhất để",
     headingHighlight: "chạm tới một effect",
+    includesNote: (
+      <>
+        Ba header. <code>trust/capability.hpp</code> là từ vựng quyền hạn —{" "}
+        <code>Capability</code>, <code>CapabilitySet</code>, và các payload <code>cap::</code> mà
+        bạn khai báo và cấp; <code>sandbox/sandbox.hpp</code> là concept{" "}
+        <code>SandboxBackend</code> cùng <code>SandboxProfile</code>; và{" "}
+        <code>rt/agent_session.hpp</code> là nơi một tập hợp thực sự được cài vào, qua{" "}
+        <code>set_capabilities()</code>.
+      </>
+    ),
     intro: (
       <>
         I2 — không có quyền hạn mặc nhiên — được hệ thống kiểu thực thi, không dựa vào kỷ luật
@@ -1087,6 +1115,13 @@ export function ApiTrustSandboxReference() {
           <p style={{ marginTop: 16 }}>{t.intro}</p>
         </div>
 
+        {/* ---- What to include ------------------------------------------------------------------ */}
+        <RevealGroup>
+          <RevealItem>
+            <ApiIncludes headers={TRUST_HEADERS}>{t.includesNote}</ApiIncludes>
+          </RevealItem>
+        </RevealGroup>
+
         {/* ---- 1. Declaration vs grant ----------------------------------------------------------- */}
         <RevealGroup>
           <RevealItem>
@@ -1254,7 +1289,7 @@ export function ApiTrustSandboxReference() {
           <RevealItem>
             <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <RawCite href={gh("include/agentengine/trust/secret_quarantine.hpp")} label="include/agentengine/trust/secret_quarantine.hpp" />
-              <RawCite href={gh("decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
+              <RawCite href={gh("decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md")} label="decisions/archive/ADR-068-runtime-secret-quarantine-host-delegated-detection.md" />
               <RawCite href={gh("tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp")} label="tests/rt/agent_session/test_rt_agent_session_quarantine_tool.cpp" />
             </div>
           </RevealItem>
@@ -1539,7 +1574,7 @@ export function ApiTrustSandboxReference() {
                 href={gh("docs/research/2026-wasm-runtime-and-state-persistence.md")}
                 label="docs/research/2026-wasm-runtime-and-state-persistence.md §2"
               />
-              <RawCite href={gh("decisions/ADR-037-remove-quark-as-core-runtime.md")} label="decisions/ADR-037-remove-quark-as-core-runtime.md" />
+              <RawCite href={gh("decisions/archive/ADR-037-remove-quark-as-core-runtime.md")} label="decisions/archive/ADR-037-remove-quark-as-core-runtime.md" />
             </div>
           </RevealItem>
         </RevealGroup>
@@ -1597,8 +1632,8 @@ export function ApiTrustSandboxReference() {
           <RevealItem>
             <div style={{ marginTop: 14, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <RawCite
-                href={gh("decisions/ADR-004-appcontainer-native-jail-windows-backend.md")}
-                label="decisions/ADR-004-appcontainer-native-jail-windows-backend.md §10"
+                href={gh("decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md")}
+                label="decisions/archive/ADR-004-appcontainer-native-jail-windows-backend.md §10"
               />
               <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_windows.cpp" />
               <RawCite href={gh("tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp")} label="tests/backends/native_jail/test_native_jail_abuse_corpus_linux.cpp" />

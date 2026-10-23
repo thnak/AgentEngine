@@ -1,4 +1,4 @@
-// Proves decisions/ADR-197-reject-malformed-tool-arguments.md (GitHub issue #105, 006 §3 step 2:
+// Proves decisions/archive/ADR-197-reject-malformed-tool-arguments.md (GitHub issue #105, 006 §3 step 2:
 // "reject; do not coerce"). A model tool call whose argument text is not valid JSON never reaches
 // the tool: `tool_call_request_of()` (core/tool_call_extraction.hpp) records the parse error, and
 // the pipeline (core/tool_pipeline.hpp: `admit_call()`, so `invoke_tool()` and the parallel-batch
@@ -19,6 +19,7 @@
 // Positive controls (2026-09-26): duplicate detection disabled in json_value.hpp -> T8, T9 fail; the non-object
 // check removed from tool_call_request_of -> T7 fails.
 
+#include <utility>
 #include <chrono>
 #include <cstdio>
 #include <optional>
@@ -26,10 +27,13 @@
 #include <thread>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/tool_call_extraction.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/testing/scripted_chat_client.hpp"
+#include "../../support/run_task_sync.hpp"
 
 namespace {
 
@@ -47,8 +51,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(ae::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 // Every argument optional: `{}` is a VALID call, so only a real step-2 refusal keeps it from running.
@@ -63,27 +66,27 @@ AE_JSON_SCHEMA(ProbeReply, seen)
 
 int g_probe_runs = 0;
 
-struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>> {
+struct ProbeTool : ae::Tool<ProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "probe";
     static constexpr std::string_view description = "Counts its runs. Every argument is optional.";
     using Args = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_probe_runs;
-        return Reply{a.note.value_or("<none>")};
+        co_return Reply{a.note.value_or("<none>")};
     }
 };
 
 struct BackgroundProbeTool
     : ae::Tool<BackgroundProbeTool, ae::Capabilities<>, ae::EffectClass<ae::effect_class::pure>,
-               ae::Backgroundable> {
+               ae::Backgroundable, ae::Approval<ae::approval_mode::never_require>> {
     static constexpr std::string_view name = "background_probe";
     static constexpr std::string_view description = "Backgroundable probe. Every argument is optional.";
     using Args = ProbeArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         ++g_probe_runs;
-        return Reply{a.note.value_or("<none>")};
+        co_return Reply{a.note.value_or("<none>")};
     }
 };
 
@@ -112,8 +115,8 @@ Invoked invoke(ae::ToolTable const& table, std::string arguments_json) {
     ae::CapabilitySet const held;
     ae::EffectContext ctx;
     Invoked out;
-    out.result = ae::invoke_tool(table, held, ae::tool_call_request_of(model_call("c", "probe", arguments_json), 0),
-                                 ctx, ae::ApprovalDecider{}, &out.audit);
+    out.result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, ae::tool_call_request_of(model_call("c", "probe", arguments_json), 0),
+                                 ctx, ae::ApprovalDecider{}, &out.audit));
     return out;
 }
 
@@ -123,7 +126,7 @@ public:
     ae::rt::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<ProbeTool>().descriptors();
+        c.tools = ae::ToolTable::from(ProbeTool{}).descriptors();
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -143,9 +146,9 @@ struct GatedTool : ae::Tool<GatedTool, ae::Capabilities<>, ae::EffectClass<ae::e
     static constexpr std::string_view description = "Runs a command (approval required).";
     using Args = CmdArgs;
     using Reply = ProbeReply;
-    static ae::result<Reply> invoke(Args a, ae::EffectContext&) {
+    ae::task<ae::result<Reply>> invoke(Args a, ae::EffectContext&) const {
         g_gated_cmds.push_back(a.cmd);
-        return Reply{a.cmd};
+        co_return Reply{a.cmd};
     }
 };
 
@@ -154,7 +157,7 @@ public:
     ae::rt::task<ae::result<ae::ContextContribution>> on_context(ae::SessionContext& sc, ae::EffectContext&) {
         ae::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ae::ToolTable::from_tools<GatedTool>().descriptors();
+        c.tools = ae::ToolTable::from(GatedTool{}).descriptors();
         co_return c;
     }
     ae::rt::task<std::monostate> on_turn_end(ae::TurnView, ae::EffectContext&) { co_return std::monostate{}; }
@@ -173,7 +176,7 @@ ae::Message user_message(std::string text) {
 }  // namespace
 
 int main() {
-    ae::ToolTable const table = ae::ToolTable::from_tools<ProbeTool, BackgroundProbeTool>();
+    ae::ToolTable const table = ae::ToolTable::from(ProbeTool{}, BackgroundProbeTool{});
 
     // --- T1: malformed text never reaches the tool, and folds as tool.malformed_arguments ----------
     {
@@ -220,27 +223,27 @@ int main() {
     {
         g_probe_runs = 0;
         ae::CapabilitySet const held;
-        auto admitted = ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
-                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{});
+        auto admitted = agentengine::test_support::run_task_sync<agentengine::result<agentengine::AdmittedCall>>(ae::admit_call(table, held, ae::tool_call_request_of(model_call("c", "probe", "{not json"), 0),
+                                       ae::Principal{}, ae::ApprovalDecider{}, ae::PolicyDecider{}));
         check(!admitted && admitted.error().code == "tool.malformed_arguments",
               "T5: admit_call() refuses the malformed call before binding anything");
 
         ae::CapabilitySet const held_bg = ae::CapabilitySet::grant_root({ae::cap::Background{4}});
         bool completed = false;
-        auto started = ae::background_task(
+        auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(
             table, held_bg, ae::tool_call_request_of(model_call("c", "background_probe", "{not json"), 0),
             ae::EffectContext{}, ae::ApprovalDecider{}, 0,
-            [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; });
+            [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         check(!started && started.error().code == "tool.malformed_arguments",
               "T5: background_task() refuses it too, before spawning anything");
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         check(!completed && g_probe_runs == 0, "T5: no background worker ran the tool");
 
         // control: the same backgroundable tool with valid arguments does start
-        started = ae::background_task(table, held_bg,
+        started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(table, held_bg,
                                       ae::tool_call_request_of(model_call("c2", "background_probe", "{}"), 0),
                                       ae::EffectContext{}, ae::ApprovalDecider{}, 0,
-                                      [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; });
+                                      [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         for (int i = 0; i < 200 && !completed; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         check(started.has_value() && completed, "T5 control: valid arguments background and complete");
     }
@@ -255,7 +258,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, ProbeProvider> session;
-        session.initialize("malformed-args", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/6);
+        session.initialize("malformed-args", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/6));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
 
@@ -311,7 +314,7 @@ int main() {
 
         ae::CapabilitySet held = ae::CapabilitySet::grant_root({});
         ae::rt::AgentSession<ae::testing::ScriptedChatClient, ae::rt::NoSessionState, GatedProvider> session;
-        session.initialize("dup-keys", ae::Principal{"p1", ""}, std::nullopt, /*max_turns=*/4);
+        session.initialize("dup-keys", ae::Principal{"p1", ""}, ae_test::trusted(std::nullopt, /*max_turns=*/4));
         session.emplace_chat_client(script);
         session.set_capabilities(&held);
         session.set_suspend_for_approval(true);

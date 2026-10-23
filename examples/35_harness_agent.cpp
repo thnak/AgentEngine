@@ -2,7 +2,7 @@
 //
 // Mirrors Microsoft Agent Framework's `chatClient.AsHarnessAgent()` / `create_harness_agent()`
 // (docs/research/2026-10-01-agent-harness.md): `make_harness_session<Writer>()` (core/harness.hpp,
-// decisions/ADR-234, 002 §2.2) runs the ADR-226 run bridge -- so the session enforces exactly what `Writer`
+// decisions/archive/ADR-234, 002 §2.2) runs the ADR-226 run bridge -- so the session enforces exactly what `Writer`
 // declares and holds only the authority the caller passes -- and adds the harness's default pieces:
 //   - harness operating instructions ahead of the agent's own;
 //   - a todo list (todos_* tools, ADR-166);
@@ -55,24 +55,24 @@ struct DraftReply {
 AE_JSON_SCHEMA(DraftReply, result)
 
 // Read-only and capability-free: usable while the agent is still planning.
-struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>> {
+struct ReadBrief : Tool<ReadBrief, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "read_brief";
     static constexpr std::string_view description = "Read the assignment brief.";
     using Args  = DraftArgs;
     using Reply = DraftReply;
-    static result<Reply> invoke(Args, EffectContext&) { return Reply{"Write 3 lines on why tests need positive controls."}; }
+    agentengine::task<result<Reply>> invoke(Args, EffectContext&) const { co_return Reply{"Write 3 lines on why tests need positive controls."}; }
 };
 
 // Has an effect: held back by the plan gate until the plan exists.
 int g_published = 0;
-struct Publish : Tool<Publish> {
+struct Publish : Tool<Publish, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "publish";
     static constexpr std::string_view description = "Publish the final text.";
     using Args  = DraftArgs;
     using Reply = DraftReply;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_published;
-        return Reply{"published " + std::to_string(a.text.size()) + " chars"};
+        co_return Reply{"published " + std::to_string(a.text.size()) + " chars"};
     }
 };
 
@@ -110,7 +110,19 @@ int main() {
         return verdict(text_of(r.message).find("Summary:") != std::string::npos);
     };
 
-    auto writer = make_harness_session<Writer>(model, AgentSessionOptions{}, std::move(harness));
+    // ADR-244: the caller's identity and choices, stated; within Writer's MaxTurns<8> and TokenBudget<2'000>.
+    auto writer = make_harness_session<Writer>(
+        model,
+        AgentSessionOptions{.session_id = "s-writer",
+                            .principal  = Principal{"p-demo", ""},
+                            .choices    = SessionChoices{AuthoritySource::single_trusted_caller(),
+                                                         Bound<std::uint64_t>::at_most(2'000),
+                                                         Bound<std::uint64_t>::at_most(8)},
+                            .grants             = {},
+                            .chat_client_grants = {},
+                            .approve_tools      = std::nullopt,
+                            .policy             = {}},
+        std::move(harness));
     if (!writer) {
         std::fprintf(stderr, "bind failed: %s\n", writer.error().message.c_str());
         return 1;

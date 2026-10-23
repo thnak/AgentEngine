@@ -7,7 +7,7 @@ target_link_libraries(smoke_vocabulary PRIVATE agentengine::core agentengine_war
 
 add_test(NAME smoke_vocabulary COMMAND smoke_vocabulary)
 
-# ---- Reference-agent prompt assembly (M3 Phase H1, 026-Agent-Facing-Runtime-Surface.md §7/§8) --
+# ---- Reference-agent prompt assembly (M3 Phase H1, rfcs/026-Agent-Facing-Runtime-Surface.md §7/§8) --
 # Header-only (core/reference_agent_prompt.hpp, core/token_estimate.hpp), core-tier, model-independent.
 agentengine_add_test(test_reference_agent_prompt LIBS agentengine::core agentengine_warnings)
 
@@ -31,13 +31,13 @@ agentengine_add_test(test_agent_tool_invocation LIBS agentengine::core agentengi
 
 agentengine_add_test(test_agent_registry_sandbox_backend_registry LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-226 (issue #46, 002 §2.1 as amended): the run bridge -- make_agent_session<A>() /
+# ---- decisions/archive/ADR-226 (issue #46, 002 §2.1 as amended): the run bridge -- make_agent_session<A>() /
 # bind_agent_session() (core/agent_session_bridge.hpp) drive real start_run()s against the strict
 # ScriptedChatClient; each declared policy is shown enforced at run time, with a positive control, and
 # an equivalent 015 document is shown to run identically (I6). No network.
 agentengine_add_test(test_agent_session_bridge LIBS agentengine::core agentengine_warnings)
 
-# ---- decisions/ADR-234 (issue #60, 002 §2.2): the Harness composition point -- make_harness_session<A>() /
+# ---- decisions/archive/ADR-234 (issue #60, 002 §2.2): the Harness composition point -- make_harness_session<A>() /
 # bind_harness_session() (core/harness.hpp) compose the default stack (instructions, todo, plan/execute gate,
 # approval suspension, telemetry; opt-in compaction, skills, reflection) on the ADR-226 bridge. Each piece is
 # shown active in a real start_run() with a positive control that disables it, and the session is shown to
@@ -75,3 +75,6 @@ if(AGENTENGINE_BUILD_PYTHON_RUNNER)
   set_tests_properties(test_reference_agent_containment_invariance PROPERTIES
     ENVIRONMENT "${AE_PYTHON_TEST_ENV}" TIMEOUT 60)
 endif()
+
+# ---- ADR-244 §2.1: Bound<T>, check_bound(), choice_missing() -- header-only, core-tier ----------
+agentengine_add_test(test_bound LIBS agentengine::core agentengine_warnings)

@@ -4,7 +4,7 @@
 // it one message, print what comes back. In AgentEngine an agent is a TYPE (002 §1): `Joker` below
 // declares its model binding, its tools, its capability ceiling and its turn bound as CRTP policy tags
 // on `Agent<Joker, ...>`, and `make_agent_session<Joker>()` (core/agent_session_bridge.hpp,
-// decisions/ADR-226, 002 §2.1) compiles and validates that declaration with `register_agent<Joker>()`
+// decisions/archive/ADR-226, 002 §2.1) compiles and validates that declaration with `register_agent<Joker>()`
 // and turns it into a running `rt::AgentSession` -- so the policy set the type declares is the policy set
 // the session enforces. Nothing below re-states a policy by hand.
 //
@@ -56,13 +56,13 @@ struct RollReply {
 };
 AE_JSON_SCHEMA(RollReply, value)
 
-struct RollDie : Tool<RollDie> {
+struct RollDie : Tool<RollDie, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name        = "roll_die";
     static constexpr std::string_view description = "Roll a die with the given number of sides.";
     using Args  = RollArgs;
     using Reply = RollReply;
     // Deterministic for a repeatable example: a fair die is someone else's problem.
-    static result<Reply> invoke(Args args, EffectContext&) { return Reply{args.sides > 3 ? 4 : 1}; }
+    agentengine::task<result<Reply>> invoke(Args args, EffectContext&) const { co_return Reply{args.sides > 3 ? 4 : 1}; }
 };
 
 // ---- the agent (002 §2): policies are types; register_agent<Joker>() compiles and validates them ------
@@ -133,7 +133,20 @@ static_assert(ChatClient<JokerChatClient>, "JokerChatClient must satisfy the Cha
 int main() {
     // The caller supplies the client and whatever authority it holds (AgentSessionOptions::grants -- none
     // needed by roll_die); the agent's declaration supplies everything else.
-    auto agent = make_agent_session<Joker>(JokerChatClient{});
+    // ADR-244: the caller states the session's identity, where its authority comes from, its token budget and its
+    // turn cap. The bridge refuses a budget or cap wider than the agent declares (Joker: TokenBudget<1'000>,
+    // MaxTurns<4>).
+    auto agent = make_agent_session<Joker>(
+        JokerChatClient{},
+        AgentSessionOptions{.session_id = "s-joker",
+                            .principal  = Principal{"p-demo", ""},
+                            .choices    = SessionChoices{AuthoritySource::single_trusted_caller(),
+                                                         Bound<std::uint64_t>::at_most(1'000),
+                                                         Bound<std::uint64_t>::at_most(4)},
+                            .grants             = {},
+                            .chat_client_grants = {},
+                            .approve_tools      = std::nullopt,
+                            .policy             = {}});
     check(agent.has_value(), "make_agent_session<Joker>() validates the declaration and binds a session");
     if (!agent.has_value()) {
         std::fprintf(stderr, "bind failed: %s (%s)\n", agent.error().message.c_str(), agent.error().code.c_str());
@@ -147,7 +160,7 @@ int main() {
         check(reply->find("4") != std::string::npos, "the answer used the declared tool's result");
     }
     check(agent->session().max_turns() == std::optional<std::uint64_t>{4},
-          "the session's turn bound is the one Joker declared (MaxTurns<4>)");
+          "the session's turn bound is the one the caller stated, within Joker's MaxTurns<4>");
 
     std::fprintf(stderr,
                  g_failures == 0 ? "example_01_hello_agent: OK\n" : "example_01_hello_agent: FAIL\n");

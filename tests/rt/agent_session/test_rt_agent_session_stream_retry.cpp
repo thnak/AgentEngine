@@ -1,4 +1,4 @@
-// Proof for ADR-177 (decisions/ADR-177-stream-retry-in-session.md): a session may re-issue a model call
+// Proof for ADR-177 (decisions/archive/ADR-177-stream-retry-in-session.md): a session may re-issue a model call
 // whose response stream died MID-ANSWER, and the ways that must be right are each a claim here.
 //
 // Deterministic and offline: every fixture pushes its scripted stream synchronously, then closes or
@@ -31,15 +31,18 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "agentengine/core/json_schema.hpp"
+#include "../../support/session_choices.hpp"
 #include "agentengine/core/model_call_gateway.hpp"
 #include "agentengine/core/recording_chat_client.hpp"
 #include "agentengine/core/replay_chat_client.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/protocol/agui/projection.hpp"
 #include "agentengine/rt/agent_session.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::AgentSession;
 using agentengine::rt::NoSessionState;
@@ -60,8 +63,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 using agentengine::CapabilitySet;
@@ -94,14 +96,14 @@ struct EchoReply { int value = 0; };
 AE_JSON_SCHEMA(EchoReply, value)
 
 struct EchoTool : agentengine::Tool<EchoTool, agentengine::Capabilities<>,
-                                     agentengine::EffectClass<agentengine::effect_class::pure>> {
+                                     agentengine::EffectClass<agentengine::effect_class::pure>, agentengine::Approval<agentengine::approval_mode::never_require>> {
     static constexpr std::string_view name = "echo_tool";
     static constexpr std::string_view description = "Echoes its integer argument back.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_echo_invocations;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -111,7 +113,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<EchoTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(EchoTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -126,9 +128,9 @@ struct GatedTool : agentengine::Tool<GatedTool, agentengine::Capabilities<>,
     static constexpr std::string_view description = "Needs approval before every call.";
     using Args = EchoArgs;
     using Reply = EchoReply;
-    static agentengine::result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<agentengine::result<Reply>> invoke(Args a, EffectContext&) const {
         ++g_echo_invocations;
-        return Reply{a.value};
+        co_return Reply{a.value};
     }
 };
 
@@ -138,7 +140,7 @@ public:
         agentengine::SessionContext& sc, EffectContext&) {
         agentengine::ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = agentengine::ToolTable::from_tools<GatedTool>().descriptors();
+        c.tools = agentengine::ToolTable::from(GatedTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(agentengine::TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -252,7 +254,7 @@ struct Harness {
 
     explicit Harness(std::vector<Attempt> attempts, std::uint32_t retries, bool stream_live = true,
                      char const* id = "s", std::optional<std::uint64_t> budget = std::nullopt) {
-        session.initialize(id, Principal{"p", ""}, budget);
+        session.initialize(id, Principal{"p", ""}, ae_test::trusted(budget));
         client = &session.emplace_chat_client();
         client->attempts = std::move(attempts);
         session.set_capabilities(&held);
@@ -540,10 +542,17 @@ int main() {
                                "net.byte_cap_exceeded"};
         check(retried(resource, "p5-resource") == 1, "P5: a byte-cap failure is not retried");
 
-        Attempt cancelled = base;  // the transport classes a cancellation TRANSIENT; the class alone would retry it
-        cancelled.fail = error{failure_class::transient, "cancelled via stop_token", "net.cancelled"};
-        check(retried(cancelled, "p5-cancel") == 1,
-              "P5 (Q5): net.cancelled is transient by class yet is NOT retried -- excluded by code");
+        // ADR-237 D6: the transport classes a cancellation `canceled` now (it was `transient`, excluded by its code);
+        // the predicate's code exception is gone, so the CLASS is what stops the retry.
+        Attempt cancelled = base;
+        cancelled.fail = error{failure_class::canceled, "cancelled via stop_token", "net.cancelled"};
+        check(retried(cancelled, "p5-cancel") == 1, "P5 (Q5, D6): net.cancelled is class canceled and is NOT retried");
+        // ...and the code alone no longer decides anything: a transient failure that happens to carry the old code
+        // is an ordinary transient failure (no string-keyed exception left in the predicate).
+        Attempt coded = base;
+        coded.fail = error{failure_class::transient, "a transient failure", "net.cancelled"};
+        check(retried(coded, "p5-cancel-code") == 2,
+              "P5 (D6): the predicate keys off the class, not the net.cancelled code");
     }
 
     // ---- P6: I3 -- text that SPELLS an error code moves nothing -------------------------------------
@@ -627,7 +636,7 @@ int main() {
             inner.attempts[0].fail    = dead_stream();
             inner.attempts[1].updates = {text_delta("done", true, kUsage)};
             RecSession s;
-            s.initialize("s-rec", Principal{"p", ""});
+            s.initialize("s-rec", Principal{"p", ""}, ae_test::trusted_unbounded());
             s.emplace_chat_client(std::move(inner), [&](agentengine::ChatCallRecording rec) {
                 std::lock_guard lk(tape_mu);
                 tape.push_back(std::move(rec));
@@ -659,7 +668,7 @@ int main() {
             using Replayer = agentengine::ReplayChatClient;
             using ReplaySession = AgentSession<Replayer, NoSessionState, EchoHistoryProvider>;
             ReplaySession rs;
-            rs.initialize("s-replay", Principal{"p", ""});
+            rs.initialize("s-replay", Principal{"p", ""}, ae_test::trusted_unbounded());
             rs.emplace_chat_client(tape, ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             CapabilitySet const held = CapabilitySet::grant_root({});
             rs.set_capabilities(&held);
@@ -671,7 +680,7 @@ int main() {
 
             // CONTROL: the single-recording player, handed the failed attempt, serves it again.
             ReplaySession single;
-            single.initialize("s-single", Principal{"p", ""});
+            single.initialize("s-single", Principal{"p", ""}, ae_test::trusted_unbounded());
             single.emplace_chat_client(tape[0], ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             single.set_capabilities(&held);
             single.set_stream_model_calls(true);
@@ -683,7 +692,7 @@ int main() {
 
             // Over-long replay is loud, not repeated.
             ReplaySession over;
-            over.initialize("s-over", Principal{"p", ""});
+            over.initialize("s-over", Principal{"p", ""}, ae_test::trusted_unbounded());
             over.emplace_chat_client(std::vector<agentengine::ChatCallRecording>{tape[0]},
                                       ChatClientCapabilities{}, [](std::chrono::milliseconds) {});
             over.set_capabilities(&held);
@@ -712,7 +721,7 @@ int main() {
         backend.attempts[1].updates = {text_delta("done", true, kUsage)};
 
         GatewaySession gs;
-        gs.initialize("s-gw", Principal{"p", ""});
+        gs.initialize("s-gw", Principal{"p", ""}, ae_test::trusted_unbounded());
         gs.emplace_chat_client(std::move(backend), std::tuple<>{},
                                 agentengine::RetryPolicy{.max_attempts = 1});
         CapabilitySet const held = CapabilitySet::grant_root({});
@@ -746,7 +755,7 @@ int main() {
             return a;
         };
         auto const make = [&](std::uint32_t retries, GatedSession& session, CapabilitySet const& held) {
-            session.initialize("s13", Principal{"p", ""});
+            session.initialize("s13", Principal{"p", ""}, ae_test::trusted_unbounded());
             session.emplace_chat_client().attempts = script();
             session.set_capabilities(&held);
             session.set_stream_model_calls(true);

@@ -90,6 +90,7 @@
 #include "agentengine/eval/lesson_screen_record.hpp"
 #include "agentengine/rt/append_log_file_store.hpp"
 #include "agentengine/trust/secure_random.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine::eval {
 
@@ -633,13 +634,13 @@ public:
     explicit Tier1AttemptLog(Store& store) : store_(&store) {}
 
     // Counts an attempt. Called BEFORE the attempt's first trial; a failure here means it must not run.
-    [[nodiscard]] result<Started> begin_attempt(Tier1Family const& family, Digest const& preregistration,
-                                                std::string const& preregistration_json,
-                                                std::string const& operator_id, std::string const& started_at) {
+    [[nodiscard]] task<result<Started>> begin_attempt(Tier1Family family, Digest preregistration,
+                                                std::string preregistration_json,
+                                                std::string operator_id, std::string started_at) {
         auto id = detail::tier1_lineage_log_id(family.lineage);
-        if (!id) return std::unexpected(id.error());
+        if (!id) co_return std::unexpected(id.error());
         auto attempt_id = trust::secure_random_hex(16);
-        if (!attempt_id) return std::unexpected(attempt_id.error());
+        if (!attempt_id) co_return std::unexpected(attempt_id.error());
         std::vector<std::pair<std::string, json::Value>> o;
         o.emplace_back("schema", json::Value::make_string(std::string(detail::kTier1LogSchema)));
         o.emplace_back("event", json::Value::make_string("started"));
@@ -650,17 +651,17 @@ public:
         o.emplace_back("started_at", json::Value::make_string(started_at));
         o.emplace_back("preregistration", json::Value::make_string(preregistration));
         o.emplace_back("design", json::Value::make_string(preregistration_json));
-        auto seq = store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
-        if (!seq) return std::unexpected(seq.error());
-        return Started{*seq, std::move(*attempt_id)};
+        auto seq = co_await store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
+        if (!seq) co_return std::unexpected(seq.error());
+        co_return Started{*seq, std::move(*attempt_id)};
     }
 
-    [[nodiscard]] result<void> complete_attempt(Tier1Family const& family, Started const& started,
+    [[nodiscard]] task<result<void>> complete_attempt(Tier1Family family, Started started,
                                                 tier1_screen_outcome outcome,
-                                                std::vector<Tier1ProbeFigures> const& probes,
-                                                std::optional<Tier1HarmFigures> const& gross_harm) {
+                                                std::vector<Tier1ProbeFigures> probes,
+                                                std::optional<Tier1HarmFigures> gross_harm) {
         auto id = detail::tier1_lineage_log_id(family.lineage);
-        if (!id) return std::unexpected(id.error());
+        if (!id) co_return std::unexpected(id.error());
         std::vector<json::Value> probe_json;
         for (Tier1ProbeFigures const& p : probes) probe_json.push_back(detail::tier1_probe_figures_json(p));
         std::vector<std::pair<std::string, json::Value>> o;
@@ -671,20 +672,20 @@ public:
         o.emplace_back("probes", json::Value::make_array(std::move(probe_json)));
         o.emplace_back("gross_harm", gross_harm.has_value() ? detail::tier1_harm_figures_json(*gross_harm)
                                                             : json::Value::make_null());
-        auto appended = store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
-        if (!appended) return std::unexpected(appended.error());
-        return {};
+        auto appended = co_await store_->append(*id, detail::tier1_bytes_of(json::Value::make_object(std::move(o))));
+        if (!appended) co_return std::unexpected(appended.error());
+        co_return result<void>{};
     }
 
     // Every attempt from the lineage, whatever its subject, in start order. A `completed` record attaches to
     // the `started` record with its `attempt_id`; one that names no such attempt, names one already
     // completed, or cannot be decoded, is an attempt of its own marked `unreadable`. So is a `started` record
     // whose stored design does not hash to its stated digest, or that repeats an earlier attempt's id.
-    [[nodiscard]] result<std::vector<Tier1AttemptRecord>> lineage_attempts(std::string const& lineage) const {
+    [[nodiscard]] task<result<std::vector<Tier1AttemptRecord>>> lineage_attempts(std::string lineage) const {
         auto id = detail::tier1_lineage_log_id(lineage);
-        if (!id) return std::unexpected(id.error());
-        auto entries = store_->read_from(*id, 0);
-        if (!entries) return std::unexpected(entries.error());
+        if (!id) co_return std::unexpected(id.error());
+        auto entries = co_await store_->read_from(*id, 0);
+        if (!entries) co_return std::unexpected(entries.error());
 
         std::vector<Tier1AttemptRecord> out;
         std::map<std::string, std::size_t> by_id;  // attempt_id -> index in `out`
@@ -774,7 +775,7 @@ public:
         }
         // `out` is already in log order: each started or unreadable record was appended at its own position.
         for (std::size_t i = 0; i < out.size(); ++i) out[i].ordinal = i + 1;
-        return out;
+        co_return out;
     }
 
 private:
@@ -873,7 +874,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
         return error{failure_class::transient, "the attempt could not be counted, so it was not run: " + why,
                      "eval.tier1_attempt_not_counted"};
     };
-    auto started = log.begin_attempt(result.family, result.preregistration_digest, *design, spec.operator_id,
+    auto started = co_await log.begin_attempt(result.family, result.preregistration_digest, *design, spec.operator_id,
                                      spec.started_at);
     if (!started) {
         result.setup_error = not_counted(started.error().message);
@@ -883,7 +884,7 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
     // Read the `started` record back before spending a single trial: a store that accepted the append but
     // lost it, or a log that has become unreadable, would otherwise run the whole attempt uncounted.
     {
-        auto before = log.lineage_attempts(result.family.lineage);
+        auto before = co_await log.lineage_attempts(result.family.lineage);
         bool const counted = before.has_value() &&
                              std::any_of(before->begin(), before->end(), [&](Tier1AttemptRecord const& a) {
                                  return !a.unreadable && a.attempt_id == started->attempt_id;
@@ -918,14 +919,14 @@ template <rt::AppendLogStore Store, class InnerFactory, class SummarizerFactory>
 
     // A failed `completed` write leaves the attempt in the log as started-but-not-completed: still
     // counted, still visible. This attempt's outcome stands; the error is reported beside it.
-    if (auto done = log.complete_attempt(result.family, *started, *outcome, probe_figures, harm_figures); !done) {
+    if (auto done = co_await log.complete_attempt(result.family, *started, *outcome, probe_figures, harm_figures); !done) {
         result.attempt_log_error = done.error();
     }
 
     // The verdict is returned either way; if the lineage's history cannot be read back, `history_complete` stays
     // false and the reason is reported, so the approver knows the attempt count is unknown.
     result.outcome = outcome;
-    auto lineage = log.lineage_attempts(result.family.lineage);
+    auto lineage = co_await log.lineage_attempts(result.family.lineage);
     if (!lineage) {
         if (!result.attempt_log_error) result.attempt_log_error = lineage.error();  // the first failure is the cause
         co_return result;
@@ -1010,18 +1011,18 @@ namespace detail {
 
 // The same record, read fresh from the lineage's log -- what an approver should be shown at approval time.
 template <rt::AppendLogStore Store>
-[[nodiscard]] inline Tier1ScreenRecord tier1_screen_record_from_log(Tier1AttemptLog<Store> const& log,
-                                                                    std::string const& lineage,
-                                                                    std::string const& attempt_id) {
-    if (attempt_id.empty()) return {};
-    auto attempts = log.lineage_attempts(lineage);
+[[nodiscard]] inline task<Tier1ScreenRecord> tier1_screen_record_from_log(Tier1AttemptLog<Store> const& log,
+                                                                          std::string lineage,
+                                                                          std::string attempt_id) {
+    if (attempt_id.empty()) co_return Tier1ScreenRecord{};
+    auto attempts = co_await log.lineage_attempts(lineage);
     if (!attempts) {
         Tier1ScreenRecord out;
         out.attempt_id = attempt_id;
         out.lineage = lineage;
-        return out;  // history_complete = false, no outcome, no form: every approval check objects
+        co_return out;  // history_complete = false, no outcome, no form: every approval check objects
     }
-    return detail::tier1_screen_record_of(*attempts, lineage, attempt_id, true);
+    co_return detail::tier1_screen_record_of(*attempts, lineage, attempt_id, true);
 }
 
 }  // namespace agentengine::eval

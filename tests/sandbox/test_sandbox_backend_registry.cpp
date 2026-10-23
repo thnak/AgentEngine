@@ -16,7 +16,7 @@
 //   7. register_hardware_isolation_backend() -- introduced by
 //      docs/planning/microvm-first-party-backend-design-draft.md Revision 2's red-team finding #1 --
 //      always registers named_only, with no mode argument available to omit or get wrong.
-//   8. 008 SS9 G6 (downgrade visibility) -- decisions/ADR-082-native-jail-promotion-gate-008-9.md SS4's
+//   8. 008 SS9 G6 (downgrade visibility) -- decisions/archive/ADR-082-native-jail-promotion-gate-008-9.md SS4's
 //      own finding that G6 was real, open work: SandboxBackendResolutionEvent::downgraded distinguishes
 //      "the winner is the strongest backend registered, full stop" from "a stronger backend is
 //      registered but does not support this platform, so this IS a fallback" -- the audit hook
@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
 
@@ -56,16 +57,16 @@ struct StatefulBackend {
     static constexpr ProfileTraits traits{42, platform_id::windows_x86_64 | platform_id::linux_x86_64,
                                            cold_start_class::milliseconds};
 
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) {
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) {
         std::string id = "handle-" + std::to_string(next_id_++);
         instances_.emplace(id, InstanceState{});
-        return SandboxHandle{id};
+        co_return SandboxHandle{id};
     }
 
-    result<ExecOutcome> exec(SandboxHandle& handle, ExecRequest const&, EffectContext&) {
+    task<result<ExecOutcome>> exec(SandboxHandle& handle, ExecRequest, EffectContext&) {
         auto it = instances_.find(handle.opaque_id);
         if (it == instances_.end()) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "unknown handle -- would fail here under Revision 1's "
                                           "B{}-per-call bug",
                                           "stateful_backend.unknown_handle"});
@@ -73,10 +74,10 @@ struct StatefulBackend {
         ++it->second.exec_count;
         ExecOutcome outcome;
         outcome.stdout_text = "exec#" + std::to_string(it->second.exec_count);
-        return outcome;
+        co_return outcome;
     }
 
-    void destroy(SandboxHandle& handle) { instances_.erase(handle.opaque_id); }
+    task<void> destroy(SandboxHandle& handle) { instances_.erase(handle.opaque_id); co_return; }
 
     struct InstanceState {
         int exec_count = 0;
@@ -91,9 +92,9 @@ struct StrongerNamedOnlyBackend {
                                            platform_id::windows_x86_64 | platform_id::linux_x86_64,
                                            cold_start_class::network_dependent};
 
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) { return SandboxHandle{"n/a"}; }
-    result<ExecOutcome> exec(SandboxHandle&, ExecRequest const&, EffectContext&) { return ExecOutcome{}; }
-    void destroy(SandboxHandle&) {}
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{"n/a"}; }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) { co_return ExecOutcome{}; }
+    task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 // A third backend that only supports Linux -- used for the "nothing strict-eligible supports the
@@ -102,9 +103,9 @@ struct LinuxOnlyBackend {
     static constexpr ProfileTraits traits{999, static_cast<std::uint8_t>(platform_id::linux_x86_64),
                                            cold_start_class::milliseconds};
 
-    result<SandboxHandle> create(SandboxSpec const&, EffectContext&) { return SandboxHandle{"n/a"}; }
-    result<ExecOutcome> exec(SandboxHandle&, ExecRequest const&, EffectContext&) { return ExecOutcome{}; }
-    void destroy(SandboxHandle&) {}
+    task<result<SandboxHandle>> create(SandboxSpec, EffectContext&) { co_return SandboxHandle{"n/a"}; }
+    task<result<ExecOutcome>> exec(SandboxHandle&, ExecRequest, EffectContext&) { co_return ExecOutcome{}; }
+    task<void> destroy(SandboxHandle&) { co_return; }
 };
 
 }  // namespace
@@ -123,11 +124,11 @@ int main() {
         if (entry.has_value()) {
             EffectContext ctx = make_ctx();
             SandboxSpec spec;
-            auto handle = (*entry)->create(spec, ctx);
+            auto handle = agentengine::rt::block_on((*entry)->create(spec, ctx));
             check(handle.has_value(), "create() succeeds through the registry's closure");
             if (handle.has_value()) {
                 ExecRequest req;
-                auto first_exec = (*entry)->exec(*handle, req, ctx);
+                auto first_exec = agentengine::rt::block_on((*entry)->exec(*handle, req, ctx));
                 check(first_exec.has_value(),
                       "REGRESSION: exec() on a handle from this registry's own create() call "
                       "succeeds (Revision 1's B{}-per-call bug made this an unconditional "
@@ -135,11 +136,11 @@ int main() {
                 if (first_exec.has_value()) {
                     check(first_exec->stdout_text == "exec#1", "first exec() sees a fresh instance");
                 }
-                auto second_exec = (*entry)->exec(*handle, req, ctx);
+                auto second_exec = agentengine::rt::block_on((*entry)->exec(*handle, req, ctx));
                 check(second_exec.has_value() && second_exec->stdout_text == "exec#2",
                       "REGRESSION: a second exec() call on the SAME handle sees the SAME "
                       "long-lived instance's incremented state, not a fresh default-constructed one");
-                (*entry)->destroy(*handle);
+                agentengine::rt::block_on((*entry)->destroy(*handle));
                 check(instance->instances_.empty(),
                       "destroy() through the registry's closure reaches the real, shared instance");
             }

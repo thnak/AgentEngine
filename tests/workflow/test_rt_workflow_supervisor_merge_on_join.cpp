@@ -20,11 +20,13 @@
 //   J3 -- disjoint changes across two independent branch executors in the same round both merge
 //         cleanly -- proving the hook handles more than one branch-mode completion per round.
 
+#include <utility>
 #include <cstdio>
 #include <string>
 
 #include "agentengine/rt/workflow_supervisor.hpp"
 #include "agentengine/workflow/worktree_scoping.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 using agentengine::rt::ExecutorBody;
 using agentengine::rt::ExecutorOutcome;
@@ -51,8 +53,7 @@ void check(bool cond, char const* what) {
 
 template <class T>
 T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 Message text_message(std::string text) {
@@ -80,11 +81,11 @@ std::string string_of(std::vector<std::byte> const& bytes) {
 }
 
 Digest blob_of(InMemoryWorktreeObjectStore& store, std::string const& content) {
-    return *store.put_blob(bytes_of(content));
+    return *agentengine::rt::block_on(store.put_blob(bytes_of(content)));
 }
 
 Digest tree_of(InMemoryWorktreeObjectStore& store, std::vector<TreeEntry> entries) {
-    return *store.put_tree(Tree{std::move(entries)});
+    return *agentengine::rt::block_on(store.put_tree(Tree{std::move(entries)}));
 }
 
 Executor make_executor(std::string id, sharing_mode mode) {
@@ -102,14 +103,14 @@ Executor make_executor(std::string id, sharing_mode mode) {
 ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& ref_store,
                           ExecutorWorktreeGrant grant, std::string file_name, std::string content) {
     return [&obj_store, &ref_store, grant, file_name, content](
-               Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        auto current = read_sub_worktree(ref_store, grant.sub);
+               Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        auto current = agentengine::rt::block_on(read_sub_worktree(ref_store, grant.sub));
         if (!current || !current->has_value()) {
-            return std::unexpected(
+            co_return std::unexpected(
                 error{failure_class::fatal, "writer_body: no current tree", "test.setup_failed"});
         }
-        auto current_tree = obj_store.get_tree((*current)->tree_digest);
-        if (!current_tree) return std::unexpected(current_tree.error());
+        auto current_tree = agentengine::rt::block_on(obj_store.get_tree((*current)->tree_digest));
+        if (!current_tree) co_return std::unexpected(current_tree.error());
 
         std::vector<TreeEntry> entries;
         for (auto const& e : current_tree->entries) {
@@ -118,15 +119,15 @@ ExecutorBody writer_body(InMemoryWorktreeObjectStore& obj_store, InMemoryStore& 
         entries.push_back(TreeEntry{file_name, blob_of(obj_store, content), false});
         auto new_tree_digest = tree_of(obj_store, entries);
 
-        auto written = write_sub_worktree(ref_store, grant.sub, new_tree_digest);
-        if (!written) return std::unexpected(written.error());
-        return ExecutorOutcome{in};
+        auto written = agentengine::rt::block_on(write_sub_worktree(ref_store, grant.sub, new_tree_digest));
+        if (!written) co_return std::unexpected(written.error());
+        co_return ExecutorOutcome{in};
     };
 }
 
 ExecutorBody passthrough_body() {
-    return [](Message const& in, EffectContext&) -> result<ExecutorOutcome> {
-        return ExecutorOutcome{in};
+    return [](Message const& in, EffectContext&) -> agentengine::task<agentengine::result<ExecutorOutcome>> {
+        co_return ExecutorOutcome{in};
     };
 }
 
@@ -138,7 +139,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"shared.txt", blob_of(obj_store, "shared-content"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j1", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j1", root));
         check(parent.has_value(), "J1 setup: parent commit succeeds");
 
         Workflow wf;
@@ -149,7 +150,7 @@ int main() {
         wf.bound.max_rounds   = 4;
         check(validate_workflow(wf).has_value(), "J1 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 1, "J1 setup: one grant minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -164,10 +165,10 @@ int main() {
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
         check(r.status == workflow_status::completed, "J1: the run completes normally");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j1");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j1"));
         check(parent_after.has_value() && parent_after->has_value(), "J1: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 2,
                   "J1: the parent's tree now has BOTH shared.txt and new.txt -- the branch's own "
                   "write folded back, driven entirely by WorkflowSupervisor's own merge-on-join hook, "
@@ -181,7 +182,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"a.txt", blob_of(obj_store, "v1"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j2", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j2", root));
         check(parent.has_value(), "J2 setup: parent commit succeeds");
 
         Workflow wf;
@@ -196,7 +197,7 @@ int main() {
         wf.bound.max_rounds = 4;
         check(validate_workflow(wf).has_value(), "J2 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 3, "J2 setup: three grants minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -217,23 +218,23 @@ int main() {
         check(r.failed_executor == "branch_writer",
               "J2: failed_executor names the branch executor whose merge actually conflicted");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j2");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j2"));
         check(parent_after.has_value() && parent_after->has_value(), "J2: the parent ref still exists");
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
-            auto blob_content = obj_store.get_blob(parent_tree->entries[0].digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
+            auto blob_content = agentengine::rt::block_on(obj_store.get_blob(parent_tree->entries[0].digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 1 && blob_content.has_value() &&
                       string_of(*blob_content) == "shared-edit",
                   "J2: the parent keeps the SHARED writer's own edit, completely untouched by the "
                   "rejected branch merge -- 025 §4's own never-last-writer-wins guarantee");
         }
 
-        auto conflicts_ref = read_ref(ref_store, conflicts_ref_name("wf:run-j2"));
+        auto conflicts_ref = agentengine::rt::block_on(read_ref(ref_store, conflicts_ref_name("wf:run-j2")));
         check(conflicts_ref.has_value() && conflicts_ref->has_value(),
               "J2: real conflict evidence was durably materialized (ADR-055) -- both versions "
               "retained, not merely a returned error nobody durably recorded");
         if (conflicts_ref.has_value() && conflicts_ref->has_value()) {
-            auto tree = obj_store.get_tree((*conflicts_ref)->tree_digest);
+            auto tree = agentengine::rt::block_on(obj_store.get_tree((*conflicts_ref)->tree_digest));
             check(tree.has_value() && tree->entries.size() == 2,
                   "J2: both ours (the parent/shared side) and theirs (the branch side) are present "
                   "in the materialized conflict evidence");
@@ -245,7 +246,7 @@ int main() {
         InMemoryStore ref_store;
         InMemoryWorktreeObjectStore obj_store;
         auto root   = tree_of(obj_store, {{"base.txt", blob_of(obj_store, "base"), false}});
-        auto parent = commit_ref(ref_store, "wf:run-j3", root);
+        auto parent = agentengine::rt::block_on(commit_ref(ref_store, "wf:run-j3", root));
         check(parent.has_value(), "J3 setup: parent commit succeeds");
 
         Workflow wf;
@@ -260,7 +261,7 @@ int main() {
         wf.bound.max_rounds = 4;
         check(validate_workflow(wf).has_value(), "J3 setup: the graph validates");
 
-        auto grants = mint_executor_worktrees(ref_store, *parent, wf);
+        auto grants = agentengine::rt::block_on(mint_executor_worktrees(ref_store, *parent, wf));
         check(grants.has_value() && grants->size() == 3, "J3 setup: three grants minted");
 
         std::vector<ExecutorBody> bodies = {
@@ -278,9 +279,9 @@ int main() {
         WorkflowResult r = drive(sup.run_workflow(RunWorkflow{text_message("go")}));
         check(r.status == workflow_status::completed, "J3: the run completes normally");
 
-        auto parent_after = read_ref(ref_store, "wf:run-j3");
+        auto parent_after = agentengine::rt::block_on(read_ref(ref_store, "wf:run-j3"));
         if (parent_after.has_value() && parent_after->has_value()) {
-            auto parent_tree = obj_store.get_tree((*parent_after)->tree_digest);
+            auto parent_tree = agentengine::rt::block_on(obj_store.get_tree((*parent_after)->tree_digest));
             check(parent_tree.has_value() && parent_tree->entries.size() == 3,
                   "J3: the parent's tree has base.txt PLUS both branches' own disjoint additions -- "
                   "two independent branch-executor completions in one round both merged, in sequence, "

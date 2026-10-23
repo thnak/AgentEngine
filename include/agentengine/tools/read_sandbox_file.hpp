@@ -26,6 +26,7 @@
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
+#include "agentengine/core/task.hpp"  // ADR-237 §5.2: invoke returns ae::task<result<Reply>>
 #include "agentengine/core/tool.hpp"
 #include "agentengine/sandbox/filesystem_adapter.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -56,26 +57,28 @@ struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval
     using Args = ReadSandboxFileArgs;
     using Reply = ReadSandboxFileReply;
 
-    [[nodiscard]] static result<Reply> invoke(Args args, EffectContext& ctx) {
+    // ADR-237 §5.2: non-static `const` member returning `task<result<Reply>>` (the §5.2 target shape;
+    // registered via `ToolTable::from(ReadSandboxFile{})`).
+    [[nodiscard]] task<result<Reply>> invoke(Args args, EffectContext& ctx) const {
         if (!ctx.sandbox_fs) {
-            return std::unexpected(error{failure_class::resource,
+            co_return std::unexpected(error{failure_class::resource,
                                           "this session has no sandbox mount yet",
                                           "read_sandbox_file.no_sandbox"});
         }
         if (!ctx.capabilities) {
-            return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
+            co_return std::unexpected(error{failure_class::policy, "no capability set bound to this call",
                                           "tool.capability_not_held"});
         }
         auto granted = ctx.capabilities->find_fs_read(std::string(kSandboxWorkMount), args.path);
         if (!granted) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "no granted FsRead capability covers '" + args.path +
                                               "' on the '" + std::string(kSandboxWorkMount) + "' mount",
                                           "tool.capability_not_held"});
         }
 
         auto bytes = ctx.sandbox_fs->read_file(args.path);
-        if (!bytes) return std::unexpected(bytes.error());
+        if (!bytes) co_return std::unexpected(bytes.error());
         // GitHub issue #149: the grant's own size cap, enforced the way `cat` enforces it
         // (`shell.cat_exceeds_size_cap`, mediated_shell_dispatch.cpp) and `mount_read()` does
         // (worktree_mount.hpp). Checked after the read, for the same stated reason: `FileSystemAdapter` has
@@ -83,14 +86,14 @@ struct ReadSandboxFile : Tool<ReadSandboxFile, Capabilities<>, Approval<approval
         // oversized file reaching a tool result, and from there the model's context -- is closed; the read
         // itself is not pre-empted, so peak memory for one call is the file's size, as it is for `cat`.
         if (granted->size_cap_bytes.has_value() && bytes->size() > *granted->size_cap_bytes) {
-            return std::unexpected(error{failure_class::policy,
+            co_return std::unexpected(error{failure_class::policy,
                                           "the requested file exceeds this capability's size cap",
                                           "read_sandbox_file.exceeds_size_cap"});
         }
 
         Reply reply;
         reply.content.assign(reinterpret_cast<char const*>(bytes->data()), bytes->size());
-        return reply;
+        co_return reply;
     }
 };
 

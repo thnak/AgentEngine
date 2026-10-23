@@ -29,6 +29,8 @@
 #include <crtdbg.h>
 #endif
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -93,17 +95,19 @@ int main() {
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E2-C1: MediatedPythonRunner initializes a real embedded interpreter");
         AE_CHECK(runner.ok(), "E2-C1: ok() reflects successful initialization");
 
         ExecState state{};
         EffectContext ctx{};  // no capabilities granted at all (nullptr) -- the fail-closed baseline
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         // E2-C2: basic execution + stdout capture.
         {
             ExecRequest req{"python", "print('hello from mediated cpython', 1 + 1)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                      "E2-C2: a trivial script runs and returns ok");
             AE_CHECK(out.has_value() && out->stdout_text.find("hello from mediated cpython 2") != std::string::npos,
@@ -114,11 +118,11 @@ int main() {
         // namespace persists across calls on the same Runner.
         {
             ExecRequest req1{"python", "ae_e2_var = 41"};
-            auto r1 = runner.run(req1, state, ctx);
+            auto r1 = agentengine::rt::block_on(runner.run(req1, state, ctx));
             AE_CHECK(r1.has_value(), "E2-C3: setup -- first execution defines a variable");
 
             ExecRequest req2{"python", "print('var is', ae_e2_var + 1)"};
-            auto r2 = runner.run(req2, state, ctx);
+            auto r2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
             AE_CHECK(r2.has_value() && r2->stdout_text.find("var is 42") != std::string::npos,
                      "E2-C3: a later execution on the same Runner sees the earlier execution's variable");
         }
@@ -128,7 +132,7 @@ int main() {
         {
             state.cwd = scratch;
             ExecRequest req{"python", "import os\nprint('cwd is', os.getcwd())"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "E2-C4: setup -- cwd-reading script runs");
             std::string expect_fragment = scratch.substr(0, 3);  // drive prefix is enough to confirm
             AE_CHECK(out.has_value() && out->stdout_text.find("cwd is") != std::string::npos,
@@ -136,7 +140,7 @@ int main() {
 
             std::filesystem::create_directories(scratch + "/subdir_e2c4");
             ExecRequest chdir_req{"python", "import os\nos.chdir(r'" + scratch + "\\subdir_e2c4')"};
-            auto chdir_out = runner.run(chdir_req, state, ctx);
+            auto chdir_out = agentengine::rt::block_on(runner.run(chdir_req, state, ctx));
             AE_CHECK(chdir_out.has_value(), "E2-C4: setup -- os.chdir() script runs");
             AE_CHECK(state.cwd.find("subdir_e2c4") != std::string::npos,
                      "E2-C4: after the call, ExecState.cwd reflects the script's own os.chdir(), not "
@@ -147,7 +151,7 @@ int main() {
         // ImportError, never reaching a real loader for it, before any capability is even relevant.
         {
             ExecRequest req{"python", "import json"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::ok,
                      "E2-C5: setup -- the runner itself completes (the denial is a guest-level "
                      "exception, not a runner-level failure)");
@@ -162,14 +166,14 @@ int main() {
         {
             ExecRequest req{"python", "import subprocess\ntry:\n    subprocess.Popen(['cmd'])\nexcept "
                                        "PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E2-C6: subprocess.Popen raises PermissionError, caught at the guest level");
         }
         {
             ExecRequest req{"python", "import os\ntry:\n    os.system('whoami')\nexcept PermissionError "
                                        "as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E2-C6: os.system raises PermissionError, caught at the guest level");
         }
@@ -178,7 +182,7 @@ int main() {
         {
             ExecRequest req{"python", "try:\n    open('/work/should_be_denied.txt', 'w')\nexcept "
                                        "PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E2-C7: open() for write without a granted FsWrite capability raises PermissionError");
             AE_CHECK(!std::filesystem::exists(scratch + "/should_be_denied.txt"),
@@ -198,7 +202,7 @@ int main() {
         cfg.mount_roots["work"] = std::wstring(scratch.begin(), scratch.end());
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "E2-C8: setup -- a second interpreter (after the first's Py_Finalize) "
                                     "initializes cleanly");
 
@@ -207,13 +211,15 @@ int main() {
             {Capability{cap::FsWrite{"work", "", std::nullopt, std::nullopt}},
              Capability{cap::FsRead{"work", "", std::nullopt}}});
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         // E2-C8 (positive control for E2-C5): "json" IS in this runner's package policy -- the
         // identical import that failed above now succeeds.
         {
             ExecRequest req{"python", "import json\nprint('json imported:', json.dumps({'a': 1}))"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("json imported") != std::string::npos,
                      "E2-C8: importing a module the package policy DOES grant succeeds");
         }
@@ -223,7 +229,7 @@ int main() {
         {
             ExecRequest req{"python", "with open('/work/e2c9.txt', 'w') as f:\n    f.write('written by "
                                        "mediated python')"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stderr_text.empty(),
                      "E2-C9: open() for write with a granted FsWrite capability succeeds with no error");
             AE_CHECK(read_file(scratch + "/e2c9.txt") == "written by mediated python",
@@ -234,7 +240,7 @@ int main() {
         // for reading succeed against the file E2-C9 just wrote.
         {
             ExecRequest req{"python", "with open('/work/e2c9.txt', 'r') as f:\n    print('READ:', f.read())"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("READ: written by mediated python") !=
                                              std::string::npos,
                      "E2-C10: open() for read with a granted FsRead capability succeeds and reads "
@@ -252,10 +258,12 @@ int main() {
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{5}}}});
             EffectContext capped_ctx{};
+            capped_ctx.session_nonce = ae_test::kTestSessionNonce;
+            capped_ctx.principal = ae_test::kTestPrincipal;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
             ExecRequest req{"python", "try:\n    open('/work/e2c9.txt', 'r')\n    print('SHOULD NOT REACH')\n"
                                        "except PermissionError as e:\n    print('DENIED:', e)"};
-            auto out = runner.run(req, capped_state, capped_ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, capped_state, capped_ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("DENIED") != std::string::npos,
                      "E2-C11: open() for read raises PermissionError when the file exceeds "
                      "size_cap_bytes -- caught at the guest level, same shape as every other denial");
@@ -267,9 +275,11 @@ int main() {
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", std::uint64_t{1000}}}});
             EffectContext capped_ctx{};
+            capped_ctx.session_nonce = ae_test::kTestSessionNonce;
+            capped_ctx.principal = ae_test::kTestPrincipal;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
             ExecRequest req{"python", "with open('/work/e2c9.txt', 'r') as f:\n    print('READ:', f.read())"};
-            auto out = runner.run(req, capped_state, capped_ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, capped_state, capped_ctx));
             AE_CHECK(out.has_value() && out->stdout_text.find("READ: written by mediated python") !=
                                              std::string::npos,
                      "E2-C12: open() for read still succeeds under a size_cap_bytes grant with headroom");
@@ -287,17 +297,19 @@ int main() {
         cfg.output_cap_bytes = 128;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "F3-setup: a third interpreter initializes cleanly");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
 
         // F3-R1: a bare trailing expression on its own line is captured as result_repr -- 010 §3's
         // own named "value never print()-ed" gap, closed.
         {
             ExecRequest req{"python", "x = 40\ny = x + 2\ny"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "F3-R1: setup -- a multi-line script with a trailing bare name runs");
             AE_CHECK(out.has_value() && out->result_repr == "42",
                      "F3-R1: the trailing expression's value is captured as result_repr, never printed");
@@ -306,7 +318,7 @@ int main() {
         // F3-R2 (010 §3's own literal example): a semicolon-separated trailing expression on ONE line.
         {
             ExecRequest req{"python", "data = 1 + 1; data"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->result_repr == "2",
                      "F3-R2: 010 §3's own 'data = ...; data' example captures result_repr == '2'");
         }
@@ -315,7 +327,7 @@ int main() {
         // and the print still ran exactly once (captured via the eval branch, not re-executed).
         {
             ExecRequest req{"python", "print('only side effect')"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->result_repr.empty(),
                      "F3-R3: a trailing print() call (returns None) leaves result_repr empty");
             AE_CHECK(out.has_value() && out->stdout_text.find("only side effect") != std::string::npos,
@@ -326,7 +338,7 @@ int main() {
         // all -- result_repr stays empty, identical to pre-F3 behavior.
         {
             ExecRequest req{"python", "z = 99"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value() && out->result_repr.empty(),
                      "F3-R4: a script with no trailing expression (ends in an assignment) leaves "
                      "result_repr empty");
@@ -336,7 +348,7 @@ int main() {
         // with an explicit marker, never silently cut or left unbounded.
         {
             ExecRequest req{"python", "print('A' * 1000)"};
-            auto out = runner.run(req, state, ctx);
+            auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
             AE_CHECK(out.has_value(), "F3-T1: setup -- a large-output script runs");
             AE_CHECK(out.has_value() && out->stdout_text.size() < 1000,
                      "F3-T1: stdout exceeding the configured cap is shorter than the raw output");

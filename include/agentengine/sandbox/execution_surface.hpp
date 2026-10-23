@@ -46,6 +46,7 @@
 #include <string_view>
 
 #include "agentengine/core/error.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -110,12 +111,14 @@ struct SurfaceRunOutcome {
     return {};
 }
 
+// decisions/archive/ADR-237 §5.1 (Phase D, #173): every member is `task`-shaped -- a surface is a container or a
+// remote environment, so each call can suspend. The surface object must outlive the returned task.
 template <class T>
 concept ExecutionSurface = requires(T& t, std::filesystem::path const& host_dir,
                                        std::string const& command) {
-    { t.reset(host_dir) } -> std::same_as<agentengine::result<void>>;
-    { t.run(command) } -> std::same_as<agentengine::result<SurfaceRunOutcome>>;
-    { t.drain_to(host_dir) } -> std::same_as<agentengine::result<void>>;
+    { t.reset(host_dir) } -> std::same_as<agentengine::task<agentengine::result<void>>>;
+    { t.run(command) } -> std::same_as<agentengine::task<agentengine::result<SurfaceRunOutcome>>>;
+    { t.drain_to(host_dir) } -> std::same_as<agentengine::task<agentengine::result<void>>>;
 };
 
 // GitHub issue #80 -- WHICH IMAGE DID THIS ACTUALLY RUN IN. A host could already PIN a surface's image

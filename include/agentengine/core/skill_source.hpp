@@ -1,5 +1,5 @@
 #pragma once
-// Implements 009-Plugin-and-Extension-System.md §8 -- "where does a skill come from," the loading/
+// Implements rfcs/009-Plugin-and-Extension-System.md §8 -- "where does a skill come from," the loading/
 // sourcing abstraction the user asked for MAF-parity on ("load from disk or inline skill, with skill
 // provider support"). MAF's own `AgentSkillsProvider`/`SkillsProvider` (docs/research/2026-maf-
 // provider-concepts.md §1) is the vocabulary precedent for the CONCEPT of "a pluggable skill origin";
@@ -26,6 +26,7 @@
 #include "agentengine/core/fs_walk.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/skill.hpp"
+#include "agentengine/core/task.hpp"
 
 namespace agentengine {
 
@@ -48,18 +49,22 @@ struct SkillSourceResult {
     std::vector<SkillBundleFile> files;
 };
 
+// ADR-237 §5.1: `load_skills()` returns `task<result<...>>` like every seam. Both shipped conformers
+// run inline (an inline bundle copies memory; a disk source reads local files once per run), so this is
+// an awaitable "async in name only" seam today -- a future registry/git/HTTP source is the real reason
+// it is a `task`.
 template <class T>
 // ae-naming-lint: allow SkillSource — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 concept SkillSource = requires(T& s) {
     { s.origin_id() } -> std::convertible_to<std::string_view>;
-    { s.load_skills() } -> std::same_as<result<std::vector<SkillSourceResult>>>;
+    { s.load_skills() } -> std::same_as<task<result<std::vector<SkillSourceResult>>>>;
 };
 
 // The type-erased, runtime-configurable table entry -- `SkillsProvider`'s own input list.
 // ae-naming-lint: allow SkillSourceDescriptor — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 struct SkillSourceDescriptor {
     std::string origin_id;
-    std::function<result<std::vector<SkillSourceResult>>()> load_skills;
+    std::function<task<result<std::vector<SkillSourceResult>>>()> load_skills;
 };
 
 template <class SourceT>
@@ -97,7 +102,7 @@ public:
         : origin_id_(std::move(origin_id)), skills_(std::move(skills)) {}
 
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
-    [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const { return skills_; }
+    [[nodiscard]] task<result<std::vector<SkillSourceResult>>> load_skills() const { co_return skills_; }
 
 private:
     std::string origin_id_;
@@ -156,10 +161,10 @@ public:
 
     [[nodiscard]] std::string_view origin_id() const noexcept { return origin_id_; }
 
-    [[nodiscard]] result<std::vector<SkillSourceResult>> load_skills() const {
+    [[nodiscard]] task<result<std::vector<SkillSourceResult>>> load_skills() const {
         std::error_code ec;
         if (!std::filesystem::is_directory(root_, ec) || ec) {
-            return std::unexpected(error{failure_class::contract,
+            co_return std::unexpected(error{failure_class::contract,
                                           "skill source root is not a directory: " + root_.string(),
                                           "skill.disk_root_not_a_directory"});
         }
@@ -209,8 +214,8 @@ public:
             results.push_back(SkillSourceResult{std::move(*skill), std::move(files)});
             return result<void>{};
         });
-        if (!listed.has_value()) return std::unexpected(listed.error());
-        return results;
+        if (!listed.has_value()) co_return std::unexpected(listed.error());
+        co_return results;
     }
 
 private:

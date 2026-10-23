@@ -37,8 +37,10 @@
 // gate fails P10/P10b (C6); run_live() that "defers" its commit (never commits) fails P15/P16 (C4).
 
 #include "agentengine/core/composed_context_provider.hpp"
+#include "../support/session_choices.hpp"
 #include "agentengine/rt/agent_session.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
+#include "agentengine/rt/block_on.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -49,7 +51,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
+#include "../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
@@ -70,8 +74,7 @@ void check(bool cond, std::string const& what) {
 
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
-    while (!t.done()) t.resume();
-    return t.take_value();
+    return agentengine::rt::block_on(std::move(t));
 }
 
 struct Counters {
@@ -91,13 +94,13 @@ public:
     explicit FakeLiveSurface(std::shared_ptr<Counters> c)
         : c_(std::move(c)), box_(c_->root / ("box" + std::to_string(++c_->boxes))) {}
 
-    [[nodiscard]] result<void> open(fs::path const& host_dir, ShellSnapshot const* snap) {
+    [[nodiscard]] task<result<void>> open(fs::path host_dir, ShellSnapshot const* snap) {
         ++c_->opens;
         std::error_code ec;
         fs::remove_all(box_, ec);
         fs::create_directories(box_, ec);
         fs::copy(host_dir, box_, fs::copy_options::recursive, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "seed failed: " + ec.message(), "test.seed"});
         cwd_ = "/workspace";
         env_.clear();
         if (snap != nullptr) {
@@ -107,20 +110,20 @@ public:
         }
         live_ = true;
         held_ = true;
-        return {};
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<LiveExecOutcome> exec(std::string const& command, std::chrono::milliseconds) {
-        if (!live_) return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
+    [[nodiscard]] task<result<LiveExecOutcome>> exec(std::string command, std::chrono::milliseconds) {
+        if (!live_) co_return std::unexpected(error{failure_class::contract, "no live shell", "test.not_live"});
         // What a real surface does with a NUL / oversized command: refused up front, nothing ran (§15.5 M1).
-        if (command == "refuse") return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
+        if (command == "refuse") co_return std::unexpected(error{failure_class::policy, "refused", "test.refused"});
         if (command == "lose_container") {  // a timeout whose in-container kill did not take (§15.5 M2)
             live_ = false;
             LiveExecOutcome lost;
             lost.timed_out = true;
             lost.shell_lost = true;
             lost.container_lost = true;
-            return lost;
+            co_return lost;
         }
         ++c_->execs;
         LiveExecOutcome out;
@@ -142,7 +145,7 @@ public:
             out.shell_lost = true;
             out.exit_code = -1;
             out.output = "partial";
-            return out;
+            co_return out;
         }
         out.output = "ran: " + command + " in " + cwd_;
         out.output_bytes = out.output.size();
@@ -150,30 +153,30 @@ public:
         snap.cwd = cwd_;
         for (auto const& [k, v] : env_) snap.env_set.emplace_back(k, v);
         out.snapshot = snap;
-        return out;
+        co_return out;
     }
 
-    [[nodiscard]] result<void> drain_to(fs::path const& host_dir) {
+    [[nodiscard]] task<result<void>> drain_to(fs::path host_dir) {
         auto cleared = clear_directory_contents(host_dir, "test.drain_clear");
-        if (!cleared.has_value()) return std::unexpected(cleared.error());
+        if (!cleared.has_value()) co_return std::unexpected(cleared.error());
         std::error_code ec;
         fs::create_directories(host_dir, ec);
         fs::copy(box_, host_dir, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        if (ec) return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
-        return {};
+        if (ec) co_return std::unexpected(error{failure_class::fatal, "drain failed: " + ec.message(), "test.drain"});
+        co_return result<void>{};
     }
 
-    [[nodiscard]] result<void> close() {
-        if (!held_) return {};
+    [[nodiscard]] task<result<void>> close() {
+        if (!held_) co_return result<void>{};
         if (c_->close_failures_left > 0) {
             --c_->close_failures_left;
             live_ = false;
-            return std::unexpected(error{failure_class::fatal, "docker rm failed", "test.close_failed"});
+            co_return std::unexpected(error{failure_class::fatal, "docker rm failed", "test.close_failed"});
         }
         ++c_->closes;
         live_ = false;
         held_ = false;
-        return {};
+        co_return result<void>{};
     }
     [[nodiscard]] bool is_live() const { return live_; }
 
@@ -235,7 +238,7 @@ template <class Provider>
     std::vector<std::pair<std::string, json::Value>> members{{"command", json::Value::make_string(command)}};
     if (restart) members.emplace_back("restart", json::Value::make_bool(true));
     json::Value const args = json::Value::make_object(std::move(members));
-    auto out = tool->invoke(args, ctx);
+    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(args, ctx));
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<ShellExecReply>(*out);
 }
@@ -281,9 +284,13 @@ struct World {
         auto root = drive(ledger.create_root_branch(owner, "b" + std::to_string(++seq)));
         if (!root.has_value()) return std::unexpected(root.error());
         auto c = counters;
-        return p.bind_sandbox(ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
-                              storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
-                              [c] { return FakeLiveSurface(c); }, 10s, Lifetime{}, clock.fn());
+        // ADR-237 §5.1 (step 37): `bind_sandbox` is async now (it awaits the surface factory). This helper
+        // keeps its own synchronous `result<void>` shape for its call sites and drives the task here.
+        p.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
+        return agentengine::rt::block_on(p.bind_sandbox(
+            ledger, std::move(*root), owner, dir / ("staging" + std::to_string(seq)), branch_q, run_q,
+            storage != nullptr ? *storage : storage_q, open != nullptr ? *open : open_q, limits,
+            [c]() -> task<FakeLiveSurface> { co_return FakeLiveSurface(c); }, 10s, Lifetime{}, clock.fn()));
     }
 };
 
@@ -291,7 +298,7 @@ using PerRunProvider = LiveShellSandboxProvider<FakeLiveSurface>;
 using PerSessionProvider = LiveShellSandboxProvider<FakeLiveSurface, InMemoryWorktreeObjectStore, lifetime::PerSession>;
 
 [[nodiscard]] bool tree_has(Ledger<>& ledger, std::string const& tree_digest, IdentityHandle who, std::string const& name) {
-    auto tree = ledger.get_tree_safe(tree_digest, who);
+    auto tree = agentengine::rt::block_on(ledger.get_tree_safe(tree_digest, who));
     if (!tree.has_value()) return false;
     return std::any_of(tree->entries.begin(), tree->entries.end(), [&](auto const& e) { return e.name == name; });
 }
@@ -310,14 +317,14 @@ struct NoArgs {
     int unused = 0;
 };
 AE_JSON_SCHEMA(NoArgs, unused)
-struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>> {
+struct CancelTool : Tool<CancelTool, Capabilities<>, EffectClass<effect_class::pure>, Approval<approval_mode::never_require>> {
     static constexpr std::string_view name = "cancel_tool";
     static constexpr std::string_view description = "Cancels the run.";
     using Args = NoArgs;
     using Reply = NoArgs;
-    static result<Reply> invoke(Args a, EffectContext&) {
+    agentengine::task<result<Reply>> invoke(Args a, EffectContext&) const {
         if (g_cancel_target != nullptr) g_cancel_target->cancel();
-        return a;
+        co_return a;
     }
 };
 class CancelProvider {
@@ -326,7 +333,7 @@ public:
     task<result<ContextContribution>> on_context(SessionContext& sc, EffectContext&) {
         ContextContribution c;
         c.messages.assign(sc.history.begin(), sc.history.end());
-        c.tools = ToolTable::from_tools<CancelTool>().descriptors();
+        c.tools = ToolTable::from(CancelTool{}).descriptors();
         co_return c;
     }
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
@@ -402,6 +409,17 @@ int main() {
         auto refused = w.bind(p, LiveShellLimits{0ms, 1h, 1});
         check(!refused.has_value() && refused.error().code == "live_shell.limits_required" && !p.is_bound(),
               "P1: a zero ceiling is refused and nothing is bound");
+    }
+
+    // ---- P1b (ADR-244 slice 4a): the contributed tool carries the mode the host set, and none until it is set
+    {
+        World w("p1b");
+        PerRunProvider p;
+        EffectContext ctx = ctx_for("owner");
+        auto bound = w.bind(p, LiveShellLimits{1s, 1h, 1});
+        auto tool  = shell_tool(p, ctx);
+        check(bound.has_value() && tool.has_value() && tool->approval == agentengine::approval_mode::never_require,
+              "P1b: shell_exec carries the mode the host set");
     }
 
     // ---- P2, P3
@@ -628,7 +646,7 @@ int main() {
             check(w.bind(live).has_value(), "P15 setup: bind");
             std::string const branch = *live.branch_name();
             LiveSession s;
-            s.initialize("p15", Principal{"owner", ""});
+            s.initialize("p15", Principal{"owner", ""}, ae_test::trusted_unbounded());
             s.set_capabilities(&held);
             check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
                   "P15 setup: engage");
@@ -649,7 +667,7 @@ int main() {
             check(w.bind(live).has_value(), "P16 setup: bind");
             std::string const branch = *live.branch_name();
             LiveSession s;
-            s.initialize("p16", Principal{"owner", ""});
+            s.initialize("p16", Principal{"owner", ""}, ae_test::trusted_unbounded());
             s.set_capabilities(&held);
             check(s.history_provider().engage(std::tuple<PerRunProvider, CancelProvider>{std::move(live), CancelProvider{}}).has_value(),
                   "P16 setup: engage");
@@ -669,7 +687,7 @@ int main() {
         Recorded rec;
         EffectContext ctx = ctx_for("owner", &rec);
         auto tool = shell_tool(p, ctx);
-        auto r = tool ? tool->invoke(json::Value::make_object({{"command", json::Value::make_string("refuse")}}), ctx)
+        auto r = tool ? test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string("refuse")}}), ctx))
                       : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
         bool const create_audited = std::any_of(rec.events.begin(), rec.events.end(),
                                                 [](auto const& e) { return e.stage == "create" && e.ok; });

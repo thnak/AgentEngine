@@ -43,12 +43,13 @@ using agentengine::tool_provenance;
 
 ToolDescriptor make_descriptor(std::string name, std::vector<Capability> ceiling = {}) {
     ToolDescriptor d;
+    d.approval = agentengine::approval_mode::never_require;  // ADR-244 slice 4a
     d.name              = std::move(name);
     d.description       = "test tool";
     d.capability_ceiling = std::move(ceiling);
-    d.invoke = [](agentengine::json::Value const&,
-                  agentengine::EffectContext&) -> agentengine::result<agentengine::json::Value> {
-        return agentengine::json::Value{};
+    d.invoke = [](agentengine::json::Value const&, agentengine::EffectContext&)
+        -> agentengine::task<agentengine::result<agentengine::json::Value>> {
+        co_return agentengine::json::Value{};
     };
     return d;
 }

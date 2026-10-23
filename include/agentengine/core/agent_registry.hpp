@@ -1,12 +1,12 @@
 #pragma once
-// Implements 002-Agent-Model-and-Authoring.md §6 — register_agent<A>(), the real metadata compiler.
+// Implements rfcs/002-Agent-Model-and-Authoring.md §6 — register_agent<A>(), the real metadata compiler.
 // M2 Phase E tasks E2 and E3 (docs/planning/milestone-2-tools-capabilities-sandbox-breakdown.md):
 // E2 is register_agent<A>() itself; E3 is invoke_agent_tool() at the bottom of this file, the
 // milestone's headline exit-criterion sentence wired to real code (see that function's own comment).
 //
 // Of §6's 8 named validation checks, six now run for real: tool name collision, capability-ceiling
 // coverage, Stateless<N>-vs-session-state via std::is_empty_v, SandboxProfile's compile-time shape
-// (decisions/ADR-012-sandbox-profile-template-parameter-kind.md), a basic shape check (ChatClientId
+// (decisions/archive/ADR-012-sandbox-profile-template-parameter-kind.md), a basic shape check (ChatClientId
 // presence), and — Milestone 5 Phase B6 (docs/planning/milestone-5-providers-identity-secrets-
 // breakdown.md) — ChatClientId credentials/OutputSchema enforceability, ADDITIVELY: an optional
 // `ChatClientRegistry const*` parameter on `register_agent<A>()` (default `nullptr`, so every
@@ -38,12 +38,14 @@
 #include <vector>
 
 #include "agentengine/core/agent.hpp"
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/fixed_string.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/tool.hpp"
 #include "agentengine/core/tool_pipeline.hpp"
+#include "agentengine/rt/block_on.hpp"  // ADR-237 §5.2: drive the async pipeline from this sync host edge
 #include "agentengine/sandbox/sandbox_backend_registry.hpp"
 #include "agentengine/trust/capability.hpp"
 
@@ -54,7 +56,7 @@ namespace agentengine {
 struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing M0 scaffolding pattern for this milestone's new types, reconcile at owning milestone (matches ToolDescriptor/ToolTable's own deferred status, core/tool_pipeline.hpp)
     std::string agent_name;
     std::string agent_instructions;
-    // Gap-2 fix (2026-08-14, decisions/ADR-044-*.md): 002 §1/§7's own identity list
+    // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): 002 §1/§7's own identity list
     // ("stable agent_id, name, description, version") named these two from the start; this struct
     // simply never grew them. `agent_description` defaults empty (matching `agent_name`'s own "not
     // declared" convention); `agent_version` is `optional`, not a defaulted empty string, because
@@ -178,11 +180,11 @@ struct policy_sandbox_profile<SandboxProfile<P>> {
 // case.
 template <class... Policies>
 struct tools_of {
-    [[nodiscard]] static ToolTable table() { return ToolTable::from_tools<>(); }
+    [[nodiscard]] static ToolTable table() { return ToolTable::from(); }
 };
 template <class... Ts, class... Rest>
 struct tools_of<Tools<Ts...>, Rest...> {
-    [[nodiscard]] static ToolTable table() { return ToolTable::from_tools<Ts...>(); }
+    [[nodiscard]] static ToolTable table() { return ToolTable::from(Ts{}...); }
 };
 template <class P, class... Rest>
 struct tools_of<P, Rest...> {
@@ -511,7 +513,7 @@ struct compiler<A, Agent<A, Policies...>> {
     }
 };
 
-// decisions/ADR-226: the C++ TYPE an agent declared through `OutputSchema<T>`, or `void` -- the bridge
+// decisions/archive/ADR-226: the C++ TYPE an agent declared through `OutputSchema<T>`, or `void` -- the bridge
 // (core/agent_session_bridge.hpp) needs `T` itself, not only `output_schema_of`'s schema text, to build
 // the response validator `AgentSession::set_output_schema()` takes. LAST tag wins, matching
 // `output_schema_of` above exactly: an agent that (oddly) declares two `OutputSchema<...>` tags must get
@@ -538,12 +540,12 @@ struct agent_output_schema<Agent<A, Policies...>> {
 
 }  // namespace agent_detail
 
-// decisions/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
+// decisions/archive/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
 template <class A>
 // ae-naming-lint: allow agent_output_schema_t — ADR-226; 027 not yet updated
 using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_detail::agent_base_t<A>>::type;
 
-// decisions/ADR-226 (002 §6: "Validation is the same code path for declarative agents"): every 002 §6
+// decisions/archive/ADR-226 (002 §6: "Validation is the same code path for declarative agents"): every 002 §6
 // check that can be evaluated from an already-compiled `AgentMetadata` VALUE, in the order
 // `agent_detail::compiler::run()` runs them. `register_agent<A>()` has always run these; a 015
 // document compiled by `compile_agent_document()` never did (that function's own comment leaves
@@ -559,6 +561,13 @@ using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_d
                                                           ChatClientRegistry const* registry = nullptr,
                                                           SandboxBackendRegistry const* sandbox_registry = nullptr) {
     using namespace agent_detail;
+    // ADR-244 §2.1: zero is refused at every check site -- a turn cap or budget of 0 is not "none allowed" (that
+    // has its own mechanism) and not "unset". Both surfaces arrive here (I6), so `MaxTurns<0>` and YAML
+    // `max_turns: 0` are refused alike (the YAML compiler also refuses it at parse).
+    if (auto r = check_bound("max_turns", Bound<std::uint64_t>::at_most(meta.max_turns)); !r) return r;
+    if (meta.token_budget.has_value()) {
+        if (auto r = check_bound("token_budget", Bound<std::uint64_t>::at_most(*meta.token_budget)); !r) return r;
+    }
     if (auto r = check_chat_client_id(meta.chat_client_id); !r) return r;
     if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) return r;
     if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return r;
@@ -604,7 +613,7 @@ template <class A>
 // the actual mechanism -- this is the one glue function connecting an agent's compiled metadata to
 // it.
 //
-// decisions/ADR-059-invoke-agent-tool-capability-attenuation.md (design -> red-team -> prove ->
+// decisions/archive/ADR-059-invoke-agent-tool-capability-attenuation.md (design -> red-team -> prove ->
 // judge, required per CLAUDE.md/I2): the target agent's own compiled `meta.capability_ceiling` is
 // NEVER granted directly (that was the bug this ADR fixes -- `grant_root(meta.capability_ceiling)`
 // minted the TARGET's own full ceiling unconditionally, ignoring what the CALLER invoking this
@@ -645,7 +654,8 @@ template <class A>
     if (!attenuated) {
         return fail_closed(attenuated.error());
     }
-    return invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy);
+    // ADR-237 §5.2: `invoke_tool` is async; this host helper is a genuinely-sync edge, so block on it.
+    return rt::block_on(invoke_tool(meta.tools, *attenuated, request, ctx, approve, audit_out, policy));
 }
 
 }  // namespace agentengine

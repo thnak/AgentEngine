@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-193-delegation-provenance.md: the one rule every agent-to-agent handoff applies --
+// Implements decisions/archive/ADR-193-delegation-provenance.md: the one rule every agent-to-agent handoff applies --
 // a hop never changes who wrote the text.
 //
 // Before this, `agent.spawn` handed a child the parent model's `input` as an untainted `role::user`, `origin=user`

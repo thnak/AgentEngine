@@ -1,4 +1,4 @@
-// Milestone 3 Phase E4 -- the STATIC half of 010-Python-Code-Interpreter.md §9 G2's ShellRunner-
+// Milestone 3 Phase E4 -- the STATIC half of rfcs/010-Python-Code-Interpreter.md §9 G2's ShellRunner-
 // specific bar ("must not merely be contained, must not exist as a reachable code path"), applied
 // to the REAL `agentengine_mediated_shell_runner` library (E3), not the untouched ADR-001 spike --
 // test_shell_runner_no_process_creation.cpp already covers the spike; this file is its own
@@ -36,7 +36,7 @@ namespace {
 constexpr int kSkipReturnCode = 77;
 
 // PLATFORM-SPECIFIC, NOT a mechanical port (2026-08-29,
-// decisions/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
+// decisions/archive/ADR-104-real-io-filesystem-linux-parity.md's own named follow-on, ADR-103 §7's
 // original residual) -- see `test_shell_runner_no_process_creation.cpp`'s own identical comment
 // for the full reasoning (Windows and POSIX name genuinely different APIs for the same underlying
 // property; `system` is the one symbol name shared verbatim by both lists, not a duplicate by

@@ -82,7 +82,7 @@
 //
 // Merge-on-join hook (set_merge_on_join_hook()/merge_on_join_hook_) -- ADDED closing decisions/
 // ADR-055-conflict-evidence-materialization.md's own §6 residual ("does not build merge-on-join
-// wiring itself"). 025-Worktree-and-Virtual-Filesystem.md §4: "A `branch` sub-worktree merges back
+// wiring itself"). rfcs/025-Worktree-and-Virtual-Filesystem.md §4: "A `branch` sub-worktree merges back
 // when its agent completes" -- a per-EXECUTOR-completion event, not tied to `edge_kind::fan_in`
 // (that is a message-ROUTING join, a different, easily-confused concept this file already implements
 // via `route_from()`; 025 §4's own merge-on-join has never been about how a reply gets routed).
@@ -127,10 +127,14 @@
 // submitted `task<void>` jobs (issued via `ThreadPool::submit()` for every item BEFORE collecting any,
 // preserving decision 5's ordering exactly), collected via `std::future<JobOutcome>::get()` in FIXED
 // INDEX ORDER, matching the original's own "completion order is whatever the scheduler produces;
-// assembly order is this loop's" guarantee bit-for-bit. Each job's own coroutine body never suspends
-// on anything (it wraps one synchronous `ExecutorBody` call, unlike `AsyncMutex`/`channel<T>`-using
-// coroutines) -- the textbook safe case for `ThreadPool`'s own documented "only safe for a coroutine
-// that suspends purely via nested task<T> -- here, not at all" constraint.
+// assembly order is this loop's" guarantee bit-for-bit. Each job's own coroutine body may now SUSPEND:
+// since ADR-237 §5.1 (Phase G, §14 step 53) `run_executor_job` awaits an `ExecutorBody`, which is
+// `task`-shaped, so a body that parks (an agent node's real `start_run()`, a nested run) parks THIS
+// job. That is supported rather than tolerated: `ThreadPool`'s own ADR-175 contract (thread_pool.hpp)
+// drives each job with `block_on()` on the worker that picked it up and hands it back to that same
+// worker when woken, so a parked job is resumed rather than dropped. The residual is cost, not
+// correctness -- a suspended job holds its worker for the duration. Getting the pool off this path is
+// the "callers onto rt::Runtime" work (#179/#182), not this slice's.
 //
 // FAULT ISOLATION, changed on purpose, not a narrowing silently accepted: the original relied on
 // Quark's `OnFailure<Restart, MaxRestarts<3, Within<1000>>>` actor supervision (a throwing executor
@@ -170,7 +174,7 @@
 // check, before any lookup, before any structural event a denied caller could otherwise push -- and a
 // denial returns a BARE `WorkflowResult{workflow_status::admission_denied}` that deliberately carries
 // no `open_interactions`, so a probing caller learns nothing it did not already know. See
-// decisions/ADR-169-workflow-supervisor-admission.md for the full design, including why this is
+// decisions/archive/ADR-169-workflow-supervisor-admission.md for the full design, including why this is
 // identity-only (no `RequestAuthority` capability half) and how a bound sub-workflow inherits.
 
 #include <algorithm>
@@ -185,6 +189,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -244,9 +249,15 @@ struct ExecutorOutcome {
         : payload(std::move(m)), routes(std::move(r)) {}
 };
 
+// decisions/archive/ADR-237 §5.1 (Phase G, slice 2): `task`-shaped. A node's body is arbitrary C++ -- it may
+// hold a real ChatClient, a nested supervisor, or anything else that parks -- so the seam lets it
+// suspend. `run_executor_job` (src/rt/workflow_supervisor.cpp) awaits it, so a suspending body
+// suspends THAT job coroutine instead of blocking a pool thread. The `.target<T>()` structural
+// detection below is unchanged: `AgentExecutorBodyTag`/`BatchableModelCall` stay the concrete types
+// stored in `bodies_`; only their `operator()`'s return type moves.
 // ae-naming-lint: allow ExecutorBody — ADR-025 §4c: deferred bulk reconciliation of the corrected-scope violation set against 027 §2-4
 using ExecutorBody =
-    std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&, agentengine::EffectContext&)>;
+    std::function<task<agentengine::result<ExecutorOutcome>>(agentengine::Message const&, agentengine::EffectContext&)>;
 
 // OQ-19 (OpenQuestions.md; docs/planning/agent-as-workflow-executor-design-draft.md §5 item 4): a
 // FIXED, non-templated functor type -- independent of rt::agent_workflow_executor.hpp's own adapter
@@ -261,19 +272,45 @@ using ExecutorBody =
 // ae-naming-lint: allow AgentExecutorBodyTag — the structural marker OQ-19's design draft names verbatim
 class AgentExecutorBodyTag {
 public:
-    using Impl = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const&,
-                                                                      agentengine::EffectContext&)>;
+    using Impl = std::function<task<agentengine::result<ExecutorOutcome>>(agentengine::Message const&,
+                                                                         agentengine::EffectContext&)>;
 
-    explicit AgentExecutorBodyTag(Impl impl) : impl_(std::move(impl)) {}
+    // ADR-244 §2.3: `source` is the wrapped session's authority source when the tag was built (nullopt: the
+    // session had no choices yet). A workflow sends its nodes no per-request authority, so `initialize()`
+    // refuses a graph with a `per_request` node (`workflow.node_requires_authority`); the body re-checks the
+    // session's source on every call, so a session re-initialised after binding is caught too.
+    // `source_` is assigned only from an engaged `source`: copying a disengaged optional<enum> copies its unset
+    // payload byte, which gcc-14 -O2 reports as -Wmaybe-uninitialized (a -Werror break in CI's Linux leg).
+    AgentExecutorBodyTag(Impl impl, std::optional<agentengine::authority_mode> source) : impl_(std::move(impl)) {
+        if (source.has_value()) source_ = *source;
+    }
 
-    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in,
-                                                      agentengine::EffectContext& ctx) const {
-        return impl_(in, ctx);
+    [[nodiscard]] std::optional<agentengine::authority_mode> source() const noexcept { return source_; }
+
+    // decisions/archive/ADR-237 §5.1 (Phase G): the tag's own call is a coroutine over `impl_`, awaited
+    // (`co_await`, not a bare `co_return impl_(...)`) so a throwing `impl_` surfaces at the caller's
+    // own await rather than one frame later.
+    agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
+                                                                      agentengine::EffectContext& ctx) const {
+        co_return co_await impl_(in, ctx);
     }
 
 private:
-    Impl impl_;
+    Impl                                      impl_;
+    std::optional<agentengine::authority_mode> source_;
 };
+
+// ADR-244 §2.3: the refusal an agent node over a `per_request` session gets, at `initialize()` and per call.
+// `node` names it: "agent node '<executor id>'" at initialize(), the session id per call (the body does not know
+// its executor id).
+[[nodiscard]] inline agentengine::error node_requires_authority(std::string_view node) {
+    return agentengine::error{agentengine::failure_class::policy,
+                              std::string(node) +
+                                  " wraps a per_request session, and a workflow sends its nodes no per-request "
+                                  "authority; give the node a single_trusted_caller() session, or start the run "
+                                  "outside the workflow with the caller's authority",
+                              "workflow.node_requires_authority"};
+}
 
 // ADR-235 (OQ-20) §3.1: the body of a `batch: true` function node -- ONE model call, split into the three
 // steps a vendor batch item needs apart: `build` the request, `call` it (the synchronous path), and
@@ -290,8 +327,11 @@ class BatchableModelCall {
 public:
     using Build    = std::function<agentengine::result<agentengine::ChatRequest>(agentengine::Message const&,
                                                                                   agentengine::EffectContext&)>;
-    using Call     = std::function<agentengine::result<agentengine::ChatResponse>(agentengine::ChatRequest const&,
-                                                                                   agentengine::EffectContext&)>;
+    // ADR-237 §5.1 (Phase G slice 5): `Call` is `task`-shaped -- it is the one model-I/O step. Its arguments are
+    // references, so the awaiter must keep `request`/`ctx` alive until the task completes (every call site here
+    // awaits it in the same full expression chain).
+    using Call     = std::function<agentengine::task<agentengine::result<agentengine::ChatResponse>>(
+        agentengine::ChatRequest const&, agentengine::EffectContext&)>;
     using Complete = std::function<agentengine::result<ExecutorOutcome>(agentengine::Message const& input,
                                                                          agentengine::ChatResponse const& response)>;
 
@@ -299,10 +339,13 @@ public:
         : build_(std::move(build)), call_(std::move(call)), complete_(std::move(complete)), backend_(std::move(backend)) {}
 
     // The synchronous path: what this node does whenever it is not batched.
-    agentengine::result<ExecutorOutcome> operator()(agentengine::Message const& in, agentengine::EffectContext& ctx) const {
+    // ADR-237 §5.1 (Phase G): the body seam is `task`-shaped, so this is a coroutine -- it still
+    // completes without suspending unless `Call` does (`Build`/`Complete` stay synchronous, ADR-239).
+    agentengine::task<agentengine::result<ExecutorOutcome>> operator()(agentengine::Message const& in,
+                                                                      agentengine::EffectContext& ctx) const {
         auto request = build(in, ctx);
-        if (!request) return std::unexpected(request.error());
-        return call_request(in, *request, ctx);
+        if (!request) co_return std::unexpected(request.error());
+        co_return co_await call_request(in, *request, ctx);
     }
 
     [[nodiscard]] agentengine::result<agentengine::ChatRequest> build(agentengine::Message const& in,
@@ -313,13 +356,14 @@ public:
 
     // `call` + `finish` on an already-built request -- the synchronous fallback sends exactly the request that
     // was admitted, never a rebuilt one (ADR-235 §3.3 step 5).
-    [[nodiscard]] agentengine::result<ExecutorOutcome> call_request(agentengine::Message const& in,
-                                                                   agentengine::ChatRequest const& request,
-                                                                   agentengine::EffectContext& ctx) const {
-        if (!call_) return std::unexpected(missing("call"));
-        auto response = call_(request, ctx);
-        if (!response) return std::unexpected(response.error());
-        return finish(in, *response);
+    // Lazy task: `in`, `request`, `ctx` are references and must outlive the awaited task.
+    [[nodiscard]] agentengine::task<agentengine::result<ExecutorOutcome>> call_request(
+        agentengine::Message const& in, agentengine::ChatRequest const& request,
+        agentengine::EffectContext& ctx) const {
+        if (!call_) co_return std::unexpected(missing("call"));
+        auto response = co_await call_(request, ctx);
+        if (!response) co_return std::unexpected(response.error());
+        co_return finish(in, *response);
     }
 
     // `complete`, with the response's own usage added to the outcome -- one accounting rule for the batched
@@ -419,14 +463,9 @@ struct ExecuteReply {
 
 [[nodiscard]] inline agentengine::Message failure_marker(std::string const& executor_id,
                                                           agentengine::failure_class klass) {
-    auto const* name = "fatal";
-    switch (klass) {
-        case agentengine::failure_class::transient: name = "transient"; break;
-        case agentengine::failure_class::policy:    name = "policy"; break;
-        case agentengine::failure_class::contract:  name = "contract"; break;
-        case agentengine::failure_class::resource:  name = "resource"; break;
-        case agentengine::failure_class::fatal:     name = "fatal"; break;
-    }
+    // ADR-237 D6: core/error.hpp's one spelling. route_from() never builds a marker for `canceled` (it is never
+    // propagated or rerouted), so "(canceled)" appears here only if a future caller does.
+    std::string const name(agentengine::failure_class_to_string(klass));
     agentengine::ContentItem item{};
     item.origin  = agentengine::content_origin::system;
     item.tainted = false;
@@ -511,6 +550,18 @@ enum class workflow_status {
         case workflow_status::invalid_routes:    return "invalid_routes";
     }
     return "invalid";
+}
+
+// ADR-237 D6: the class a wrapped workflow's non-completed run carries to whoever awaited it
+// (workflow_as_executor.hpp, workflow_as_chat_client.hpp). `cancelled` is `canceled` -- so an outer workflow
+// never retries it nor reroutes it to a fallback; `bound_deadline` is `resource` -- a deadline is a budget (001 §5,
+// I8). Every other status keeps the `contract` both adapters used before D6.
+[[nodiscard]] inline agentengine::failure_class inner_run_failure_class(workflow_status s) noexcept {
+    switch (s) {
+        case workflow_status::cancelled:      return agentengine::failure_class::canceled;
+        case workflow_status::bound_deadline: return agentengine::failure_class::resource;
+        default:                              return agentengine::failure_class::contract;
+    }
 }
 
 // ADR-169 (GitHub issue #65): all three request types below carry the SAME additive, defaulted
@@ -777,7 +828,7 @@ public:
     // to that entry point. Settling pushes events, so like every entry point it blocks if the host has
     // enabled the event stream and stopped draining a full one -- ADR-214 §5 R2.)
     //
-    // Issue #156 (decisions/ADR-214) -- what a cancel does, wherever it lands:
+    // Issue #156 (decisions/archive/ADR-214) -- what a cancel does, wherever it lands:
     //   - In a round: the round's in-flight steps finish (cooperatively -- an agent step's session sees
     //     `ctx.cancellation` and ends `run.canceled`), no failed step is retried, and the run ends
     //     `cancelled`. A step that failed in that round is NOT reported as `executor_failed`: the
@@ -818,7 +869,7 @@ public:
     [[nodiscard]] std::uint32_t rounds_executed() const noexcept { return rounds_; }
     [[nodiscard]] std::string const& run_id() const noexcept { return run_id_; }
 
-    // decisions/ADR-070-host-configurable-responsibility-boundary.md: `true` whenever
+    // decisions/archive/ADR-070-host-configurable-responsibility-boundary.md: `true` whenever
     // `graph().bound.token_budget` is set -- see that field's own doc comment
     // (workflow/graph.hpp) for why. Unconditional and deterministic (a pure read of already-
     // validated `graph_` state, nothing timing-dependent), so a host can check this right after
@@ -879,14 +930,16 @@ public:
     // Reproduced verbatim from the original: a caller-injected callback (I2), never an ambient Store,
     // fired with the round just completed and a full `to_record()` snapshot taken at exactly that
     // boundary.
-    using CheckpointHook = std::function<void(std::uint32_t round, RunStateRecord const&)>;
+    // `task`-shaped since decisions/archive/ADR-237 §5.1 (#172): the usual hook persists through a SessionStore, which
+    // is. The record is by value so the hook frame owns it across a suspension.
+    using CheckpointHook = std::function<task<void>(std::uint32_t round, RunStateRecord)>;
     void set_checkpoint_hook(CheckpointHook hook) { checkpoint_hook_ = std::move(hook); }
 
     // ADR-055 follow-up -- see file banner's "Merge-on-join hook" paragraph for the full design.
     // Fired once per branch-mode executor, immediately after ITS OWN reply is folded successfully
     // this round. `result<void>{}` means "merged cleanly, or nothing needed merging"; a real `error`
     // is a fatal, non-retried outcome for the whole run (`workflow_status::merge_conflict`).
-    using MergeOnJoinHook = std::function<agentengine::result<void>(std::string const& executor_id)>;
+    using MergeOnJoinHook = std::function<task<agentengine::result<void>>(std::string executor_id)>;
     void set_merge_on_join_hook(MergeOnJoinHook hook) { merge_on_join_hook_ = std::move(hook); }
 
     // 014 §7's live-view bullet. Constructs a fresh, directly-connected producer/consumer pair
@@ -949,6 +1002,13 @@ public:
     // supervisor is opted in again before `poll_batches()` will act. Call before running, not mid-run.
     [[nodiscard]] agentengine::result<void> enable_batch_coalescing(BatchPolicy policy = {});
     [[nodiscard]] bool batch_coalescing_enabled() const noexcept { return batch_policy_.has_value(); }
+
+    // ADR-244 §2.3: the named refusal behind an `invalid` graph, where the failed check has one -- today
+    // `workflow.node_requires_authority`, an agent node over a `per_request` session. nullopt for a valid graph
+    // and for the older checks, which report `workflow_status::invalid` without a code.
+    [[nodiscard]] std::optional<agentengine::error> const& initialize_refusal() const noexcept {
+        return initialize_refusal_;
+    }
 
     // The jobs the current run is waiting on. Unlocked, like `open_interactions()`.
     [[nodiscard]] std::vector<PendingBatchJob> pending_batches() const;
@@ -1099,9 +1159,10 @@ private:
 
     enum class route_result { ok, routing_failed, workflow_failed };
 
-    // One round's worth of concurrent fan-out. Wraps ONE synchronous ExecutorBody call -- never
-    // suspends on anything else -- the safe case for ThreadPool::submit()'s own documented
-    // constraint (see file banner). Takes everything BY VALUE so the coroutine frame owns independent
+    // One round's worth of concurrent fan-out. Wraps ONE `ExecutorBody` call -- the body is
+    // `task`-shaped since ADR-237 §5.1 (Phase G, §14 step 53), so this job genuinely suspends when the
+    // body does; see the file banner for why that is safe on `ThreadPool::submit()` and what it costs.
+    // Takes everything BY VALUE so the coroutine frame owns independent
     // copies, not references into the caller's stack -- the same "coroutine frame owns its inputs"
     // discipline this project's own AsyncMutex test debugging (async_mutex.hpp's own history) already
     // established as load-bearing, not just tidy.
@@ -1125,31 +1186,10 @@ private:
         std::string executor_id, std::uint32_t round, std::uint32_t attempt,
         std::vector<std::string> path_prefix);
 
-    // ADR-157 (issues #33/#38), driven by `block_on()` since decisions/ADR-175: this was a hand-rolled
-    // `while (!t.done()) t.resume();` loop, and the argument below guarantees only that `inner`'s own
-    // `run_mutex_` is uncontended -- a node inside `inner` can still park on something shared, which
-    // the loop resumed a second time. The original argument, for `run_mutex_`: the identical reason
-    // ADR-150 established for rt/workflow_as_executor.hpp's adapter, PLUS one
-    // additional guarantee specific to nesting: `inner->run_workflow()`/`inner->resume_workflow()`
-    // are only ever called from (a) inside THIS supervisor's own execute() round loop (via
-    // run_sub_workflow_job, below) or (b) THIS supervisor's own resume_workflow()'s pending-sub-
-    // workflow branch -- and BOTH (a) and (b) only ever run while THIS (the OUTER) supervisor's own
-    // `run_mutex_` is held (I1) by run_workflow()/resume_workflow()/continue_workflow(), which
-    // serializes them against each other. So at most ONE thread can ever be driving a GIVEN `inner`
-    // at a time, structurally, regardless of how many worker threads this round's fan-out uses --
-    // `inner`'s own `run_mutex_` is therefore never genuinely contended by two callers from this
-    // supervisor. The OQ-19-style quarantine extension (below, in execute()) additionally prevents
-    // two DIFFERENT deliveries in the SAME round from targeting the SAME `inner` via the same
-    // executor_index. CALLER CONTRACT this does NOT enforce, matching this codebase's existing
-    // trust-based lifetime contracts (e.g. workflow_as_executor_body()'s own reference-overload
-    // documentation): a single `inner` instance must be bound via bind_sub_workflow() to AT MOST
-    // ONE executor_index across the whole outer graph -- binding the same `inner` to two different
-    // sub_workflow nodes is unsupported and not guarded against, and would defeat the quarantine's
-    // own per-index dedup.
-    template <class T>
-    [[nodiscard]] static T drive(agentengine::rt::task<T> t) {
-        return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
-    }
+    // ADR-157 (issues #33/#38) required a hand-rolled `while (!t.done()) t.resume();` loop here, later
+    // a `block_on` wrapper (`drive<T>`): a nested run had to be driven from a non-awaiting call site.
+    // ADR-237 §5.1 (Phase G) removed the need -- `resume_workflow_locked`/`run_sub_workflow_job` are
+    // already coroutines, so both nested-run call sites simply `co_await` now and `drive<T>` is gone.
 
     // docs/planning/nested-workflow-event-forwarding-design-draft.md (issue #42 item 3, red-teamed):
     // wires `inner`'s multiplexed event sink + path prefix for EXACTLY the scope of one nested
@@ -1252,19 +1292,19 @@ private:
     // §3.3 step 7: submits every chunk. A chunk whose submit fails is handled by `on_unbatchable`: re-enqueued
     // with `no_batch` into `deferred` (sync), or appended to `exec_deliveries`/`replies` as a failed reply
     // (fail). Returns the executor indices now waiting on a batch (live view).
-    std::vector<std::size_t> submit_batch_chunks(std::vector<BatchChunk>& chunks,
-                                                 std::vector<Delivery>& exec_deliveries,
-                                                 std::vector<ExecuteReply>& replies,
-                                                 std::vector<Delivery>& deferred);
+    task<std::vector<std::size_t>> submit_batch_chunks(std::vector<BatchChunk>& chunks,
+                                                       std::vector<Delivery>& exec_deliveries,
+                                                       std::vector<ExecuteReply>& replies,
+                                                       std::vector<Delivery>& deferred);
     // §3.5 helpers, under `run_mutex_`.
     task<WorkflowResult> poll_batches_locked(PollBatches request);
-    void cancel_abandoned_batches();
+    task<void> cancel_abandoned_batches();
     void resolve_batch_item(BatchItem& item, agentengine::BatchItemResult const& result);
     void resolve_batch_item_failed(BatchItem& item, agentengine::batch_item_status status,
                                    agentengine::failure_class klass, std::string const& detail, bool honour_policy);
     // execute()'s prologue fold of resolved items (§3.5 step 4). Returns a terminal status to finish with, or
     // nullopt to continue into the round loop.
-    std::optional<workflow_status> fold_batch_items(std::vector<Delivery>& next);
+    task<std::optional<workflow_status>> fold_batch_items(std::vector<Delivery>& next);
     [[nodiscard]] agentengine::EffectContext batch_context(std::size_t executor_index);
     // Called by every entry point after admission: a run that was cancelled (or has a cancel pending and
     // something live) answers `cancelled` without moving. `std::nullopt` means "proceed".
@@ -1305,9 +1345,10 @@ private:
                                                              std::vector<ExecuteReply> const& replies,
                                                              std::size_t i) noexcept;
 
+    // ADR-237 D6: the class decision is core/error.hpp's `is_retryable`; an edge retry re-invokes the executor
+    // as a fresh attempt (`fresh`), so `resource` retries and `canceled` never does.
     [[nodiscard]] static bool is_retryable(agentengine::failure_class klass) noexcept {
-        return klass == agentengine::failure_class::transient ||
-               klass == agentengine::failure_class::resource;
+        return agentengine::is_retryable(klass, agentengine::retry_budget::fresh);
     }
 
     // GitHub issue #52 fix (renamed from `deliver_once`, which used to no-op on an existing entry --
@@ -1389,6 +1430,10 @@ private:
     // erasure confirms was actually produced by `agent_session_as_executor_body()`, not merely a
     // plain closure that happens to satisfy `ExecutorBody`'s call signature.
     [[nodiscard]] bool agent_kind_bodies_are_structurally_agent_backed() const;
+
+    // ADR-244 §2.3: the first agent node whose tag records a `per_request` session, as its refusal; nullopt when
+    // there is none.
+    [[nodiscard]] std::optional<agentengine::error> agent_node_authority_refusal() const;
 
     // ADR-157 (issues #33/#38) -- the sub_workflow-kind sibling of the check above. `sub_workflows_`
     // is populated by `bind_sub_workflow()`, called AFTER `initialize()` -- so this check, run
@@ -1506,6 +1551,9 @@ private:
     // ADR-157 -- see initialize()'s own comment. Everything `valid_` depends on EXCEPT sub_workflow
     // binding; set once per initialize() call, read by bind_sub_workflow() to recompute `valid_`.
     bool           valid_base_  = false;
+    // ADR-244 §2.3: why the last initialize() left the graph invalid, for the checks that have a named refusal
+    // (today: an agent node over a per_request session). See initialize_refusal().
+    std::optional<agentengine::error> initialize_refusal_;
     std::uint32_t  rounds_      = 0;
     std::uint64_t  run_counter_ = 0;
     std::string    run_id_;
@@ -1653,21 +1701,21 @@ private:
 template <SessionStore StoreT>
 [[nodiscard]] task<result<void>> save_workflow_checkpoint(WorkflowSupervisor& supervisor, StoreT& store) {
     RunStateRecord rec = co_await supervisor.snapshot_record();
-    co_return store.save(rec.run_id, encode_run_state_record(rec));
+    co_return co_await store.save(rec.run_id, encode_run_state_record(rec));
 }
 
 // Load the latest durable checkpoint for `run_id`, or std::nullopt if none was ever saved. Synchronous
 // (no task<T>) -- like rt::AgentSession's own load_agent_session_snapshot(), this never touches a live
 // WorkflowSupervisor instance, so there is no in-flight state to guard against.
 template <SessionStore StoreT>
-[[nodiscard]] result<std::optional<RunStateRecord>> load_workflow_checkpoint(
-    StoreT const& store, std::string const& run_id) {
-    if (!store.exists(run_id)) return std::optional<RunStateRecord>{};
-    result<std::vector<std::byte>> bytes = store.load(run_id);
-    if (!bytes) return std::unexpected(bytes.error());
+[[nodiscard]] task<result<std::optional<RunStateRecord>>> load_workflow_checkpoint(
+    StoreT const& store, std::string run_id) {
+    if (!co_await store.exists(run_id)) co_return std::optional<RunStateRecord>{};
+    result<std::vector<std::byte>> bytes = co_await store.load(run_id);
+    if (!bytes) co_return std::unexpected(bytes.error());
     result<RunStateRecord> rec = decode_run_state_record(*bytes);
-    if (!rec) return std::unexpected(rec.error());
-    return std::optional<RunStateRecord>{std::move(*rec)};
+    if (!rec) co_return std::unexpected(rec.error());
+    co_return std::optional<RunStateRecord>{std::move(*rec)};
 }
 
 }  // namespace agentengine::rt

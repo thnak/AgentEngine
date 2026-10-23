@@ -1,4 +1,4 @@
-// Proof for decisions/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece
+// Proof for decisions/archive/ADR-155-agent-progress-codeact-module.md -- GitHub issue #31's own three-piece
 // gap ("agent.progress is spec'd and manifest-registered but has no implementation"), closed. Runs a
 // REAL script against the REAL built `agentengine_python_worker.exe`
 // (native_jail_backend.cpp's create_python_worker()/exec_session()/dispatch_worker_query()), the same
@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "../support/python_runner_grants.hpp"
+#include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/pal/env.hpp"
 #include "agentengine/sandbox/runner.hpp"
@@ -50,13 +52,15 @@ int main() {
         cfg.python_home = AE_PYTHON_HOME;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.progress.report('x')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R1: exec_session() returns a real outcome, not a hang/crash");
         if (out.has_value()) {
@@ -77,12 +81,14 @@ int main() {
         cfg.expose_agent_progress = true;
 
         MediatedPythonRunner runner(std::move(cfg), backend);
-        auto init = runner.initialize();
+        auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "R2 setup: runner initializes with agent.progress exposed");
 
         std::vector<std::string> reported;
         ExecState state{};
         EffectContext ctx{};
+        ctx.session_nonce = ae_test::kTestSessionNonce;
+        ctx.principal = ae_test::kTestPrincipal;
         ctx.report_progress = [&reported](ContentItem item) {
             if (auto const* text = std::get_if<Text>(&item.value)) reported.push_back(text->text);
         };
@@ -92,7 +98,7 @@ int main() {
                           "agent.progress.report('50% done')\n"
                           "print('script finished normally')\n"
                           "agent.progress.report('75% done')\n"};
-        auto out = runner.run(req, state, ctx);
+        auto out = agentengine::rt::block_on(runner.run(req, state, ctx));
 
         AE_CHECK(out.has_value(), "R2: exec_session() returns a real outcome");
         if (out.has_value()) {
@@ -114,7 +120,7 @@ int main() {
         // ---- R4: the worker is still alive after all this -- a SECOND, independent call on the SAME
         // handle also succeeds, proving no latent damage from the progress calls. -------------------
         ExecRequest req2{"python", "x = 1 + 1\n"};
-        auto out2 = runner.run(req2, state, ctx);
+        auto out2 = agentengine::rt::block_on(runner.run(req2, state, ctx));
         AE_CHECK(out2.has_value() && out2->klass == exec_outcome_class::ok,
                   "R4: the SAME worker handles a later, unrelated call normally afterward");
     }

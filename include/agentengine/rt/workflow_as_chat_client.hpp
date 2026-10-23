@@ -10,7 +10,8 @@
 // embeds a Workflow as an `ExecutorBody` participant INSIDE another workflow's graph; this one makes a
 // Workflow satisfy the `ChatClient` calling convention instead. Full design history, ten independent
 // red-team rounds, and every rejected alternative: docs/planning/workflow-as-chatclient-adapter-
-// design-draft.md.
+// design-draft.md. decisions/ADR-244-required-choices-step-1b.md §2.3: refused inside a `per_request`
+// session (`chat_stream()`), since the wrapped nodes run at the host's authority.
 //
 // DELIBERATELY NO `chat()` -- `ChatClient` (core/chat_client.hpp) only requires `capabilities()` +
 // `chat_stream()`; this type conforms via `chat_stream()` alone. Round 8 of the design's own red-team
@@ -91,7 +92,7 @@
 // CURRENT `open_interactions()` set on every call (so a stale answer to an already-resolved interaction
 // is silently skipped, not a special case -- it simply never matches).
 //
-// ANSWER ROUTING (decisions/ADR-230, issue #44) -- this type is also an `InteractiveChatClient`
+// ANSWER ROUTING (decisions/archive/ADR-230, issue #44) -- this type is also an `InteractiveChatClient`
 // (core/chat_client.hpp): `pending_client_interactions()` reports the open asks from the supervisor's own
 // state and `cancel_client_interactions()` abandons them. An `AgentSession` bound to it never reads the ask
 // item above out of content; it suspends as a `client_input` interaction and hands its caller's answer back
@@ -155,7 +156,7 @@ namespace workflow_chat_client_detail {
 
 // Drives a task<T> from a plain, non-coroutine call site. Formerly the resume-until-done loop every such
 // rt:: call site duplicated, which resumed a parked handle a second time; `block_on()` since
-// decisions/ADR-175.
+// decisions/archive/ADR-175.
 template <class T>
 [[nodiscard]] T drive(agentengine::rt::task<T> t) {
     return agentengine::rt::block_on(std::move(t));  // ADR-175: was `while (!t.done()) t.resume();`
@@ -223,7 +224,7 @@ inline constexpr char const* kResponseTypeId = "agentengine.workflow_request_por
         }
         std::span<std::byte const> bytes{reinterpret_cast<std::byte const*>(payload_json.data()),
                                           payload_json.size()};
-        auto blob = ctx.blob_sink(bytes, "application/json");
+        auto blob = drive(ctx.blob_sink(bytes, "application/json"));  // ADR-237 5.1 (#187): plain call site, like run_workflow below
         if (!blob) return std::unexpected(blob.error());
         agentengine::ContentItem item{};
         item.origin = agentengine::content_origin::external;
@@ -543,7 +544,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
             // caller is still draining it). It used to vanish: the outer session was charged 0.
             charge_undelivered();
             producer.fail(agentengine::error{
-                agentengine::failure_class::contract,
+                agentengine::rt::inner_run_failure_class(r.status),  // ADR-237 D6
                 std::string("workflow chat call: the wrapped workflow did not complete (status=") +
                     tag + ")",
                 std::string("chat_client.workflow_chat_client.inner_run_not_completed.") + tag});
@@ -597,6 +598,19 @@ public:
         agentengine::ChatRequest const& request, agentengine::EffectContext& ctx) const {
         auto pair = agentengine::make_stream<agentengine::ChatResponseUpdate>(
             std::pmr::get_default_resource());
+
+        // ADR-244 §2.3: the wrapped workflow runs its nodes under the host's own per-node contexts, never the
+        // per-request authority the outer session admitted -- so inside a per_request session this client would
+        // turn a caller's checked authority into the host's. Refused before any worker starts; the session sets
+        // `authority_source` on every admitted run (a direct call outside a session leaves it unset).
+        if (ctx.authority_source == agentengine::authority_mode::per_request) {
+            pair.producer.fail(agentengine::error{
+                agentengine::failure_class::policy,
+                "WorkflowChatClient runs its workflow's nodes at the host's authority, so it is refused inside a "
+                "per_request session; bind it to a single_trusted_caller() session",
+                "workflow_chat_client.per_request_session"});
+            return std::move(pair.consumer);
+        }
 
         // File banner's "EffectContext" paragraph: sanitized whole-struct copy, made synchronously,
         // BEFORE detaching. ctx itself (the caller's own reference) is never captured or read from the

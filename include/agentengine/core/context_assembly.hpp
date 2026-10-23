@@ -1,5 +1,5 @@
 #pragma once
-// Implements 005-Sessions-State-and-Memory.md §3 — deterministic, budgeted assembly across an
+// Implements rfcs/005-Sessions-State-and-Memory.md §3 — deterministic, budgeted assembly across an
 // ordered list of `ContextProvider` contributors. Milestone 4 Phase B3
 // (docs/planning/milestone-4-sessions-durability-memory-breakdown.md): proven here as its own
 // standalone, generically-tested seam. `AgentSession` itself still wires exactly one contributor
@@ -61,7 +61,7 @@ namespace agentengine {
 // idea.
 //
 // 2026-08-23 (docs/planning/2026-08-22-component-role-audit-tracker.md Finding E,
-// decisions/ADR-075-context-budget-fail-closed.md): a nonzero, exceeded budget is a HARD FAILURE of
+// decisions/archive/ADR-075-context-budget-fail-closed.md): a nonzero, exceeded budget is a HARD FAILURE of
 // `assemble_context()` (see its own comment below) — the mechanism used to silently trim the
 // contributor's oldest messages and still return success. There is deliberately no second field here
 // to pick "trim" vs. "error" per contributor: grepped every real (non-test) caller in the tree before
@@ -74,7 +74,7 @@ struct ContextBudget {
     std::uint64_t max_tokens = 0;
 };
 
-// decisions/ADR-066-context-provider-attribution-provenance.md §3: a `ContextProvider` type must
+// decisions/archive/ADR-066-context-provider-attribution-provenance.md §3: a `ContextProvider` type must
 // declare its own name at compile time -- the identical requirement, and the identical reasoning,
 // as `Middleware`'s own `HasMiddlewareName` (middleware.hpp): this codebase does not use
 // typeid/RTTI to fabricate one (CONVENTIONS.md), and provenance stamping (below) needs a real,
@@ -89,7 +89,7 @@ template <class T>
 [[nodiscard]] constexpr std::string_view context_provider_name() noexcept {
     static_assert(HasContextProviderName<T>,
                   "a ContextProvider type must declare `static constexpr std::string_view name` "
-                  "(decisions/ADR-066-context-provider-attribution-provenance.md §3) -- this "
+                  "(decisions/archive/ADR-066-context-provider-attribution-provenance.md §3) -- this "
                   "codebase does not use typeid/RTTI to fabricate one");
     return T::name;
 }
@@ -134,7 +134,7 @@ struct ContextProviderDescriptor {
     // `on_turn_end`), but the type must still match what every real conformer's method returns.
     using OnTurnEndFn = std::function<task<std::monostate>(TurnView, EffectContext&)>;
 
-    // decisions/ADR-066-...: this contributor's declared `contributor_type` -- set from
+    // decisions/archive/ADR-066-...: this contributor's declared `contributor_type` -- set from
     // `ProviderT::name` by `make_context_provider_descriptor<ProviderT>()` below, never by a caller
     // hand-building a descriptor (there is no public setter; a hand-built `ContextProviderDescriptor`
     // that bypasses the factory gets an empty name, same fail-... shape `ToolDescriptor::
@@ -245,7 +245,7 @@ struct ContextAssemblyResult {
             }
         }
 
-        // decisions/ADR-066-context-provider-attribution-provenance.md §2/§4 -- stamped here,
+        // decisions/archive/ADR-066-context-provider-attribution-provenance.md §2/§4 -- stamped here,
         // structurally, at the ONE seam every contribution already flows through unconditionally,
         // rather than trusted from each contributor's own discipline (MAF's shape; rejected, see the
         // ADR's §2). Two independent steps per message, in this order:

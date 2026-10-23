@@ -131,7 +131,7 @@ result<void> MediatedFileSystemAdapter::remove(std::string_view path, bool recur
         return {};
     }
 
-    // Iterative post-order removal (2026-08-29, decisions/ADR-104-real-io-filesystem-linux-parity.md's
+    // Iterative post-order removal (2026-08-29, decisions/archive/ADR-104-real-io-filesystem-linux-parity.md's
     // own named follow-on) -- this used to recurse one C++ stack frame per directory-tree level, the
     // IDENTICAL structural hazard ADR-103's own MUST-FIX closed for the Linux sibling's `usage()`
     // (a real, twice-reproduced segfault against a guest-created, arbitrarily-deep directory tree --

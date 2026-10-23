@@ -1,5 +1,5 @@
 #pragma once
-// Implements decisions/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a HOST may mount
+// Implements decisions/archive/ADR-224-host-premounted-builtin-skills.md (GitHub issue #47): a HOST may mount
 // the built-in skill that teaches a tool, before the first model call, when the host itself declares
 // that tool into a session. 009 §8c's on-demand mount (ADR-024) leaves discovery to the model, and a
 // live session showed a model probing a shell grammar blind for fifteen turns rather than calling
