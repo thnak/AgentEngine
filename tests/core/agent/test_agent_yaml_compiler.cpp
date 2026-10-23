@@ -44,37 +44,7 @@ struct ResearcherAgent
 }  // namespace
 
 int main() {
-    std::string const agent_doc = R"YAML(apiVersion: agentengine.dev/v1
-kind: Agent
-metadata:
-  id: researcher
-  version: 1.4.0
-  description: Researches a question and cites sources.
-spec:
-  provider:
-    model: anthropic:claude-opus-5
-    options: { temperature: 0.2 }
-  instructions: |
-    Research the question. Cite sources.
-  tools:
-    - web_search
-    - code_interpreter
-    - handoff: writer
-  capabilities:
-    net_out: ["api.search.example"]
-  sandbox:
-    profile: strict
-  limits:
-    max_turns: 12
-    token_budget: 200000
-  approval: policy_driven
-  memory:
-    - kind: semantic
-      store: project-docs
-  middleware: [redact_pii]
-  telemetry: { capture: metadata_only }
-  output_schema: { $ref: "./schemas/research-result.json" }
-)YAML";
+    std::string const agent_doc = R"YAML(apiVersion: agentengine.dev/v1\nkind: Agent\nmetadata:\n  id: researcher\n  version: 1.4.0\n  description: Researches a question and cites sources.\nspec:\n  provider:\n    model: anthropic:claude-opus-5\n    options: { temperature: 0.2 }\n  instructions: |\n    Research the question. Cite sources.\n  tools:\n    - web_search\n    - code_interpreter\n    - handoff: writer\n  capabilities:\n    net_out: ["api.search.example"]\n  sandbox:\n    profile: strict\n  limits:\n    max_turns: 12\n    token_budget: 200000\n  approval: policy_driven\n  memory:\n    - kind: semantic\n      store: project-docs\n  middleware: [redact_pii]\n  telemetry: { capture: metadata_only }\n  output_schema: { $ref: "./schemas/research-result.json" }\n)YAML";
 
     // --- F-1: 015 §2's own example compiles, every covered field is real and correct ----------------
     ae::AgentMetadata compiled_meta;
@@ -165,23 +135,17 @@ spec:
     {
         for (std::size_t i = 0; i < ae::agent_choice_options::approval.size(); ++i) {
             auto r = ae::compile_agent_document(*yaml::parse(
-                "spec:
-  approval: " + std::string(ae::agent_choice_options::approval[i]) + "
-"));
+                "spec:\n  approval: " + std::string(ae::agent_choice_options::approval[i]) + "\n"));
             check(r.has_value() && r->approval == static_cast<ae::approval_mode>(i),
                   "F-3b: approval option '" + std::string(ae::agent_choice_options::approval[i]) + "' parses to its enumerator");
         }
         for (std::size_t i = 0; i < ae::agent_choice_options::concurrency.size(); ++i) {
             auto r = ae::compile_agent_document(*yaml::parse(
-                "spec:
-  concurrency: " + std::string(ae::agent_choice_options::concurrency[i]) + "
-"));
+                "spec:\n  concurrency: " + std::string(ae::agent_choice_options::concurrency[i]) + "\n"));
             check(r.has_value() && r->concurrency == static_cast<ae::concurrency_mode>(i),
                   "F-3b: concurrency option '" + std::string(ae::agent_choice_options::concurrency[i]) + "' parses");
         }
-        auto bad = ae::compile_agent_document(*yaml::parse("spec:
-  approval: sometimes
-"));
+        auto bad = ae::compile_agent_document(*yaml::parse("spec:\n  approval: sometimes\n"));
         bool lists_all = !bad.has_value();
         if (!bad.has_value()) {
             for (std::string_view o : ae::agent_choice_options::approval) {
@@ -193,26 +157,16 @@ spec:
 
     // --- F-3c (ADR-244 slice 4c): the sandbox block -- only `strict` is spelled in a document; a fallback is refused.
     {
-        auto named = ae::compile_agent_document(*yaml::parse("spec:
-  sandbox:
-    profile: native-jail
-"));
+        auto named = ae::compile_agent_document(*yaml::parse("spec:\n  sandbox:\n    profile: native-jail\n"));
         check(!named.has_value() && named.error().code == "choice.unknown_option" &&
                   named.error().message.find("strict") != std::string::npos,
               "F-3c: a profile other than strict is choice.unknown_option, naming the table (it used to become "
               "is_strict=false with all-zero traits)");
-        auto strict = ae::compile_agent_document(*yaml::parse("spec:
-  sandbox:
-    profile: strict
-"));
+        auto strict = ae::compile_agent_document(*yaml::parse("spec:\n  sandbox:\n    profile: strict\n"));
         check(strict.has_value() && strict->sandbox_profile.has_value() && strict->sandbox_profile->is_strict,
               "F-3c: strict compiles");
         auto chain = ae::compile_agent_document(
-            *yaml::parse("spec:
-  sandbox:
-    profile: strict
-    fallback: [native-jail, remote]
-"));
+            *yaml::parse("spec:\n  sandbox:\n    profile: strict\n    fallback: [native-jail, remote]\n"));
         check(!chain.has_value() && chain.error().code == "agent_yaml_compiler.sandbox_fallback_unsupported",
               "F-3c: sandbox.fallback is refused until a resolver consumes it (no fallback is silent), not read for "
               "nothing");
@@ -224,8 +178,7 @@ spec:
         check(minimal.has_value(), "F-4: a minimal document with an empty spec still compiles");
         if (minimal.has_value()) {
             ae::AgentMetadata const defaults;  // the struct's own real defaults, not asserted values
-            // ADR-244 slice 4b: the five choices have no default (they are `nullopt`), so "unset carries the
-            // struct's own default" means exactly that -- unstated, for `validate_agent_metadata` to refuse.
+            // ADR-244 slice 4b: the five choices have no default (they are `nullopt`), so "unset carries the\n            // struct's own default" means exactly that -- unstated, for `validate_agent_metadata` to refuse.
             check(!minimal->max_turns.has_value() && !minimal->token_budget.has_value() &&
                       !minimal->sandbox_profile.has_value() && minimal->approval == defaults.approval &&
                       minimal->concurrency == defaults.concurrency &&
@@ -244,12 +197,7 @@ spec:
 
     // --- F-6: gap-4/gap-5 closure (ADR-054) -- a ToolRegistry resolves spec.tools by name -----------
     {
-        std::string const doc_with_tools = R"YAML(spec:
-  tools:
-    - web_search
-    - code_interpreter
-    - handoff: writer
-)YAML";
+        std::string const doc_with_tools = R"YAML(spec:\n  tools:\n    - web_search\n    - code_interpreter\n    - handoff: writer\n)YAML";
 
         // F-6a: 015 §2's own example, RE-compiled through the SAME code path but with registry ==
         // nullptr (the default): tools stays honestly empty, byte-identical to F-1's own already-
