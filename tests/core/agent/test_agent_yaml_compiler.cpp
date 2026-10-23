@@ -227,7 +227,12 @@ spec:
 
     // --- F-6: gap-4/gap-5 closure (ADR-054) -- a ToolRegistry resolves spec.tools by name -----------
     {
-        std::string const doc_with_tools = R"YAML(spec:\n  tools:\n    - web_search\n    - code_interpreter\n    - handoff: writer\n)YAML";
+        std::string const doc_with_tools = R"YAML(spec:
+  tools:
+    - web_search
+    - code_interpreter
+    - handoff: writer
+)YAML";
 
         // F-6a: 015 §2's own example, RE-compiled through the SAME code path but with registry ==
         // nullptr (the default): tools stays honestly empty, byte-identical to F-1's own already-
