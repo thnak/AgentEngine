@@ -53,6 +53,9 @@
 
 using namespace agentengine;
 using namespace agentengine::rt;
+// ADR-244 slice 5: ScopeOptions states its concurrency. These tests do not exercise the cap, so they say "unbounded".
+static ScopeOptions unbounded_scope() { return {.max_concurrency = Bound<std::size_t>::unbounded()}; }
+
 using namespace std::chrono_literals;
 
 namespace {
@@ -293,7 +296,7 @@ task<void> c5_body(task_scope& s, Runtime* rt, AsyncMutex* m, C5Out* o) {
 }
 
 task<void> c5_root(Runtime* rt, AsyncMutex* m, C5Out* o) {
-    co_await with_scope([rt, m, o](task_scope& s) { return c5_body(s, rt, m, o); });
+    co_await with_scope([rt, m, o](task_scope& s) { return c5_body(s, rt, m, o); }, unbounded_scope());
 }
 
 void c5_non_awaiting(Runtime& rt) {
@@ -415,7 +418,7 @@ task<void> c8_body(task_scope& s, Runtime* rt, AsyncMutex* m, C8Out* o) {
 }
 
 task<void> c8_root(Runtime* rt, AsyncMutex* m, C8Out* o) {
-    ScopeOptions opts;
+    ScopeOptions opts = unbounded_scope();
     opts.fresh_chains = true;
     co_await with_scope([rt, m, o](task_scope& s) { return c8_body(s, rt, m, o); }, opts);
 }

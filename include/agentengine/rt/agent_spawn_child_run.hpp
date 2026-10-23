@@ -160,7 +160,7 @@ struct ChildSpawnRequest {
 // `delegation_depth` is already at `kMaxDelegationDepth` -- no child session is ever constructed for
 // a request that would exceed it.
 template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
-          class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>,
+          class HistoryProviderT = agentengine::HistoryProvider<agentengine::UnboundedWindow>,
           class ConfigureChatClientFn>
 [[nodiscard]] agentengine::rt::task<agentengine::result<agentengine::rt::AgentResponse>> run_child_agent_session(
     std::string child_id, ChildSpawnRequest req, ConfigureChatClientFn configure_chat_client) {

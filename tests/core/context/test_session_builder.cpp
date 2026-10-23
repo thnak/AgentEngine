@@ -537,12 +537,12 @@ int main() {
     }
 
     // ---- §2b: ComposedQuickstartSessionBuilder<Provider, Store, Ms...> -- session_builder.hpp's own
-    // finding 8. The pack mixes a default-constructible provider (HistoryProvider<Window<0>>) with a
+    // finding 8. The pack mixes a default-constructible provider (HistoryProvider<UnboundedWindow>) with a
     // genuinely NON-default-constructible one (RequiredArgProvider, this file's own local fixture) --
     // proving the actual gap finding 8 closes, not just that composition works for already-easy types.
     using ComposedBuilder =
         ComposedQuickstartSessionBuilder<quickstart::Provider::openai, InMemorySecretStore,
-                                           HistoryProvider<Window<0>>, RequiredArgProvider>;
+                                           HistoryProvider<UnboundedWindow>, RequiredArgProvider>;
     static_assert(std::is_default_constructible_v<ComposedBuilder::HistoryProviderT>,
                   "ComposedContextProvider<Ms...> itself must stay default-constructible -- the "
                   "whole mechanism finding 8 relies on -- even though one of ITS Ms (RequiredArgProvider) "
@@ -569,7 +569,7 @@ int main() {
         auto turn_end_calls = std::make_shared<std::size_t>(0);
         auto built = ComposedBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .providers(std::make_tuple(HistoryProvider<Window<0>>{},
+                         .providers(std::make_tuple(HistoryProvider<UnboundedWindow>{},
                                                      RequiredArgProvider{"required-arg-text",
                                                                            turn_end_calls}))
                          .session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
@@ -582,7 +582,7 @@ int main() {
             // B16: the composed provider's on_context() -- driven DIRECTLY (see this file's own top
             // comment for why, matching test_composed_context_provider.cpp's own "Part 1" scope) --
             // actually returns RequiredArgProvider's real, host-supplied contribution, in declared
-            // order (HistoryProvider<Window<0>> first, contributing nothing for an empty history;
+            // order (HistoryProvider<UnboundedWindow> first, contributing nothing for an empty history;
             // RequiredArgProvider second).
             Principal principal{"p-composed", ""};
             std::vector<Message> empty_history;
@@ -593,7 +593,7 @@ int main() {
                 session_ctx, effect_ctx));
             check(contribution.has_value(), "B16: on_context() succeeds once engaged");
             check(contribution.has_value() && contribution->messages.size() == 1,
-                  "B16: exactly one message -- HistoryProvider<Window<0>> contributes nothing for an "
+                  "B16: exactly one message -- HistoryProvider<UnboundedWindow> contributes nothing for an "
                   "empty history, RequiredArgProvider contributes exactly one");
             check(contribution.has_value() && contribution->messages.size() == 1 &&
                       std::get<Text>(contribution->messages[0].content.front().value).text ==
@@ -611,13 +611,13 @@ int main() {
         auto counter_b = std::make_shared<std::size_t>(0);
         auto built = ComposedBuilder("gpt-4o-mini")
                          .api_key_from_env("openai-api-key", "AE_TEST_QUICKSTART_KEY")
-                         .providers(std::make_tuple(HistoryProvider<Window<0>>{},
+                         .providers(std::make_tuple(HistoryProvider<UnboundedWindow>{},
                                                      RequiredArgProvider{"first-engage", counter_a}))
                          .session_id("s-test").principal(ae_test::principal()).choices(ae_test::trusted(std::nullopt, 25)).build();
         check(built.has_value(), "B17 setup: build() succeeds");
         if (built.has_value()) {
             auto second_engage = built->session().history_provider().engage(std::make_tuple(
-                HistoryProvider<Window<0>>{}, RequiredArgProvider{"second-engage", counter_b}));
+                HistoryProvider<UnboundedWindow>{}, RequiredArgProvider{"second-engage", counter_b}));
             check(!second_engage.has_value(),
                   "a second engage() call on the same instance fails closed");
             if (!second_engage.has_value()) {

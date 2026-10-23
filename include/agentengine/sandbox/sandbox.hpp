@@ -130,7 +130,10 @@ struct MountSpec {  // ae-naming-lint: allow MountSpec — 008 §2 names this ty
     std::variant<std::string /*host_path*/, BlobRef> source;
     std::string guest_path;  // canonical, ordinary-looking (026 §2) — never runtime-revealing
     bool        read_write = false;
-    std::uint64_t quota_bytes = 0;
+    // ADR-244 slice 5: stated, not defaulted. DECLARED ONLY: no backend enforces a per-mount quota yet (the Kata
+    // header names it a real gap; a worktree mount's quota is its cap::FsWrite), so a backend that cannot enforce
+    // `at_most(n)` must refuse it rather than accept it silently -- until then say `unbounded()`.
+    cap::Limit quota_bytes;
 };
 
 // The statement a "create" SandboxExec event carries (ADR-244 slice 5, G-C12): every nonzero limit the spec starts the
@@ -239,6 +242,15 @@ namespace sandbox_detail {
                     failure_class::policy,
                     "a cap::SandboxMount grant has an empty host_path_prefix; a grant must name the host "
                     "path it covers",
+                    "sandbox.mount_grant_invalid"});
+            }
+            // The guest side is the same: "" would cover every guest path, so a grant states the guest prefix it
+            // covers ("/" for the whole guest tree is a stated choice, and the only way to say "any").
+            if (grant.guest_path_prefix.empty()) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "a cap::SandboxMount grant has an empty guest_path_prefix; a grant must name the guest "
+                    "path it covers (\"/\" for any)",
                     "sandbox.mount_grant_invalid"});
             }
         }

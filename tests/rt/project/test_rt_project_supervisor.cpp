@@ -150,7 +150,7 @@ int main() {
         sup.register_member(member_a, store_a);
         sup.register_member(member_b, store_b);
         check(sup.member_count() == 2,
-              "Q1: both a Window<0>-history member and a Window<8>-history member registered into "
+              "Q1: both a UnboundedWindow-history member and a Window<8>-history member registered into "
               "the SAME ProjectSupervisor -- they are genuinely different C++ types");
         check(sup.workflow_count() == 0, "Q4: registering members does not affect workflow_count()");
 

@@ -85,7 +85,7 @@ int main() {
         KataBackend backend;
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
-            MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(short_spec);
         short_spec.limits.wall_ms = 800;
 
@@ -184,7 +184,7 @@ int main() {
         KataBackend backend;
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
-            MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true});
+            MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(contained_spec);
         contained_spec.limits.wall_ms = 2500;
         contained_spec.limits.output_bytes = 4096;

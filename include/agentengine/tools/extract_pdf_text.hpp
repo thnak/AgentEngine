@@ -270,7 +270,7 @@ template <sandbox::NetEgressBackend Proxy>
 [[nodiscard]] inline std::vector<MountSpec> worker_mounts() {
     std::vector<MountSpec> out;
     auto add = [&out](std::string path) {
-        out.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false});
+        out.push_back(MountSpec{.source = path, .guest_path = path, .read_write = false, .quota_bytes = cap::Limit::unbounded()});
     };
 #if !defined(_WIN32)
     for (char const* dir : {"/bin", "/lib", "/lib64", "/usr"}) {

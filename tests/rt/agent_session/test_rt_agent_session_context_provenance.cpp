@@ -125,7 +125,7 @@ Message user_message(std::string text) {
 int main() {
     using agentengine::Principal;
     using ComposedProvider =
-        agentengine::ComposedContextProvider<agentengine::HistoryProvider<agentengine::Window<0>>,
+        agentengine::ComposedContextProvider<agentengine::HistoryProvider<agentengine::UnboundedWindow>,
                                                SkillLikeProvider>;
 
     AgentSession<RecordingChatClient, NoSessionState, ComposedProvider> session;
@@ -134,7 +134,7 @@ int main() {
     // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
     // default-constructible -- see composed_context_provider.hpp's own comment on why).
     auto engaged = session.history_provider().engage(
-        std::tuple{agentengine::HistoryProvider<agentengine::Window<0>>{}, SkillLikeProvider{}});
+        std::tuple{agentengine::HistoryProvider<agentengine::UnboundedWindow>{}, SkillLikeProvider{}});
     check(engaged.has_value(), "T1 setup: engage() succeeds");
     RecordingChatClient& client = session.emplace_chat_client();
 

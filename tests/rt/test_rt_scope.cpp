@@ -67,6 +67,9 @@
 
 using namespace agentengine;
 using namespace agentengine::rt;
+// ADR-244 slice 5: ScopeOptions states its concurrency. These tests do not exercise the cap, so they say "unbounded".
+static ScopeOptions unbounded_scope() { return {.max_concurrency = Bound<std::size_t>::unbounded()}; }
+
 using namespace std::chrono_literals;
 
 namespace {
@@ -144,7 +147,7 @@ task<void> s1_body(task_scope& s, Runtime* rt, S1State* st) {
 }
 
 task<void> s1_root(Runtime* rt, S1State* st) {
-    co_await with_scope([rt, st](task_scope& s) { return s1_body(s, rt, st); });
+    co_await with_scope([rt, st](task_scope& s) { return s1_body(s, rt, st); }, unbounded_scope());
     st->seen_after_scope = st->finished.load();
 }
 
@@ -155,7 +158,7 @@ task<void> s1_body_nojoin(task_scope& s, Runtime* rt, S1State* st) {
 }
 
 task<int> s1_root_nojoin(Runtime* rt, S1State* st) {
-    co_await with_scope([rt, st](task_scope& s) { return s1_body_nojoin(s, rt, st); });
+    co_await with_scope([rt, st](task_scope& s) { return s1_body_nojoin(s, rt, st); }, unbounded_scope());
     co_return st->finished.load();
 }
 
@@ -203,7 +206,7 @@ task<void> s2_body(task_scope& s, S2State* st) {
 }
 
 task<void> s2_root(S2State* st) {
-    co_await with_scope([st](task_scope& s) { return s2_body(s, st); });
+    co_await with_scope([st](task_scope& s) { return s2_body(s, st); }, unbounded_scope());
 }
 
 void s2_child_strands(Runtime& rt) {
@@ -274,7 +277,7 @@ task<S3Out> s3_root_body(Runtime* rt, S3State* st) {
     S3Out      o;
     auto const t0 = std::chrono::steady_clock::now();
     try {
-        co_await with_scope([rt, st](task_scope& s) { return s3_body_throws(s, rt, st); });
+        co_await with_scope([rt, st](task_scope& s) { return s3_body_throws(s, rt, st); }, unbounded_scope());
     } catch (std::runtime_error const& e) {
         o.what              = e.what();
         o.finished_at_catch = st->finished.load();
@@ -344,7 +347,7 @@ task<S4Out> s4_root(Runtime* rt, S4State* st) {
     S4Out                  o;
     std::vector<task<int>> tasks;
     for (int i = 0; i < 16; ++i) tasks.push_back(s4_item(rt, st, i, 16));
-    o.values  = co_await when_all(std::move(tasks));
+    o.values  = co_await when_all(std::move(tasks), unbounded_scope());
     auto tup  = co_await when_all(s4_int(), s4_str(), s4_void());
     o.a       = std::get<0>(tup);
     o.b       = std::get<1>(tup);
@@ -385,8 +388,7 @@ task<void> s5_item(Runtime* rt, S5State* st) {
 task<void> s5_root(Runtime* rt, S5State* st) {
     std::vector<task<void>> tasks;
     for (int i = 0; i < 8; ++i) tasks.push_back(s5_item(rt, st));
-    ScopeOptions opts;
-    opts.max_concurrency = 2;
+    ScopeOptions opts{.max_concurrency = Bound<std::size_t>::at_most(2)};
     (void)co_await when_all(std::move(tasks), opts);
 }
 
@@ -408,7 +410,7 @@ task<void> s6_body(task_scope& s, Runtime* rt, std::atomic<bool>* joining) {
 }
 
 task<void> s6_owner(Runtime* rt, std::atomic<bool>* joining) {
-    co_await with_scope([rt, joining](task_scope& s) { return s6_body(s, rt, joining); });
+    co_await with_scope([rt, joining](task_scope& s) { return s6_body(s, rt, joining); }, unbounded_scope());
 }
 
 int s6_violation_child() {
@@ -470,7 +472,7 @@ task<void> s7_body(task_scope& s, Runtime* rt, S7State* st) {
 
 task<std::chrono::milliseconds> s7_root(Runtime* rt, S7State* st, std::stop_token stop) {
     auto const   t0 = std::chrono::steady_clock::now();
-    ScopeOptions opts;
+    ScopeOptions opts = unbounded_scope();
     opts.stop = std::move(stop);
     co_await with_scope([rt, st](task_scope& s) { return s7_body(s, rt, st); }, opts);
     co_return since(t0);
@@ -494,7 +496,7 @@ void s7_stop_forwarding(Runtime& rt) {
 task<void> s8_body(task_scope& /*s*/) { co_return; }
 
 task<void> s8_root() {
-    co_await with_scope([](task_scope& s) { return s8_body(s); });
+    co_await with_scope([](task_scope& s) { return s8_body(s); }, unbounded_scope());
 }
 
 void s8_off_strand() {

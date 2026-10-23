@@ -151,7 +151,7 @@ int main() {
     {
         std::string const home = std::filesystem::path(AE_PYTHON_HOME).string();
         SandboxSpec spec;
-        spec.mounts.push_back(MountSpec{.source = home, .guest_path = "/home", .read_write = true});
+        spec.mounts.push_back(MountSpec{.source = home, .guest_path = "/home", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{home, "/home", true}}});
         EffectContext ctx;
         auto h = rt::block_on(backend.create(spec, ctx));

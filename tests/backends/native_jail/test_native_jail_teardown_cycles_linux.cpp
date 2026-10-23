@@ -168,7 +168,7 @@ int main() {
     // ---- The real cycle loop. --------------------------------------------------------------------
     SandboxSpec spec;
     spec.mounts.push_back(
-        MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+        MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
     ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
     ae_test::grant_listed_mounts(spec);

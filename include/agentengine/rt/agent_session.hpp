@@ -224,7 +224,7 @@
 namespace agentengine::rt {
 
 template <class ChatClientT, class StateT = NoSessionState,
-          class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
+          class HistoryProviderT = agentengine::HistoryProvider<agentengine::UnboundedWindow>>
     requires (agentengine::ChatClient<ChatClientT> || agentengine::ModelCallGatewayLike<ChatClientT>) &&
              agentengine::ContextProvider<HistoryProviderT>
 class AgentSession final : public AgentSessionCore {
@@ -247,7 +247,7 @@ public:
     // `HistoryProviderT` happens to be a type that tracks one (currently only `ComposedContextProvider
     // <Ms...>`'s own private `bind_owner()`, which this class is friended for -- see that method's
     // own comment). `if constexpr` keeps this a true no-op, not just harmless, for every OTHER
-    // `HistoryProviderT` (e.g. the default `HistoryProvider<Window<0>>`), which never declares
+    // `HistoryProviderT` (e.g. the default `HistoryProvider<UnboundedWindow>`), which never declares
     // `bind_owner()` at all -- the closing hazard this exists to prevent (cross-session aliasing of
     // LIVE, capability-bearing provider state) doesn't apply to a plain, copyable history buffer.
     //

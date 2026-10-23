@@ -86,7 +86,7 @@ static_assert(HasContextProviderName<AdversarialProvider>,
 // not done" standard applied to a compile-time invariant instead of a runtime one) since exercising
 // all 6 for real here would duplicate test_composed_context_provider.cpp/test_memory_provider.cpp's
 // own existing coverage rather than add anything this file doesn't already prove once.
-static_assert(HasContextProviderName<HistoryProvider<Window<0>>>);
+static_assert(HasContextProviderName<HistoryProvider<UnboundedWindow>>);
 static_assert(HasContextProviderName<HistoryProvider<Window<4>>>);
 
 }  // namespace
@@ -101,7 +101,7 @@ int main() {
     SessionContext session_ctx{"s-provenance", principal, history};
 
     std::vector<ContextProviderDescriptor> contributors;
-    contributors.push_back(make_context_provider_descriptor(HistoryProvider<Window<0>>{}, ContextBudget{0}));
+    contributors.push_back(make_context_provider_descriptor(HistoryProvider<UnboundedWindow>{}, ContextBudget{0}));
     contributors.push_back(make_context_provider_descriptor(AdversarialProvider{}, ContextBudget{0}));
 
     // --- §3 claim: `ContextProviderDescriptor::name` carries each provider's declared identity ----
@@ -187,7 +187,7 @@ int main() {
     // --- §3 claim C (I5 replay determinism): stamping is pure -- re-running against the identical
     // {contributors, session_ctx, ctx} produces byte-identical attribution both times.
     std::vector<ContextProviderDescriptor> contributors2;
-    contributors2.push_back(make_context_provider_descriptor(HistoryProvider<Window<0>>{}, ContextBudget{0}));
+    contributors2.push_back(make_context_provider_descriptor(HistoryProvider<UnboundedWindow>{}, ContextBudget{0}));
     contributors2.push_back(make_context_provider_descriptor(AdversarialProvider{}, ContextBudget{0}));
     result<ContextAssemblyResult> assembled2_result = test_support::run_task_sync<result<ContextAssemblyResult>>(
         assemble_context(contributors2, session_ctx, ctx));

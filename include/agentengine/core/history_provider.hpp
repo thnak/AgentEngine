@@ -30,8 +30,16 @@
 
 namespace agentengine {
 
+// ADR-244 slice 5: `N` is a real window. `Window<0>` used to mean "keep everything", a `0` standing for "no limit";
+// it does not compile, and "keep everything" is the named `UnboundedWindow` below.
 template <std::size_t N>
-struct Window {};  // ae-naming-lint: allow Window — 005 §4 names this concept normatively; 027 has not been updated to list it
+struct Window {  // ae-naming-lint: allow Window — 005 §4 names this concept normatively; 027 has not been updated to list it
+    static_assert(N > 0, "Window<0> is not a window: 0 is not 'no limit'. Say UnboundedWindow to keep the whole history, or Window<N> with N > 0");
+};
+
+// "Keep every message": the explicit spelling of what `Window<0>` meant. History grows with the session, so the
+// context the model sees is bounded only by the session's own turn and token budgets (I8), not by this provider.
+struct UnboundedWindow {};  // ae-naming-lint: allow UnboundedWindow — ADR-244 slice 5: the named "unbounded" history strategy
 
 // 005 §4's other named strategy: "Summarize older turns into a `system` summary message via a
 // declared model." `SummarizerT` is that declared model — a second `ChatClient` (004 §1), not
@@ -66,12 +74,8 @@ public:
                                                                  EffectContext&) {
         ContextContribution contribution;
         auto const& h = session_ctx.history;
-        if constexpr (N == 0) {
-            contribution.messages.assign(h.begin(), h.end());
-        } else {
-            std::size_t const start = h.size() > N ? h.size() - N : 0;
-            contribution.messages.assign(h.begin() + static_cast<std::ptrdiff_t>(start), h.end());
-        }
+        std::size_t const start = h.size() > N ? h.size() - N : 0;
+        contribution.messages.assign(h.begin() + static_cast<std::ptrdiff_t>(start), h.end());
         co_return contribution;
     }
 
@@ -80,8 +84,25 @@ public:
     task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
 };
 
-static_assert(ContextProvider<HistoryProvider<Window<0>>>,
-              "HistoryProvider<Window<0>> must satisfy ContextProvider (005 §5)");
+// The named "keep everything" strategy (formerly `Window<0>`): same contributor name, same replay rule, no cut.
+template <>
+class HistoryProvider<UnboundedWindow> {
+public:
+    static constexpr std::string_view name = "history";  // ae-naming-lint: allow name — ADR-033's HasMiddlewareName precedent, reused verbatim per ADR-066 §3
+
+    [[nodiscard]] task<result<ContextContribution>> on_context(SessionContext& session_ctx,
+                                                                 EffectContext&) {
+        ContextContribution contribution;
+        auto const& h = session_ctx.history;
+        contribution.messages.assign(h.begin(), h.end());
+        co_return contribution;
+    }
+
+    task<std::monostate> on_turn_end(TurnView, EffectContext&) { co_return std::monostate{}; }
+};
+
+static_assert(ContextProvider<HistoryProvider<UnboundedWindow>>,
+              "HistoryProvider<UnboundedWindow> must satisfy ContextProvider (005 §5)");
 static_assert(ContextProvider<HistoryProvider<Window<8>>>,
               "HistoryProvider<Window<N>> must satisfy ContextProvider (005 §5)");
 

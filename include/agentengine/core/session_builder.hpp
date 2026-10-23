@@ -453,14 +453,14 @@ inline constexpr std::array<std::string_view, 1> kSecretSourceOptions = {
 // `CapabilitySet const*` reference for as long as the session is used -- see this file's own top
 // comment for why a plain move-constructed `AgentSession` member cannot work here.
 //
-// `HistoryProviderT` defaults to `AgentSession`'s own default (`HistoryProvider<Window<0>>`) so
+// `HistoryProviderT` defaults to `AgentSession`'s own default (`HistoryProvider<UnboundedWindow>`) so
 // every existing `Bundle<ChatClientT, Store>` spelling (§2a's `QuickstartSessionBuilder`) is
 // completely unaffected -- the third parameter exists only so `ComposedQuickstartSessionBuilder`
 // (§2b, below) can supply its own `agentengine::ComposedContextProvider<Ms...>` instead -- and,
 // since ADR-226, so `make_agent_session<A>()`/`bind_agent_session()` (core/agent_session_bridge.hpp)
 // can supply `AgentToolSurface<>`, the slot that carries a declared agent's `Tools<...>`.
 template <class ChatClientT, class Store,
-          class HistoryProviderT = agentengine::HistoryProvider<agentengine::Window<0>>>
+          class HistoryProviderT = agentengine::HistoryProvider<agentengine::UnboundedWindow>>
 class Bundle {
 public:
     using SessionT = agentengine::rt::AgentSession<ChatClientT, agentengine::rt::NoSessionState,

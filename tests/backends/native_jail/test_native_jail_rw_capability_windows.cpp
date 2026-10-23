@@ -51,7 +51,7 @@ fs::path fresh_dir(char const* name) {
 
 SandboxSpec rw_spec(fs::path const& dir) {
     SandboxSpec spec;
-    spec.mounts.push_back(MountSpec{.source = dir.string(), .guest_path = "/rw", .read_write = true});
+    spec.mounts.push_back(MountSpec{.source = dir.string(), .guest_path = "/rw", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
     spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{dir.string(), "/rw", true}}});
     spec.limits.wall_ms = 10000;
     return spec;
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     {
         std::string const verbatim = "\\\\?\\" + deployment.string();
         SandboxSpec spec;
-        spec.mounts.push_back(MountSpec{.source = verbatim, .guest_path = "/rw", .read_write = true});
+        spec.mounts.push_back(MountSpec{.source = verbatim, .guest_path = "/rw", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{verbatim, "/rw", true}}});
         EffectContext ctx;
         auto h = rt::block_on(backend.create(spec, ctx));

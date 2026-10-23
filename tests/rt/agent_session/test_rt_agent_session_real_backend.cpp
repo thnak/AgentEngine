@@ -33,7 +33,7 @@
 //         whose ChatClientT was never emplaced fails closed (no fabricated response, I3); a declared
 //         tool reaches the wire's top-level `tools` array through a real run.
 //   R1-R4 (from test_agent_session_skills_real_backend.cpp): a real turn through
-//         `ComposedContextProvider<BuiltinSkillsProvider, HistoryProvider<Window<0>>>` still carries
+//         `ComposedContextProvider<BuiltinSkillsProvider, HistoryProvider<UnboundedWindow>>` still carries
 //         ordinary history to the wire AND the skill advertisement (name+description) reaches the same
 //         wire request, ordered BEFORE history (the real regression this file's ordering check exists
 //         for), and the AgentResponse carries real server content.
@@ -309,7 +309,7 @@ static_assert(std::is_default_constructible_v<ToolSession>,
 using SkillsSession = AgentSession<RealClient, NoSessionState,
                                     agentengine::ComposedContextProvider<
                                         BuiltinSkillsProvider,
-                                        agentengine::HistoryProvider<agentengine::Window<0>>>>;
+                                        agentengine::HistoryProvider<agentengine::UnboundedWindow>>>;
 static_assert(std::is_default_constructible_v<SkillsSession>,
               "SkillsSession must stay default-constructible, matching ComposedContextProvider's own "
               "auto-engaging default ctor when every Ms is default-constructible");
@@ -478,7 +478,7 @@ int main() {
             // ComposedContextProvider's default ctor no longer auto-engages even when every Ms is
             // default-constructible -- see composed_context_provider.hpp's own comment on why).
             auto engaged = session.history_provider().engage(
-                std::tuple{BuiltinSkillsProvider{}, agentengine::HistoryProvider<agentengine::Window<0>>{}});
+                std::tuple{BuiltinSkillsProvider{}, agentengine::HistoryProvider<agentengine::UnboundedWindow>{}});
             check(engaged.has_value(), "Skills setup: engage() succeeds");
 
             // ---- R1: a real turn through a real, skills-composed session ----------------------------

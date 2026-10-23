@@ -55,7 +55,7 @@ int main() {
     AE_CHECK(!ec, "setup: scratch mount directory exists");
 
     SandboxSpec spec;
-    spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
     ae_test::grant_listed_mounts(spec);
     agentengine::native_jail::test::add_shell_toolchain_mounts(spec);
     ae_test::grant_listed_mounts(spec);
@@ -145,8 +145,8 @@ int main() {
         std::filesystem::path const inner = work_dir / "inner";
         std::filesystem::create_directories(inner, ec);
         SandboxSpec overlap;
-        overlap.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
-        overlap.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work/inner", .read_write = false});
+        overlap.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
+        overlap.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work/inner", .read_write = false, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(overlap);
         auto refused = agentengine::rt::block_on(backend.create(overlap, ctx));
         AE_CHECK(!refused.has_value() && refused.error().code == "sandbox.mount_overlap",
@@ -154,8 +154,8 @@ int main() {
         if (refused.has_value()) agentengine::rt::block_on(backend.destroy(*refused));
 
         SandboxSpec disjoint;
-        disjoint.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
-        disjoint.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/workshop", .read_write = false});
+        disjoint.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
+        disjoint.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/workshop", .read_write = false, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(disjoint);
         disjoint.limits.wall_ms = 2000;
         auto ok = agentengine::rt::block_on(backend.create(disjoint, ctx));
@@ -168,7 +168,7 @@ int main() {
         // path would be created beside the jail root, and `/` is the root itself.
         for (char const* bad : {"//work", "work", "/", "", "/work/", "/a/../work", "/a/./b"}) {
             SandboxSpec s;
-            s.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = bad, .read_write = false});
+            s.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = bad, .read_write = false, .quota_bytes = cap::Limit::unbounded()});
             ae_test::grant_listed_mounts(s);
             auto r = agentengine::rt::block_on(backend.create(s, ctx));
             AE_CHECK(!r.has_value() && r.error().code == "sandbox.guest_path_invalid",
@@ -176,8 +176,8 @@ int main() {
             if (r.has_value()) agentengine::rt::block_on(backend.destroy(*r));
         }
         SandboxSpec twice;
-        twice.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
-        twice.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work", .read_write = false});
+        twice.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
+        twice.mounts.push_back(MountSpec{.source = inner.string(), .guest_path = "/work", .read_write = false, .quota_bytes = cap::Limit::unbounded()});
         ae_test::grant_listed_mounts(twice);
         auto dup = agentengine::rt::block_on(backend.create(twice, ctx));
         AE_CHECK(!dup.has_value() && dup.error().code == "sandbox.mount_overlap",

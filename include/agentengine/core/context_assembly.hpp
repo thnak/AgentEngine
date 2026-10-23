@@ -56,7 +56,7 @@ namespace agentengine {
 }
 
 // "Every contributor declares a token budget" (005 §3). `max_tokens == 0` means unbounded — a
-// contributor that never fails on size, matching `HistoryProvider<Window<0>>`'s own "0 means
+// contributor that never fails on size, matching `HistoryProvider<UnboundedWindow>`'s own "0 means
 // unbounded" convention (history_provider.hpp) rather than inventing a second sentinel for the same
 // idea.
 //

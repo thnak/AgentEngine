@@ -60,7 +60,7 @@ namespace {
 
 [[nodiscard]] SandboxSpec ro_spec(std::filesystem::path const& dir, bool granted) {
     SandboxSpec spec;
-    spec.mounts.push_back(MountSpec{.source = dir.string(), .guest_path = "/ro", .read_write = false});
+    spec.mounts.push_back(MountSpec{.source = dir.string(), .guest_path = "/ro", .read_write = false, .quota_bytes = cap::Limit::unbounded()});
     if (granted) {
         spec.capabilities =
             CapabilitySet::grant_root({Capability{cap::SandboxMount{dir.string(), "/ro", false}}});

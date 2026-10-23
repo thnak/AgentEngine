@@ -61,7 +61,7 @@ int main() {
     AE_CHECK(!ec, "setup: scratch mount directory exists");
 
     SandboxSpec spec;
-    spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true});
+    spec.mounts.push_back(MountSpec{.source = work_dir.string(), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
     ae_test::grant_listed_mounts(spec);
     // 5000, not 2000: measured this session (test_native_jail_backend_windows flaking right after
     // test_job_object_limits' own memory-heavy tests) -- under host memory pressure,

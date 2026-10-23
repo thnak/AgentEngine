@@ -22,7 +22,7 @@
 //         failure REASONS ([1] unknown-to-registry vs [2] known-but-ungranted) are indistinguishable
 //         to a caller, by design.
 //   T5 -- end-to-end: a REAL AgentSpawnToolProvider, composed via the REAL
-//         core/composed_context_provider.hpp seam alongside an ordinary HistoryProvider<Window<0>>,
+//         core/composed_context_provider.hpp seam alongside an ordinary HistoryProvider<UnboundedWindow>,
 //         drives a REAL parent AgentSession's own tool-call loop -- the model issues a real
 //         "agent.spawn" tool call, AgentSpawnTool's real descriptor (built by
 //         make_tool_descriptor_with_invoke, never a test-only stand-in) dispatches into
@@ -459,13 +459,13 @@ int main() {
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(2)}});
 
-        using ParentHistory = ComposedContextProvider<HistoryProvider<Window<0>>,
+        using ParentHistory = ComposedContextProvider<HistoryProvider<UnboundedWindow>,
                                                         AgentSpawnToolProvider<InMemoryAppendLogStore>>;
         AgentSession<ScriptedChatClient, NoSessionState, ParentHistory> parent;
         parent.initialize("parent-1", Principal{"caller-5", ""}, ae_test::trusted_unbounded());
         parent.set_capabilities(&caller_held);
         auto engaged = parent.history_provider().engage(std::make_tuple(
-            HistoryProvider<Window<0>>{},
+            HistoryProvider<UnboundedWindow>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
                                                              tracker, agentengine::approval_mode::never_require)));
         check(engaged.has_value(), "T5 setup: ComposedContextProvider::engage() succeeds");
@@ -504,7 +504,7 @@ int main() {
         unarmed.initialize("parent-2", Principal{"caller-6", ""}, ae_test::trusted_unbounded());
         unarmed.set_capabilities(&no_spawn_cap);
         auto engaged2 = unarmed.history_provider().engage(std::make_tuple(
-            HistoryProvider<Window<0>>{},
+            HistoryProvider<UnboundedWindow>{},
             AgentSpawnToolProvider<InMemoryAppendLogStore>(registry, pump, caller_ref, "/caller", quota,
                                                              tracker, agentengine::approval_mode::never_require)));
         check(engaged2.has_value(), "T6 setup: engage() succeeds for the unarmed session too");

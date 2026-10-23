@@ -95,7 +95,7 @@ namespace agentengine {
 //     `ComposedContextProvider` set for the same slot (ADR-074, quickstart finding 9). A move leaves the
 //     source unbound (quickstart finding 11's lesson: a moved-from instance must fail closed, not run
 //     empty).
-template <class Inner = HistoryProvider<Window<0>>>
+template <class Inner = HistoryProvider<UnboundedWindow>>
     requires ContextProvider<Inner> && std::default_initializable<Inner>
 // ae-naming-lint: allow AgentToolSurface — ADR-226 (002 §2.1 run bridge); 027 not yet updated
 class AgentToolSurface {
@@ -216,7 +216,7 @@ using AgentBundle = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentTo
 // decisions/archive/ADR-234 (issue #60): the same bundle with a caller-chosen `Inner` behind the agent's tool
 // surface -- how the harness (core/harness.hpp) composes ON this bridge instead of a third session-
 // construction path. `AgentBundle<C>` is exactly `AgentBundleWith<C>`.
-template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
+template <class ChatClientT, class Inner = HistoryProvider<UnboundedWindow>>
 // ae-naming-lint: allow AgentBundleWith — ADR-234 (harness composes on the ADR-226 bridge); 027 not yet updated
 using AgentBundleWith = quickstart::Bundle<ChatClientT, InMemorySecretStore, AgentToolSurface<Inner>>;
 
@@ -298,7 +298,7 @@ struct BundleFactory {
     return tools;
 }
 
-template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
+template <class ChatClientT, class Inner = HistoryProvider<UnboundedWindow>>
 [[nodiscard]] result<AgentBundleWith<ChatClientT, Inner>> bind(AgentMetadata const& meta, ChatClientT client,
                                                                AgentSessionOptions opts, OutputValidator validator,
                                                                ChatClientRegistry const* registry,

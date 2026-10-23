@@ -11,7 +11,7 @@
 //   R4 -- search_tools: finds an unmounted tool by keyword, never mutates mount state.
 //   R5 -- a structural no-leakage check (026 §8 G3): an error message never echoes another tool's
 //         operator-authored description text.
-//   R6 -- ComposedContextProvider<HistoryProvider<Window<0>>, SkillsProvider<>, ToolOptimizerProvider>
+//   R6 -- ComposedContextProvider<HistoryProvider<UnboundedWindow>, SkillsProvider<>, ToolOptimizerProvider>
 //         -- the second real (non-fixture) 3-provider production composition in the tree -- proven
 //         both directly (on_context) and wired into a real rt::AgentSession run, showing the declare
 //         cadence holds end to end: a newly mount_tool'd tool is NOT on the first outbound
@@ -194,7 +194,7 @@ Message user_message(std::string text) {
     return m;
 }
 
-// ComposedContextProvider<HistoryProvider<Window<0>>, SkillsProvider<>, ToolOptimizerProvider>,
+// ComposedContextProvider<HistoryProvider<UnboundedWindow>, SkillsProvider<>, ToolOptimizerProvider>,
 // wrapped so it can occupy AgentSession's default-constructed provider slot -- the SAME shape
 // tools/cli_chat.cpp's own ToolDeclaringHistoryProvider() : skills_(demo_skill_sources()) {} already
 // uses for exactly this reason (SkillsProvider<>/ToolOptimizerProvider are not themselves
@@ -203,7 +203,7 @@ class ThreeWayToolOptimizerProvider {
 public:
     ThreeWayToolOptimizerProvider()
         : inner_(std::tuple{
-              HistoryProvider<Window<0>>{}, SkillsProvider<>(std::vector<SkillSourceDescriptor>{}),
+              HistoryProvider<UnboundedWindow>{}, SkillsProvider<>(std::vector<SkillSourceDescriptor>{}),
               ToolOptimizerProvider(ToolTable::from(PingTool{}), no_tool_source(),
                                      fetch_one(make_fixture_tool(
                                          "extra_tool", "A plugin-sourced fixture tool.")))}) {}
@@ -214,7 +214,7 @@ public:
     task<std::monostate> on_turn_end(TurnView tv, EffectContext& ec) { return inner_.on_turn_end(tv, ec); }
 
 private:
-    ComposedContextProvider<HistoryProvider<Window<0>>, SkillsProvider<>, ToolOptimizerProvider> inner_;
+    ComposedContextProvider<HistoryProvider<UnboundedWindow>, SkillsProvider<>, ToolOptimizerProvider> inner_;
 };
 static_assert(ContextProvider<ThreeWayToolOptimizerProvider>,
               "ThreeWayToolOptimizerProvider must satisfy ContextProvider (005 §5)");

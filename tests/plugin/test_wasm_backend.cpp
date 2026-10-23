@@ -101,7 +101,7 @@ EffectContext make_ctx() {
 // invoke "now" (which reads request.capabilities.first()) keep getting the kind it expects; the
 // per-callback probes below (§5) define their own orderings deliberately instead of using this one.
 std::vector<Capability> const kAllRequiredCapabilities = {
-    cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{},
+    cap::Clock{cap::ClockResolution::finest()}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{},
 };
 
 // One gated-callback kind-check probe (D5, closing ADR-010 claim 4's remaining four-callback gap):
@@ -124,7 +124,8 @@ void probe_gated_callback(std::vector<std::uint8_t> const& bytes, std::string co
         return;
     }
 
-    PluginManifest manifest;
+    PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                            .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
     manifest.id = "test.gated." + tool + "." + label;
     manifest.version = "0.1.0";
     manifest.world = plugin_world::tool;
@@ -221,14 +222,15 @@ std::string fetch_via_loopback_grant(std::vector<std::uint8_t> const& bytes, std
     SandboxSpec spec;
     cap::NetOut net{{}, cap::Limit::unbounded(), {}};
     net.host_allowlist = {"127.0.0.1:" + std::to_string(port) + ":http"};
-    std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
+    std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}};
     spec.capabilities = CapabilitySet::grant_root(order);
     spec.limits.wall_ms = wall_ms;
     EffectContext ctx = make_ctx();
     auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     AE_CHECK(handle.has_value(), label + ": create() succeeds");
     if (!handle) return "";
-    PluginManifest manifest;
+    PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                            .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
     manifest.id = "test.egress." + label;
     manifest.version = "0.1.0";
     manifest.world = plugin_world::tool;
@@ -311,7 +313,7 @@ std::string fetch_with_through(std::vector<std::uint8_t> const& bytes, std::shar
     SandboxSpec spec;
     cap::NetOut net{{}, cap::Limit::unbounded(), {}};
     net.host_allowlist = {"127.0.0.1:" + std::to_string(port) + ":http"};
-    std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
+    std::vector<Capability> const order = {net, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}};
     spec.capabilities = CapabilitySet::grant_root(order);
     spec.limits.wall_ms = wall_ms;
     EffectContext ctx = make_ctx();
@@ -320,7 +322,8 @@ std::string fetch_with_through(std::vector<std::uint8_t> const& bytes, std::shar
     auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     AE_CHECK(handle.has_value(), label + ": create() succeeds");
     if (!handle) return "";
-    PluginManifest manifest;
+    PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                            .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
     manifest.id = "test.egress.seam." + label;
     manifest.version = "0.1.0";
     manifest.world = plugin_world::tool;
@@ -380,7 +383,7 @@ int main() {
         SandboxSpec spec;
         // The D5-extended fixture now imports fs/http/secrets too (four new tools calling them), so
         // the whole-component import check needs all five gated kinds granted, not just Clock.
-        spec.capabilities = CapabilitySet::grant_root({cap::Clock{}, cap::Entropy{}, cap::FsRead{},
+        spec.capabilities = CapabilitySet::grant_root({cap::Clock{cap::ClockResolution::finest()}, cap::Entropy{}, cap::FsRead{},
                                                          cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         spec.limits.memory_bytes = 64ull * 1024 * 1024;
 
@@ -389,12 +392,13 @@ int main() {
         AE_CHECK(handle.has_value(), "positive: create() succeeds");
         if (!handle) return 1;
 
-        PluginManifest manifest;
+        PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
         manifest.id = "test.echo-now-spin";
         manifest.version = "0.1.0";
         manifest.world = plugin_world::tool;
         manifest.requested_capabilities = kAllRequiredCapabilities;
-        manifest.memory_bytes_limit = spec.limits.memory_bytes;
+        manifest.memory_bytes_limit = cap::Limit::at_most(spec.limits.memory_bytes);
 
         auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
         AE_CHECK(loaded.has_value(), "positive: load_component() succeeds (manifest covers real imports)");
@@ -458,13 +462,14 @@ int main() {
         SandboxSpec spec;
         // Operator would allow everything the component needs, Clock included...
         spec.capabilities = CapabilitySet::grant_root(
-            {cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
+            {cap::Clock{cap::ClockResolution::finest()}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         EffectContext ctx = make_ctx();
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         AE_CHECK(handle.has_value(), "negative: create() succeeds");
         if (!handle) return 1;
 
-        PluginManifest manifest;
+        PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
         manifest.id = "test.negative";
         manifest.version = "0.1.0";
         manifest.world = plugin_world::tool;
@@ -508,7 +513,8 @@ int main() {
         AE_CHECK(handle.has_value(), "operator-grant-missing: create() succeeds");
         if (!handle) return 1;
 
-        PluginManifest manifest;
+        PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
         manifest.id = "test.operator-grant-missing";
         manifest.version = "0.1.0";
         manifest.world = plugin_world::tool;
@@ -533,18 +539,19 @@ int main() {
         WasmBackend backend;
         SandboxSpec spec;
         spec.capabilities = CapabilitySet::grant_root(
-            {cap::Entropy{}, cap::Clock{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
+            {cap::Entropy{}, cap::Clock{cap::ClockResolution::finest()}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}});
         EffectContext ctx = make_ctx();
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle) return 1;
 
-        PluginManifest manifest;
+        PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
         manifest.id = "test.kind-confusion";
         manifest.version = "0.1.0";
         manifest.world = plugin_world::tool;
         // Order matters: capabilities[0] (what the fixture's "now" tool actually calls
         // now-unix-millis with) is bound to Entropy here, not Clock.
-        manifest.requested_capabilities = {cap::Entropy{},   cap::Clock{},  cap::FsRead{},
+        manifest.requested_capabilities = {cap::Entropy{},   cap::Clock{cap::ClockResolution::finest()},  cap::FsRead{},
                                             cap::FsWrite{},   cap::NetOut{}, cap::Secret{}};
 
         auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
@@ -563,17 +570,17 @@ int main() {
     //       capability first (wrong kind), against the real fixture's four new tools.
     {
         probe_gated_callback(bytes, "fs-read/right-kind", "read-file",
-                              {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
+                              {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}},
                               "not implemented in M2's minimal host");
         probe_gated_callback(bytes, "fs-read/wrong-kind", "read-file",
-                              {cap::FsWrite{}, cap::FsRead{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
+                              {cap::FsWrite{}, cap::FsRead{}, cap::NetOut{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}},
                               "wrong kind");
 
         probe_gated_callback(bytes, "fs-write/right-kind", "write-file",
-                              {cap::FsWrite{}, cap::FsRead{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
+                              {cap::FsWrite{}, cap::FsRead{}, cap::NetOut{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}},
                               "not implemented in M2's minimal host");
         probe_gated_callback(bytes, "fs-write/wrong-kind", "write-file",
-                              {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{}},
+                              {cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}},
                               "wrong kind");
 
         // http-request/right-kind is no longer a stub-trap probe (decisions/archive/ADR-011-first-party-
@@ -589,13 +596,14 @@ int main() {
         {
             WasmBackend backend;
             SandboxSpec spec;
-            std::vector<Capability> const order = {cap::NetOut{}, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}};
+            std::vector<Capability> const order = {cap::NetOut{}, cap::FsRead{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}};
             spec.capabilities = CapabilitySet::grant_root(order);
             EffectContext ctx = make_ctx();
             auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
             AE_CHECK(handle.has_value(), "http-request/right-kind: create() succeeds");
             if (handle) {
-                PluginManifest manifest;
+                PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                        .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
                 manifest.id = "test.gated.fetch.http-request-right-kind";
                 manifest.version = "0.1.0";
                 manifest.world = plugin_world::tool;
@@ -617,14 +625,14 @@ int main() {
             }
         }
         probe_gated_callback(bytes, "http-request/wrong-kind", "fetch",
-                              {cap::FsRead{}, cap::NetOut{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{}},
+                              {cap::FsRead{}, cap::NetOut{}, cap::FsWrite{}, cap::Secret{}, cap::Clock{cap::ClockResolution::finest()}},
                               "wrong kind");
 
         probe_gated_callback(bytes, "resolve-secret/right-kind", "get-secret",
-                              {cap::Secret{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Clock{}},
+                              {cap::Secret{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}, cap::Clock{cap::ClockResolution::finest()}},
                               "not implemented in M2's minimal host");
         probe_gated_callback(bytes, "resolve-secret/wrong-kind", "get-secret",
-                              {cap::Clock{}, cap::Secret{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}},
+                              {cap::Clock{cap::ClockResolution::finest()}, cap::Secret{}, cap::FsRead{}, cap::FsWrite{}, cap::NetOut{}},
                               "wrong kind");
     }
 
@@ -642,12 +650,13 @@ int main() {
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         if (!handle) return 1;
 
-        PluginManifest manifest;
+        PluginManifest manifest{.id = {}, .version = {}, .world = plugin_world::tool, .requested_capabilities = {},
+                                .memory_bytes_limit = cap::Limit::unbounded(), .wall_ms_limit = cap::Limit::unbounded()};
         manifest.id = "test.spin";
         manifest.version = "0.1.0";
         manifest.world = plugin_world::tool;
         manifest.requested_capabilities = kAllRequiredCapabilities;
-        manifest.wall_ms_limit = 200;
+        manifest.wall_ms_limit = cap::Limit::at_most(200);
 
         auto loaded = backend.load_component(*handle, manifest, bytes, ctx);
         if (!loaded) std::cerr << "  (wall_ms load error: " << loaded.error().code << ": " << loaded.error().message << ")\n";

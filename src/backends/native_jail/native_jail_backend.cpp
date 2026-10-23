@@ -760,7 +760,7 @@ result<SandboxHandle> NativeJailBackend::create_python_worker(SandboxSpec const&
         if (!p.empty()) deployment.push_back(p);
     }
     for (std::wstring const& path : deployment) {
-        effective.mounts.push_back(MountSpec{.source = narrow(path), .guest_path = narrow(path), .read_write = false});
+        effective.mounts.push_back(MountSpec{.source = narrow(path), .guest_path = narrow(path), .read_write = false, .quota_bytes = cap::Limit::unbounded()});
     }
 
     // The relay opens files under `session.mount_roots` on the host side, so each root must be one of the

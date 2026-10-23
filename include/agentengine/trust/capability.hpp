@@ -156,8 +156,27 @@ struct Exec {
     Limit wall_ms_cap;
     Limit memory_bytes_cap;
 };
+// ADR-244 slice 5: a clock capability states its resolution. `finest()` is exact time, `at_resolution(ms)` rounds to
+// ms; there is no default, so `cap::Clock{}` does not compile and a `0` is not a spelling of "exact". DECLARED ONLY:
+// no host function rounds to it yet (the wasm `now` import returns exact milliseconds whatever is granted), so a grant
+// of `at_resolution(n)` narrows what a child may be granted but does not yet coarsen what is read.
+class ClockResolution {
+public:
+    ClockResolution() = delete;
+    [[nodiscard]] static constexpr ClockResolution finest() noexcept { return ClockResolution{std::chrono::milliseconds{0}}; }
+    [[nodiscard]] static constexpr ClockResolution at_resolution(std::chrono::milliseconds ms) noexcept { return ClockResolution{ms}; }
+    [[nodiscard]] constexpr std::chrono::milliseconds ms() const noexcept { return ms_; }
+    [[nodiscard]] constexpr bool is_finest() const noexcept { return ms_.count() == 0; }
+    friend constexpr bool operator==(ClockResolution const&, ClockResolution const&) = default;
+
+private:
+    explicit constexpr ClockResolution(std::chrono::milliseconds ms) noexcept : ms_(ms) {}
+    std::chrono::milliseconds ms_;
+};
+// The compile-time spelling for `cap::decl::Clock<...>` (a tag cannot carry a class-type NTTP through BoundValue).
+inline constexpr std::uint64_t kFinestClockResolutionMs = 0;
 struct Clock {
-    std::chrono::milliseconds resolution{0};       // finer (smaller) resolution = more authority
+    ClockResolution resolution;                    // finer (smaller) resolution = more authority
 };
 struct Entropy {};
 struct EnvRead {
@@ -305,7 +324,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::tool_call:   return cap::ToolCall{};
         case capability_kind::runner_call: return cap::RunnerCall{};
         case capability_kind::exec:        return cap::Exec{"", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded()};
-        case capability_kind::clock:       return cap::Clock{};
+        case capability_kind::clock:       return cap::Clock{cap::ClockResolution::finest()};  // kind-only widest shape
         case capability_kind::entropy:     return cap::Entropy{};
         case capability_kind::env_read:    return cap::EnvRead{};
         case capability_kind::env_write:   return cap::EnvWrite{};
@@ -442,7 +461,7 @@ struct Exec {
     static constexpr agentengine::BoundValue<std::uint64_t> wall_ms_cap = WallMsCap;
     static constexpr agentengine::BoundValue<std::uint64_t> memory_bytes_cap = MemoryBytesCap;
 };
-template <std::uint64_t ResolutionMs = 0>
+template <std::uint64_t ResolutionMs>  // no default: say `cap::kFinestClockResolutionMs` or a real resolution
 struct Clock {};
 struct Entropy {};
 template <agentengine::fixed_string Key>
@@ -533,7 +552,9 @@ template <agentengine::fixed_string Profile, agentengine::BoundValue<std::uint64
 }
 template <std::uint64_t ResolutionMs>
 [[nodiscard]] inline Capability to_capability(cap::decl::Clock<ResolutionMs> const&) {
-    return cap::Clock{std::chrono::milliseconds{ResolutionMs}};
+    return cap::Clock{ResolutionMs == cap::kFinestClockResolutionMs
+                          ? cap::ClockResolution::finest()
+                          : cap::ClockResolution::at_resolution(std::chrono::milliseconds{ResolutionMs})};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::Entropy const&) { return cap::Entropy{}; }
 template <agentengine::fixed_string Key>
@@ -671,7 +692,7 @@ namespace capability_detail {
            cap_covers(parent.memory_bytes_cap, requested.memory_bytes_cap);
 }
 [[nodiscard]] inline bool subsumes_payload(cap::Clock const& parent, cap::Clock const& requested) {
-    return requested.resolution >= parent.resolution;  // coarser-or-equal resolution is narrower
+    return requested.resolution.ms() >= parent.resolution.ms();  // coarser-or-equal resolution is narrower
 }
 [[nodiscard]] inline bool subsumes_payload(cap::Entropy const&, cap::Entropy const&) { return true; }
 [[nodiscard]] inline bool subsumes_payload(cap::EnvRead const& parent, cap::EnvRead const& requested) {

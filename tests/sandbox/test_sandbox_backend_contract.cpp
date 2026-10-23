@@ -93,7 +93,8 @@ int main() {
 
     // (d) MountSpec::source holds a host path.
     {
-        MountSpec mount{.source = std::string{"C:/worktree/session-1"}, .guest_path = "/work"};
+        MountSpec mount{.source = std::string{"C:/worktree/session-1"}, .guest_path = "/work",
+                        .read_write = false, .quota_bytes = cap::Limit::unbounded()};
         AE_CHECK(std::holds_alternative<std::string>(mount.source),
                   "C1: MountSpec::source can be a host path (008 §2's first alternative)");
         AE_CHECK(std::get<std::string>(mount.source) == "C:/worktree/session-1",
@@ -105,7 +106,7 @@ int main() {
         BlobRef blob{.digest = "sha256:deadbeef", .media_type = "application/octet-stream",
                      .size = 4096, .store = "worktree-blobs"};
         MountSpec mount{.source = blob, .guest_path = "/artifacts", .read_write = false,
-                        .quota_bytes = 4096};
+                        .quota_bytes = cap::Limit::at_most(4096)};
         AE_CHECK(std::holds_alternative<BlobRef>(mount.source),
                   "C1: MountSpec::source can be a BlobRef (008 §2's second alternative)");
         AE_CHECK(std::get<BlobRef>(mount.source).digest == "sha256:deadbeef",

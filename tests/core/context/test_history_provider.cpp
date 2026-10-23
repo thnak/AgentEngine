@@ -54,17 +54,17 @@ int main() {
     };
     ae::EffectContext ctx{};
 
-    // --- Window<0> (unbounded) keeps everything, in order -----------------------------------------
+    // --- UnboundedWindow (unbounded) keeps everything, in order -----------------------------------------
     {
-        ae::HistoryProvider<ae::Window<0>> provider;
+        ae::HistoryProvider<ae::UnboundedWindow> provider;
         ae::SessionContext session_ctx{"s-1", principal, history};
         auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(
             provider.on_context(session_ctx, ctx));
         AE_CHECK(out.has_value() && out->messages.size() == 5,
-                 "B2-C1: Window<0> keeps the full history (unbounded default)");
+                 "B2-C1: UnboundedWindow keeps the full history (unbounded default)");
         AE_CHECK(out.has_value() && !out->messages.empty() && text_of(out->messages.front()) == "one" &&
                      text_of(out->messages.back()) == "five",
-                 "B2-C2: Window<0> preserves original order");
+                 "B2-C2: UnboundedWindow preserves original order");
     }
 
     // --- Window<N> keeps exactly the last N messages, dropping older ones -------------------------

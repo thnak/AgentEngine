@@ -175,8 +175,9 @@ int main() {
     assert(memory_item.origin.source == ae::memory_source::user_stated);
 
     // -- Plugin manifest (plugin/plugin.hpp) --
-    ae::PluginManifest manifest{};
-    manifest.id = "demo-plugin";
+    ae::PluginManifest manifest{.id = "demo-plugin", .version = "0.1.0", .world = ae::plugin_world::tool,
+                                .requested_capabilities = {}, .memory_bytes_limit = ae::cap::Limit::unbounded(),
+                                .wall_ms_limit = ae::cap::Limit::unbounded()};
     manifest.world = ae::plugin_world::tool;
     assert(manifest.world == ae::plugin_world::tool);
 

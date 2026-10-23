@@ -6,7 +6,7 @@
 // conversation: every `start_run()` call against the same session appends to its own durable
 // `history_` (005 §3) and that whole accumulated history is what the next turn's `ChatClient` sees
 // (through whatever `HistoryProviderT` the session was built with -- the default,
-// `HistoryProvider<Window<0>>`, is unbounded, matching what's used here).
+// `HistoryProvider<UnboundedWindow>`, is unbounded, matching what's used here).
 //
 // Run: ./agentengine_example_03_multi_turn
 
