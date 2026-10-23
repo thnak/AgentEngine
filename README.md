@@ -13,8 +13,8 @@ runtime configuration objects.
 > **Status: implementation under way, not a finished product.** The design is 30 reviewed RFCs; the code
 > under `include/`, `src/` and `tests/` implements a large part of it, and each gate that was executed is
 > recorded as an ADR in [`decisions/`](decisions/README.md). What is built, and what is not, changes
-> weekly: read [`docs/planning/`](docs/planning/) for the live per-milestone status rather than trusting a
-> summary here. One scope decision up front: AgentEngine does **not** run an HTTP listener. Your host code
+> weekly: [`docs/status.md`](docs/status.md) is the dated snapshot of what you can use today and what blocks
+> production, and [`docs/planning/`](docs/planning/) has the per-milestone detail. One scope decision up front: AgentEngine does **not** run an HTTP listener. Your host code
 > owns the socket and hands the engine parsed requests ([ADR-061](decisions/archive/ADR-061-host-provided-inbound-transport.md)).
 
 ## An agent is a type
@@ -23,7 +23,7 @@ runtime configuration objects.
 struct Researcher : Agent<Researcher,
         ChatClientId<"anthropic:claude-opus-5">,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
-        Capabilities<NetOut<"api.search.example">>,
+        Capabilities<NetOut<"api.search.example", unbounded()>>,
         SandboxProfile<Strict>,
         MaxTurns<12>> {
     static constexpr std::string_view name = "researcher";
@@ -57,7 +57,7 @@ same session wiring:
 ```cpp
 auto built = quickstart::OpenAiSessionBuilder("gpt-4o-mini")
                  .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
-                 .grant(Capability{cap::FsRead{"scratch", "", std::nullopt}})
+                 .grant(Capability{cap::FsRead{"scratch", "", cap::Limit::unbounded()}})
                  .build();
 if (built) { auto reply = built->ask("Compare WASI 0.2 and 0.3."); }
 ```
