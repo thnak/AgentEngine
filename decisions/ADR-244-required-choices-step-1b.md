@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c), 4 (4a, 4b, 4c), most of 5 (caps, engine floors, grant parser, SandboxExec limits) and part of 6 (registry by registration, secret prefix) built. Four red-team rounds, each
+**Status:** Judged (2026-10-23, project-owner sign-off). Design, revision 5; the unbuilt items listed in §5 remain to be built under this ADR; slices 1, 2, 3 (3a, 3b, 3c), 4 (4a, 4b, 4c), most of 5 (caps, engine floors, grant parser, SandboxExec limits) and part of 6 (registry by registration, secret prefix) built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
