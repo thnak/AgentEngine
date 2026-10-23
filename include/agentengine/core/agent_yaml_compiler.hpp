@@ -58,6 +58,7 @@
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_value.hpp"
 #include "agentengine/core/tool_registry.hpp"
+#include "agentengine/trust/capability_yaml.hpp"
 
 namespace agentengine {
 
@@ -267,8 +268,17 @@ template <class Enum, std::size_t N>
         }
     }
 
-    // capabilities / output_schema: see file-top comment for exactly why each stays at its honest
-    // default rather than a fabricated value.
+    // capabilities (ADR-244 §5 step 5, I6): the ceiling a `per_request` agent declares. Parsed strictly into the same
+    // `cap::` values the C++ form produces (trust/capability_yaml.hpp); absent, the ceiling stays empty and a
+    // `per_request` session is refused for it, as for a C++ agent that declares none. An unknown kind or key, a
+    // missing limit or a wrong type is an error, never a skipped entry.
+    if (json::Value const* caps = spec->find("capabilities")) {
+        auto ceiling = trust::parse_capability_ceiling(*caps);
+        if (!ceiling) return std::unexpected(ceiling.error());
+        meta.capability_ceiling = std::move(*ceiling);
+    }
+
+    // output_schema: see file-top comment for exactly why it stays at its honest default rather than a fabricated value.
     return meta;
 }
 

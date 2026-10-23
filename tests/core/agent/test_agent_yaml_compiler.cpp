@@ -61,7 +61,8 @@ spec:
     - code_interpreter
     - handoff: writer
   capabilities:
-    net_out: ["api.search.example"]
+    net_out:
+      - { hosts: ["api.search.example:443:https"], byte_cap: 1048576, methods: [GET] }
   sandbox:
     profile: strict
   limits:
@@ -103,8 +104,9 @@ spec:
                 check(compiled_meta.tools.descriptors().empty(),
                       "F-1: tools is HONESTLY empty -- no tool-name registry and no runtime ToolTable "
                       "builder exist yet, named not fabricated");
-                check(compiled_meta.capability_ceiling.empty(),
-                      "F-1: capability_ceiling is HONESTLY empty for the identical reason");
+                check(compiled_meta.capability_ceiling.size() == 1 &&
+                          std::holds_alternative<ae::cap::NetOut>(compiled_meta.capability_ceiling[0]),
+                      "F-1: capability_ceiling <- spec.capabilities (one net_out entry, ADR-244 §5 step 5)");
                 check(!compiled_meta.output_schema_json.has_value(),
                       "F-1: output_schema_json stays unset -- the document only supplies a $ref to an "
                       "external file, which this compiler does not resolve");
@@ -285,6 +287,34 @@ spec:
             check(missing.error().code == "agent.tool_not_found_in_registry",
                   "F-6c: rejected with the real, specific error_code");
         }
+    }
+
+    // --- F-7 (ADR-244 §5 step 5, I6): spec.capabilities is the agent's declared ceiling ----------------------------
+    {
+        std::string const head = "spec:\n  capabilities:\n";
+        auto with_caps = ae::compile_agent_document(*yaml::parse(
+            head + "    fs_read:\n      - { mount: work, path_prefix: /src, size_cap_bytes: 1024 }\n"
+                   "    net_out:\n      - { hosts: [\"h:443:https\"], byte_cap: unbounded, methods: any }\n"));
+        check(with_caps.has_value() && with_caps->capability_ceiling.size() == 2,
+              "F-7: a valid capabilities block becomes the metadata's capability_ceiling");
+        if (with_caps) {
+            ae::CapabilitySet const ceiling = ae::CapabilitySet::grant_root(with_caps->capability_ceiling);
+            check(ceiling.contains(ae::Capability{ae::cap::FsRead{"work", "/src/a.txt", ae::cap::Limit::at_most(512)}}),
+                  "F-7: the declared ceiling covers a narrower request");
+            check(!ceiling.contains(ae::Capability{ae::cap::FsRead{"work", "/src", ae::cap::Limit::at_most(4096)}}),
+                  "F-7: and refuses one larger than the document stated");
+        }
+
+        auto typo = ae::compile_agent_document(*yaml::parse(head + "    fs_wirte:\n      - { mount: w }\n"));
+        check(!typo.has_value() && typo.error().code == "capabilities.unsupported_kind",
+              "F-7: a misspelt capability kind fails the compile, it is not skipped");
+        auto uncapped = ae::compile_agent_document(
+            *yaml::parse(head + "    fs_read:\n      - { mount: work, path_prefix: /src }\n"));
+        check(!uncapped.has_value() && uncapped.error().code == "choice.missing.grant.size_cap_bytes",
+              "F-7: a capability with no stated limit fails the compile");
+        auto none = ae::compile_agent_document(*yaml::parse("spec:\n  approval: never_require\n"));
+        check(none.has_value() && none->capability_ceiling.empty(),
+              "F-7: no capabilities block leaves the ceiling empty (a per_request session is refused for it)");
     }
 
     if (g_failures == 0) {
