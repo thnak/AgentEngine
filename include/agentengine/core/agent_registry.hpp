@@ -30,6 +30,7 @@
 // `SandboxProfileArg` concept — a real `SandboxBackend`, or `Strict`, sandbox/sandbox.hpp's renamed,
 // now-real resolution selector) rather than picked unilaterally inline, per CLAUDE.md.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -67,13 +68,18 @@ struct AgentMetadata {  // ae-naming-lint: allow AgentMetadata — pre-existing 
     std::string chat_client_id;
     ToolTable tools;
     std::vector<Capability> capability_ceiling;
-    std::uint32_t max_turns = 16;                  // 002 §3 table default
-    std::optional<std::uint64_t> token_budget;      // nullopt = unbounded (002 §3 table default)
-    approval_mode approval = approval_mode::policy_driven;      // 002 §3 table default
-    concurrency_mode concurrency = concurrency_mode::sequential; // 002 §3 table default
+    // ADR-244 §2.2 (slice 4b): the five choices 002 §3 used to default are `nullopt` until stated, and
+    // `validate_agent_metadata` fails an unstated one with `choice.missing.<field>` listing the options. A
+    // turn cap or budget is a `Bound` (`unbounded()` is a value the developer states; `nullopt` is "never
+    // chosen", no longer "unbounded"). `telemetry` stays defaulted: nothing but the harness enforces it
+    // (ADR-244 §5, "unenforced, so optional").
+    std::optional<Bound<std::uint64_t>> max_turns;
+    std::optional<Bound<std::uint64_t>> token_budget;
+    std::optional<approval_mode> approval;
+    std::optional<concurrency_mode> concurrency;
     telemetry_capture telemetry = telemetry_capture::metadata_only; // 002 §3 table default
     std::optional<std::uint32_t> stateless_pool_size;  // nullopt = off (002 §3 table default)
-    SandboxProfileDescriptor sandbox_profile;          // is_strict=true default (002 §3 table default)
+    std::optional<SandboxProfileDescriptor> sandbox_profile;
     // Milestone 5 Phase B5: 003 §4's OutputSchema<T> contract, compiled to JSON Schema text; nullopt
     // when the agent declared no OutputSchema<T>. `output_schema_strategy` is nullopt whenever
     // `output_schema_json` is nullopt (nothing to enforce) OR no `ChatClientRegistry` was supplied
@@ -97,30 +103,45 @@ struct policy_chat_client_id<ChatClientId<Id>> {
     static std::string_view get() { return ChatClientId<Id>::id; }
 };
 
+// ADR-244 slice 4b: `declared` is the compile-time "this tag is present", which the `static_assert`s in
+// `compiler::run` read; `get()` is the value.
 template <class Policy>
 struct policy_max_turns {
-    static std::optional<std::uint32_t> get() { return std::nullopt; }
+    static constexpr bool declared = false;
+    static std::optional<Bound<std::uint64_t>> get() { return std::nullopt; }
 };
-template <std::uint32_t N>
-struct policy_max_turns<MaxTurns<N>> {
-    static std::optional<std::uint32_t> get() { return N; }
+template <BoundValue<std::uint64_t> B>
+struct policy_max_turns<MaxTurns<B>> {
+    static constexpr bool declared = true;
+    static std::optional<Bound<std::uint64_t>> get() { return B.to_bound(); }
 };
 
 template <class Policy>
 struct policy_token_budget {
-    static std::optional<std::uint64_t> get() { return std::nullopt; }
+    static constexpr bool declared = false;
+    static std::optional<Bound<std::uint64_t>> get() { return std::nullopt; }
 };
-template <std::uint64_t N>
-struct policy_token_budget<TokenBudget<N>> {
-    static std::optional<std::uint64_t> get() { return N; }
+template <BoundValue<std::uint64_t> B>
+struct policy_token_budget<TokenBudget<B>> {
+    static constexpr bool declared = true;
+    static std::optional<Bound<std::uint64_t>> get() { return B.to_bound(); }
 };
+
+// Agent approval is `Approval<M>` only: `ApprovalChosenByHost` (slice 4a) is a tool tag, where the host wires
+// the tool; an agent's own mode is the developer's statement in the declaration.
+template <class Policy>
+struct policy_agent_approval : std::false_type {};
+template <approval_mode M>
+struct policy_agent_approval<Approval<M>> : std::true_type {};
 
 template <class Policy>
 struct policy_concurrency {
+    static constexpr bool declared = false;
     static std::optional<concurrency_mode> get() { return std::nullopt; }
 };
 template <concurrency_mode M>
 struct policy_concurrency<Concurrency<M>> {
+    static constexpr bool declared = true;
     static std::optional<concurrency_mode> get() { return M; }
 };
 
@@ -161,10 +182,12 @@ struct policy_output_schema<OutputSchema<T>> {
 // not a value), so this is where that information gets turned into data.
 template <class Policy>
 struct policy_sandbox_profile {
+    static constexpr bool declared = false;
     static std::optional<SandboxProfileDescriptor> get() { return std::nullopt; }
 };
 template <SandboxProfileArg P>
 struct policy_sandbox_profile<SandboxProfile<P>> {
+    static constexpr bool declared = true;
     static std::optional<SandboxProfileDescriptor> get() {
         if constexpr (std::same_as<P, Strict>) {
             return SandboxProfileDescriptor{.is_strict = true, .traits = {}};
@@ -219,17 +242,17 @@ template <class... Policies>
 }
 
 template <class... Policies>
-[[nodiscard]] std::uint32_t max_turns_of() {
-    std::uint32_t value = 16;
+[[nodiscard]] std::optional<Bound<std::uint64_t>> max_turns_of() {
+    std::optional<Bound<std::uint64_t>> value;
     ([&value] {
-        if (auto v = policy_max_turns<Policies>::get(); v.has_value()) value = *v;
+        if (auto v = policy_max_turns<Policies>::get(); v.has_value()) value = v;
     }(), ...);
     return value;
 }
 
 template <class... Policies>
-[[nodiscard]] std::optional<std::uint64_t> token_budget_of() {
-    std::optional<std::uint64_t> value;
+[[nodiscard]] std::optional<Bound<std::uint64_t>> token_budget_of() {
+    std::optional<Bound<std::uint64_t>> value;
     ([&value] {
         if (auto v = policy_token_budget<Policies>::get(); v.has_value()) value = v;
     }(), ...);
@@ -237,22 +260,21 @@ template <class... Policies>
 }
 
 template <class... Policies>
-[[nodiscard]] approval_mode approval_of() {
-    // Same tag, same extraction mechanism as Tool's (tool_detail::policy_approval) -- Agent's own
-    // default (policy_driven) differs from Tool's (never_require, core/tool.hpp), a difference in
-    // the owning context's default, not a second definition of Approval<M> itself.
-    approval_mode mode = approval_mode::policy_driven;
+[[nodiscard]] std::optional<approval_mode> approval_of() {
+    // Same tag, same extraction mechanism as Tool's (tool_detail::policy_approval). No default for either an
+    // agent or a tool (ADR-244 slices 4a/4b); absent is `nullopt`.
+    std::optional<approval_mode> mode;
     ([&mode] {
-        if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = *m;
+        if (auto m = tool_detail::policy_approval<Policies>::get(); m.has_value()) mode = m;
     }(), ...);
     return mode;
 }
 
 template <class... Policies>
-[[nodiscard]] concurrency_mode concurrency_of() {
-    concurrency_mode value = concurrency_mode::sequential;
+[[nodiscard]] std::optional<concurrency_mode> concurrency_of() {
+    std::optional<concurrency_mode> value;
     ([&value] {
-        if (auto v = policy_concurrency<Policies>::get(); v.has_value()) value = *v;
+        if (auto v = policy_concurrency<Policies>::get(); v.has_value()) value = v;
     }(), ...);
     return value;
 }
@@ -284,16 +306,40 @@ template <class... Policies>
     return value;
 }
 
-// 002 §3 table default (`Strict`) when no `SandboxProfile<P>` tag is declared at all -- absence is a
-// real, meaningful default here (unlike `Stateless<N>`'s absence-off, 002 §9 Q3), so this returns a
-// value directly rather than an `std::optional` a caller might mistake for "unspecified."
+// ADR-244 slice 4b: absence is `nullopt`, not `Strict` -- the strictness is a stated choice (002 §3's old
+// default, and `Strict`'s own eligibility, are the developer's to make).
 template <class... Policies>
-[[nodiscard]] SandboxProfileDescriptor sandbox_profile_of() {
+[[nodiscard]] std::optional<SandboxProfileDescriptor> sandbox_profile_of() {
     std::optional<SandboxProfileDescriptor> value;
     ([&value] {
         if (auto v = policy_sandbox_profile<Policies>::get(); v.has_value()) value = v;
     }(), ...);
-    return value.value_or(SandboxProfileDescriptor{});
+    return value;
+}
+
+// -- ADR-244 §2.1 option tables (slice 4b) -----------------------------------------------------------------
+// One table per enumerated choice; `choice_missing` lists it, and a parser reads the same table so an option
+// added to one is in the other.
+namespace agent_choice_options {
+inline constexpr std::array<std::string_view, 2> bound   = {"at_most(<n>)", "unbounded()"};
+inline constexpr std::array<std::string_view, 3> approval = {"never_require", "always_require", "policy_driven"};
+inline constexpr std::array<std::string_view, 2> concurrency = {"sequential", "parallel"};
+inline constexpr std::array<std::string_view, 2> sandbox_profile = {"strict", "a named SandboxBackend"};
+inline constexpr std::array<std::string_view, 1> sandbox_backend = {
+    "register a backend with SandboxBackendRegistry::register_backend(name, instance)"};
+}  // namespace agent_choice_options
+
+// The five choices 002 §3 used to default. Each fails `choice.missing.<field>` listing its options.
+[[nodiscard]] inline result<void> check_required_choices(AgentMetadata const& meta) {
+    namespace opt = agent_choice_options;
+    if (!meta.max_turns.has_value()) return std::unexpected(choice_missing("max_turns", opt::bound));
+    if (!meta.token_budget.has_value()) return std::unexpected(choice_missing("token_budget", opt::bound));
+    if (!meta.approval.has_value()) return std::unexpected(choice_missing("approval", opt::approval));
+    if (!meta.concurrency.has_value()) return std::unexpected(choice_missing("concurrency", opt::concurrency));
+    if (!meta.sandbox_profile.has_value()) {
+        return std::unexpected(choice_missing("sandbox_profile", opt::sandbox_profile));
+    }
+    return {};
 }
 
 // -- 002 §6 validation checks ---------------------------------------------------------------------
@@ -355,24 +401,23 @@ template <class... Policies>
     return {};
 }
 
-// ADR-012, real per docs/planning/sandbox-backend-registry-design-draft.md (Revision 2). When `P`
-// named a concrete backend type directly, `SandboxProfileArg<P>` already required
-// `SandboxBackend<P>` at `SandboxProfile<P>`'s own declaration site (compile time) -- a type that
-// doesn't satisfy the concept, or isn't even includable in this build (e.g. a wasm backend type
-// without AGENTENGINE_WITH_WASM), fails to compile before `register_agent<A>()` is ever
-// instantiated, so there is no runtime "unavailable" case left to check for that branch;
-// `desc.is_strict == false` here is proof enough by construction. `Strict` is the branch genuinely
-// deferred until a registry is supplied: with none (`registry == nullptr`), this stays the pre-M2
-// always-pass stub -- an honest "not evaluated," not a silent pass dressed up as enforcement, the
-// same shape `check_chat_client_credentials` above already uses. With one supplied, `Strict`
-// resolves against the registry's real, registered candidates (`SandboxBackendRegistry::
-// resolve_strict()`, sandbox/sandbox_backend_registry.hpp) -- `nullopt`/error there becomes 008 §3's
-// "no fallback -> startup fails" case here, for real.
+// ADR-012, real per docs/planning/sandbox-backend-registry-design-draft.md (Revision 2); ADR-244 slice 4b made the
+// registry a required argument. When `P` named a concrete backend type directly, `SandboxProfileArg<P>` already
+// required `SandboxBackend<P>` at `SandboxProfile<P>`'s own declaration site (compile time), so
+// `desc.is_strict == false` is proof enough by construction. `Strict` resolves against the registry's real,
+// registered candidates (`SandboxBackendRegistry::resolve_strict()`, sandbox/sandbox_backend_registry.hpp) --
+// `nullopt`/error there is 008 §3's "no fallback -> startup fails" case, for real. An empty registry is refused
+// first (`choice.missing.sandbox_backend`): the host registers each backend it chose, and none was.
 [[nodiscard]] inline result<void> check_sandbox_profile_availability(
-        SandboxProfileDescriptor const& desc, SandboxBackendRegistry const* registry) {
-    if (registry == nullptr) return {};
+        SandboxProfileDescriptor const& desc, SandboxBackendRegistry const& registry) {
+    // ADR-244 §2.2 (slice 4b): a registry nothing was registered in is a choice nobody made -- the host registers
+    // each backend it chose, and there is no default registry to fall back on. Refused for a concrete-backend
+    // profile as well (the registry is where the host states which backends exist).
+    if (registry.empty()) {
+        return std::unexpected(choice_missing("sandbox_backend", agent_choice_options::sandbox_backend));
+    }
     if (!desc.is_strict) return {};
-    return registry->resolve_strict(current_platform()).transform([](auto*) { return; });
+    return registry.resolve_strict(current_platform()).transform([](auto*) { return; });
 }
 
 // Stubbed: needs a per-tool backend-declaration policy tag that does not exist yet
@@ -458,7 +503,7 @@ concept has_agent_version = requires { { A::version } -> std::convertible_to<std
 template <class A, class... Policies>
 struct compiler<A, Agent<A, Policies...>> {
     [[nodiscard]] static result<AgentMetadata> run(ChatClientRegistry const* registry,
-                                                     SandboxBackendRegistry const* sandbox_registry) {
+                                                     SandboxBackendRegistry const& sandbox_registry) {
         AgentMetadata meta;
         meta.agent_name = std::string(A::name);
         meta.agent_instructions = std::string(A::instructions);
@@ -480,8 +525,22 @@ struct compiler<A, Agent<A, Policies...>> {
             return std::unexpected(r.error());
         }
 
+        // ADR-244 §2.2 (slice 4b): each of the five choices is stated in the declaration. A missing tag is a
+        // compile error here, not the runtime `choice.missing.*` a hand-built or YAML-built `AgentMetadata`
+        // gets from `validate_agent_metadata`.
+        static_assert((policy_max_turns<Policies>::declared || ...),
+                      "Agent declares no MaxTurns<at_most(n)> or MaxTurns<unbounded()> (ADR-244: a turn cap is chosen)");
+        static_assert((policy_token_budget<Policies>::declared || ...),
+                      "Agent declares no TokenBudget<at_most(n)> or TokenBudget<unbounded()> (ADR-244: a budget is chosen)");
+        static_assert((policy_agent_approval<Policies>::value || ...),
+                      "Agent declares no Approval<approval_mode::...> (ADR-244: an approval mode is chosen)");
+        static_assert((policy_concurrency<Policies>::declared || ...),
+                      "Agent declares no Concurrency<concurrency_mode::...> (ADR-244: concurrency is chosen)");
+        static_assert((policy_sandbox_profile<Policies>::declared || ...),
+                      "Agent declares no SandboxProfile<Strict | Backend> (ADR-244: strictness is chosen)");
+
         meta.sandbox_profile = sandbox_profile_of<Policies...>();
-        if (auto r = check_sandbox_profile_availability(meta.sandbox_profile, sandbox_registry); !r) {
+        if (auto r = check_sandbox_profile_availability(*meta.sandbox_profile, sandbox_registry); !r) {
             return std::unexpected(r.error());
         }
         if (auto r = check_tool_sandbox_profile_compatibility(); !r) return std::unexpected(r.error());
@@ -491,6 +550,10 @@ struct compiler<A, Agent<A, Policies...>> {
         meta.approval = approval_of<Policies...>();
         meta.concurrency = concurrency_of<Policies...>();
         meta.telemetry = telemetry_of<Policies...>();
+        // Zero is refused at the declaration by `at_most`'s consteval; the runtime check covers a hand-built
+        // `BoundValue{0, false}` and keeps this path on the same rule as the others.
+        if (auto r = check_bound("max_turns", *meta.max_turns); !r) return std::unexpected(r.error());
+        if (auto r = check_bound("token_budget", *meta.token_budget); !r) return std::unexpected(r.error());
 
         meta.output_schema_json = output_schema_of<Policies...>();
         if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id);
@@ -540,6 +603,10 @@ struct agent_output_schema<Agent<A, Policies...>> {
 
 }  // namespace agent_detail
 
+// ADR-244 slice 4b: the option tables (`agent_detail::agent_choice_options`) are read by the spawn path and by the
+// declarative parsers as well, so they are named at namespace scope.
+namespace agent_choice_options = agent_detail::agent_choice_options;
+
 // decisions/archive/ADR-226: `OutputSchema<T>`'s `T` for agent `A`, or `void` when `A` declares none.
 template <class A>
 // ae-naming-lint: allow agent_output_schema_t — ADR-226; 027 not yet updated
@@ -558,22 +625,22 @@ using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_d
 // (`std::is_empty_v<A>`) and so can only run in `register_agent<A>()`; a declarative document has no
 // `Stateless` field to get wrong.
 [[nodiscard]] inline result<void> validate_agent_metadata(AgentMetadata const& meta,
-                                                          ChatClientRegistry const* registry = nullptr,
-                                                          SandboxBackendRegistry const* sandbox_registry = nullptr) {
+                                                          ChatClientRegistry const* registry,
+                                                          SandboxBackendRegistry const& sandbox_registry) {
     using namespace agent_detail;
+    // ADR-244 §2.2 (slice 4b): a choice nobody made is a named error before anything about its value.
+    if (auto r = check_required_choices(meta); !r) return r;
     // ADR-244 §2.1: zero is refused at every check site -- a turn cap or budget of 0 is not "none allowed" (that
-    // has its own mechanism) and not "unset". Both surfaces arrive here (I6), so `MaxTurns<0>` and YAML
-    // `max_turns: 0` are refused alike (the YAML compiler also refuses it at parse).
-    if (auto r = check_bound("max_turns", Bound<std::uint64_t>::at_most(meta.max_turns)); !r) return r;
-    if (meta.token_budget.has_value()) {
-        if (auto r = check_bound("token_budget", Bound<std::uint64_t>::at_most(*meta.token_budget)); !r) return r;
-    }
+    // has its own mechanism) and not "unset". Both surfaces arrive here (I6), so `at_most(0)` and YAML
+    // `max_turns: 0` are refused alike (the CRTP path also refuses it at compile time, `at_most` is consteval).
+    if (auto r = check_bound("max_turns", *meta.max_turns); !r) return r;
+    if (auto r = check_bound("token_budget", *meta.token_budget); !r) return r;
     if (auto r = check_chat_client_id(meta.chat_client_id); !r) return r;
     if (auto r = check_chat_client_credentials(meta.chat_client_id, registry); !r) return r;
     if (auto r = check_tool_name_collision(meta.tools.descriptors()); !r) return r;
     CapabilitySet const ceiling = CapabilitySet::grant_root(meta.capability_ceiling);
     if (auto r = check_capability_ceiling(ceiling, meta.tools.descriptors()); !r) return r;
-    if (auto r = check_sandbox_profile_availability(meta.sandbox_profile, sandbox_registry); !r) return r;
+    if (auto r = check_sandbox_profile_availability(*meta.sandbox_profile, sandbox_registry); !r) return r;
     if (auto r = check_tool_sandbox_profile_compatibility(); !r) return r;
     if (auto r = check_output_schema_enforceable(meta.output_schema_json, registry, meta.chat_client_id); !r) {
         return r;
@@ -586,20 +653,13 @@ using agent_output_schema_t = typename agent_detail::agent_output_schema<agent_d
 // fast" -- `A` must derive from `Agent<A, Policies...>` for some Policies pack (any other type fails
 // to compile here, not at some later use site).
 //
-// Milestone 5 Phase B6: `registry` is additive and defaults to `nullptr`, so every pre-M5 call site
-// (`register_agent<A>()`, no arguments) keeps compiling and keeps its pre-M5 stubbed-check
-// behavior unchanged -- passing a real `ChatClientRegistry` opts a caller into the real
-// credential/OutputSchema-enforceability checks (agent_detail::compiler::run, above).
-//
-// docs/planning/sandbox-backend-registry-design-draft.md (Revision 2): `sandbox_registry` is a
-// second, independent additive parameter, same "opts a caller into the real check, unaffected
-// otherwise" contract as `registry` above -- every existing one-arg or zero-arg call site is
-// unaffected; passing a real `SandboxBackendRegistry` opts a caller into `Strict` actually
-// resolving against real, registered backends (check_sandbox_profile_availability, above) instead
-// of the pre-registry always-pass stub.
+// `registry` (the chat clients the agent may bind) may be `nullptr`: the credential and OutputSchema checks are then
+// the honest "not evaluated" (milestone 5 phase B6). `sandbox_registry` is required (ADR-244 slice 4b, no
+// `nullptr` default, no default registry): `Strict` resolves against it and an empty one is
+// `choice.missing.sandbox_backend`.
 template <class A>
-[[nodiscard]] result<AgentMetadata> register_agent(ChatClientRegistry const* registry = nullptr,
-                                                     SandboxBackendRegistry const* sandbox_registry = nullptr) {
+[[nodiscard]] result<AgentMetadata> register_agent(ChatClientRegistry const* registry,
+                                                     SandboxBackendRegistry const& sandbox_registry) {
     return agent_detail::compiler<A, agent_detail::agent_base_t<A>>::run(registry, sandbox_registry);
 }
 

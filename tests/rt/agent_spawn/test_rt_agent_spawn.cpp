@@ -66,6 +66,7 @@
 #include "agentengine/rt/agent_spawn.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/delegated_approval_policy.hpp"
+#include "../../support/agent_options.hpp"
 
 using agentengine::AgentMetadata;
 using agentengine::CapabilitySet;
@@ -209,7 +210,7 @@ static_assert(agentengine::ChatClient<ScriptedChatClient>);
 // `mint_spawn_worktree` needs neither for `scratch` (core/agent_spawn_worktree.hpp).
 [[nodiscard]] SpawnTargetDescriptor make_helper_target(std::string child_reply_text) {
     SpawnTargetDescriptor d;
-    d.metadata          = AgentMetadata{};
+    d.metadata          = ae_test::stated_metadata();
     d.spawn_cost         = 1;
     d.worktree_mode       = agentengine::sharing_mode::scratch;
     d.child_token_budget = 1000;
@@ -276,7 +277,7 @@ static_assert(agentengine::ContextProvider<ChildPolicyHistoryProvider>);
 [[nodiscard]] SpawnTargetDescriptor make_policy_gated_target(agentengine::PolicyDecider policy_decider,
                                                                 agentengine::ApprovalDecider approval_decider = {}) {
     SpawnTargetDescriptor d;
-    d.metadata           = AgentMetadata{};
+    d.metadata           = ae_test::stated_metadata();
     d.spawn_cost          = 1;
     d.worktree_mode        = agentengine::sharing_mode::scratch;
     d.child_token_budget  = 1000;

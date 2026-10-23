@@ -64,6 +64,7 @@
 #include "agentengine/rt/agent_workflow_executor.hpp"
 #include "agentengine/rt/workflow_as_chat_client.hpp"
 #include "agentengine/rt/workflow_as_executor.hpp"
+#include "../../support/agent_options.hpp"
 
 using namespace agentengine;
 using agentengine::rt::AgentSession;
@@ -286,7 +287,7 @@ ChainResult run_chain(ChainOptions const& opt) {
     g_tracker = &tracker;
 
     SpawnTargetDescriptor b;
-    b.metadata = AgentMetadata{};
+    b.metadata = ae_test::stated_metadata();
     b.metadata.capability_ceiling = {cap::AgentCall{"C", trust::SpawnBudget::mint_root(2)}};
     b.worktree_mode = sharing_mode::scratch;
     b.child_token_budget = opt.b_child_budget;
@@ -302,7 +303,7 @@ ChainResult run_chain(ChainOptions const& opt) {
             });
     };
     SpawnTargetDescriptor cdesc;
-    cdesc.metadata = AgentMetadata{};
+    cdesc.metadata = ae_test::stated_metadata();
     cdesc.worktree_mode = sharing_mode::scratch;
     cdesc.child_token_budget = 1'000'000;
     cdesc.unattended_operator = opt.c_unattended;
@@ -536,6 +537,7 @@ FanResult run_fan(std::uint64_t a_budget, Principal root, ApprovedLessonRegistry
     g_registry = &registry;
     g_tracker = &tracker;
     SpawnTargetDescriptor b;
+    b.metadata = ae_test::stated_metadata();
     b.metadata.capability_ceiling = {cap::AgentCall{"C", trust::SpawnBudget::mint_root(2)}};
     b.worktree_mode = sharing_mode::scratch;
     b.child_token_budget = 1'000'000;
@@ -546,6 +548,7 @@ FanResult run_fan(std::uint64_t a_budget, Principal root, ApprovedLessonRegistry
                                                                                [](FanClient& c) { c.label = "B"; });
     };
     SpawnTargetDescriptor cd;
+    cd.metadata = ae_test::stated_metadata();
     cd.worktree_mode = sharing_mode::scratch;
     cd.child_token_budget = 1'000'000;
     cd.run_child = [](std::string id, ChildSpawnRequest req) {
@@ -720,6 +723,7 @@ struct DirectSpawn {
         pool.initialize(pool_tokens);
         pump = std::make_unique<SpawnPump<InMemoryAppendLogStore>>(pool, store);
         SpawnTargetDescriptor d;
+        d.metadata = ae_test::stated_metadata();
         d.worktree_mode = sharing_mode::scratch;
         d.run_child = [this](std::string, ChildSpawnRequest) -> rt::task<result<rt::AgentResponse>> {
             ++child_runs;
@@ -766,6 +770,7 @@ struct DropSpawn {
         pool.initialize(100);
         pump = std::make_unique<SpawnPump<InMemoryAppendLogStore>>(pool, store);
         SpawnTargetDescriptor d;
+        d.metadata = ae_test::stated_metadata();
         d.worktree_mode = sharing_mode::scratch;
         d.run_child = [this](std::string id, ChildSpawnRequest req) -> rt::task<result<rt::AgentResponse>> {
             last_child_id = id;
@@ -1624,7 +1629,7 @@ int main() {
         g_registry = &registry;
         g_tracker = &tracker;
         SpawnTargetDescriptor b;
-        b.metadata = AgentMetadata{};
+        b.metadata = ae_test::stated_metadata();
         b.metadata.capability_ceiling = {cap::AgentCall{"C", trust::SpawnBudget::mint_root(2)}};
         b.worktree_mode = sharing_mode::scratch;
         b.run_child = [&to_a, record](std::string id, ChildSpawnRequest req) {
@@ -1636,7 +1641,7 @@ int main() {
                 });
         };
         SpawnTargetDescriptor cdesc;
-        cdesc.metadata = AgentMetadata{};
+        cdesc.metadata = ae_test::stated_metadata();
         cdesc.worktree_mode = sharing_mode::scratch;
         cdesc.run_child = [&to_b, record](std::string id, ChildSpawnRequest req) {
             record(to_b, req, 777);

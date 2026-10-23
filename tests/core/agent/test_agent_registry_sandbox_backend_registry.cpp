@@ -1,5 +1,6 @@
 // Proves docs/planning/sandbox-backend-registry-design-draft.md (Revision 2)'s wiring into
-// register_agent<A>(): the second, independent, additive SandboxBackendRegistry const* parameter.
+// register_agent<A>(): the SandboxBackendRegistry parameter, required since ADR-244 slice 4b (no `nullptr` default;
+// an empty registry is `choice.missing.sandbox_backend`).
 // SandboxBackendRegistry itself is proven separately (test_sandbox_backend_registry.cpp); this file
 // proves check_sandbox_profile_availability() actually consults it through the real
 // compiler<A,...>::run() call chain (agent_registry.hpp), and that a concrete-backend
@@ -55,14 +56,23 @@ struct AvailableBackend {
 
 // No SandboxProfile<...> tag -- 002 §3's table default, Strict.
 struct StrictAgent
-    : agentengine::Agent<StrictAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">> {
+    : agentengine::Agent<StrictAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "strict-agent";
     static constexpr std::string_view instructions = "Defaults to SandboxProfile<Strict>.";
 };
 
 struct ConcreteAgent
     : agentengine::Agent<ConcreteAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::SandboxProfile<ConcreteBackend>> {
+                         agentengine::SandboxProfile<ConcreteBackend>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>> {
     static constexpr std::string_view name = "concrete-agent";
     static constexpr std::string_view instructions = "Names a concrete backend directly.";
 };
@@ -73,54 +83,63 @@ int main() {
     using agentengine::register_agent;
     using agentengine::SandboxBackendRegistry;
 
-    // ---- No SandboxBackendRegistry supplied: Strict stays the honest pre-registry stub, unaffected
-    //      by this change -- every pre-existing zero/one-arg call site keeps passing. -------------
-    {
-        auto meta = register_agent<StrictAgent>();  // zero-arg, exactly like every pre-existing site
-        check(meta.has_value(),
-              "with no SandboxBackendRegistry supplied, Strict still registers cleanly "
-              "(pre-registry always-pass stub, unaffected by this wiring)");
-    }
-
-    // ---- A SandboxBackendRegistry supplied, but empty: Strict now fails closed for real. ---------
+    // ---- ADR-244 slice 4b (flipped): the registry is required, and an EMPTY one is a choice nobody made. Before,
+    //      a null registry made Strict "not evaluated" and an empty one failed with the resolver's own code.
     {
         SandboxBackendRegistry empty_registry;
-        auto meta = register_agent<StrictAgent>(nullptr, &empty_registry);
-        check(!meta.has_value(),
-              "with a SandboxBackendRegistry supplied and nothing registered, Strict now fails "
-              "closed for real (008 §3's 'no fallback -> startup fails'), not a silent pass");
+        auto meta = register_agent<StrictAgent>(nullptr, empty_registry);
+        check(!meta.has_value() && meta.error().code == "choice.missing.sandbox_backend",
+              "an empty SandboxBackendRegistry fails choice.missing.sandbox_backend, naming how to register one");
         if (!meta.has_value()) {
-            check(meta.error().code == "sandbox_backend_registry.no_strict_candidate",
-                  "the real registry error code surfaces through register_agent<A>() unmodified");
+            check(meta.error().message.find("register_backend") != std::string::npos,
+                  "... and the message lists the option (register a backend)");
         }
     }
 
-    // ---- A SandboxBackendRegistry supplied with a real, current-platform-supporting backend:
-    //      Strict resolves and registration succeeds. -------------------------------------------
+    // ---- A registry with entries, none of them able to win Strict: the resolver's own error, unmodified. ------
+    {
+        SandboxBackendRegistry registry;
+        auto registered = registry.register_backend("named-only", std::make_shared<AvailableBackend>(),
+                                                    agentengine::strict_eligibility::named_only);
+        check(registered.has_value(), "setup: registering a named-only backend succeeds");
+        auto meta = register_agent<StrictAgent>(nullptr, registry);
+        check(!meta.has_value() && meta.error().code == "sandbox_backend_registry.no_strict_candidate",
+              "Strict against a registry with no strict-eligible backend fails closed (008 §3's 'no fallback -> "
+              "startup fails'), with the resolver's own code");
+    }
+
+    // ---- A real, current-platform-supporting backend: Strict resolves and registration succeeds. ------------
     {
         SandboxBackendRegistry registry;
         auto instance = std::make_shared<AvailableBackend>();
         auto registered = registry.register_backend("available", instance);
         check(registered.has_value(), "setup: registering a real backend succeeds");
 
-        auto meta = register_agent<StrictAgent>(nullptr, &registry);
+        auto meta = register_agent<StrictAgent>(nullptr, registry);
         check(meta.has_value(),
-              "with a SandboxBackendRegistry supplied and a current-platform-supporting backend "
-              "registered, Strict resolves for real and registration succeeds");
+              "with a current-platform-supporting backend registered, Strict resolves for real and registration "
+              "succeeds");
     }
 
-    // ---- A concrete SandboxProfile<P> is unaffected by the registry either way -- proven at
-    //      compile time already, so an empty registry never rejects it. -------------------------
+    // ---- A concrete SandboxProfile<P> never consults WHICH backends are registered (its availability was proven at
+    //      compile time, ADR-012), but the registry must exist: empty is refused, non-empty registers. ----------
     {
         SandboxBackendRegistry empty_registry;
-        auto meta = register_agent<ConcreteAgent>(nullptr, &empty_registry);
+        auto refused = register_agent<ConcreteAgent>(nullptr, empty_registry);
+        check(!refused.has_value() && refused.error().code == "choice.missing.sandbox_backend",
+              "a concrete SandboxProfile<P> agent against an EMPTY registry is refused too (ADR-244 slice 4b: the "
+              "registry is where the host states which backends exist)");
+
+        SandboxBackendRegistry registry;
+        auto registered = registry.register_backend("elsewhere", std::make_shared<AvailableBackend>(),
+                                                    agentengine::strict_eligibility::named_only);
+        check(registered.has_value(), "setup: registering an unrelated backend succeeds");
+        auto meta = register_agent<ConcreteAgent>(nullptr, registry);
         check(meta.has_value(),
-              "a concrete SandboxProfile<P> agent registers cleanly even against an empty "
-              "SandboxBackendRegistry -- its availability was already proven at compile time "
-              "(ADR-012), so check_sandbox_profile_availability() never consults the registry for "
-              "this shape");
+              "a concrete SandboxProfile<P> agent registers against a non-empty registry that does not hold its own "
+              "backend (ADR-012: availability is a compile-time fact, not a registry lookup)");
         if (meta.has_value()) {
-            check(!meta->sandbox_profile.is_strict && meta->sandbox_profile.traits.strength == 5,
+            check(!meta->sandbox_profile->is_strict && meta->sandbox_profile->traits.strength == 5,
                   "the compiled metadata still carries the real, concrete backend's own traits");
         }
     }

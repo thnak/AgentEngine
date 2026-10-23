@@ -38,6 +38,7 @@
 
 #include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/yaml_value.hpp"
+#include "../../support/agent_options.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -89,9 +90,9 @@ int main() {
     {
         auto meta = compile(doc_with_limits("  limits:\n    max_turns: 12\n    token_budget: 200000\n"));
         check(meta.has_value(), "Y1 (positive control): a valid limits block compiles");
-        check(meta.has_value() && meta->max_turns == 12,
+        check(meta.has_value() && meta->max_turns == ae::Bound<std::uint64_t>::at_most(12),
               "Y1 (positive control): max_turns is exactly what was declared");
-        check(meta.has_value() && meta->token_budget.has_value() && *meta->token_budget == 200000,
+        check(meta.has_value() && meta->token_budget == ae::Bound<std::uint64_t>::at_most(200000),
               "Y1 (positive control): token_budget is exactly what was declared, so the rejections "
               "below are measured against a path that demonstrably works");
     }
@@ -106,7 +107,7 @@ int main() {
               "Y2: ... under a code a caller can match on");
         // Stated explicitly so the record shows what the old behaviour WAS, not merely that it has
         // changed: 4294967295 is what -1.0 lands on when cast to uint32 on these compilers.
-        check(!meta.has_value() || meta->max_turns != 4294967295u,
+        check(!meta.has_value() || meta->max_turns != ae::Bound<std::uint64_t>::at_most(4294967295u),
               "Y2: ... and specifically does not yield 4294967295");
     }
 
@@ -142,11 +143,15 @@ int main() {
     {
         auto meta = compile(doc_with_limits(""));
         check(meta.has_value(), "Y7: a document with no limits block still compiles");
-        check(meta.has_value() && meta->max_turns == 16,
-              "Y7: ... and keeps 002 §3's documented max_turns default of 16");
-        check(meta.has_value() && !meta->token_budget.has_value(),
-              "Y7: ... and leaves token_budget unset, which is the documented 'unbounded' state -- "
-              "the guard rejects bad values, it does not make the block mandatory");
+        // ADR-244 slice 4b flipped this: an absent limit is no longer 002 §3's default (16 turns, no budget), it
+        // is an unstated choice -- left unset by the compiler, refused by validate_agent_metadata.
+        check(meta.has_value() && !meta->max_turns.has_value() && !meta->token_budget.has_value(),
+              "Y7: ... and leaves max_turns and token_budget UNSET, not defaulted (ADR-244 slice 4b)");
+        if (meta.has_value()) {
+            auto valid = ae::validate_agent_metadata(*meta, nullptr, ae_test::sandboxes());
+            check(!valid.has_value() && valid.error().code == "choice.missing.max_turns",
+                  "Y7: ... and validate_agent_metadata names the missing choice, listing the options");
+        }
     }
 
     // ---- Y8 (ADR-244 §2.1): zero is refused, not taken as a budget.
@@ -158,7 +163,8 @@ int main() {
         check(!budget.has_value() && budget.error().code == "choice.zero_bound",
               "Y8: token_budget: 0 is REFUSED with choice.zero_bound");
         auto one = compile(doc_with_limits("  limits:\n    max_turns: 1\n    token_budget: 1\n"));
-        check(one.has_value() && one->max_turns == 1 && one->token_budget == std::uint64_t{1},
+        check(one.has_value() && one->max_turns == ae::Bound<std::uint64_t>::at_most(1) &&
+                      one->token_budget == ae::Bound<std::uint64_t>::at_most(1),
               "Y8 control: max_turns: 1 and token_budget: 1 compile as written");
     }
 

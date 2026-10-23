@@ -8,6 +8,7 @@
 #include <string>
 
 #include "agentengine/protocol/a2a/agent_card.hpp"
+#include "../../support/agent_options.hpp"
 
 namespace {
 
@@ -52,12 +53,17 @@ struct SearchTool : ae::Tool<SearchTool, ae::Approval<ae::approval_mode::never_r
 };
 
 struct TwoToolAgent : ae::Agent<TwoToolAgent, ae::ChatClientId<"anthropic:claude-opus-5">,
-                                 ae::Tools<EchoTool, SearchTool>> {
+                                ae::Tools<EchoTool, SearchTool>, ae::MaxTurns<ae::at_most(16)>,
+                                ae::TokenBudget<ae::unbounded()>, ae::Approval<ae::approval_mode::policy_driven>,
+                                ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "two-tool-agent";
     static constexpr std::string_view instructions = "Declares two tools, for a card with two skills.";
 };
 
-struct NoToolAgent : ae::Agent<NoToolAgent, ae::ChatClientId<"anthropic:claude-opus-5">> {
+struct NoToolAgent : ae::Agent<NoToolAgent, ae::ChatClientId<"anthropic:claude-opus-5">,
+                               ae::MaxTurns<ae::at_most(16)>, ae::TokenBudget<ae::unbounded()>,
+                               ae::Approval<ae::approval_mode::policy_driven>,
+                               ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "no-tool-agent";
     static constexpr std::string_view instructions = "Declares no tools at all.";
 };
@@ -68,7 +74,7 @@ int main() {
     // --- D2-1: skills are derived one-per-tool, in registration order, name/description from the ----
     // --- real ToolDescriptor -- never hand-maintained.                                              ---
     {
-        auto meta = ae::register_agent<TwoToolAgent>();
+        auto meta = ae::register_agent<TwoToolAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "D2-1: TwoToolAgent registers cleanly");
         if (meta.has_value()) {
             a2a::AgentCardIdentity identity;
@@ -116,7 +122,7 @@ int main() {
 
     // --- D2-4: an agent with NO tools produces an empty skills array, not an error -------------------
     {
-        auto meta = ae::register_agent<NoToolAgent>();
+        auto meta = ae::register_agent<NoToolAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "D2-4: NoToolAgent registers cleanly");
         if (meta.has_value()) {
             a2a::AgentCardIdentity identity;
@@ -130,7 +136,7 @@ int main() {
     // --- D2-6: once a caller DOES have a real binding (D3+), supplying an AgentInterface round-trips -
     // --- through this generator untouched -- it doesn't get in the way of the real case.             -
     {
-        auto meta = ae::register_agent<NoToolAgent>();
+        auto meta = ae::register_agent<NoToolAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "D2-6: NoToolAgent registers cleanly (reused for the interface check)");
         if (meta.has_value()) {
             a2a::AgentCardIdentity identity;

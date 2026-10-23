@@ -44,6 +44,7 @@
 #include "agentengine/rt/agent_spawn_child_run.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/trust/agent_spawn_capability.hpp"
+#include "../../support/agent_options.hpp"
 
 using agentengine::AgentMetadata;
 using agentengine::CapabilitySet;
@@ -354,7 +355,7 @@ int main() {
     {
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({AgentCall{"helper", SpawnBudget::mint_root(2)}});
-        AgentMetadata target;  // empty declared ceiling
+        AgentMetadata target = ae_test::stated_metadata();  // empty declared ceiling
 
         AgentSession<ScriptedChatClient, NoSessionState, SpawnHistoryProvider> parent;
         parent.initialize("parent-1", Principal{"caller-1", ""}, ae_test::trusted_unbounded());

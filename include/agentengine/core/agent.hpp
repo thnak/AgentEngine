@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/core/chat_client.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/core/fixed_string.hpp"
@@ -43,10 +44,13 @@ struct SandboxProfile {};  // ae-naming-lint: allow SandboxProfile — 008 §2a/
 // examples show, `Capabilities<NetOut<"api.search.example">>`) now lives in core/policy_tags.hpp,
 // shared with Tool's declaration site (006 §1) — not redefined here.
 
-template <std::uint32_t N>
+// ADR-244 §2.1 (slice 4b): a turn cap and a token budget are stated as a `BoundValue` -- `MaxTurns<at_most(16)>`,
+// `TokenBudget<unbounded()>` -- never a bare integer (no conversion) and never omitted (`register_agent<A>()`
+// static_asserts each of the five required tags, 002 §3). `at_most(0)` does not compile.
+template <BoundValue<std::uint64_t> B>
 struct MaxTurns {};  // ae-naming-lint: allow MaxTurns — pre-existing M0 scaffolding, reconcile at owning milestone
 
-template <std::uint64_t N>
+template <BoundValue<std::uint64_t> B>
 struct TokenBudget {};  // ae-naming-lint: allow TokenBudget — pre-existing M0 scaffolding, reconcile at owning milestone
 
 // `approval_mode`/`Approval<M>` now live in core/tool.hpp (006 §4 owns Approval's semantics) and

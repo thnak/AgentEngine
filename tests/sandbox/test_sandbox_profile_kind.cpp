@@ -2,11 +2,9 @@
 // parameter kind (a real SandboxBackend, or the Strict resolution selector -- never an enum value)
 // round-trips correctly through register_agent<A>() into AgentMetadata::sandbox_profile.
 //
-//   1. No SandboxProfile<...> tag declared at all -> the 002 §3 table default (Strict) is compiled
-//      in, not left unset.
-//   2. SandboxProfile<Strict> declared explicitly -> the same is_strict=true result as the default
-//      (proves the two spellings -- absence and explicit Strict -- are genuinely equivalent, not
-//      just coincidentally both "true" today).
+//   1. (ADR-244 slice 4b) No SandboxProfile<...> tag is a compile error -- tests/compile_fail's
+//      agent_rejects_* gates -- so there is no "default Strict" left to prove; the declaration says it.
+//   2. SandboxProfile<Strict> declared explicitly -> is_strict=true, compiled in as a stated value.
 //   3. SandboxProfile<ConformingBackend> declared -> is_strict=false and traits == the backend's own
 //      real, compile-time ProfileTraits -- not a copy that could drift from what the type itself
 //      declares.
@@ -22,6 +20,7 @@
 #include <string>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../support/agent_options.hpp"
 
 namespace {
 
@@ -54,21 +53,23 @@ static_assert(agentengine::SandboxProfileArg<ConformingBackend>);
 static_assert(agentengine::SandboxProfileArg<agentengine::Strict>);
 static_assert(!agentengine::SandboxProfileArg<int>);
 
-struct DefaultProfileAgent
-    : agentengine::Agent<DefaultProfileAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">> {
-    static constexpr std::string_view name = "default-profile-agent";
-    static constexpr std::string_view instructions = "Declares no SandboxProfile<...> tag at all.";
-};
-
 struct StrictAgent : agentengine::Agent<StrictAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                                         agentengine::SandboxProfile<agentengine::Strict>> {
+                                        agentengine::SandboxProfile<agentengine::Strict>,
+                                        agentengine::MaxTurns<agentengine::at_most(16)>,
+                                        agentengine::TokenBudget<agentengine::unbounded()>,
+                                        agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                                        agentengine::Concurrency<agentengine::concurrency_mode::sequential>> {
     static constexpr std::string_view name = "strict-agent";
     static constexpr std::string_view instructions = "Declares SandboxProfile<Strict> explicitly.";
 };
 
 struct ConcreteProfileAgent
     : agentengine::Agent<ConcreteProfileAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::SandboxProfile<ConformingBackend>> {
+                         agentengine::SandboxProfile<ConformingBackend>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>> {
     static constexpr std::string_view name = "concrete-profile-agent";
     static constexpr std::string_view instructions = "Declares SandboxProfile<ConformingBackend>.";
 };
@@ -78,36 +79,26 @@ struct ConcreteProfileAgent
 int main() {
     using agentengine::register_agent;
 
-    // -- 1/4. no tag declared -> Strict default, registers cleanly -------------------------------
+    // -- 2/4. explicit SandboxProfile<Strict> -> is_strict -------------------
     {
-        auto meta = register_agent<DefaultProfileAgent>();
-        check(meta.has_value(), "DefaultProfileAgent registers cleanly");
-        if (meta) {
-            check(meta->sandbox_profile.is_strict,
-                  "no SandboxProfile<...> tag declared -> is_strict defaults to true (002 §3 table default)");
-        }
-    }
-
-    // -- 2/4. explicit SandboxProfile<Strict> -> the same result as the default -------------------
-    {
-        auto meta = register_agent<StrictAgent>();
+        auto meta = register_agent<StrictAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "StrictAgent registers cleanly");
         if (meta) {
-            check(meta->sandbox_profile.is_strict,
-                  "SandboxProfile<Strict> declared explicitly -> is_strict is true, same as the default");
+            check(meta->sandbox_profile->is_strict,
+                  "SandboxProfile<Strict> declared -> is_strict is true");
         }
     }
 
     // -- 3/4. a real conforming backend -> is_strict=false, real traits extracted -----------------
     {
-        auto meta = register_agent<ConcreteProfileAgent>();
+        auto meta = register_agent<ConcreteProfileAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "ConcreteProfileAgent registers cleanly");
         if (meta) {
-            check(!meta->sandbox_profile.is_strict,
+            check(!meta->sandbox_profile->is_strict,
                   "SandboxProfile<ConformingBackend> declared -> is_strict is false");
-            check(meta->sandbox_profile.traits.strength == ConformingBackend::traits.strength &&
-                      meta->sandbox_profile.traits.platform_mask == ConformingBackend::traits.platform_mask &&
-                      meta->sandbox_profile.traits.cold_start == ConformingBackend::traits.cold_start,
+            check(meta->sandbox_profile->traits.strength == ConformingBackend::traits.strength &&
+                      meta->sandbox_profile->traits.platform_mask == ConformingBackend::traits.platform_mask &&
+                      meta->sandbox_profile->traits.cold_start == ConformingBackend::traits.cold_start,
                   "the extracted traits exactly match ConformingBackend::traits, not a stale copy");
         }
     }

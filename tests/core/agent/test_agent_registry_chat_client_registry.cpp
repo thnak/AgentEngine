@@ -9,6 +9,7 @@
 #include <string>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/agent_options.hpp"
 
 namespace {
 
@@ -27,20 +28,34 @@ struct WeatherResult {
 AE_JSON_SCHEMA(WeatherResult, summary, temperature_f)
 
 struct RegisteredAgent
-    : agentengine::Agent<RegisteredAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">> {
+    : agentengine::Agent<RegisteredAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "registered";
     static constexpr std::string_view instructions = "Bound to a ChatClientId the registry knows.";
 };
 
 struct UnregisteredAgent
-    : agentengine::Agent<UnregisteredAgent, agentengine::ChatClientId<"openai:gpt-5">> {
+    : agentengine::Agent<UnregisteredAgent, agentengine::ChatClientId<"openai:gpt-5">,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "unregistered";
     static constexpr std::string_view instructions = "Bound to a ChatClientId the registry does NOT know.";
 };
 
 struct StructuredOutputAgent
     : agentengine::Agent<StructuredOutputAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::OutputSchema<WeatherResult>> {
+                         agentengine::OutputSchema<WeatherResult>, agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "structured-output";
     static constexpr std::string_view instructions = "Declares OutputSchema<WeatherResult>.";
 };
@@ -61,7 +76,7 @@ int main() {
 
     // ---- with no registry: pre-M5 stub behavior is unchanged (both checks always pass) -----------
     {
-        auto meta = register_agent<UnregisteredAgent>();  // zero-arg call, exactly like every pre-M5 site
+        auto meta = register_agent<UnregisteredAgent>(nullptr, ae_test::sandboxes());  // no chat-client registry: credentials are "not evaluated"
         check(meta.has_value(),
               "with no registry supplied, an unregistered ChatClientId still registers (pre-M5 "
               "always-pass stub, unaffected by Phase B6)");
@@ -69,13 +84,13 @@ int main() {
 
     // ---- with a registry: a registered ChatClientId passes ---------------------------------------
     {
-        auto meta = register_agent<RegisteredAgent>(&registry);
+        auto meta = register_agent<RegisteredAgent>(&registry, ae_test::sandboxes());
         check(meta.has_value(), "a ChatClientId present in the supplied registry registers successfully");
     }
 
     // ---- with a registry: an unregistered ChatClientId is rejected -------------------------------
     {
-        auto meta = register_agent<UnregisteredAgent>(&registry);
+        auto meta = register_agent<UnregisteredAgent>(&registry, ae_test::sandboxes());
         check(!meta.has_value(),
               "with a registry supplied, a ChatClientId absent from it is now rejected");
         if (!meta.has_value()) {
@@ -85,7 +100,7 @@ int main() {
 
     // ---- OutputSchema<T> + a registry: strategy is chosen and recorded ----------------------------
     {
-        auto meta = register_agent<StructuredOutputAgent>(&registry);
+        auto meta = register_agent<StructuredOutputAgent>(&registry, ae_test::sandboxes());
         check(meta.has_value(), "an agent with OutputSchema<T> registers against a capable ChatClient");
         if (meta.has_value()) {
             check(meta->output_schema_json.has_value() &&
@@ -100,7 +115,7 @@ int main() {
 
     // ---- OutputSchema<T> with NO registry: nothing to enforce against, honestly not evaluated -----
     {
-        auto meta = register_agent<StructuredOutputAgent>();  // zero-arg, no registry
+        auto meta = register_agent<StructuredOutputAgent>(nullptr, ae_test::sandboxes());  // no chat-client registry
         check(meta.has_value(), "OutputSchema<T> with no registry still registers (nothing to check against yet)");
         if (meta.has_value()) {
             check(meta->output_schema_json.has_value(),

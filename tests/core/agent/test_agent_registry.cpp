@@ -18,6 +18,7 @@
 #include <string>
 
 #include "agentengine/core/agent_registry.hpp"
+#include "../../support/agent_options.hpp"
 
 namespace {
 
@@ -69,19 +70,34 @@ struct DuplicateNameTool : agentengine::Tool<DuplicateNameTool, agentengine::App
 
 struct WellFormedAgent
     : agentengine::Agent<WellFormedAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Tools<EchoTool>, agentengine::Capabilities<agentengine::cap::decl::Entropy>> {
+                         agentengine::Tools<EchoTool>, agentengine::Capabilities<agentengine::cap::decl::Entropy>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "well-formed";
     static constexpr std::string_view instructions = "Register cleanly; used for the positive case.";
 };
 
-struct NoChatClientAgent : agentengine::Agent<NoChatClientAgent> {
+struct NoChatClientAgent
+    : agentengine::Agent<NoChatClientAgent, agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "no-chat-client";
     static constexpr std::string_view instructions = "Declares no ChatClientId<...> at all.";
 };
 
 struct NameCollisionAgent
     : agentengine::Agent<NameCollisionAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Tools<EchoTool, DuplicateNameTool>> {
+                         agentengine::Tools<EchoTool, DuplicateNameTool>,
+                         agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "name-collision";
     static constexpr std::string_view instructions = "Two tools both named 'echo'.";
 };
@@ -90,14 +106,22 @@ struct NameCollisionAgent
 // cover what the tool requires.
 struct CapabilityGapAgent
     : agentengine::Agent<CapabilityGapAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Tools<EchoTool>> {
+                         agentengine::Tools<EchoTool>, agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "capability-gap";
     static constexpr std::string_view instructions = "Declares EchoTool but grants it no capabilities.";
 };
 
 struct StatelessOkAgent
     : agentengine::Agent<StatelessOkAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Stateless<4>> {
+                         agentengine::Stateless<4>, agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "stateless-ok";
     static constexpr std::string_view instructions = "Stateless<N> on a genuinely empty type.";
 };
@@ -105,7 +129,11 @@ struct StatelessOkAgent
 // Carries instance data -- Stateless<N> combined with session-state usage, 002 §6's own wording.
 struct StatelessViolationAgent
     : agentengine::Agent<StatelessViolationAgent, agentengine::ChatClientId<"anthropic:claude-opus-5">,
-                          agentengine::Stateless<4>> {
+                         agentengine::Stateless<4>, agentengine::MaxTurns<agentengine::at_most(16)>,
+                         agentengine::TokenBudget<agentengine::unbounded()>,
+                         agentengine::Approval<agentengine::approval_mode::policy_driven>,
+                         agentengine::Concurrency<agentengine::concurrency_mode::sequential>,
+                         agentengine::SandboxProfile<agentengine::Strict>> {
     static constexpr std::string_view name = "stateless-violation";
     static constexpr std::string_view instructions = "Stateless<N> but carries an instance field.";
     int turn_count = 0;  // session state -- exactly what Stateless<N> claims does not exist
@@ -118,19 +146,20 @@ int main() {
 
     // -- positive: compiles, and every default from 002 §3's table lands correctly -----------------
     {
-        auto meta = register_agent<WellFormedAgent>();
+        auto meta = register_agent<WellFormedAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "well-formed agent registers successfully");
         if (meta) {
             check(meta->agent_name == "well-formed", "agent_name carried through from static name");
             check(meta->chat_client_id == "anthropic:claude-opus-5", "chat_client_id extracted");
             check(meta->tools.find("echo") != nullptr, "declared tool present in the compiled table");
             check(meta->capability_ceiling.size() == 1, "capability ceiling has exactly the one declared cap");
-            check(meta->max_turns == 16, "MaxTurns default is 16 (002 §3 table)");
-            check(!meta->token_budget.has_value(), "TokenBudget default is unbounded (nullopt)");
+            check(meta->max_turns == agentengine::Bound<std::uint64_t>::at_most(16), "MaxTurns<at_most(16)> compiles to 16");
+            check(meta->token_budget == agentengine::Bound<std::uint64_t>::unbounded(),
+                  "TokenBudget<unbounded()> compiles to an explicit unbounded (not nullopt)");
             check(meta->approval == agentengine::approval_mode::policy_driven,
-                  "Approval default is policy_driven for an Agent (differs from Tool's never_require)");
+                  "Approval<policy_driven> is carried through");
             check(meta->concurrency == agentengine::concurrency_mode::sequential,
-                  "Concurrency default is sequential");
+                  "Concurrency<sequential> is carried through");
             check(meta->telemetry == agentengine::telemetry_capture::metadata_only,
                   "Telemetry default is metadata_only");
             check(!meta->stateless_pool_size.has_value(), "Stateless default is off (absent, not 0)");
@@ -139,35 +168,35 @@ int main() {
 
     // -- negative: ChatClientId missing --------------------------------------------------------------
     {
-        auto meta = register_agent<NoChatClientAgent>();
+        auto meta = register_agent<NoChatClientAgent>(nullptr, ae_test::sandboxes());
         check(!meta.has_value(), "agent with no ChatClientId<...> is rejected");
         if (!meta) check(meta.error().code == "agent.chat_client_id_missing", "specific diagnostic code");
     }
 
     // -- negative: tool-name collision -- 002 §8 G3 miniature, defect class 1 of 2 (E4) -------------
     {
-        auto meta = register_agent<NameCollisionAgent>();
+        auto meta = register_agent<NameCollisionAgent>(nullptr, ae_test::sandboxes());
         check(!meta.has_value(), "two tools sharing a name are rejected");
         if (!meta) check(meta.error().code == "agent.tool_name_collision", "specific diagnostic code");
     }
 
     // -- negative: capability-ceiling-mismatch -- 002 §8 G3 miniature, defect class 2 of 2 (E4) -----
     {
-        auto meta = register_agent<CapabilityGapAgent>();
+        auto meta = register_agent<CapabilityGapAgent>(nullptr, ae_test::sandboxes());
         check(!meta.has_value(), "a tool needing an uncovered capability is rejected");
         if (!meta) check(meta.error().code == "agent.capability_ceiling_exceeded", "specific diagnostic code");
     }
 
     // -- positive: Stateless<N> on a genuinely empty type is fine -------------------------------------
     {
-        auto meta = register_agent<StatelessOkAgent>();
+        auto meta = register_agent<StatelessOkAgent>(nullptr, ae_test::sandboxes());
         check(meta.has_value(), "Stateless<N> on an empty agent type registers successfully");
         if (meta) check(meta->stateless_pool_size == 4u, "stateless_pool_size carried through");
     }
 
     // -- negative: Stateless<N> combined with session-state usage -------------------------------------
     {
-        auto meta = register_agent<StatelessViolationAgent>();
+        auto meta = register_agent<StatelessViolationAgent>(nullptr, ae_test::sandboxes());
         check(!meta.has_value(), "Stateless<N> on a type carrying instance data is rejected");
         if (!meta) check(meta.error().code == "agent.stateless_session_state", "specific diagnostic code");
     }

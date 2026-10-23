@@ -1,6 +1,6 @@
 # ADR-244 — How does the engine make each of ADR-242 §2's implicit choices a required, named, recorded choice, at today's types, without the engine granting itself authority?
 
-**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c) and 4a built. Four red-team rounds, each
+**Status:** Proposed (2026-10-21). Design, revision 5; slices 1, 2, 3 (3a, 3b, 3c), 4a and 4b built. Four red-team rounds, each
 rejecting the revision it read (§7); this revision folds round 4 in. Findings, evidence, the full inventory
 and the revision history are in [`docs/planning/adr-244-red-team.md`](../docs/planning/adr-244-red-team.md).
 Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) §6 step 1b and
@@ -292,10 +292,26 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      the tree states its mode; the tests and examples that had none state `never_require`, the old default.
      Tests: `test_tool_approval_choice` T1–T6, `compile_fail` `tool_rejects_missing_approval` and
      `tool_rejects_two_approvals` (control `tool_approval_positive_control`), with planted mutants.
-   - **4b and 4c (to do):** `validate_agent_metadata`, CRTP `static_assert`s and `BoundValue` tags, the registry
-   parameter, builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
-   (`as_bounded_integer`, option tables, `fallback`, `capabilities` for `per_request`); 002 §3 and §9 Q3
-   amended.
+   - **4b, agent metadata choices (built):** `BoundValue<uint64_t>` (`core/bound.hpp`) with `consteval` `at_most(n)`
+     (a `0` does not compile) and `unbounded()`; `MaxTurns<B>` and `TokenBudget<B>` take it, a bare integer does
+     not convert. `AgentMetadata::max_turns`, `token_budget`, `approval`, `concurrency` and `sandbox_profile` are
+     `std::optional` (`telemetry` stays defaulted, unenforced), and `validate_agent_metadata` fails an unset one
+     `choice.missing.<field>` listing `agent_choice_options::*`, before checking a value (`choice.zero_bound` for
+     `at_most(0)`). `register_agent<A>()` `static_assert`s all five tags. The bridge reads `*meta.max_turns` /
+     `*meta.token_budget` as the declared bounds; `perform_agent_spawn` refuses a target with no turn cap or
+     budget before the depth, cost token or worktree is touched. `register_agent`, `validate_agent_metadata`,
+     `bind_agent_session`, `make_agent_session` and the harness's two entry points take the
+     `SandboxBackendRegistry` by reference, with no default (the chat-client registry stays a nullable pointer, an
+     honest "not evaluated"); an empty one fails `choice.missing.sandbox_backend`, including for a concrete-backend
+     profile, and `SandboxBackendRegistry::empty()` is new. 002 §2, §3 and §6 amended. Tests:
+     `test_agent_metadata_choices` M1-M6, `test_agent_registry_sandbox_backend_registry` (empty registry,
+     flipped from "null registry passes"), `test_rt_spawn_authority` P4, `compile_fail`
+     `agent_rejects_missing_max_turns`, `agent_rejects_raw_integer_max_turns`, `agent_rejects_zero_turn_cap`
+     (control `agent_choices_positive_control`), with planted mutants; the tests and examples that had none state
+     the old defaults (`ae_test::stated_metadata()`).
+   - **4c (to do):** builders' `principal` and `secret_source`, spawn target validation, the YAML parsers
+     (`as_bounded_integer`, option tables read from `agent_choice_options`, `fallback`, `capabilities` for
+     `per_request`, an explicit `unbounded` value); 002 §9 Q3 amended.
 5. **Resource limits, capability caps, time limits (rest of G-C1/G-C2, G-C12):** `Bound` fields, backends read
    `limit()`, every substitution site in the planning log removed or named as an engine floor, the
    declarative grant parser, `SandboxExec` `limits`.

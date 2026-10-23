@@ -201,6 +201,9 @@ int main() {
 
         SpawnTargetDescriptor target;
         target.metadata          = AgentMetadata{};
+        // ADR-244 slice 4b: the target's turn cap and budget are stated, not defaulted.
+        target.metadata.max_turns    = agentengine::Bound<std::uint64_t>::at_most(16);
+        target.metadata.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
         target.spawn_cost         = 1;
         target.worktree_mode       = agentengine::sharing_mode::scratch;
         target.child_token_budget = 1000;

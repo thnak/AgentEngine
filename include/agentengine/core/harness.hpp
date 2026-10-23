@@ -467,7 +467,7 @@ template <class HistoryT, class ChatClientT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> bind(AgentMetadata meta, ChatClientT client, AgentSessionOptions opts,
                                                       HarnessOptions hopts, agent_bind_detail::OutputValidator validator,
                                                       ChatClientRegistry const* registry,
-                                                      SandboxBackendRegistry const* sandbox_registry) {
+                                                      SandboxBackendRegistry const& sandbox_registry) {
     bool const todo_on  = !hopts.disable_todo;
     bool const plan_on  = !hopts.disable_plan_execute;
     // A Telemetry<none> agent has declared no telemetry; the agent's declaration caps the harness's default.
@@ -637,10 +637,9 @@ template <class HistoryT = HistoryProvider<Window<0>>, class ChatClientT>
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> bind_harness_session(AgentMetadata const& meta, ChatClientT client,
                                                                       AgentSessionOptions opts,
-                                                                      HarnessOptions hopts = {},
-                                                                      ChatClientRegistry const* registry = nullptr,
-                                                                      SandboxBackendRegistry const* sandbox_registry =
-                                                                          nullptr) {
+                                                                      ChatClientRegistry const* registry,
+                                                                      SandboxBackendRegistry const& sandbox_registry,
+                                                                      HarnessOptions hopts = {}) {
     return harness_detail::bind<HistoryT>(meta, std::move(client), std::move(opts), std::move(hopts), {}, registry,
                                           sandbox_registry);
 }
@@ -651,10 +650,9 @@ template <class A, class HistoryT = HistoryProvider<Window<0>>, class ChatClient
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>) && ContextProvider<HistoryT> &&
             HasContextProviderName<HistoryT> && std::default_initializable<HistoryT>
 [[nodiscard]] result<HarnessBundle<ChatClientT>> make_harness_session(ChatClientT client, AgentSessionOptions opts,
-                                                                      HarnessOptions hopts = {},
-                                                                      ChatClientRegistry const* registry = nullptr,
-                                                                      SandboxBackendRegistry const* sandbox_registry =
-                                                                          nullptr) {
+                                                                      ChatClientRegistry const* registry,
+                                                                      SandboxBackendRegistry const& sandbox_registry,
+                                                                      HarnessOptions hopts = {}) {
     result<AgentMetadata> meta = register_agent<A>(registry, sandbox_registry);
     if (!meta) return std::unexpected(meta.error());
     return harness_detail::bind<HistoryT>(std::move(*meta), std::move(client), std::move(opts), std::move(hopts),

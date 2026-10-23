@@ -38,9 +38,10 @@ struct Researcher : Agent<Researcher,
         Tools<WebSearch, CodeInterpreter, Handoff<Writer>>,
         Capabilities<NetOut<"api.search.example">>,
         SandboxProfile<Strict>,
-        MaxTurns<12>,
-        TokenBudget<200'000>,
+        MaxTurns<at_most(12)>,
+        TokenBudget<at_most(200'000)>,
         Approval<Mode::PolicyDriven>,
+        Concurrency<Mode::Sequential>,
         Telemetry<Capture::MetadataOnly>> {
 
     static constexpr std::string_view name = "researcher";
@@ -58,7 +59,10 @@ struct Researcher : Agent<Researcher,
 **Policies are types, not values.** `MaxTurns<12>` is a template parameter that lands in
 `.rodata` metadata, not a field read on the hot path — the same reasoning as Quark's `Priority<P>`
 and `DrainBudget<N>` (Quark 005, ADR-007/008). A policy that is not specified is not "defaulted at
-runtime"; the default is a compile-time selection with no branch.
+runtime"; the default is a compile-time selection with no branch. **Five policies have no default**
+(ADR-244 slice 4b): `MaxTurns`, `TokenBudget`, `Approval`, `Concurrency` and `SandboxProfile` are stated in every
+declaration, `register_agent<A>()` `static_assert`s each, and a turn cap or budget is a `BoundValue` --
+`at_most(n)` or `unbounded()`, never a bare integer and never `at_most(0)` (§3).
 
 **Hooks are detected, not virtual.** Presence is a concept check; an omitted hook compiles to
 nothing. There is no vtable, no RTTI, and no null check per turn.
@@ -159,12 +163,12 @@ class template cannot share one identifier in the same namespace. `ChatClientId`
 |---|---|---|
 | `ChatClientId<"vendor:model">` | Model backend binding (004); overridable per run and by config | required |
 | `Tools<Ts...>` | Declared tool set | empty |
-| `SandboxProfile<P>` | Isolation profile for this agent's sandboxed effects (008) | `Strict` |
+| `SandboxProfile<P>` | Isolation profile for this agent's sandboxed effects (008) | required (was `Strict`) |
 | `Capabilities<Cs...>` | Capability ceiling (007) | empty |
-| `MaxTurns<N>` | Turn-loop bound | 16 |
-| `TokenBudget<N>` | Cumulative token ceiling per run | unbounded |
-| `Approval<Mode>` | `NeverRequire` / `AlwaysRequire` / `PolicyDriven` — a floor over the declared tools: `AlwaysRequire` gates every tool; the other two leave each tool's own `Approval` as declared, never loosen it (ADR-226 §3) | `PolicyDriven` |
-| `Concurrency<Mode>` | Tool-batch concurrency (001 §4) | `Sequential` |
+| `MaxTurns<B>` | Turn-loop bound; `B` is `at_most(n)` or `unbounded()` (a `BoundValue`, `core/bound.hpp`) | required (was 16) |
+| `TokenBudget<B>` | Cumulative token ceiling per run; `B` as for `MaxTurns` | required (was unbounded) |
+| `Approval<Mode>` | `NeverRequire` / `AlwaysRequire` / `PolicyDriven` — a floor over the declared tools: `AlwaysRequire` gates every tool; the other two leave each tool's own `Approval` as declared, never loosen it (ADR-226 §3) | required (was `PolicyDriven`) |
+| `Concurrency<Mode>` | Tool-batch concurrency (001 §4) | required (was `Sequential`) |
 | `Retry<Policy>` | Transient-failure retry shape | bounded exponential |
 | `Memory<Ms...>` | Memory/context providers (005) | none |
 | `Middleware<Ms...>` | Ordered middleware chain (§5) | none |
@@ -321,7 +325,10 @@ At `register_agent<A>()` the engine compiles metadata and **validates**, failing
 - a `ChatClientId` binding with no configured credentials or endpoint;
 - an `OutputSchema` the bound `ChatClient` cannot enforce and no fallback strategy;
 - a handoff cycle without a bound;
-- `Stateless<N>` combined with session-state usage.
+- `Stateless<N>` combined with session-state usage;
+- a turn cap, token budget, approval mode, concurrency mode or sandbox profile that was never stated
+  (`choice.missing.<field>`, listing the options; a C++ declaration that omits the tag does not compile), or a turn
+  cap or budget of `at_most(0)` (`choice.zero_bound`; ADR-244 §2).
 
 **Validation is the same code path for declarative agents** (015) — a YAML agent that would fail
 here fails at load with the same diagnostic. This is the enforcement mechanism for I6.

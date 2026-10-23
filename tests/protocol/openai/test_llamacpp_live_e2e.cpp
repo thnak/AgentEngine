@@ -52,6 +52,9 @@
 //                                 every check but LC-8, whose claim is about the blocked-range table
 //                                 and is therefore a property of a private address -- see LC-8.
 //   AGENTENGINE_LLAMACPP_MODEL    optional -- llama.cpp ignores it; default "local"
+//   AGENTENGINE_LLAMACPP_API_KEY  optional -- the Bearer credential, defaulting to the
+//                                 keyless "sk-local-no-auth-required" a local server
+//                                 ignores. Set it to exercise a server that authenticates.
 //   AGENTENGINE_LLAMACPP_PREFIX   optional -- prepended to every prompt, default "/no_think "
 //
 // Why AGENTENGINE_LLAMACPP_PREFIX exists: `ChatRequest` carries no sampling parameters at all
@@ -230,10 +233,14 @@ int main() {
 
     // llama.cpp needs no credential, but the credential PATH is exercised for real: a SecretStore, a
     // cap::Secret grant, and resolution at the point of use inside chat() (004 §1, 018 §4). That is
-    // what makes LC-7's denial case meaningful rather than decorative.
+    // what makes LC-7's denial case meaningful rather than decorative. The key itself is overridable
+    // so the same test reaches an authenticating OpenAI-compatible server; a keyless local one
+    // ignores the default.
     constexpr char const* kSecretName = "llamacpp-api-key";
+    constexpr char const* kDefaultApiKey = "sk-local-no-auth-required";
+    std::string const api_key = env_or("AGENTENGINE_LLAMACPP_API_KEY", kDefaultApiKey);
     InMemorySecretStore store;
-    store.set(kSecretName, "sk-local-no-auth-required");
+    store.set(kSecretName, api_key);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
     EffectContext ctx;
     ctx.principal = Principal{"llamacpp-live-e2e-principal", ""};

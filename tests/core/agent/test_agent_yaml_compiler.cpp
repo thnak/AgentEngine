@@ -9,6 +9,7 @@
 
 #include "agentengine/core/agent_yaml_compiler.hpp"
 #include "agentengine/core/yaml_value.hpp"
+#include "../../support/agent_options.hpp"
 
 namespace {
 
@@ -29,8 +30,9 @@ namespace yaml = agentengine::yaml;
 // cross-check (F-2): same name, same instructions, same chat client id, same max_turns/token_budget/
 // approval -- every field this narrow compiler slice actually covers.
 struct ResearcherAgent
-    : ae::Agent<ResearcherAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<12>,
-                ae::TokenBudget<200000>, ae::Approval<ae::approval_mode::policy_driven>> {
+    : ae::Agent<ResearcherAgent, ae::ChatClientId<"anthropic:claude-opus-5">, ae::MaxTurns<ae::at_most(12)>,
+                ae::TokenBudget<ae::at_most(200000)>, ae::Approval<ae::approval_mode::policy_driven>,
+                ae::Concurrency<ae::concurrency_mode::sequential>, ae::SandboxProfile<ae::Strict>> {
     static constexpr std::string_view name         = "researcher";
     static constexpr std::string_view instructions = "Research the question. Cite sources.\n";
     // Gap-2 fix (2026-08-14, decisions/archive/ADR-044-*.md): optional statics, detected via
@@ -90,14 +92,14 @@ spec:
                       "F-1: agent_instructions <- spec.instructions (block literal)");
                 check(compiled_meta.chat_client_id == "anthropic:claude-opus-5",
                       "F-1: chat_client_id <- spec.provider.model");
-                check(compiled_meta.max_turns == 12, "F-1: max_turns <- spec.limits.max_turns");
-                check(compiled_meta.token_budget == std::optional<std::uint64_t>{200000},
+                check(compiled_meta.max_turns == ae::Bound<std::uint64_t>::at_most(12), "F-1: max_turns <- spec.limits.max_turns");
+                check(compiled_meta.token_budget == ae::Bound<std::uint64_t>::at_most(200000),
                       "F-1: token_budget <- spec.limits.token_budget");
                 check(compiled_meta.approval == ae::approval_mode::policy_driven,
                       "F-1: approval <- spec.approval");
                 check(compiled_meta.telemetry == ae::telemetry_capture::metadata_only,
                       "F-1: telemetry <- spec.telemetry.capture");
-                check(compiled_meta.sandbox_profile.is_strict == true,
+                check(compiled_meta.sandbox_profile.has_value() && compiled_meta.sandbox_profile->is_strict,
                       "F-1: sandbox_profile.is_strict <- spec.sandbox.profile == \"strict\"");
                 check(compiled_meta.tools.descriptors().empty(),
                       "F-1: tools is HONESTLY empty -- no tool-name registry and no runtime ToolTable "
@@ -118,7 +120,7 @@ spec:
     // --- F-2: I6 IN ACTION -- the SAME fields, compiled from the REAL C++ authoring form via -------
     // --- register_agent<A>(), agree with the YAML-compiled metadata.                              ---
     {
-        auto cpp_meta = ae::register_agent<ResearcherAgent>();
+        auto cpp_meta = ae::register_agent<ResearcherAgent>(nullptr, ae_test::sandboxes());
         check(cpp_meta.has_value(), "F-2: the equivalent hand-written C++ agent registers cleanly");
         if (cpp_meta.has_value()) {
             check(cpp_meta->agent_name == compiled_meta.agent_name,
@@ -165,7 +167,10 @@ spec:
         check(minimal.has_value(), "F-4: a minimal document with an empty spec still compiles");
         if (minimal.has_value()) {
             ae::AgentMetadata const defaults;  // the struct's own real defaults, not asserted values
-            check(minimal->max_turns == defaults.max_turns && minimal->approval == defaults.approval &&
+            // ADR-244 slice 4b: the five choices have no default (they are `nullopt`), so "unset carries the
+            // struct's own default" means exactly that -- unstated, for `validate_agent_metadata` to refuse.
+            check(!minimal->max_turns.has_value() && !minimal->token_budget.has_value() &&
+                      !minimal->sandbox_profile.has_value() && minimal->approval == defaults.approval &&
                       minimal->concurrency == defaults.concurrency &&
                       minimal->telemetry == defaults.telemetry,
                   "F-4: every unset field carries AgentMetadata's own real default, never an "

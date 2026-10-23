@@ -289,7 +289,7 @@ struct BundleFactory {
         // "more cautious, never less" rule applied at the declaration, ADR-226 §3).
         if (meta.approval == approval_mode::always_require) d.approval = approval_mode::always_require;
         // 001 §4 / 006 §5: parallel only when the AGENT allows it AND every tool in the batch declares it.
-        if (meta.concurrency == concurrency_mode::sequential) {
+        if (meta.concurrency != concurrency_mode::parallel) {  // sequential, or (unvalidated) unset: serialise
             d.parallelizable = false;
             d.exclusivity_group.reset();
         }
@@ -301,7 +301,7 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
 [[nodiscard]] result<AgentBundleWith<ChatClientT, Inner>> bind(AgentMetadata const& meta, ChatClientT client,
                                                                AgentSessionOptions opts, OutputValidator validator,
                                                                ChatClientRegistry const* registry,
-                                                               SandboxBackendRegistry const* sandbox_registry,
+                                                               SandboxBackendRegistry const& sandbox_registry,
                                                                DescriptorFilter const& filter = {}) {
     using BundleT  = AgentBundleWith<ChatClientT, Inner>;
     using SessionT = typename BundleT::SessionT;
@@ -331,11 +331,9 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     // 002 §9 Q2: the caller's turn cap and budget narrow the agent's declaration; one above it is refused
     // (`agent_session.override_widens`), not clamped -- a caller who asked for more than the agent allows should
     // hear about it, and `unbounded()` against a declared bound is such a request.
-    // ADR-244 slice 4 makes `AgentMetadata`'s own `max_turns`/`token_budget` required `Bound`s as well.
-    Bound<std::uint64_t> const declared_turns = Bound<std::uint64_t>::at_most(meta.max_turns);
-    Bound<std::uint64_t> const declared_budget = meta.token_budget.has_value()
-                                                     ? Bound<std::uint64_t>::at_most(*meta.token_budget)
-                                                     : Bound<std::uint64_t>::unbounded();
+    // ADR-244 slice 4b: `validate_agent_metadata` (above) has refused a metadata with either unset.
+    Bound<std::uint64_t> const declared_turns  = *meta.max_turns;
+    Bound<std::uint64_t> const declared_budget = *meta.token_budget;
     if (!declared_turns.covers(opts.choices.max_turns)) return std::unexpected(override_widens("max_turns"));
     if (!declared_budget.covers(opts.choices.token_budget)) return std::unexpected(override_widens("token_budget"));
 
@@ -415,7 +413,7 @@ template <class ChatClientT, class Inner = HistoryProvider<Window<0>>>
     md["agent.name"]           = meta.agent_name;
     md["agent.chat_client_id"] = meta.chat_client_id;
     md["agent.telemetry"]      = std::string(telemetry_name(meta.telemetry));
-    md["agent.sandbox_profile"] = meta.sandbox_profile.is_strict ? "strict" : "declared_backend";
+    md["agent.sandbox_profile"] = meta.sandbox_profile->is_strict ? "strict" : "declared_backend";
     if (meta.agent_version.has_value()) md["agent.version"] = *meta.agent_version;
     if (meta.stateless_pool_size.has_value()) {
         md["agent.stateless_pool_size"] = std::to_string(*meta.stateless_pool_size);
@@ -452,9 +450,8 @@ template <class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
 [[nodiscard]] result<AgentBundle<ChatClientT>> bind_agent_session(AgentMetadata const& meta, ChatClientT client,
                                                                   AgentSessionOptions opts,
-                                                                  ChatClientRegistry const* registry = nullptr,
-                                                                  SandboxBackendRegistry const* sandbox_registry =
-                                                                      nullptr) {
+                                                                  ChatClientRegistry const* registry,
+                                                                  SandboxBackendRegistry const& sandbox_registry) {
     return agent_bind_detail::bind(meta, std::move(client), std::move(opts), {}, registry, sandbox_registry);
 }
 
@@ -464,9 +461,8 @@ template <class ChatClientT>
 template <class A, class ChatClientT>
     requires(ChatClient<ChatClientT> || ModelCallGatewayLike<ChatClientT>)
 [[nodiscard]] result<AgentBundle<ChatClientT>> make_agent_session(ChatClientT client, AgentSessionOptions opts,
-                                                                  ChatClientRegistry const* registry = nullptr,
-                                                                  SandboxBackendRegistry const* sandbox_registry =
-                                                                      nullptr) {
+                                                                  ChatClientRegistry const* registry,
+                                                                  SandboxBackendRegistry const& sandbox_registry) {
     result<AgentMetadata> meta = register_agent<A>(registry, sandbox_registry);
     if (!meta) return std::unexpected(meta.error());
 

@@ -155,6 +155,10 @@ public:
         return register_backend(std::move(name), std::move(instance), strict_eligibility::named_only);
     }
 
+    // ADR-244 slice 4b: an agent cannot be registered or bound against a registry nothing was registered in -- the
+    // host registers each backend it chose, and none was (`choice.missing.sandbox_backend`).
+    [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
+
     // §1 Q2 (design draft): 008 §3's `Profile::Strict` resolution rule, applied to the real,
     // registered candidate set -- filters to `strict_eligible` entries only (`named_only` entries
     // never compete here), hands `sandbox::resolve_strict()` the real candidates in deterministic
