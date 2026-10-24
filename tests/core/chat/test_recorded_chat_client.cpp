@@ -53,7 +53,7 @@ std::filesystem::path fixture(std::string const& name) {
 }
 
 ae::EffectContext make_ctx() {
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = ae::Principal{"p-1", "tenant-1"};
     ctx.trace_id = "trace-1";
     ctx.span_id = "span-1";

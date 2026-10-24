@@ -69,7 +69,7 @@ int main() {
     auto announcer = make_native_capability_announcer(std::move(shell), std::move(bash),
                                                         std::move(python), std::move(node));
 
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root({
         Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}},
         Capability{cap::NativeExec{"bash", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}},
@@ -106,7 +106,7 @@ int main() {
         NativePythonProvider python2({"python"}, mount_root, "workdir");
         auto announcer2 = make_native_capability_announcer(std::move(shell2), std::move(python2));
 
-        EffectContext ctx2{};  // only cmd granted, NOT python
+        EffectContext ctx2{.deadline = agentengine::Deadline::none()};  // only cmd granted, NOT python
         ctx2.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc2{"announcer-test-2", principal, empty_history};

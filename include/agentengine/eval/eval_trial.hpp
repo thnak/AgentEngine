@@ -463,7 +463,10 @@ template <class Inner, class SummarizerT>
                                       spec.token_budget ? Bound<std::uint64_t>::at_most(*spec.token_budget)
                                                         : Bound<std::uint64_t>::unbounded(),
                                       spec.max_turns ? Bound<std::uint64_t>::at_most(*spec.max_turns)
-                                                     : Bound<std::uint64_t>::unbounded()});
+                                                     : Bound<std::uint64_t>::unbounded(),
+                                      // A trial states no per-call timeout (the harness bounds a trial by turns and
+                                      // tokens): a stated `unbounded()`, not a default.
+                                      Bound<std::uint64_t>::unbounded()});
     session.set_capabilities(&held);
 
     MemProvider memory_provider{store.object_store(), store.ref_store(),  store.mount(),

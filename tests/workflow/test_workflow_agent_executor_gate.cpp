@@ -98,7 +98,7 @@ int main() {
     {
         Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}});
         CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}});
-        std::vector<EffectContext> contexts(1);
+        std::vector<EffectContext> contexts(1, agentengine::EffectContext{.deadline = agentengine::Deadline::none()});
         contexts[0].capabilities = borrow_capabilities(held);
         check(check_workflow_executable(wf, contexts).has_value(),
               "G3: a satisfied capability_ceiling is accepted");
@@ -107,7 +107,7 @@ int main() {
     // ---- G4: contexts-aware overload -- a declared ceiling with NO granted CapabilitySet fails ----
     {
         Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}});
-        std::vector<EffectContext> contexts(1);  // default: contexts[0].capabilities == nullptr
+        std::vector<EffectContext> contexts(1, agentengine::EffectContext{.deadline = agentengine::Deadline::none()});  // default: contexts[0].capabilities == nullptr
         check_error(check_workflow_executable(wf, contexts), failure_class::policy,
                     "workflow.agent_capability_ceiling_unmet",
                     "G4: a declared ceiling with no granted CapabilitySet at all is rejected");
@@ -117,7 +117,7 @@ int main() {
     {
         Workflow wf = one_agent_node({cap::FsRead{.mount_id = "work", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}});
         CapabilitySet const held = CapabilitySet::grant_root({cap::FsRead{.mount_id = "other-mount", .path_prefix = "", .size_cap_bytes = cap::Limit::unbounded()}});
-        std::vector<EffectContext> contexts(1);
+        std::vector<EffectContext> contexts(1, agentengine::EffectContext{.deadline = agentengine::Deadline::none()});
         contexts[0].capabilities = borrow_capabilities(held);
         check_error(check_workflow_executable(wf, contexts), failure_class::policy,
                     "workflow.agent_capability_ceiling_unmet",
@@ -138,7 +138,7 @@ int main() {
     {
         Workflow sub = one_agent_node();
         sub.executors.front().kind = executor_kind::sub_workflow;
-        std::vector<EffectContext> contexts(1);
+        std::vector<EffectContext> contexts(1, agentengine::EffectContext{.deadline = agentengine::Deadline::none()});
         check(check_workflow_executable(sub, contexts).has_value(),
               "G6: sub_workflow is accepted by the contexts-aware overload (ADR-157) -- the real "
               "bound/unbound check now lives in WorkflowSupervisor::initialize() itself");

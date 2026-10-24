@@ -86,7 +86,7 @@ int main() {
                      // ADR-244: stated, never defaulted -- the session holds its own grants; one question to a
                      // live model, capped at 25 turns and 20'000 tokens.
                      .choices(SessionChoices{AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::at_most(20'000),
-                                             Bound<std::uint64_t>::at_most(25)})
+                                             Bound<std::uint64_t>::at_most(25), agentengine::Bound<std::uint64_t>::unbounded()})
                      .endpoint(host, kHttpsPort, kPathPrefix)
                      .api_key_from_env(kSecretName, "AGENTENGINE_OPENROUTER_API_KEY")
                      .declare_capabilities(caps)

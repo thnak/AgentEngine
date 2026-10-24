@@ -106,7 +106,7 @@ int main() {
         make_msg("one", "h-1"), make_msg("two", "h-2"), make_msg("three", "h-3"),
         make_msg("four", "h-4"), make_msg("five", "h-5"),
     };
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // --- History shorter than the verbatim window: no summary, nothing fabricated -----------------
     {

@@ -109,7 +109,7 @@ public:
 }
 
 agentengine::EffectContext make_ctx(agentengine::CapabilitySet const& held) {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
     return ctx;
@@ -424,7 +424,7 @@ void test_control_value_reaches_the_seam() {
     auto ctx = make_ctx(held);
     std::stop_source stop;
     ctx.cancellation                = stop.get_token();
-    ctx.deadline                    = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    ctx.deadline                    = agentengine::Deadline::at(std::chrono::steady_clock::now() + std::chrono::seconds(30));
     ctx.principal                   = agentengine::make_embedded_principal("p-ctl", "tenant-ctl");
     ctx.run_id                      = "sess:run:3";
     ctx.root_run_id                 = "ROOT:run:1";
@@ -440,7 +440,7 @@ void test_control_value_reaches_the_seam() {
         stop.request_stop();
         check(backend.last_control->stop.stop_requested(),
               "G7 tool row: ... and it is the SAME token: a stop on ctx.cancellation reaches the seam");
-        check(backend.last_control->deadline == ctx.deadline, "G7 tool row: the seam sees ctx.deadline");
+        check(backend.last_control->deadline == ctx.deadline.time().value(), "G7 tool row: the seam sees ctx.deadline");
         check(backend.last_control->admission.tenant == "tenant-ctl" &&
                   backend.last_control->admission.principal == "p-ctl" &&
                   backend.last_control->admission.root_run == "ROOT:run:1",

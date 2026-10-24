@@ -378,7 +378,7 @@ int main() {
         AgentEngineSecretStore store(std::move(*EnvSecretSource::create(kLegacyEnvSecretPrefix)));
         CapabilitySet const held =
             CapabilitySet::grant_root({Capability{cap::Secret{"prod-api-key-2", std::chrono::seconds{0}}}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal    = Principal{"p-test", ""};
         ctx.capabilities = borrow_capabilities(held);
         auto lease = rt::block_on(store.resolve(SecretRef{"prod-api-key-2"}, ctx));
@@ -587,7 +587,7 @@ int main() {
             Principal principal{"p-composed", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-composed", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
             auto contribution = agentengine::test_support::run_task_sync<
                 result<ContextContribution>>(built->session().history_provider().on_context(
                 session_ctx, effect_ctx));
@@ -648,7 +648,7 @@ int main() {
             Principal principal{"p-composed-2", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-composed-2", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
             auto contribution = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built->session().history_provider().on_context(session_ctx, effect_ctx));
             check(contribution.has_value() && contribution->messages.size() == 2,
@@ -698,7 +698,7 @@ int main() {
             Principal principal{"p-move", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-move", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
 
             auto still_session1 = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built1->session().history_provider().on_context(session_ctx, effect_ctx));
@@ -749,7 +749,7 @@ int main() {
             Principal principal{"p-b23", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-b23", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
             auto session2_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built2->session().history_provider().on_context(session_ctx, effect_ctx));
             bool leaked = session2_now.has_value() && session2_now->messages.size() == 1 &&
@@ -793,7 +793,7 @@ int main() {
             Principal principal{"p-b24", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-b24", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
             auto session2_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built2->session().history_provider().on_context(session_ctx, effect_ctx));
             bool leaked = session2_now.has_value() && session2_now->messages.size() == 1 &&
@@ -864,7 +864,7 @@ int main() {
             Principal principal{"p-b25", ""};
             std::vector<Message> empty_history;
             SessionContext session_ctx{"s-b25", principal, empty_history};
-            EffectContext effect_ctx{};
+            EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
             auto session3_now = agentengine::test_support::run_task_sync<result<ContextContribution>>(
                 built3->session().history_provider().on_context(session_ctx, effect_ctx));
             bool leaked = session3_now.has_value() && session3_now->messages.size() == 1 &&
@@ -883,7 +883,7 @@ int main() {
         Principal principal{"p-move-2", ""};
         std::vector<Message> empty_history;
         SessionContext session_ctx{"s-move-2", principal, empty_history};
-        EffectContext effect_ctx{};
+        EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
 
         // B21a: self-move-assignment (`x = std::move(x)`) must be a safe no-op, not a state-destroying
         // self-clear -- the `if (this != &other)` guard in operator=(ComposedContextProvider&&)
@@ -1023,7 +1023,7 @@ int main() {
         Principal principal{"p-b22", ""};
         std::vector<Message> empty_history;
         SessionContext session_ctx{"s-b22", principal, empty_history};
-        EffectContext effect_ctx{};
+        EffectContext effect_ctx{.deadline = agentengine::Deadline::none()};
 
         CountingProvider::on_context_calls = 0;
         ProviderT lcp;

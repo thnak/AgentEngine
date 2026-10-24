@@ -406,7 +406,7 @@ int main() {
     // captured and mutate agent_session.hpp's own unlocked run_event_seq_by_run_ map from off-thread.
     {
         std::atomic<int> fired{0};
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal    = Principal{"p", ""};
         ctx.run_id       = "bg-race-run";
         ctx.report_progress = [&fired](agentengine::ContentItem) { fired.fetch_add(1); };
@@ -447,7 +447,7 @@ int main() {
     // all, just the intended use of the session-sandbox seam this pointer exists for.
     {
         DummyFileSystemAdapter adapter;
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal   = Principal{"p", ""};
         ctx.run_id      = "bg-race-run-sandbox-fs";
         ctx.sandbox_fs  = &adapter;

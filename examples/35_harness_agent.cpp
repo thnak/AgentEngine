@@ -138,7 +138,7 @@ int main() {
                             .principal  = Principal{"p-demo", ""},
                             .choices    = SessionChoices{AuthoritySource::single_trusted_caller(),
                                                          Bound<std::uint64_t>::at_most(2'000),
-                                                         Bound<std::uint64_t>::at_most(8)},
+                                                         Bound<std::uint64_t>::at_most(8), agentengine::Bound<std::uint64_t>::unbounded()},
                             .grants             = {},
                             .chat_client_grants = {},
                             .approve_tools      = std::nullopt,

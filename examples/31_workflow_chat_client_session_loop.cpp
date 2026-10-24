@@ -157,7 +157,7 @@ int main() {
     std::deque<std::string> canned_answers = {"Blue", "Medium"};
 
     std::vector<Message> history = {text_message("Hi, I'd like to place an order.")};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     std::string final_answer;
     bool completed = false;
 

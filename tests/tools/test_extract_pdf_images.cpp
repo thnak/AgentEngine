@@ -229,7 +229,7 @@ void test_real_end_to_end_image_extraction() {
     std::vector<agentengine::Capability> grants{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}};
     for (auto const& m : agentengine::tools::required_grants()) grants.push_back(m);
     agentengine::CapabilitySet const held = agentengine::CapabilitySet::grant_root(std::move(grants));
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
@@ -263,7 +263,7 @@ void test_real_end_to_end_image_extraction() {
 void test_ambiguous_source_rejected_before_any_sandbox_work() {
     using agentengine::tools::ExtractPdfImages;
     agentengine::CapabilitySet const held;
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 

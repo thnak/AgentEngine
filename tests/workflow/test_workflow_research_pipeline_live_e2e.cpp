@@ -318,7 +318,7 @@ int main() {
     caps.streaming         = true;
     caps.max_output_tokens = 200;
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = agentengine::Principal{"research-pipeline-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 

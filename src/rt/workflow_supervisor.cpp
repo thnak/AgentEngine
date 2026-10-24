@@ -14,7 +14,7 @@ void WorkflowSupervisor::initialize(agentengine::workflow::Workflow graph, std::
     graph_    = std::move(graph);
     bodies_   = std::move(bodies);
     contexts_ = std::move(contexts);
-    contexts_.resize(graph_.executors.size());
+    contexts_.resize(graph_.executors.size(), agentengine::EffectContext{.deadline = agentengine::Deadline::none()});
     designated_stall_reporter_ = std::move(designated_stall_reporter);
     stall_streak_ = 0;
     resets_used_  = 0;

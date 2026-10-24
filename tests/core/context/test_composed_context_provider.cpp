@@ -211,7 +211,7 @@ static_assert(std::is_default_constructible_v<ComposedSession>,
 
 int main() {
     ae::Principal principal{"p-composed", ""};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // --- Part 1a: direct unit coverage, N == 3, every budget unbounded -------------------------
     // Proves the composition mechanics (declared order, tool survival, on_turn_end fan-out) with

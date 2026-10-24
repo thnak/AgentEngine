@@ -138,7 +138,7 @@ int main() {
         provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
         std::vector<Message> history;
         SessionContext session_ctx{label, principal, history};
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = borrow_capabilities(caps);

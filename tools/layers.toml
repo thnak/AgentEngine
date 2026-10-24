@@ -47,6 +47,7 @@
 "include/agentengine/core/fixed_string.hpp" = { layer = "V", reason = "structural string NTTP helper, pure language utility" }
 "include/agentengine/core/bound.hpp"        = { layer = "V", reason = "Bound<T> 'at most n or unbounded' (ADR-244 2.1): the capability caps and resource limits of every layer state their limits with it; includes only error.hpp" }
 "include/agentengine/core/choice_error.hpp" = { layer = "V", reason = "choice_missing(): the one error shape for a choice nobody made (ADR-244 2.1); includes only error.hpp" }
+"include/agentengine/core/deadline.hpp"    = { layer = "V", reason = "Deadline, a call's stated time limit (ADR-244 2.2): EffectContext and the layers that read it state `at(t)` or `none()`; includes only bound.hpp" }
 "include/agentengine/core/bound_value.hpp" = { layer = "V", reason = "BoundValue, the compile-time spelling of Bound for CRTP tag arguments (ADR-244 2.1); includes only bound.hpp" }
 "include/agentengine/core/engine_floor.hpp" = { layer = "V", reason = "EngineFloor: the named host-safety bounds kept under an unbounded() choice (ADR-244 2.1); includes only bound.hpp" }
 "include/agentengine/core/tainted.hpp"      = { layer = "V", reason = "Tainted<T> type-level taint marker (003 §2, 007 §4) every layer must see" }

@@ -71,7 +71,7 @@ int main() {
 
     ExecState state_a{};
     ExecState state_b{};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.session_nonce = ae_test::kTestSessionNonce;
     ctx.principal = ae_test::kTestPrincipal;
 

@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
     InMemorySecretStore store;
     store.set(kSecretName, *key);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = Principal{"batch-infer", ""};
     ctx.capabilities = borrow_capabilities(held);
 

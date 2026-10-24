@@ -198,7 +198,7 @@ ae::RetryPolicy fast_retry_policy() {
 }
 
 [[nodiscard]] ae::EffectContext make_ctx() {
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.run_id = "test-run";
     ctx.turn_index = 0;
     return ctx;
@@ -417,7 +417,7 @@ int main() {
         ae::ModelCallGateway<ScriptedGatewayBackend> gw(primary, std::make_tuple(), retry, breaker, &no_jitter);
 
         auto ctx = make_ctx();
-        ctx.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+        ctx.deadline = agentengine::Deadline::at(std::chrono::steady_clock::now() + std::chrono::milliseconds(5));
 
         auto const started = std::chrono::steady_clock::now();
         auto r = ae::test_support::run_task_sync<ae::result<ae::ChatResponse>>(gw.call(make_request(), ctx));

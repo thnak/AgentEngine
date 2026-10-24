@@ -149,7 +149,7 @@ int main() {
         "Water boils at a lower temperature at higher altitude.",
         "Goodbye! Ending the session now.",
     });
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"p-demo", ""};
 
     // The "human" side -- a canned, deterministic queue rather than real stdin, so this example

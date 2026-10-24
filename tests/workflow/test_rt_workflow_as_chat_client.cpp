@@ -333,7 +333,7 @@ int main() {
         bool moderator_delta_sink_called = false;
         std::vector<agentengine::BoundCapability> local_bound;
 
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.bound_capabilities = &local_bound;
         ctx.report_progress = [&](ContentItem) { report_progress_called = true; };
         ctx.agent_turn_sink = [&](agentengine::RunEvent const&) { agent_turn_sink_called = true; };
@@ -372,7 +372,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("hello", role::user), text_message("world", role::assistant)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult result = drain(client.chat_stream(req, ctx));
         check(!result.failed, "T3: fresh call completes without error");
@@ -414,7 +414,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("please ask", role::user)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult first = drain(client.chat_stream(req, ctx));
         check(!first.failed, "T5: reaching a request_port is a SUCCESSFUL suspended response, not an error");
@@ -473,7 +473,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("please ask twice", role::user)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult first = drain(client.chat_stream(req, ctx));
         check(!first.failed, "T7: two ports opening in the same round is a successful suspended response");
@@ -551,14 +551,14 @@ int main() {
         ChatRequest req;
         req.messages = {text_message("a message long enough to exceed a tiny byte threshold", role::user)};
 
-        EffectContext ctx_no_sink{};
+        EffectContext ctx_no_sink{.deadline = agentengine::Deadline::none()};
         ctx_no_sink.tool_result_byte_threshold = 8;  // trivially exceeded, no blob_sink configured
         DrainResult failed = drain(client.chat_stream(req, ctx_no_sink));
         check(failed.failed, "T8: an oversized envelope with no blob_sink fails closed");
         check(failed.err.code == "chat_client.workflow_chat_client.history_oversized_no_sink",
               "T8: the failure carries the documented oversized-no-sink error code");
 
-        EffectContext ctx_with_sink{};
+        EffectContext ctx_with_sink{.deadline = agentengine::Deadline::none()};
         ctx_with_sink.tool_result_byte_threshold = 8;
         ctx_with_sink.blob_sink = [](std::span<std::byte const>,
                                       std::string const& media_type) -> agentengine::task<agentengine::result<agentengine::BlobRef>> {
@@ -594,7 +594,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("x", role::user)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult result = drain(client.chat_stream(req, ctx));
         check(result.failed, "T9: a bound_max_rounds terminal status fails closed");
@@ -621,7 +621,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("hi", role::user)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult result = drain(client.chat_stream(req, ctx));
         check(!result.failed, "T10: the run with a real agent-kind node completes");
@@ -656,7 +656,7 @@ int main() {
         WorkflowChatClient client(inner);
         ChatRequest req;
         req.messages = {text_message("hi", role::user)};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         DrainResult first = drain(client.chat_stream(req, ctx));
         check(!first.failed, "T11: the first call dispatches the agent-kind node, reaches the port, "

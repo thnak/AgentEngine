@@ -120,7 +120,7 @@ int main() {
 
     // ---- on_context(): the stored item is ranked against this turn and injected -------------------
     std::vector<Message> history{user_message("can you turn dark mode back on", "m-1")};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
     SessionContext session_ctx{"s-memory", principal, history};
 
@@ -149,7 +149,7 @@ int main() {
                                 m.role = role::assistant;
                                 return m;
                             }()};
-    EffectContext turn_ctx{};
+    EffectContext turn_ctx{.deadline = agentengine::Deadline::none()};
     turn_ctx.principal  = principal;
     turn_ctx.run_id     = "s-memory:run:1";
     turn_ctx.turn_index = 0;

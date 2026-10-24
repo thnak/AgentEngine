@@ -97,7 +97,7 @@ int main() {
     {
         SessionExecStateRegistry registry;
         ExecState& state = registry.get_or_create("session:e1-3");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         MockShellRunner shell;
         auto shell_result = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "cd /tmp/from-shell-cd"}, state, ctx));
@@ -120,7 +120,7 @@ int main() {
     {
         SessionExecStateRegistry registry;
         ExecState& state = registry.get_or_create("session:e1-4");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
         MockPythonRunner python;
         auto python_result = agentengine::rt::block_on(python.run(ExecRequest{"python", "os.chdir('/tmp/from-python-chdir')"}, state, ctx));

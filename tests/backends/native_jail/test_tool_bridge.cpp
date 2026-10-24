@@ -98,7 +98,7 @@ struct StashingTool
 agentengine::Principal const kCaller{"p-caller", ""};
 
 [[nodiscard]] agentengine::EffectContext caller_ctx(std::vector<agentengine::Capability> held) {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = kCaller;
     ctx.capabilities = std::make_shared<agentengine::CapabilitySet const>(
         agentengine::CapabilitySet::grant_root(std::move(held)));
@@ -224,7 +224,7 @@ int main() {
         auto denied = bridge_tool_call(config, req, bare);
         check(denied.is_error, "G-C5(c): a capability the bridge config holds but the caller does not is refused");
 
-        agentengine::EffectContext null_caps;
+        agentengine::EffectContext null_caps{.deadline = agentengine::Deadline::none()};
         null_caps.principal = kCaller;
         ToolCallRequest req2{"c5c-null", "echo_tool", *json::parse(R"({"message":"hi"})"), false};
         check(bridge_tool_call(config, req2, null_caps).is_error,

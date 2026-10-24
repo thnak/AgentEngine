@@ -631,7 +631,7 @@ private:
         Job& job = *job_ptr;
 
         // The allowlist (ADR-181 §10 C6): exactly these fields, nothing inherited from a session.
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal          = job.spec.principal;
         ctx.capabilities       = std::make_shared<CapabilitySet const>(job.spec.capabilities);
         ctx.bound_capabilities = &job.bound;

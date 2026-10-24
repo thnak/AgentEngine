@@ -138,7 +138,7 @@ int main() {
         CapabilitySet caps = CapabilitySet::grant_root(
             {Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
              Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);

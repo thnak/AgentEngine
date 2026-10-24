@@ -32,7 +32,7 @@ int g_failures = 0;
     } while (0)
 
 EffectContext make_ctx(std::string principal_id = "test-principal") {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{std::move(principal_id), ""};
     return ctx;
 }

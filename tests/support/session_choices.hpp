@@ -20,14 +20,14 @@ namespace ae_test {
 // A session that holds its own grants, with no budget and no turn cap.
 [[nodiscard]] inline agentengine::SessionChoices trusted_unbounded() {
     return {agentengine::AuthoritySource::single_trusted_caller(), agentengine::Bound<std::uint64_t>::unbounded(),
-            agentengine::Bound<std::uint64_t>::unbounded()};
+            agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()};
 }
 
 // The same, with the budget and turn cap a test passed (unset is none).
 [[nodiscard]] inline agentengine::SessionChoices trusted(std::optional<std::uint64_t> token_budget,
                                                          std::optional<std::uint64_t> max_turns = std::nullopt) {
     return {agentengine::AuthoritySource::single_trusted_caller(), bound_or_unbounded(token_budget),
-            bound_or_unbounded(max_turns)};
+            bound_or_unbounded(max_turns), agentengine::Bound<std::uint64_t>::unbounded()};
 }
 
 // A Tier-3 session (formerly `set_require_authority(true)`): every request carries its authority, against no
@@ -35,7 +35,8 @@ namespace ae_test {
 [[nodiscard]] inline agentengine::SessionChoices per_request_no_ceiling(
     std::optional<std::uint64_t> token_budget = std::nullopt, std::optional<std::uint64_t> max_turns = std::nullopt) {
     return {agentengine::AuthoritySource::per_request(agentengine::CapabilitySet::no_ceiling()),
-            bound_or_unbounded(token_budget), bound_or_unbounded(max_turns)};
+            bound_or_unbounded(token_budget), bound_or_unbounded(max_turns),
+            agentengine::Bound<std::uint64_t>::unbounded()};
 }
 
 // The principal a builder test states (ADR-244 slice 4c: the builders have no default identity).

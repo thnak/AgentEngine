@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
                      // watches the session and can stop it, so tokens are not capped.
                      .choices(agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                           agentengine::Bound<std::uint64_t>::unbounded(),
-                                                          agentengine::Bound<std::uint64_t>::at_most(25)})
+                                                          agentengine::Bound<std::uint64_t>::at_most(25), agentengine::Bound<std::uint64_t>::unbounded()})
                      .grant(Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}})
                      .grant(Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}})
                      .grant(Capability{cap::RunCommand{}})

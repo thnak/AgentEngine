@@ -38,7 +38,7 @@ int main() {
     namespace json = ae::json;
     ae::Principal const principal{"p-plan", ""};
     std::vector<ae::Message> history{make_msg(ae::role::user, "ship the release", "m-1")};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
     ae::SessionContext session_ctx{"s-plan", principal, history};
 

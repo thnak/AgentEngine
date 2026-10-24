@@ -21,7 +21,7 @@ using namespace aepv;
 namespace {
 
 EffectContext make_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.trace_id = "kata-backend-egress-test";
     ctx.span_id = "span-1";
     return ctx;

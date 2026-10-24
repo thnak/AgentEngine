@@ -65,7 +65,7 @@ int main() {
     InMemoryAppendLogStore store;
     std::string const session_id = "s-journal";
 
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.run_id     = "s-journal:run:1";
     ctx.turn_index = 0;
 
@@ -112,7 +112,7 @@ int main() {
 
     // ---- J7: a SECOND, genuinely interrupted effect is distinguished by idempotency key -------------
     auto args2 = *agentengine::json::parse(R"({"path":"/tmp/b"})");
-    EffectContext ctx2{};
+    EffectContext ctx2{.deadline = agentengine::Deadline::none()};
     ctx2.run_id     = "s-journal:run:1";
     ctx2.turn_index = 1;  // a later turn -- a genuinely different effect
     IdempotencyKey const key2 = derive_idempotency_key(ctx2, 0, args2);

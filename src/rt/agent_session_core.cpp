@@ -667,7 +667,7 @@ void AgentSessionCore::fork_core_from(AgentSessionCore const& source, std::strin
     stream_retries_used_ = 0;
     discarded_tokens_estimate_ = 0;
     last_run_id_.clear();
-    effect_context_ = EffectContext{};
+    effect_context_ = EffectContext{.deadline = Deadline::none()};  // no call in flight
     advance_session_nonce();  // ADR-244 §2.4: a new incarnation
     open_interactions_.clear();
     interaction_counter_ = 0;
@@ -702,7 +702,7 @@ void AgentSessionCore::clear_core_state() {
     stream_retries_used_ = 0;
     discarded_tokens_estimate_ = 0;
     last_run_id_.clear();
-    effect_context_ = EffectContext{};
+    effect_context_ = EffectContext{.deadline = Deadline::none()};  // no call in flight
     advance_session_nonce();  // ADR-244 §2.4: a new incarnation
     open_interactions_.clear();
     interaction_counter_ = 0;
@@ -792,7 +792,9 @@ result<void> AgentSessionCore::restore_from_record(AgentSessionRecord const& rec
             "choices), which states them",
             "session.record_without_choices"});
     }
-    SessionChoices const recorded{choices_->authority, rec.choices->token_budget, rec.choices->max_turns};
+    // The record does not carry the per-call timeout (a latency choice, not durable state), so it covers any stated one.
+    SessionChoices const recorded{choices_->authority, rec.choices->token_budget, rec.choices->max_turns,
+                                  Bound<std::uint64_t>::unbounded()};
     if (rec.choices->authority != choices_->authority.mode() || !recorded.covers(*choices_)) {
         return std::unexpected(error{failure_class::policy,
             "restoring would change the authority mode or widen a budget: the record ran under " +
@@ -975,6 +977,7 @@ result<void> AgentSessionCore::apply_dispatch_authority(
     if (!choices_.has_value()) return std::unexpected(missing_session_choices());
     if (result<void> z = check_bound("token_budget", choices_->token_budget); !z) return z;
     if (result<void> z = check_bound("max_turns", choices_->max_turns); !z) return z;
+    if (result<void> z = check_bound("call_timeout_ms", choices_->call_timeout_ms); !z) return z;
 
     if (CapabilityCeiling const* ceiling = choices_->authority.ceiling(); ceiling != nullptr) {
         if (!authority.has_value()) {
@@ -1074,6 +1077,7 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
     // a live stream, unlike Backgroundable's deliberate suppression).
     auto make_call_ctx = [this](std::string const& call_id) {
         EffectContext ctx = effect_context_;
+        ctx.deadline = call_deadline(std::chrono::steady_clock::now());  // this call's own, from the stated timeout
         ctx.report_progress = [this, run_id = ctx.run_id, call_id](ContentItem item) {
             detail::force_tainted(item);
             emit_run_event_for(run_id, run_event_kind::tool_call_delta,
@@ -1957,6 +1961,13 @@ task<result<AgentResponse>> AgentSessionCore::run_rounds_body() {
         }
         for (;;) {
             emit_run_event(run_event_kind::model_call_started);
+            // The stated per-call timeout becomes this call's deadline on the live context, and is cleared when the call
+            // ends on any path, so a hook or provider that reads `effect_context_` between calls never sees a past one.
+            struct DeadlineScope {
+                EffectContext& ctx;
+                ~DeadlineScope() { ctx.deadline = Deadline::none(); }
+            } const deadline_scope{effect_context_};
+            effect_context_.deadline = call_deadline(std::chrono::steady_clock::now());
             // ADR-244 §2.3 (slice 3c): with chat-client secrets set, the model call's context carries those and
             // nothing else -- the run's authority stays out of the model call, and the secrets out of the run's.
             if (chat_client_secrets_ != nullptr) {

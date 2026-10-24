@@ -179,7 +179,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root(
             {Capability{cap::NetOut{{"127.0.0.1:" + std::to_string(server.port()) + ":tcp"}, cap::Limit::unbounded(), {}}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -223,7 +223,7 @@ int main() {
         AE_CHECK(init.has_value(), "setup: runner initializes cleanly (SOCK-DENY)");
 
         ExecState state{};
-        EffectContext ctx{};  // no capabilities granted at all -- irrelevant here, since these
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities granted at all -- irrelevant here, since these
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
                                 // methods must be denied unconditionally, not merely without a grant
@@ -281,7 +281,7 @@ int main() {
         ExecState state{};
         CapabilitySet caps =
             CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);

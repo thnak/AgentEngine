@@ -270,7 +270,7 @@ int main() {
     {
         Recorder rec;
         {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.sandbox_exec_sink = rec.sink();
             {
                 SandboxExecScope scope(ctx, "e1", "native-jail", "create");
@@ -293,7 +293,7 @@ int main() {
 
         rec.events.clear();
         {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.sandbox_exec_sink = rec.sink();
             {
                 SandboxExecScope scope(ctx, "e2", "native-jail", "create");
@@ -309,7 +309,7 @@ int main() {
 
         rec.events.clear();
         {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.sandbox_exec_sink = rec.sink();
             {
                 SandboxExecScope scope(ctx, "e3", "docker", "exec");
@@ -420,7 +420,7 @@ int main() {
     // a detached thread outliving a forked/cleared/destroyed session is what this reset closes.
     {
         std::atomic<int> fired{0};
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal         = Principal{"p", ""};
         ctx.run_id            = "bg-race-run";
         ctx.sandbox_exec_sink = [&fired](run_event_kind, payload::SandboxExec) {
@@ -530,7 +530,7 @@ int main() {
             });
 
             Recorder rec;
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal         = Principal{"test-principal", ""};
             ctx.capabilities      = agentengine::borrow_capabilities(held);
             ctx.sandbox_exec_sink = rec.sink();

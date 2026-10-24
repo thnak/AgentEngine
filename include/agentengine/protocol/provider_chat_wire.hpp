@@ -64,7 +64,7 @@ struct ProviderReactorOptions {
     rt::HostResolver  resolver{};
     // Idle/stall/limits for the reactor path; `idle_timeout` is overwritten with sandbox::io_timeout_ms() (the
     // blocking client's bound) so a deployment's one setting governs both paths.
-    rt::HttpOptions   options{};
+    rt::HttpOptions   options{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};  // ADR-244 §2.2: a stated unbounded; a stream is bounded by idle/stall timeouts and the call stop
 };
 
 // ADR-237 step 6's named leftover: map the reactor's `http_error` onto the engine's `failure_class`, keeping the

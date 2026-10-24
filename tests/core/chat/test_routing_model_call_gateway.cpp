@@ -111,7 +111,7 @@ ae::RetryPolicy fast_retry_policy() {
 }
 
 [[nodiscard]] ae::EffectContext make_ctx() {
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.run_id = "test-run";
     ctx.turn_index = 0;
     return ctx;

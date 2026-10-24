@@ -61,11 +61,16 @@ struct SessionChoices {  // ae-naming-lint: allow SessionChoices — ADR-244
     AuthoritySource       authority;
     Bound<std::uint64_t>  token_budget;
     Bound<std::uint64_t>  max_turns;
+    // ADR-244 §2.2 (time limits): how long ONE model call or ONE tool call may take, in milliseconds -- `at_most(n)` or
+    // `unbounded()`. The session turns it into `EffectContext::deadline` for each call. It is a boundary check, not
+    // preemption: a call that starts past it is refused, a retry that cannot finish inside it is not started, and an
+    // egress wait ends at it; a tool body already running is not interrupted (ADR-242 §3a).
+    Bound<std::uint64_t>  call_timeout_ms;
 
     // The narrowing order restore and fork use: the same authority mode, and budgets no wider than `this`.
     [[nodiscard]] bool covers(SessionChoices const& narrower) const noexcept {
         return authority.mode() == narrower.authority.mode() && token_budget.covers(narrower.token_budget) &&
-               max_turns.covers(narrower.max_turns);
+               max_turns.covers(narrower.max_turns) && call_timeout_ms.covers(narrower.call_timeout_ms);
     }
 };
 

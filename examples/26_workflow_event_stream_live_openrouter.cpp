@@ -150,7 +150,7 @@ int main() {
     // this example actually cares about are set by assignment -- no member list to fall out of date
     // as the struct grows, which is the same reason nothing else in the tree designated-initializes
     // this type.
-    EffectContext wf_ctx{};
+    EffectContext wf_ctx{.deadline = agentengine::Deadline::none()};
     wf_ctx.principal    = Principal{"example-26-principal", ""};
     wf_ctx.capabilities = borrow_capabilities(held);
 

@@ -16,6 +16,7 @@
 
 #include "agentengine/core/authority_terms.hpp"
 #include "agentengine/core/content.hpp"
+#include "agentengine/core/deadline.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/run_event.hpp"
 #include "agentengine/core/task.hpp"  // ADR-237 5.1 (#187): blob_sink returns task<result<BlobRef>>
@@ -50,13 +51,13 @@ struct SessionNonce {
 };
 
 struct EffectContext {
-    Principal                             principal;
-    SessionNonce                          session_nonce;
+    Principal                             principal{};
+    SessionNonce                          session_nonce{};
     // ADR-244 §2.3: written by the session in every branch of its dispatch-authority step, never by a tool or
     // from model output. nullopt on a context no session built. A spawned child inherits the source from here.
-    std::optional<authority_mode>         authority_source;
+    std::optional<authority_mode>         authority_source{};
     // The admitted request's expiry under `per_request`; nullopt under `single_trusted_caller`.
-    std::optional<Expiry>                 authority_expires_at;
+    std::optional<Expiry>                 authority_expires_at{};
     // ADR-061 §20.3: a shared_ptr, not a raw pointer, since Tier 3 populates this per-request from a
     // RequestAuthority-owned CapabilitySet (rt/agent_session.hpp) that must outlive the coroutine
     // frame that constructed it -- a raw pointer borrowed from that frame would dangle once the
@@ -64,7 +65,7 @@ struct EffectContext {
     // matters for the session-level fallback case: AgentSession::capabilities_ is itself a shared_ptr
     // constructed with a no-op deleter (ADR-061 §26.1), so copying it here never implies deleting the
     // caller-owned CapabilitySet it points at.
-    std::shared_ptr<CapabilitySet const>  capabilities;  // borrowed or per-request-owned; see above
+    std::shared_ptr<CapabilitySet const>  capabilities{};  // borrowed or per-request-owned; see above
     // 006 §3 step 7's per-call handles ("materialize capability handles for this call only") --
     // distinct from `capabilities` above (the run's whole held set, useful for read-only checks):
     // these are freshly minted for THIS invocation and revoked at step 10 (core/tool_pipeline.hpp),
@@ -72,9 +73,13 @@ struct EffectContext {
     // loses it the moment the call ends -- the shared-ticket revocation the handle carries doesn't
     // care how many copies exist. Borrowed; never owned here.
     std::vector<BoundCapability> const*   bound_capabilities = nullptr;
-    std::chrono::steady_clock::time_point deadline{};
-    std::string                           trace_id;
-    std::string                           span_id;
+    // ADR-244 slice 5 (time limits): stated, not defaulted. `Deadline::at(t)` or the named `Deadline::none()`; a session
+    // sets it per call from `SessionChoices::call_timeout_ms`. It is a boundary check (a tool call that starts past it is
+    // refused, a retry that cannot finish inside it is not started, an egress wait ends at it), NOT preemption of a body
+    // already running.
+    Deadline                              deadline;
+    std::string                           trace_id{};
+    std::string                           span_id{};
     // Milestone 4 Phase A3 (docs/planning/milestone-4-sessions-durability-memory-breakdown.md):
     // real 001 §1/§2 Run/Turn identity, threaded through here because 019 §3's per-effect
     // idempotency key is derived from exactly `{run_id, turn_index, call_index, argument_digest}`
@@ -83,7 +88,7 @@ struct EffectContext {
     // (`core/agent_session.hpp`), deterministically from the session's own monotonic run counter
     // -- never wall-clock-derived (001 §7: an unrecorded wall-clock read here would be exactly the
     // kind of untracked nondeterminism I5 forbids).
-    std::string  run_id;
+    std::string  run_id{};
     // ADR-241 §8.4 (S2 step 1): the id of the ROOT run this call descends from -- the run an agent.spawn
     // child, a background job or a workflow node ultimately serves. A root run's value is its own `run_id`;
     // every descendant carries the root's. It is the egress proxy's admission label (`EgressCallControl::
@@ -92,7 +97,7 @@ struct EffectContext {
     // a `ChildSpawnRequest`, a job owner or the workflow supervisor -- nothing here is ever derived from model
     // output, and no tool writes it. Empty means "unknown": the admission step then falls back to `run_id`, and if
     // both are empty charges the UNATTRIBUTED bucket (it never skips a level, ADR-241 R5-1).
-    std::string  root_run_id;
+    std::string  root_run_id{};
     std::uint64_t turn_index = 0;
     // ADR-057 §9 (Design B: abort-and-replay for `agent.ask()`, 026 §5): host-driven REPLAY state,
     // set by `AgentSession::resolve_interaction()`'s `codeact_ask` branch (rt/agent_session.hpp)
@@ -104,7 +109,7 @@ struct EffectContext {
     // never something the model supplies (I3). A host's `execute_code` implementation reads this to
     // build its own `sandbox::ExecRequest::preseeded_answers` -- see that field's own comment for the
     // full consumption contract.
-    std::vector<std::string> codeact_preseeded_answers;
+    std::vector<std::string> codeact_preseeded_answers{};
     // ADR-060: a real, call-scoped reverse channel into the session's own `emit_run_event()` --
     // `Tool<>::invoke()` calls `ctx.report_progress(ContentItem{...})` to push a `run_event_kind::
     // tool_call_delta` (run_event.hpp) for ITSELF, mid-call, onto `enable_event_stream()`'s stream.
@@ -219,7 +224,7 @@ struct EffectContext {
         [](Usage const&, std::uint64_t) {};
     // ADR-193: what the calling run may still spend (nullopt = no budget), set by `rt::AgentSession` before it
     // dispatches tool calls; a tool that runs another agent caps the child's budget by it.
-    std::optional<std::uint64_t> remaining_token_budget;
+    std::optional<std::uint64_t> remaining_token_budget{};
 
     // docs/planning/workflow-mid-run-cancellation-design-draft.md (GitHub issue #37, red-teamed):
     // `WorkflowSupervisor`'s own cooperative mid-call cancellation signal (`rt/workflow_supervisor.
@@ -241,7 +246,7 @@ struct EffectContext {
     // `ExecutorBody`/`WorkflowSupervisor` code path in this codebase makes any I5 replay-determinism
     // claim today — this is the same category of live, unrecorded read, disclosed here rather than
     // silently assumed harmless, so a future I5-related change to this layer knows to revisit it.
-    std::stop_token cancellation;
+    std::stop_token cancellation{};
 
     // 006 §7 / 028 §2: an oversized tool result is promoted to a `BlobRef` rather than inlined into
     // the model's context. Both fields below default OFF (`nullopt` / an empty `std::function`) --
@@ -255,7 +260,7 @@ struct EffectContext {
     // effective per-turn token budget it is tracking (005 §3's `TokenBudget`, scaled to a declared
     // fraction) and sets it here per call -- the same per-call-hint shape 006 §6b Q5 already
     // established for `watch_resource`'s poll interval, applied to this seam instead.
-    std::optional<std::uint64_t> tool_result_byte_threshold;
+    std::optional<std::uint64_t> tool_result_byte_threshold{};
 
     // Where an oversized result's bytes actually go once step 9 decides to promote -- content-
     // addressed storage is the named seam (025's worktree object store; 003 §3's own `BlobRef::store`
@@ -269,7 +274,7 @@ struct EffectContext {
     // (`WorktreeObjectStore::put_blob`) is. The sink's arguments (`bytes`) must outlive the task;
     // every caller awaits it in the same full-expression, from a frame that owns the bytes.
     std::function<task<result<BlobRef>>(std::span<std::byte const> bytes, std::string const& media_type)>
-        blob_sink;
+        blob_sink{};
 
     // The session's own mediated filesystem view into its sandbox mount, if one is currently live
     // (008 §6's `per_session` sandbox lifetime: "created on first use, retained while the session
@@ -298,7 +303,7 @@ struct EffectContext {
     // external effect on it -- that is the tool's side of the `effect_class::idempotent` contract.
     // `attempt` is 1-based; 0 (and an empty key) means "not set by this caller": the foreground
     // `invoke_tool()` path does not populate either yet (named in ADR-181's residuals).
-    std::string   idempotency_key;
+    std::string   idempotency_key{};
     std::uint32_t attempt = 0;
 };
 

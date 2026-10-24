@@ -270,7 +270,7 @@ int main() {
         // The WorkflowResult carries no error code, and the session's own admission would refuse the run too
         // (run.authority_required); the body itself names the cause.
         art::ExecutorBody body = art::agent_session_as_executor_body(s);
-        ae::EffectContext ctx;
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto direct = drive(body(text_message("hi"), ctx));
         check(code_of(direct) == "workflow.node_requires_authority" && client.calls() == 0,
               "S4: called directly, the node refuses with workflow.node_requires_authority");

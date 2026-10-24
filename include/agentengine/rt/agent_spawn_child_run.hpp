@@ -87,6 +87,10 @@ struct ChildSpawnRequest {
     // `tighter(target, caller's remaining budget)` and the target's declared turn cap.
     std::optional<agentengine::Bound<std::uint64_t>> token_budget{};
     std::optional<agentengine::Bound<std::uint64_t>> max_turns{};
+    // ADR-244 §2.2 (time limits): how long one of the child's model or tool calls may take. `perform_agent_spawn` states
+    // it as what is left of the caller's deadline, so a child never outlives its parent's call (`unbounded()` when the
+    // caller has none).
+    std::optional<agentengine::Bound<std::uint64_t>> call_timeout_ms{};
     // ADR-244 §2.3 (slice 3c): the caller's authority source (`EffectContext::authority_source`) and, under
     // `per_request`, the expiry its run was admitted with (`EffectContext::authority_expires_at`). The child runs
     // under the same source: `per_request` makes it a per_request session whose one run carries the derived
@@ -189,6 +193,11 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
             "spawn.max_turns",
             std::array<std::string_view, 2>{"Bound<std::uint64_t>::at_most(n)", "Bound<std::uint64_t>::unbounded()"}));
     }
+    if (!req.call_timeout_ms.has_value()) {
+        co_return std::unexpected(agentengine::choice_missing(
+            "spawn.call_timeout_ms",
+            std::array<std::string_view, 2>{"Bound<std::uint64_t>::at_most(n)", "Bound<std::uint64_t>::unbounded()"}));
+    }
     bool const per_request = *req.authority_source == agentengine::authority_mode::per_request;
     if (per_request && !req.authority_expires_at.has_value()) {
         co_return std::unexpected(agentengine::choice_missing(
@@ -203,7 +212,7 @@ template <class ChatClientT, class StateT = agentengine::rt::NoSessionState,
                      agentengine::SessionChoices{
                          per_request ? agentengine::AuthoritySource::per_request(req.capabilities)
                                      : agentengine::AuthoritySource::single_trusted_caller(),
-                         *req.token_budget, *req.max_turns});
+                         *req.token_budget, *req.max_turns, *req.call_timeout_ms});
     // ADR-241 §8.4: before start_run() -- the child's runs are charged to the caller's ROOT run, not their own.
     child.set_inherited_root_run_id(req.root_run_id);
     configure_chat_client(child.emplace_chat_client());

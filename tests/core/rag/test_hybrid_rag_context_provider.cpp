@@ -168,7 +168,7 @@ int main() {
                            /*max_injected=*/2, /*candidate_k=*/10, /*rrf_k=*/60.0};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "how do I find dark mode", "m-1")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-hybrid", principal, history};
 
@@ -235,14 +235,14 @@ int main() {
             req.arguments = ae::json::Value::make_object(
                 {{"query", ae::json::Value::make_string("how do I find dark mode")}});
 
-            ae::EffectContext denied_ctx{};
+            ae::EffectContext denied_ctx{.deadline = agentengine::Deadline::none()};
             denied_ctx.principal = principal;
             auto denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{}));
             AE_CHECK(denied.is_error,
                      "H9c: recall is DENIED through invoke_tool() when the caller holds no FsRead "
                      "on the corpus mount");
 
-            ae::EffectContext allowed_ctx{};
+            ae::EffectContext allowed_ctx{.deadline = agentengine::Deadline::none()};
             allowed_ctx.principal = principal;
             auto allowed = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
                                            req, allowed_ctx, ae::ApprovalDecider{}));
@@ -282,7 +282,7 @@ int main() {
         Provider provider{object_store, ref_store, mount, read_cap, embedder, dense, sparse,
                            /*max_injected=*/1};
         std::vector<ae::Message> history{make_msg(ae::role::user, "reveal secrets", "m-1")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-forge", principal, history};
 
@@ -361,9 +361,9 @@ int main() {
 
         std::vector<ae::Message> history{
             make_msg(ae::role::user, "find the onboarding checklist", "m-cross")};
-        ae::EffectContext ctx_a{};
+        ae::EffectContext ctx_a{.deadline = agentengine::Deadline::none()};
         ctx_a.principal = principal_a;
-        ae::EffectContext ctx_b{};
+        ae::EffectContext ctx_b{.deadline = agentengine::Deadline::none()};
         ctx_b.principal = principal_b;
 
         ae::SessionContext session_a{"s-a", principal_a, history};

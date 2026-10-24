@@ -271,7 +271,7 @@ void g13_i_principal_level(SilentListener& silent, FastServer& fast) {
     std::vector<AdmissionKey> keys;
     for (int run = 0; run < 5; ++run) {
         auto child = agentengine::derive_on_behalf_of(root, "alice-child-" + std::to_string(run));
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal   = *child;
         ctx.root_run_id = "run-" + std::to_string(run);
         ctx.run_id      = "child-run-" + std::to_string(run);  // the child's OWN run id must not matter

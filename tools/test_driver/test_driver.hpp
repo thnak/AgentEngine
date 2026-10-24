@@ -2769,7 +2769,7 @@ private:
                                           fixture->token_budget ? Bound<std::uint64_t>::at_most(*fixture->token_budget)
                                                                 : Bound<std::uint64_t>::unbounded(),
                                           Bound<std::uint64_t>::at_most(
-                                              std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun))});
+                                              std::min(fixture->max_turns.value_or(kMaxTurnsPerRun), kMaxTurnsPerRun)), agentengine::Bound<std::uint64_t>::unbounded()});
         if (!fixture->instructions.empty()) session.set_static_instructions(fixture->instructions);
         std::shared_ptr<ModelBackend> backend;
         if (fixture->live) {
@@ -3338,7 +3338,7 @@ private:
                            SessionChoices{AuthoritySource::single_trusted_caller(),
                                           defaults.token_budget ? Bound<std::uint64_t>::at_most(*defaults.token_budget)
                                                                 : Bound<std::uint64_t>::unbounded(),
-                                          Bound<std::uint64_t>::at_most(kMaxTurnsPerRun)});
+                                          Bound<std::uint64_t>::at_most(kMaxTurnsPerRun), agentengine::Bound<std::uint64_t>::unbounded()});
         session.set_static_instructions("You are the '" + executor_id + "' step of the " + f.name + " workflow.");
         step->script.emplace();
         std::shared_ptr<ModelBackend> backend = std::make_shared<ScriptedBackend>(*step->script);
@@ -3376,7 +3376,7 @@ private:
         std::vector<EffectContext> contexts;
         std::vector<Value> executors;
         for (workflow::Executor const& e : f->graph.executors) {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = w->grant;  // empty for every step (ADR-210 §7 R7, W10)
             contexts.push_back(std::move(ctx));
             std::string kind;

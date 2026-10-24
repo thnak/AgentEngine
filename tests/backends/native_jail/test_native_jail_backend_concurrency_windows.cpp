@@ -98,7 +98,7 @@ int main() {
     // `shared_backend`'s own `instances_` map.
     auto worker = [&](int thread_index) {
         for (int i = 0; i < kIterationsPerThread; ++i) {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             auto handle = agentengine::rt::block_on(shared_backend.create(spec, ctx));
             if (!handle.has_value()) {
                 ++unexpected_error_count;

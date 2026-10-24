@@ -132,7 +132,7 @@ int main() {
     // --- Call 1: open the conversation, reach the request_port node, suspend. ---
     ChatRequest req1;
     req1.messages = {text_message("Hi, I need help picking a color.")};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     std::vector<ChatResponseUpdate> first = drain(client.chat_stream(req1, ctx), "call 1");
     check(first.size() == 1, "reaching the request_port pushes exactly one ask-signal update");

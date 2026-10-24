@@ -113,7 +113,7 @@ struct Invoked {
 };
 Invoked invoke(ae::ToolTable const& table, std::string arguments_json) {
     ae::CapabilitySet const held;
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     Invoked out;
     out.result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, held, ae::tool_call_request_of(model_call("c", "probe", arguments_json), 0),
                                  ctx, ae::ApprovalDecider{}, &out.audit));
@@ -232,7 +232,7 @@ int main() {
         bool completed = false;
         auto started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(
             table, held_bg, ae::tool_call_request_of(model_call("c", "background_probe", "{not json"), 0),
-            ae::EffectContext{}, ae::ApprovalDecider{}, 0,
+            ae::EffectContext{.deadline = agentengine::Deadline::none()}, ae::ApprovalDecider{}, 0,
             [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         check(!started && started.error().code == "tool.malformed_arguments",
               "T5: background_task() refuses it too, before spawning anything");
@@ -242,7 +242,7 @@ int main() {
         // control: the same backgroundable tool with valid arguments does start
         started = agentengine::test_support::run_task_sync<agentengine::result<void>>(ae::background_task(table, held_bg,
                                       ae::tool_call_request_of(model_call("c2", "background_probe", "{}"), 0),
-                                      ae::EffectContext{}, ae::ApprovalDecider{}, 0,
+                                      ae::EffectContext{.deadline = agentengine::Deadline::none()}, ae::ApprovalDecider{}, 0,
                                       [&](ae::ToolResult, ae::ToolInvocationAudit) { completed = true; }));
         for (int i = 0; i < 200 && !completed; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         check(started.has_value() && completed, "T5 control: valid arguments background and complete");

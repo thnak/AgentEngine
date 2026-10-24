@@ -67,7 +67,7 @@ struct EchoPayloadBackgroundableTool
 };
 
 agentengine::EffectContext make_ctx() {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"test-principal", ""};
     return ctx;
 }

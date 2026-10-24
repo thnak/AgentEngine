@@ -178,7 +178,7 @@ int main() {
     // ---- Task 1: csv_sum ---------------------------------------------------------------------
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "csv_sum.json");
-        EffectContext dummy_ctx{};
+        EffectContext dummy_ctx{.deadline = agentengine::Deadline::none()};
         dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         dummy_ctx.principal = ae_test::kTestPrincipal;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
@@ -193,7 +193,7 @@ int main() {
         AE_CHECK(!code.empty(), "H1-T1: a python code block is extracted from the fixture response");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -208,7 +208,7 @@ int main() {
     // ---- Task 2: list_dir ---------------------------------------------------------------------
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "list_dir.json");
-        EffectContext dummy_ctx{};
+        EffectContext dummy_ctx{.deadline = agentengine::Deadline::none()};
         dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         dummy_ctx.principal = ae_test::kTestPrincipal;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
@@ -223,7 +223,7 @@ int main() {
         AE_CHECK(!code.empty(), "H1-T2: a python code block is extracted from the fixture response");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -239,7 +239,7 @@ int main() {
     // ---- Task 3: pandas_groupby -----------------------------------------------------------------
     {
         RecordedChatClient client(std::filesystem::path(AE_TEST_FIXTURE_DIR) / "pandas_groupby.json");
-        EffectContext dummy_ctx{};
+        EffectContext dummy_ctx{.deadline = agentengine::Deadline::none()};
         dummy_ctx.session_nonce = ae_test::kTestSessionNonce;
         dummy_ctx.principal = ae_test::kTestPrincipal;
         auto resp = run_task_sync<result<ChatResponse>>(client.chat(ChatRequest{}, dummy_ctx));
@@ -254,7 +254,7 @@ int main() {
         AE_CHECK(!code.empty(), "H1-T3: a python code block is extracted from the fixture response");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);

@@ -116,7 +116,7 @@ void egress_section(Parker& parker) {
     using agentengine::tools::ReadContent;
     agentengine::CapabilitySet const held =
         agentengine::CapabilitySet::grant_root({agentengine::cap::NetOut{{"example.com:80:http"}, agentengine::cap::Limit::unbounded(), {}}});
-    agentengine::EffectContext ctx{};
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"p-lane", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
@@ -176,7 +176,7 @@ agentengine::task<agentengine::result<agentengine::ExecOutcome>> run_both(Suspen
 
 void runner_section(Parker& parker) {
     agentengine::ExecState state;
-    agentengine::EffectContext ctx{};
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     SuspendingRunner suspending{&parker};
     ReadingRunner reading;
     std::size_t const parks_before = parker.parks;
@@ -199,7 +199,7 @@ void runner_section(Parker& parker) {
         agentengine::Capability{agentengine::cap::FsRead{"work", "", agentengine::cap::Limit::unbounded()}},
         agentengine::Capability{agentengine::cap::FsWrite{"work", "", agentengine::cap::Limit::unbounded(), agentengine::cap::Limit::unbounded()}},
     });
-    agentengine::EffectContext shell_ctx{};
+    agentengine::EffectContext shell_ctx{.deadline = agentengine::Deadline::none()};
     shell_ctx.principal = agentengine::Principal{"p-lane", ""};
     shell_ctx.capabilities = agentengine::borrow_capabilities(held);
     agentengine::ToolCallRequest const req{"call-lane", "run_shell",
@@ -270,7 +270,7 @@ void backend_section(Parker& parker) {
     auto entry = registry.resolve_named(agentengine::HostSandboxSelection{"suspending"});
     AE_CHECK(entry.has_value(), "S1 setup: resolved by name");
     if (!entry.has_value()) return;
-    agentengine::EffectContext ctx{};
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     std::size_t const parks_before = parker.parks;
     auto out = run(drive_registered(**entry, ctx));
     AE_CHECK(out.has_value(), "S1: create -> exec -> exec -> destroy through the registry entry, on a lane");
@@ -462,7 +462,7 @@ agentengine::task<agentengine::result<agentengine::ShellExecReply>> live_flow(La
     provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
     if (!bound.has_value()) co_return std::unexpected(bound.error());
 
-    agentengine::EffectContext ctx{};
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{.id = "lane-owner", .tenant_id = ""};
     static std::vector<agentengine::Message> const no_history;
     agentengine::SessionContext sc{"lane-live", ctx.principal, no_history};

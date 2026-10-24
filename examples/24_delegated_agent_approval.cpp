@@ -171,7 +171,7 @@ int main() {
         session.initialize("s-top-level", Principal{"p-human-operator", ""},
                            agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                        agentengine::Bound<std::uint64_t>::unbounded(),
-                                                       agentengine::Bound<std::uint64_t>::unbounded()});
+                                                       agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});
         session.set_capabilities(&held);
@@ -232,7 +232,7 @@ int main() {
         // run_child_agent_session()'s own unconditional derive_on_behalf_of() call, unchanged here.
         CapabilitySet const caller_held =
             CapabilitySet::grant_root({cap::AgentCall{"reviewer-child", trust::SpawnBudget::mint_root(2)}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::make_shared<CapabilitySet const>(caller_held);
         ctx.principal     = Principal{"p-human-operator", ""};

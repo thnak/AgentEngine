@@ -591,7 +591,7 @@ private:
     // server-minted run (ADR-241 §8.4).
     [[nodiscard]] EffectContext request_context(Principal const& caller,
                                                 std::optional<CapabilityGrant> const& grant) const {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = caller;
         mint_request_run(ctx);
         ctx.authority_source = authority_.mode();

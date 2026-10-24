@@ -116,7 +116,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto echo_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo hello world"}, state, ctx));
@@ -171,7 +171,7 @@ int main() {
     // ---- Positive-control-paired denials (022 §5): identical operations, NO capabilities granted -
     {
         ExecState state{};
-        EffectContext ctx{};  // no capabilities at all -- the fail-closed default
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities at all -- the fail-closed default
 
         auto mkdir_denied = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "mkdir denied_dir"}, state, ctx));
         AE_CHECK(!mkdir_denied.has_value() && mkdir_denied.error().code == "shell.capability_denied",
@@ -197,7 +197,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         for (char const* hostile : {"cmd.exe", "/bin/sh", "totally_bogus_xyz123", "powershell"}) {
             auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", hostile}, state, ctx));
@@ -212,7 +212,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo piped-through | cat"}, state, ctx));
         AE_CHECK(out.has_value() && out->stdout_text.find("piped-through") != std::string::npos,
@@ -223,7 +223,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto and_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "echo a && echo b"}, state, ctx));
         AE_CHECK(and_out.has_value() && and_out->stdout_text.find("b") != std::string::npos,
@@ -238,7 +238,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto if_out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "if echo cond then echo then-branch fi"}, state, ctx));
         AE_CHECK(if_out.has_value() && if_out->stdout_text.find("then-branch") != std::string::npos,
@@ -254,7 +254,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = full_caps();  // includes RunnerCall{"fake"}
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         fake_invoked = false;
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "fake hello"}, state, ctx));
@@ -263,7 +263,7 @@ int main() {
     }
     {
         ExecState state{};
-        EffectContext ctx{};  // no capabilities -- RunnerCall{"fake"} not granted
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities -- RunnerCall{"fake"} not granted
         fake_invoked = false;
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "fake hello"}, state, ctx));
         AE_CHECK(!out.has_value() && !fake_invoked,
@@ -280,7 +280,7 @@ int main() {
         MediatedShellRunner capped_shell(*adapter, registry, "work", /*output_cap_bytes=*/64);
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         std::string big_word(1000, 'a');
@@ -313,7 +313,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps = full_caps();
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo 123456789 > seed.txt"}, state, ctx));
             AE_CHECK(out.has_value(), "E3-Q0: setup -- seeding a known 10-byte file succeeds");
@@ -325,7 +325,7 @@ int main() {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
                 {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{1'000'000}), cap::Limit::unbounded()}}});
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir under_quota"}, state, ctx));
             AE_CHECK(out.has_value(), "E3-Q1: mkdir succeeds under a quota-capped FsWrite grant with headroom");
@@ -344,7 +344,7 @@ int main() {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
                 {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});  // 5 < the 10 already used
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mkdir over_quota"}, state, ctx));
             AE_CHECK(out.has_value() && out->klass == exec_outcome_class::policy_violation &&
@@ -360,7 +360,7 @@ int main() {
             ExecState state{};
             CapabilitySet caps = CapabilitySet::grant_root(
                 {Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "rm seed.txt"}, state, ctx));
             AE_CHECK(out.has_value(),
@@ -373,7 +373,7 @@ int main() {
             // Setup, uncapped: give `cp` a real source file to read from.
             ExecState setup_state{};
             CapabilitySet setup_caps = full_caps();
-            EffectContext setup_ctx{};
+            EffectContext setup_ctx{.deadline = agentengine::Deadline::none()};
             setup_ctx.capabilities = agentengine::borrow_capabilities(setup_caps);
             auto setup_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo cp-src > cp_src.txt"}, setup_state, setup_ctx));
             AE_CHECK(setup_out.has_value(), "E3-Q4: setup -- a real source file for cp exists");
@@ -382,7 +382,7 @@ int main() {
             CapabilitySet caps = CapabilitySet::grant_root(
                 {Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
                  Capability{cap::FsWrite{"work", "", cap::Limit::at_most(std::uint64_t{5}), cap::Limit::unbounded()}}});  // exhausted, same as E3-Q2
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
 
             auto mv_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "mv under_quota moved_dir"}, state, ctx));
@@ -403,7 +403,7 @@ int main() {
         {
             ExecState state{};
             CapabilitySet caps = full_caps();
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto write_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "echo hi > readable.txt"}, state, ctx));
             AE_CHECK(write_out.has_value(), "E3-Q5: setup -- write a small file to read back");
@@ -412,7 +412,7 @@ int main() {
             ExecState state{};
             CapabilitySet caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{100})}}});
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));
             AE_CHECK(cat_out.has_value() && cat_out->stdout_text.find("hi") != std::string::npos,
@@ -429,7 +429,7 @@ int main() {
             ExecState state{};
             CapabilitySet caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{2})}}});
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = agentengine::borrow_capabilities(caps);
             auto cat_out = agentengine::rt::block_on(quota_shell.run(ExecRequest{"shell", "cat readable.txt"}, state, ctx));
             AE_CHECK(cat_out.has_value() && cat_out->klass == exec_outcome_class::policy_violation &&

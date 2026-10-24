@@ -87,7 +87,7 @@ void test_sh_c1_execstate_sharing() {
 
     ExecState state;
     state.cwd = "/";
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     CapabilitySet caps; // cd needs no capability per §2.4
     ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -112,7 +112,7 @@ void test_sh_c3_no_retokenize() {
 
     ExecState state;
     state.cwd = "/";
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     CapabilitySet caps = make_capabilities({capability_kind::env_write});
     ctx.capabilities = agentengine::borrow_capabilities(caps);
 
@@ -204,7 +204,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
 
     // Gate half: no runner_call capability -> denied BEFORE the nested runner ever executes.
     {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         CapabilitySet caps; // empty
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
@@ -216,7 +216,7 @@ void test_sh_g4_runner_call_gate_and_identity() {
 
     // Construction half: granted -> invoked, and the ctx passed through is pointer-identical.
     {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         CapabilitySet caps = make_capabilities({capability_kind::runner_call});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         invoked = false;
@@ -239,8 +239,8 @@ void test_sh_g4_runner_call_gate_and_identity() {
     // object, this test's own assertion mechanism would have failed loudly instead of passing
     // vacuously.
     {
-        EffectContext ctx_a;
-        EffectContext ctx_b; // a different object standing in for a hypothetical "broadened" copy
+        EffectContext ctx_a{.deadline = agentengine::Deadline::none()};
+        EffectContext ctx_b{.deadline = agentengine::Deadline::none()}; // a different object standing in for a hypothetical "broadened" copy
         bool would_have_been_caught = (&ctx_a != &ctx_b);
         AE_CHECK(would_have_been_caught,
                  "Sh-G4 negative control: the identity assertion distinguishes two distinct "
@@ -262,7 +262,7 @@ void test_capability_checks_kind_only() {
     auto run_with = [&](std::string script, CapabilitySet caps) {
         ExecState state;
         state.cwd = "/";
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         return agentengine::rt::block_on(runner.run(ExecRequest{"shell", std::move(script)}, state, ctx));
     };
@@ -321,7 +321,7 @@ void test_a_c2_nothing_executes_on_parse_failure() {
 
     ExecState state;
     state.cwd = "/";
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     // Deliberately GRANT FsWrite here: if the malformed-script bug this claim guards against were
     // present and mkdir ran anyway, granting the capability makes that failure observable (the
     // directory would actually get created) rather than being masked by an unrelated capability
@@ -371,7 +371,7 @@ void test_sh_s1_hostile_name_corpus() {
     ExecState state;
     state.cwd = "/";
     for (auto const& name : {"/bin/sh", "cmd.exe", "totally_bogus_xyz123"}) {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         CapabilitySet caps;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         auto outcome = agentengine::rt::block_on(runner.run(ExecRequest{"shell", std::string(name) + " -c hostile"}, state, ctx));

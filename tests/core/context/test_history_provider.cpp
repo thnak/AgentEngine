@@ -52,7 +52,7 @@ int main() {
         make_turn("one", "m-1"), make_turn("two", "m-2"), make_turn("three", "m-3"),
         make_turn("four", "m-4"), make_turn("five", "m-5"),
     };
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // --- UnboundedWindow (unbounded) keeps everything, in order -----------------------------------------
     {

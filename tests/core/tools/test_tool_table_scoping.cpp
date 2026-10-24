@@ -112,7 +112,7 @@ int main() {
     {
         ToolTable const scoped = scope_tools_to_mounted_skills(universe, {"beta"});
         CapabilitySet const held = CapabilitySet::grant_root({});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
         ToolCallRequest const allowed_req{"call-1", "beta", json::Value::make_object({{"note", json::Value::make_string("x")}}),
@@ -173,7 +173,7 @@ int main() {
                   d.parallelizable == via_value.parallelizable && d.backgroundable == via_value.backgroundable,
               "R5: from(...) and make_tool_descriptor(ToolT{...}) produce identical policy metadata");
 
-        EffectContext    ctx;
+        EffectContext    ctx{.deadline = agentengine::Deadline::none()};
         json::Value      args = schema::to_json(NoteArgs{"hi"});
         auto             reply = test_support::run_task_sync<result<json::Value>>(d.invoke(args, ctx));
         check(reply.has_value() && *calls == 1,

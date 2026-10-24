@@ -100,7 +100,7 @@ int main() {
         AE_CHECK(runner.ok(), "E2-C1: ok() reflects successful initialization");
 
         ExecState state{};
-        EffectContext ctx{};  // no capabilities granted at all (nullptr) -- the fail-closed baseline
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities granted at all (nullptr) -- the fail-closed baseline
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
 
@@ -210,7 +210,7 @@ int main() {
         CapabilitySet caps = CapabilitySet::grant_root(
             {Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
              Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -257,7 +257,7 @@ int main() {
             ExecState capped_state{};
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{5})}}});
-            EffectContext capped_ctx{};
+            EffectContext capped_ctx{.deadline = agentengine::Deadline::none()};
             capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.principal = ae_test::kTestPrincipal;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
@@ -274,7 +274,7 @@ int main() {
             ExecState capped_state{};
             CapabilitySet capped_caps =
                 CapabilitySet::grant_root({Capability{cap::FsRead{"work", "", cap::Limit::at_most(std::uint64_t{1000})}}});
-            EffectContext capped_ctx{};
+            EffectContext capped_ctx{.deadline = agentengine::Deadline::none()};
             capped_ctx.session_nonce = ae_test::kTestSessionNonce;
             capped_ctx.principal = ae_test::kTestPrincipal;
             capped_ctx.capabilities = agentengine::borrow_capabilities(capped_caps);
@@ -301,7 +301,7 @@ int main() {
         AE_CHECK(init.has_value(), "F3-setup: a third interpreter initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
 

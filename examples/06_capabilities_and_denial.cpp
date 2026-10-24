@@ -166,7 +166,7 @@ int main() {
         session.initialize("s-no-grant", Principal{"p-demo", ""},
                            agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                        agentengine::Bound<std::uint64_t>::unbounded(),
-                                                       agentengine::Bound<std::uint64_t>::unbounded()});
+                                                       agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root({});  // deliberately empty
         session.set_capabilities(&held);
@@ -189,7 +189,7 @@ int main() {
         session.initialize("s-granted", Principal{"p-demo", ""},
                            agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                        agentengine::Bound<std::uint64_t>::unbounded(),
-                                                       agentengine::Bound<std::uint64_t>::unbounded()});
+                                                       agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
         session.emplace_chat_client();
         CapabilitySet const held = CapabilitySet::grant_root(
             {Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}}});

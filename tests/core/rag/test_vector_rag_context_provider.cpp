@@ -288,7 +288,7 @@ int main() {
         Provider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/2};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "please turn on dark mode again", "m-1")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
 
         ae::SessionContext session_ctx{"s-rag", principal, history};
@@ -333,7 +333,7 @@ int main() {
 
             auto args = ae::json::parse(R"({"query":"dark mode"})");
             AE_CHECK(args.has_value(), "setup: recall args parse");
-            ae::EffectContext tool_ctx{};
+            ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
             tool_ctx.principal = principal;
             auto reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx));
             AE_CHECK(reply.has_value(),
@@ -379,14 +379,14 @@ int main() {
             req.arguments = ae::json::Value::make_object(
                 {{"query", ae::json::Value::make_string("dark mode")}});
 
-            ae::EffectContext denied_ctx{};
+            ae::EffectContext denied_ctx{.deadline = agentengine::Deadline::none()};
             denied_ctx.principal = principal;
             auto denied = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet{}, req, denied_ctx, ae::ApprovalDecider{}));
             AE_CHECK(denied.is_error,
                      "R17c: recall is DENIED through invoke_tool() when the caller holds no FsRead "
                      "on the corpus mount");
 
-            ae::EffectContext allowed_ctx{};
+            ae::EffectContext allowed_ctx{.deadline = agentengine::Deadline::none()};
             allowed_ctx.principal = principal;
             auto allowed = agentengine::test_support::run_task_sync<agentengine::ToolResult>(ae::invoke_tool(table, ae::CapabilitySet::grant_root({ae::Capability{read_cap}}),
                                            req, allowed_ctx, ae::ApprovalDecider{}));
@@ -491,9 +491,9 @@ int main() {
 
         std::vector<ae::Message> history{
             make_msg(ae::role::user, "find the onboarding checklist", "m-cross")};
-        ae::EffectContext ctx_a{};
+        ae::EffectContext ctx_a{.deadline = agentengine::Deadline::none()};
         ctx_a.principal = principal_a;
-        ae::EffectContext ctx_b{};
+        ae::EffectContext ctx_b{.deadline = agentengine::Deadline::none()};
         ctx_b.principal = principal_b;
 
         ae::SessionContext session_a{"s-a", principal_a, history};
@@ -577,7 +577,7 @@ int main() {
         Provider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/1};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "read the docs", "m-forge")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-forge", principal, history};
 
@@ -643,7 +643,7 @@ int main() {
         AlternatingProvider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/1};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "same query text, every time", "m-replay")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-replay", principal, history};
 
@@ -718,7 +718,7 @@ int main() {
             ae::make_context_provider_descriptor(std::move(provider), ae::ContextBudget{});
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "which build system", "m-r12")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r12", principal, history};
 
@@ -729,7 +729,7 @@ int main() {
 
         auto args = ae::json::parse(R"({"query":"which build system"})");
         AE_CHECK(args.has_value(), "R12 setup: recall args parse");
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R12: recall's invoke succeeds even though `this` now points into shared_ptr-managed "
@@ -768,7 +768,7 @@ int main() {
                            /*max_injected=*/3};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "anything", "m-r13")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r13", principal, history};
 
@@ -779,7 +779,7 @@ int main() {
 
         auto args = ae::json::parse(R"({"query":"anything"})");
         AE_CHECK(args.has_value(), "R13 setup: recall args parse");
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R13: recall's invoke against an empty index still succeeds -- zero matches is not "
@@ -830,7 +830,7 @@ int main() {
         Provider provider{object_store, ref_store, mount, read_cap, embedder, index, /*max_injected=*/2};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "real query", "m-r14")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r14", principal, history};
 
@@ -841,7 +841,7 @@ int main() {
 
         auto args = ae::json::parse(R"({"query":"real query"})");
         AE_CHECK(args.has_value(), "R14 setup: recall args parse");
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         AE_CHECK(reply.has_value(),
                  "R14: recall's invoke succeeds even though the index also holds a stale, unbacked "
@@ -891,7 +891,7 @@ int main() {
                                     /*max_injected=*/1};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, chunk_text, "m-r15")};
-        ae::EffectContext setup_ctx{};
+        ae::EffectContext setup_ctx{.deadline = agentengine::Deadline::none()};
         setup_ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r15", principal, history};
 
@@ -913,7 +913,7 @@ int main() {
         threads.reserve(kThreads);
         for (int i = 0; i < kThreads; ++i) {
             threads.emplace_back([&, i]() {
-                ae::EffectContext thread_ctx{};
+                ae::EffectContext thread_ctx{.deadline = agentengine::Deadline::none()};
                 thread_ctx.principal = principal;
                 results[i] = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, thread_ctx));
             });
@@ -963,7 +963,7 @@ int main() {
                                   /*max_injected=*/3};
 
         std::vector<ae::Message> history{make_msg(ae::role::user, "anything", "m-r16")};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ae::SessionContext session_ctx{"s-r16", principal, history};
 
@@ -975,7 +975,7 @@ int main() {
 
         auto args = ae::json::parse(R"({"query":"anything"})");
         AE_CHECK(args.has_value(), "R16 setup: recall args parse");
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply = out.has_value() ? ae::test_support::run_task_sync<ae::result<ae::json::Value>>(out->tools.front().invoke(*args, tool_ctx)) : ae::result<ae::json::Value>{};
         auto const* results = reply.has_value() ? reply->find("results") : nullptr;
         AE_CHECK(results != nullptr && results->is_array() && results->as_array().empty(),

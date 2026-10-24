@@ -265,7 +265,7 @@ int main() {
         OpenAIEmbedder embedder("unreachable.invalid", 443, "text-embedding-3-small",
                                  SecretRef{"never-resolved"}, caps, store);
 
-        EffectContext ctx;  // no capabilities granted at all -- ctx.capabilities is null
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities granted at all -- ctx.capabilities is null
         ctx.principal = Principal{"test-principal", ""};
 
         auto outcome = run_task_sync<result<std::vector<std::vector<float>>>>(
@@ -289,7 +289,7 @@ int main() {
 
         CapabilitySet held =
             CapabilitySet::grant_root({cap::Secret{"never-resolved", std::chrono::seconds{0}}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = Principal{"test-principal", ""};
         ctx.capabilities = agentengine::borrow_capabilities(held);  // the capability IS granted -- proves the batch-size gate fires
                                     // first, independent of whether resolution would have succeeded
@@ -321,7 +321,7 @@ int main() {
         OpenAIEmbedder embedder("unreachable.invalid", 443, "m", SecretRef{"granted-but-unreachable"},
                                  caps, store);
 
-        EffectContext ctx;  // NO capability granted
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // NO capability granted
         ctx.principal = Principal{"test-principal", ""};
 
         auto outcome = run_task_sync<result<std::vector<std::vector<float>>>>(

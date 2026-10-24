@@ -134,7 +134,7 @@ int main() {
     std::filesystem::create_directories(work_dir, ec);
     AE_CHECK(!ec, "setup: scratch work_dir exists");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // ---- Axis 1: env (008 SS9 G3) -- a host secret must not reach the guest ----------------------
     {

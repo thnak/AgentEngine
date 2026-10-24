@@ -1451,7 +1451,7 @@ private:
     // LATER, unrelated `AgentSession` once this one is destroyed.
     std::uint64_t const                                 session_identity_ =
         agent_session_detail::next_session_identity();
-    EffectContext                                       effect_context_;
+    EffectContext                                       effect_context_{.deadline = agentengine::Deadline::none()};  // none until a call is in flight
     // ADR-244 §2.4: the epoch half of `effect_context_.session_nonce` (the identity half is
     // `session_identity_`). Moves on initialize, clear, restore and fork, so a one-per-session resource
     // bound to an earlier incarnation refuses this one.
@@ -1464,6 +1464,11 @@ private:
     std::optional<agentengine::SessionChoices>           choices_;
     [[nodiscard]] std::optional<std::uint64_t> token_budget_limit() const noexcept {
         return choices_ ? choices_->token_budget.limit() : std::nullopt;
+    }
+    // The deadline for one call starting at `now`, from the stated `SessionChoices::call_timeout_ms`. With no choices
+    // stated no call can start (every run is refused `choice.missing.session`), so `none()` here is unreachable.
+    [[nodiscard]] agentengine::Deadline call_deadline(std::chrono::steady_clock::time_point now) const noexcept {
+        return choices_ ? agentengine::Deadline::after(now, choices_->call_timeout_ms) : agentengine::Deadline::none();
     }
     [[nodiscard]] static agentengine::error missing_session_choices() {
         return agentengine::choice_missing("session", agentengine::kSessionAuthorityOptions);

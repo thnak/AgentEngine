@@ -44,7 +44,7 @@ int main() {
              "a stub tool's capability ceiling is empty -- it needs no capability");
 
     // ---- invoking the descriptor records the call and returns the fixed reply, regardless of args
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     auto args1 = ae::json::Value::make_object({{"region", ae::json::Value::make_string("eu-west-1")}});
     auto reply1 = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(descriptor.invoke(args1, ctx));
     AE_CHECK(reply1.has_value(), "invoking the stub tool succeeds");

@@ -133,7 +133,7 @@ static_assert(agentengine::ChatClient<StreamingWordChatClient>,
 int main() {
     using namespace agentengine;
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"test-principal", ""};
 
     // ---- B4b-R1: FIFO, lossless delivery under real cross-thread backpressure ---------------------

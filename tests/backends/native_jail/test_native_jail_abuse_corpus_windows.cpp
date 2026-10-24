@@ -143,7 +143,7 @@ int main() {
         out << "TOP_SECRET_CONTENT_NOT_GRANTED_TO_THE_GUEST";
     }
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // ---- Case 1: fork bomb (008 SS7) -- contained by PROCESS_CREATION_CHILD_PROCESS_RESTRICTED --
     // MEASURED FINDING (this pass): the contained case below returns succeeded=0 REGARDLESS of

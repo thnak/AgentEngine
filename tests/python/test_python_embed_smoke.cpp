@@ -49,7 +49,7 @@ int main() {
         "import math\n"
         "print('hello from embedded cpython', 1 + 1, math.sqrt(9.0))\n";
     agentengine::ExecState state{};
-    agentengine::EffectContext ctx{};
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     agentengine::result<agentengine::ExecOutcome> outcome = agentengine::rt::block_on(runner.run(request, state, ctx));
     assert(outcome.has_value() && "run() must succeed for trivial allowed code");

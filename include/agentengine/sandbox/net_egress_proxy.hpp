@@ -254,7 +254,7 @@ inline constexpr std::chrono::hours kMaxEgressWallBound{24};
 [[nodiscard]] inline EgressCallControl egress_call_control(EffectContext const& ctx) {
     EgressCallControl c;
     c.stop                = ctx.cancellation;
-    c.deadline            = ctx.deadline;
+    c.deadline            = ctx.deadline.time().value_or(std::chrono::steady_clock::time_point{});  // none == the egress layer's zero
     c.admission.tenant    = ctx.principal.tenant_id;
     c.admission.principal = ctx.principal.root_id();
     c.admission.root_run  = ctx.root_run_id.empty() ? ctx.run_id : ctx.root_run_id;

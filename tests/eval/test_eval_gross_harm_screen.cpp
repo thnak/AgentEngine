@@ -1029,7 +1029,7 @@ int main() {
 
     // ---- Scenario 16: the summarizer recorder, directly ---------------------------------------------
     {
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ae::ChatRequest request;
         request.messages.push_back(user_message("summarize this turn"));
 
@@ -1101,7 +1101,7 @@ int main() {
             inner.hang = true;
             std::stop_source stop;
             stop.request_stop();
-            ae::EffectContext cancelled_ctx{};
+            ae::EffectContext cancelled_ctx{.deadline = agentengine::Deadline::none()};
             cancelled_ctx.cancellation = stop.get_token();
             ev::detail::SummarizerRecorder<ProgrammableSummarizer> rec(inner, &t, std::nullopt);
             auto d = drain_terminal(rec.chat_stream(request, cancelled_ctx));

@@ -372,10 +372,18 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      rounds to a `ClockResolution` (the wasm `now` import returns exact milliseconds), so a stated value narrows what may be
      granted but is not yet applied. A backend that cannot enforce a stated `at_most(n)` quota must refuse it before this
      row can move to "engine enforces".
-   - **Not done in this slice (named, not hidden).** The time-limit row of §2.2 -- `rt::HttpOptions::total_timeout{0}` and
-     `EffectContext::deadline{}` -- stays: 413 `EffectContext` constructions default the deadline, and making it
-     required needs the per-call deadline to be a stated choice on `SessionChoices` first (who states it for a tool
-     call a session issues).
+   - **Time limits (built).** `core/deadline.hpp`: `Deadline` has no default constructor; `Deadline::at(t)` or the named
+     `Deadline::none()`, and `EffectContext::deadline` is one, so the 400-odd contexts that defaulted it now state it.
+     `SessionChoices::call_timeout_ms` (`Bound<uint64_t>`, required, `at_most(0)` refused with `choice.zero_bound`) is who
+     states it for a call a session issues: the session sets `EffectContext::deadline` for each model call and tool
+     call from it. A child session's timeout is what is left of its caller's deadline (`Deadline::as_timeout_ms`), so a
+     child never outlives the call that spawned it; `RecordedChoices` does not carry it (a latency choice, not durable
+     state). `rt::HttpOptions::total_timeout_ms` is a required `Bound` (`unbounded()` for no timer). The provider
+     transports state `unbounded()` for the total and stay bounded by the idle and stall timeouts and the call stop.
+   - **What a deadline is, and is not.** It is a boundary check: a call that starts past it is refused, a retry that
+     cannot finish inside it is not started, and an egress wait ends at it. It does not preempt a tool body already
+     running; ADR-242 §3a says so. The `idle_timeout` and `consumer_stall_timeout` 90 s defaults with their `0 = none`
+     are outside this row and are not changed.
    Tests: `compile_fail` `cap_rejects_*` (one control), `test_native_exec_capability` N13/N14,
    `test_capped_grant_admission`, `test_engine_floor`, `lint_sandbox_exec_limits*`.
 6. **Backends, Runtime, secrets, unmediated surfaces (G-C8 to G-C10)** (built: the registry, the secret prefix;

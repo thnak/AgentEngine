@@ -221,7 +221,7 @@ int main() {
     {
         std::vector<Message> empty_history;
         SessionContext session_ctx{"composed-containerd-live-session", real_owner_principal, empty_history};
-        EffectContext direct_ctx;
+        EffectContext direct_ctx{.deadline = agentengine::Deadline::none()};
         direct_ctx.principal = real_owner_principal;
         direct_ctx.capabilities = borrow_capabilities(held);
 

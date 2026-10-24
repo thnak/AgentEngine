@@ -96,7 +96,7 @@ int main() {
             co_return true;
         };
 
-        ae::EffectContext ctx_a;
+        ae::EffectContext ctx_a{.deadline = agentengine::Deadline::none()};
         ctx_a.principal = kCallerA;
         ae::ToolInvocationAudit audit_a;
         auto result_a = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c1", "always_approve_tool"), ctx_a,
@@ -109,7 +109,7 @@ int main() {
               "claim 1: the decider's Principal is byte-identical to what ToolInvocationAudit records "
               "for the SAME call -- the same ctx.principal, not an independent value");
 
-        ae::EffectContext ctx_b;
+        ae::EffectContext ctx_b{.deadline = agentengine::Deadline::none()};
         ctx_b.principal = kCallerB;
         ae::ToolInvocationAudit audit_b;
         auto result_b = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, make_request("c2", "always_approve_tool"), ctx_b,
@@ -171,7 +171,7 @@ int main() {
             co_return true;
         };
 
-        ae::EffectContext ctx;
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = kCaller;
         bool                completed = false;
         ae::ToolInvocationAudit final_audit;

@@ -598,7 +598,7 @@ int main() {
         agentengine::ToolCallRequest const req{"c-bg", "bg_stateful_tool",
                                                 agentengine::json::Value::make_object({}),
                                                 /*arguments_tainted=*/false, 0};
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         bool completion_called = false;
 
         auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(
@@ -631,7 +631,7 @@ int main() {
         agentengine::ToolCallRequest const req{"c-ok", "stateless_bg_tool",
                                                 agentengine::json::Value::make_object({}),
                                                 /*arguments_tainted=*/false, 0};
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         bool completion_called = false;
 
         auto submitted = agentengine::test_support::run_task_sync<agentengine::result<void>>(agentengine::background_task(

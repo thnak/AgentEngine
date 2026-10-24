@@ -131,7 +131,7 @@ int main() {
 
     std::vector<Message> empty_history;
     SessionContext session_ctx{"composed-provider-test", real_principal, empty_history};
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = real_principal;
     CapabilitySet const caps = CapabilitySet::grant_root({});
     ctx.capabilities = borrow_capabilities(caps);

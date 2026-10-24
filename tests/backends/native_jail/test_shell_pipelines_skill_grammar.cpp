@@ -70,7 +70,7 @@ public:
 
     Run run(std::string const& source, ae::CapabilitySet const& held) {
         auto const table = ae::ToolTable::from_descriptors({sandbox_->tool_descriptor(ae::approval_mode::never_require)});
-        ae::EffectContext ctx;
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = ae::Principal{"skill-grammar", ""};
         ctx.capabilities = ae::borrow_capabilities(held);
         ae::ToolCallRequest const req{"c" + std::to_string(++n_), "run_shell",

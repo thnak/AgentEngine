@@ -310,7 +310,7 @@ task<result<NetEgressResponse>> egress_fetch_gated(NetEgressRequest req, GatedEg
     //    than a tiny cap fails while it is being read; the request-level total derives from both (ADR-241 S1).
     std::uint64_t const cap =
         std::min<std::uint64_t>(granted.byte_cap.limit().value_or(kHardResponseCeilingBytes), kHardResponseCeilingBytes);
-    rt::HttpContext ctx;
+    rt::HttpContext ctx{.options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}};  // set to the request budget below
     ctx.reactor  = &io->runtime.reactor();
     ctx.dns_pool = &io->runtime.dns_pool();
     // Whatever policy the seam carries is narrowed to IPv4 unless a test opted into v6 by name; an empty one stays empty
@@ -325,7 +325,8 @@ task<result<NetEgressResponse>> egress_fetch_gated(NetEgressRequest req, GatedEg
 #ifdef AGENTENGINE_WITH_HTTPS
     ctx.tls = rt::tls_connector({.ca_bundle_pem_override = std::move(seams.tls_ca_override)});
 #endif
-    ctx.options.total_timeout            = std::max(request_budget, std::chrono::milliseconds{1});
+    ctx.options.total_timeout_ms         = agentengine::Bound<std::uint64_t>::at_most(
+        static_cast<std::uint64_t>(std::max(request_budget, std::chrono::milliseconds{1}).count()));
     ctx.options.idle_timeout             = std::chrono::milliseconds(io_timeout_ms());
     ctx.options.limits.max_header_bytes  = static_cast<std::size_t>(std::min<std::uint64_t>(64u * 1024u, cap));
     ctx.options.limits.max_body_bytes    = cap;

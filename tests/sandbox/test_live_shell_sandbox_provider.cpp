@@ -205,7 +205,7 @@ struct Recorded {
 };
 
 [[nodiscard]] EffectContext ctx_for(std::string const& principal_id, Recorded* rec = nullptr) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal.id = principal_id;
     if (rec != nullptr) {
         ctx.sandbox_exec_sink = [rec](run_event_kind, run_event_payload::SandboxExec p) {

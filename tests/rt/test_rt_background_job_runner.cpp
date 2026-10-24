@@ -450,7 +450,7 @@ int main() {
             seen->key              = ctx.idempotency_key;
             seen->attempt          = ctx.attempt;
             seen->token_possible   = ctx.cancellation.stop_possible();
-            seen->deadline_default = ctx.deadline == std::chrono::steady_clock::time_point{};
+            seen->deadline_default = ctx.deadline.is_none();
             seen->no_sandbox       = ctx.sandbox_fs == nullptr;
             seen->no_blob_sink     = !ctx.blob_sink;
             seen->run_id           = ctx.run_id;

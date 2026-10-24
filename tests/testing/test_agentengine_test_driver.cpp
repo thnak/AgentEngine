@@ -1490,7 +1490,7 @@ int main() {
                 co_return td::obj({{"ok", td::boolean(true)}});
             };
             agentengine::ToolDescriptor const wrapped = td::recording_tool(fake, log, nullptr);
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             bool capped = false;
             for (std::size_t i = 0; i <= td::kMaxRealToolCalls; ++i) {
                 auto r = agentengine::test_support::run_task_sync<agentengine::result<Value>>(wrapped.invoke(td::obj({}), ctx));
@@ -1501,7 +1501,7 @@ int main() {
             auto log2 = std::make_shared<td::RealToolLog>(std::nullopt);
             agentengine::ToolDescriptor const wrapped2 = td::recording_tool(fake, log2, nullptr);
             std::stop_source stop;
-            agentengine::EffectContext cctx;
+            agentengine::EffectContext cctx{.deadline = agentengine::Deadline::none()};
             cctx.cancellation = stop.get_token();
             stop.request_stop();
             int const before = inner_calls;

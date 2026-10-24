@@ -460,6 +460,7 @@ int main() {
         req.capabilities = minted->capabilities;
         req.principal     = Principal{"caller-1", ""};
         req.max_turns     = agentengine::Bound<std::uint64_t>::at_most(5);
+        req.call_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded();
         req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
         req.authority_source = agentengine::authority_mode::single_trusted_caller;
 

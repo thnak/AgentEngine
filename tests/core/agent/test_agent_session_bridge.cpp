@@ -615,7 +615,7 @@ int main() {
         std::vector<ae::Message> history;
         ae::Principal principal{"p", ""};
         ae::SessionContext sc{"s", principal, history};
-        ae::EffectContext ec;
+        ae::EffectContext ec{.deadline = agentengine::Deadline::none()};
         auto contribution = ae::rt::block_on(surface.on_context(sc, ec));
         check(!contribution.has_value() && contribution.error().code == "agent_tool_surface.name_collision",
               "P13: a context provider shadowing a declared tool's name fails closed");

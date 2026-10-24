@@ -216,7 +216,7 @@ int main() {
     InMemorySecretStore store;
     store.set(kSecretName, "ollama");
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{kSecretName, std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"ollama-live-e2e-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 

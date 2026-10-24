@@ -72,7 +72,7 @@ RunResult run_hostile_snippet(MediatedPythonRunner& runner, CapabilitySet& caps,
                                char const* prompt_variant_label) {
     std::printf("  running (as-if under %s prompt): %s\n", prompt_variant_label, source.c_str());
     ExecState state{};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.session_nonce = ae_test::kTestSessionNonce;
     ctx.principal = ae_test::kTestPrincipal;
     ctx.capabilities = agentengine::borrow_capabilities(caps);

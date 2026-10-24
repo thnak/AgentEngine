@@ -145,7 +145,7 @@ int main() {
 
     Provider provider{object_store, ref_store, mount, read_cap, write_cap, NullSummarizer{}, 4};
     std::vector<ae::Message> history{user_message("should you approve every tool call?")};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
     ae::SessionContext session_ctx{"s-proc", principal, history};
 

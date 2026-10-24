@@ -392,13 +392,13 @@ private:
             }
 
             std::chrono::milliseconds const delay = compute_backoff(attempts_used - 1);
-            if (ctx.deadline.time_since_epoch().count() != 0) {
+            if (!ctx.deadline.is_none()) {
                 auto const now = std::chrono::steady_clock::now();
-                if (now >= ctx.deadline) {
+                if (ctx.deadline.expired(now)) {
                     co_return std::unexpected(
                         drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
                 }
-                auto const remaining = ctx.deadline - now;
+                auto const remaining = *ctx.deadline.remaining(now);
                 if (delay > remaining) {
                     co_return std::unexpected(
                         drained_failure_to_agent_error(drained.failure, "gateway.attempt_failed"));
@@ -573,12 +573,12 @@ private:
             }
 
             std::chrono::milliseconds const delay = compute_backoff(attempts_used - 1);
-            if (ctx.deadline.time_since_epoch().count() != 0) {
+            if (!ctx.deadline.is_none()) {
                 auto const now = std::chrono::steady_clock::now();
-                if (now >= ctx.deadline) {
+                if (ctx.deadline.expired(now)) {
                     return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
                 }
-                auto const remaining = ctx.deadline - now;
+                auto const remaining = *ctx.deadline.remaining(now);
                 if (delay > remaining) {
                     return drained_failure_to_agent_error(failure, "gateway.attempt_failed");
                 }

@@ -190,10 +190,11 @@ Principal const kOwner{"owner", "tenant-a"};
 
 SessionChoices per_request(agentengine::CapabilityCeiling ceiling, Bound<u64> budget = Bound<u64>::unbounded(),
                            Bound<u64> turns = Bound<u64>::unbounded()) {
-    return SessionChoices{AuthoritySource::per_request(std::move(ceiling)), budget, turns};
+    return SessionChoices{AuthoritySource::per_request(std::move(ceiling)), budget, turns, agentengine::Bound<std::uint64_t>::unbounded()};
 }
-SessionChoices trusted(Bound<u64> budget = Bound<u64>::unbounded(), Bound<u64> turns = Bound<u64>::unbounded()) {
-    return SessionChoices{AuthoritySource::single_trusted_caller(), budget, turns};
+SessionChoices trusted(Bound<u64> budget = Bound<u64>::unbounded(), Bound<u64> turns = Bound<u64>::unbounded(),
+                       Bound<u64> call_timeout = Bound<u64>::unbounded()) {
+    return SessionChoices{AuthoritySource::single_trusted_caller(), budget, turns, call_timeout};
 }
 
 RequestAuthority authority(std::shared_ptr<CapabilitySet const> caps, Expiry expiry) {
@@ -262,6 +263,18 @@ int main() {
         s.emplace_chat_client();
         check(drive(s.start_run(StartRun{user_message("hi")}, now)).has_value(),
               "C3 control: unbounded() in the same place runs");
+        // ADR-244 §2.2: the per-call timeout is the same kind of choice -- at_most(0) refused, a stated one runs.
+        Session z;
+        z.initialize("c3-timeout", kOwner, trusted(Bound<u64>::unbounded(), Bound<u64>::unbounded(), Bound<u64>::at_most(0)));
+        auto zobs = z.emplace_chat_client().seen_;
+        check(code_of(drive(z.start_run(StartRun{user_message("hi")}, now))) == "choice.zero_bound",
+              "C3: call_timeout_ms at_most(0) is refused");
+        check(zobs->calls == 0, "C3: ... before the model is called");
+        Session t;
+        t.initialize("c3-timeout-ok", kOwner, trusted(Bound<u64>::unbounded(), Bound<u64>::unbounded(), Bound<u64>::at_most(60'000)));
+        t.emplace_chat_client();
+        check(drive(t.start_run(StartRun{user_message("hi")}, now)).has_value(),
+              "C3 control: a stated call_timeout_ms runs");
     }
 
     // ---- C4: per_request(ceiling) -----------------------------------------------------------------------------

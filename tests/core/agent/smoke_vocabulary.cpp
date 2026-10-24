@@ -118,7 +118,7 @@ int main() {
     ::agentengine::test_support::fail_fast_on_windows();
     // -- EffectContext (core/effect_context.hpp) --
     ae::CapabilitySet caps{};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = ae::Principal{"p-1", "tenant-1"};
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ctx.trace_id = "trace-1";

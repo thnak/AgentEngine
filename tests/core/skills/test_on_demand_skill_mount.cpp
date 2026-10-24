@@ -92,7 +92,7 @@ int main() {
         MountedSkillsState mount_state;
         ToolTable const universe = ToolTable::from(FakeTool{});
         CapabilitySet const held = CapabilitySet::grant_root({});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(held);
 
         // Before any mount: fake_tool is named by test-skill's allowed-tools, but test-skill is not
