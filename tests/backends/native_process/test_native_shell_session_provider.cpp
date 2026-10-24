@@ -53,6 +53,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/admitted_invoke.hpp"
 #include "../../support/run_task_sync.hpp"  // ADR-237 §5.2: drive the async tool invoke
 using namespace agentengine;
 using namespace agentengine::native_process;
@@ -148,7 +149,9 @@ template <class P>
     if (!tool.has_value()) return std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"});
     std::vector<std::pair<std::string, json::Value>> m{{"command", json::Value::make_string(command)}};
     if (restart) m.emplace_back("restart", json::Value::make_bool(true));
-    auto out = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object(std::move(m)), c.ctx));
+    // ADR-237 D3: the tool declares a per-call requirement, so it runs through admission (bind + approve) and refuses
+    // when its closure is called on its own (N16 below).
+    auto out = ae_test::invoke_admitted(*tool, json::Value::make_object(std::move(m)), c.ctx);
     if (!out.has_value()) return std::unexpected(out.error());
     return schema::from_json<NativeShellSessionReply>(*out);
 }
@@ -403,10 +406,59 @@ int main() {
         // The tool is not even offered under the one-shot grant; drive the still-held descriptor from the full context.
         auto tool = tool_of(p, c);
         std::optional<result<json::Value>> n3;
-        if (tool.has_value()) n3 = test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), revoked.ctx));
-        check(n3.has_value() && !n3->has_value() && (*n3).error().code == "native_shell_session.grant_revoked" &&
+        if (tool.has_value()) n3 = ae_test::invoke_admitted(*tool, json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), revoked.ctx);
+        // ADR-237 D3 (recorded behaviour change): a grant that is gone altogether is refused at ADMISSION
+        // (`tool.capability_not_held`), before the provider's own code runs, so the command is refused but the shell is
+        // no longer killed BY the refused command. It is killed at the next check point (on_context / on_run_end), as
+        // for an idle shell (N9). A grant NARROWED below what the shell was opened under still reaches exec() and is
+        // killed there (N4).
+        check(n3.has_value() && !n3->has_value() && (*n3).error().code == "tool.capability_not_held",
+              "N3: a call made after the grant is gone is refused at admission");
+        check(p.session()->is_live(), "N3: the refused call does not itself end the shell (admission ran first)");
+        (void)drive(p.on_run_end(RunEndView{run_end_reason::final_answer}, revoked.ctx));
+        check(!p.session()->is_live(), "N3: the next check point (on_run_end) kills the shell the revoked grant covered");
+    }
+
+    // ---- N16 (ADR-237 D3): the tool's closure called WITHOUT admission refuses, grant held. The control is every run()
+    // above, which runs the same tool through admission.
+    {
+        NativeShellSessionProvider<lifetime::PerRun> p({std::string(kShell)}, root.wstring(), "workdir", small_q, limits,
+                                                       30s, approval_mode::always_require, lifetime::PerRun{},
+                                                       default_live_shell_clock(), std::string(kShell));
+        Ctx c({Capability{grant(true, 600000, 8)}});
+        auto tool = tool_of(p, c);
+        if (tool.has_value()) {
+            auto raw = test_support::run_task_sync<result<json::Value>>(tool->invoke(
+                json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), c.ctx));
+            check(!raw.has_value() && raw.error().code == "tool.requirement_unbound" && !p.session()->is_live(),
+                  "N16: calling the tool's closure with no admission refuses (tool.requirement_unbound) and opens no shell");
+        }
+    }
+
+    // ---- N4b (ADR-237 D3): the PER-COMMAND narrowing check in exec() itself ---------------------------------------
+    // N4 is caught earlier, at the narrowed context's on_context, so it never reaches exec(). Drive a stale descriptor
+    // (built under the wide grant) with the narrowed context, as N3 does for a revoked one: admission binds the request
+    // clamped to the NARROWED grant, and the running shell -- opened under the wider one -- is no longer covered by it.
+    {
+        // Its own open budget: the shared `small_q` is spent exactly by N6's re-open accounting.
+        auto q4b = *agentengine::rt::AsyncQuota<LiveShellOpen>::mint_root(authority, owner, 2);
+        NativeShellSessionProvider<lifetime::PerRun> p({std::string(kShell)}, root.wstring(), "workdir", q4b, limits,
+                                                       30s, approval_mode::always_require, lifetime::PerRun{},
+                                                       default_live_shell_clock(), std::string(kShell));
+        Ctx wide({Capability{grant(true, 600000, 8)}});
+        auto opened = run(p, wide, "Write-Output open");
+        check(opened.has_value() && p.session()->is_live(), "N4b setup: the shell is open under the wide grant");
+        Ctx narrowed({Capability{grant(true, 1000, 8)}});
+        auto stale = tool_of(p, wide);  // contributed under the wide grant; not re-offered under the narrowed one
+        std::optional<result<json::Value>> n4b;
+        if (stale.has_value()) {
+            n4b = ae_test::invoke_admitted(
+                *stale, json::Value::make_object({{"command", json::Value::make_string("Write-Output x")}}), narrowed.ctx);
+        }
+        check(n4b.has_value() && !n4b->has_value() && (*n4b).error().code == "native_shell_session.grant_revoked" &&
                   !p.session()->is_live(),
-              "N3: a call made after the grant is gone is refused and the shell is killed");
+              "N4b: a call under a grant narrowed below what the shell was opened with is refused by exec() and the shell "
+              "is killed");
     }
 
     // ---- N6
@@ -454,11 +506,22 @@ int main() {
         Ctx stranger({}, "someone-else");
         std::vector<std::pair<std::string, json::Value>> m{{"command", json::Value::make_string("Write-Output x")}};
         auto tool = tool_of(p, c);
-        auto st = tool ? test_support::run_task_sync<result<json::Value>>(tool->invoke(json::Value::make_object(std::move(m)), stranger.ctx))
+        auto st = tool ? ae_test::invoke_admitted(*tool, json::Value::make_object(std::move(m)), stranger.ctx)
                        : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
-        check(!st.has_value() && st.error().code == "native_shell_session.principal_mismatch" && p.session()->is_live() &&
+        // ADR-237 D3: a grantless identity is now refused at admission; it never reaches the provider.
+        check(!st.has_value() && st.error().code == "tool.capability_not_held" && p.session()->is_live() &&
                   bg != 0 && process_alive(bg),
-              "N10: a grantless other identity is refused as the wrong principal; the opener's shell keeps running");
+              "N10: a grantless other identity is refused at admission; the opener's shell keeps running");
+
+        // N10b (the control the old N10 gave for free): another identity that DOES hold the grant reaches exec() and is
+        // refused as the wrong principal, and the opener's shell keeps running.
+        Ctx other({Capability{grant(true, 600000, 8)}}, "someone-else-with-a-grant");
+        std::vector<std::pair<std::string, json::Value>> m2{{"command", json::Value::make_string("Write-Output x")}};
+        auto st2 = tool ? ae_test::invoke_admitted(*tool, json::Value::make_object(std::move(m2)), other.ctx)
+                        : result<json::Value>(std::unexpected(error{failure_class::contract, "no tool", "test.no_tool"}));
+        check(!st2.has_value() && st2.error().code == "native_shell_session.principal_mismatch" && p.session()->is_live() &&
+                  bg != 0 && process_alive(bg),
+              "N10b: another identity WITH a grant is refused as the wrong principal; the opener's shell keeps running");
 
         // N9: the grant is revoked and NO further command comes: the next check point (on_context) ends the idle
         // shell and its background process.

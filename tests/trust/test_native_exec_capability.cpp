@@ -269,6 +269,31 @@ int main() {
                  "N14 (positive control): `unbounded` and a positive number are the accepted spellings");
     }
 
+    // ---- N15: a live-session request is clamped to the grant's session and process caps (ADR-237 D3, #176) -----------
+    // `bind_clamped` is how a per-call requirement that states no caps binds under a capped grant. The first version
+    // clamped only cpu/wall/memory, so a live grant with a session cap and a process cap could never cover one.
+    {
+        auto const unb = cap::Limit::unbounded();
+        cap::NativeExec const live_grant{"pwsh", "workdir", cap::Limit::at_most(1000), cap::Limit::at_most(500), unb, true,
+                                         cap::Limit::at_most(60000), cap::Limit::at_most(8)};
+        auto const root = CapabilitySet::grant_root({Capability{live_grant}});
+        cap::NativeExec const request{"pwsh", "workdir", unb, unb, unb, true, unb, unb};
+        AE_CHECK(!root.contains(request), "N15 (setup): an uncapped request is NOT contained by the capped grant");
+        auto bound = root.clamped_binding(Capability{request});
+        AE_CHECK(bound.has_value(), "N15: the capped live grant covers the request once clamped");
+        auto const* ne = bound.has_value() ? std::get_if<cap::NativeExec>(&*bound) : nullptr;
+        AE_CHECK(ne != nullptr && ne->session_wall_ms_cap.limit() == std::optional<std::uint64_t>(60000) &&
+                     ne->max_processes.limit() == std::optional<std::uint64_t>(8) &&
+                     ne->cpu_ms_cap.limit() == std::optional<std::uint64_t>(1000) && ne->live_session,
+                 "N15: the bound capability carries the grant's own session and process caps, and stays a live session");
+
+        // Control: a grant that did not opt into live sessions never covers a live request, clamped or not.
+        cap::NativeExec plain = live_grant;
+        plain.live_session    = false;
+        AE_CHECK(!CapabilitySet::grant_root({Capability{plain}}).clamped_binding(Capability{request}).has_value(),
+                 "N15 control: a grant without the live_session opt-in does not cover a live request");
+    }
+
     if (g_failures != 0) {
         std::cerr << g_failures << " check(s) failed.\n";
         return 1;
