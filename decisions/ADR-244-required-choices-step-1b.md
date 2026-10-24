@@ -402,8 +402,13 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `network = false` grant for a surface that keeps a network. Each check emits one `SandboxExec` audit row, admitted
      or refused. `MandatorySandboxProvider` (run, task-branch run) and `LiveShellSandboxProvider` pass their context.
      Tests: `test_unmediated_shell_gate` U1-U7 against a fake surface (no daemon), and every Docker and containerd
-     test that runs a command now carries the grant. Not built: a YAML spelling of the grant (`capabilities:`), and
-     the containerd host bind through `authorize_spec`.
+     test that runs a command now carries the grant. Not built: a YAML spelling of the grant (`capabilities:`).
+   - **The containerd host bind (built, G-C4).** `ContainerdCliBackend::create` builds a `SandboxSpec` for its read-write
+     bind of the host directory onto `/workspace` and runs `authorize_spec` before any `ctr` call: it needs a granted
+     `cap::SandboxMount` naming that host path, read-write (`sandbox.mount_not_authorized` otherwise, with no `ctr`
+     invoked). `create` takes the grants as a required argument and `ContainerdExecutionSurface` carries the host's own
+     (constructor argument, no default; they travel with a move). Tests: `test_containerd_isolation` C8 (refused with no
+     grant, with another path, and with a read-only grant) and every live containerd test under a stated grant.
    - **What a deadline is, and is not.** It is a boundary check: a call that starts past it is refused, a retry that
      cannot finish inside it is not started, and an egress wait ends at it. It does not preempt a tool body already
      running; ADR-242 §3a says so. The `idle_timeout` and `consumer_stall_timeout` 90 s defaults with their `0 = none`
@@ -422,8 +427,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      (`test_secret_store` A3b, `compile_fail` `env_secret_source_no_default`).
    - **Not built, each needs live infrastructure to prove and is left rather than written unproven.**
      `KataBackend::create(config)` with a digest-pinned image (`sandbox.image_not_pinned`; G-C9) needs a pulled image's
-     real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag; the Docker and
-     containerd host bind through `authorize_spec` (§2.5) needs the Linux container hosts; the Linux jail's cgroup
+     real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag. The Linux jail's cgroup
      root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
      there, not duplicated here.
 

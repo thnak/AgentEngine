@@ -509,7 +509,8 @@ public:
     // did not have before; loosening any axis is an explicit field assignment a reader can see.
     [[nodiscard]] agentengine::result<Instance> create(
             std::string const& id, std::filesystem::path const& host_dir,
-            std::string const& image, ContainerdIsolation const& isolation) {
+            std::string const& image, ContainerdIsolation const& isolation,
+            agentengine::CapabilitySet const& mount_grants) {
         if (auto ok = ctr_cli_detail::reject_unsafe_token(id, "id"); !ok.has_value())
             return std::unexpected(ok.error());
         if (auto ok = ctr_cli_detail::reject_unsafe_token(image, "image"); !ok.has_value())
@@ -522,6 +523,18 @@ public:
             return std::unexpected(agentengine::error{agentengine::failure_class::policy,
                                                         "ctr_cli_backend: host_dir must not be empty",
                                                         "ctr_cli_backend.empty_host_dir"});
+        }
+        // ADR-244 §2.5 (G-C4): the read-write host bind is a host-path mount like any other, so it goes through
+        // `authorize_spec` -- covered by a granted `cap::SandboxMount` naming this host path and `/workspace`, read-write,
+        // or refused (`sandbox.mount_not_authorized`). The grants are what the host stated; this adds none.
+        {
+            agentengine::SandboxSpec bind_spec{};
+            bind_spec.capabilities = mount_grants;
+            bind_spec.mounts.push_back(agentengine::MountSpec{
+                .source = host_dir_str, .guest_path = "/workspace", .read_write = true,
+                .quota_bytes = agentengine::cap::Limit::unbounded()});
+            if (auto authorized = agentengine::authorize_spec(bind_spec); !authorized.has_value())
+                return std::unexpected(authorized.error());
         }
         std::string const mount_arg =
             "type=bind,src=" + host_dir_str + ",dst=/workspace,options=rbind:rw";
@@ -776,8 +789,11 @@ public:
     // an existing `ContainerdExecutionSurface{}` / `{"docker.io/library/alpine:latest"}` call site
     // keeps compiling and now runs contained. Use `containerd_isolation_from()` to derive this from an
     // engine `SandboxSpec`'s own `limits`/`net`.
-    ContainerdExecutionSurface(std::string image, ContainerdIsolation isolation)
-        : image_(std::move(image)), isolation_(isolation),
+    // ADR-244 §2.5: `mount_grants` is the host's own statement of which host path this surface may bind read-write
+    // into the container (`cap::SandboxMount{host_prefix, "/workspace" or "/", read_write = true}`); a `reset()` into a
+    // directory it does not cover is refused.
+    ContainerdExecutionSurface(std::string image, ContainerdIsolation isolation, agentengine::CapabilitySet mount_grants)
+        : image_(std::move(image)), isolation_(isolation), mount_grants_(std::move(mount_grants)),
           seq_(static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())) {}
 
     ~ContainerdExecutionSurface() {
@@ -802,7 +818,8 @@ public:
     // still wrong. The identical bug was live in `DockerExecutionSurface` for the length of one edit.
     ContainerdExecutionSurface(ContainerdExecutionSurface&& other) noexcept
         : image_(std::move(other.image_)), resolved_digest_(std::move(other.resolved_digest_)),
-          resolved_kind_(other.resolved_kind_), isolation_(other.isolation_), ctr_(std::move(other.ctr_)),
+          resolved_kind_(other.resolved_kind_), isolation_(other.isolation_), mount_grants_(std::move(other.mount_grants_)),
+          ctr_(std::move(other.ctr_)),
           instance_(std::move(other.instance_)), mounted_at_(std::move(other.mounted_at_)),
           seq_(other.seq_) {
         other.instance_.reset();
@@ -821,6 +838,7 @@ public:
             resolved_digest_.swap(other.resolved_digest_);  // issue #80 -- travels with `instance_`
             std::swap(resolved_kind_, other.resolved_kind_);  // ADR-176 §9 -- and never without it
             std::swap(isolation_, other.isolation_);  // ADR-172 -- see the move ctor's own comment
+            std::swap(mount_grants_, other.mount_grants_);  // ADR-244 §2.5 -- the bind authority travels with it
             std::swap(ctr_, other.ctr_);
             instance_.swap(other.instance_);
             mounted_at_.swap(other.mounted_at_);
@@ -873,7 +891,7 @@ public:
         std::string const id = "ae_ces_" + std::to_string(::getpid()) + "_" +
                                 std::to_string(ctr_cli_detail::current_process_start_key()) + "_" +
                                 std::to_string(++seq_);
-        auto inst = ctr_.create(id, host_dir, image_, isolation_);
+        auto inst = ctr_.create(id, host_dir, image_, isolation_, mount_grants_);
         if (!inst.has_value()) return std::unexpected(inst.error());
         instance_ = *inst;
         // Issue #80: resolved ONCE per surface, on the first `reset()` -- not per reset, which
@@ -973,6 +991,7 @@ private:
     // ADR-172 (issue #66). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
     ContainerdIsolation isolation_;
+    agentengine::CapabilitySet mount_grants_;
     ContainerdCliBackend ctr_;
     std::optional<ContainerdCliBackend::Instance> instance_;
     std::filesystem::path mounted_at_;

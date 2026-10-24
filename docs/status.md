@@ -96,7 +96,7 @@ Each item is a named gap, not a guess. The authoritative list is [ADR-242](../de
 
 | Order | Work | State |
 |---|---|---|
-| 1 | Finish ADR-244 (Docker and containerd isolation limits and `cap::UnmediatedShell` are done): Kata `create()` with a pinned image; the containerd host bind | In progress; the rest needs live Linux hosts to prove |
+| 1 | Finish ADR-244 (Docker and containerd isolation limits `cap::UnmediatedShell` and the containerd host bind are done): Kata `create()` with a pinned image | In progress; the rest needs live Linux hosts to prove |
 | 2 | Finish ADR-237: the runtime substrate and removal of the legacy synchronous machinery (issues #175-#187, #196) | Open; awaiting Judge sign-off (#186) |
 | 3 | Public API and layer redesign (ADR-243): the type-erased session and chat client, session and workflow out of `rt/`, the line budget | Proposed |
 | 4 | One execution seam (ADR-242 step 3): worktree verbs in `SandboxBackend`, Docker and containerd as conformers, `NoSandboxBackend`, the CodeAct tier over Kata, the pinned Kata guest image, recycling | Not started |

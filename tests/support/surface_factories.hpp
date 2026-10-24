@@ -28,6 +28,12 @@ namespace ae_test {
     return ctx;
 }
 
+// ADR-244 §2.5: the host's statement that a surface may bind `host_prefix` read-write into the container.
+[[nodiscard]] inline agentengine::CapabilitySet mount_grants(std::string host_prefix) {
+    return agentengine::CapabilitySet::grant_root(
+        {agentengine::Capability{agentengine::cap::SandboxMount{std::move(host_prefix), "/", true}}});
+}
+
 // For `SandboxRuntime::run(..., executed, &ctx)` on a Docker surface in its default (no network) isolation.
 [[nodiscard]] inline agentengine::EffectContext const& docker_ctx() {
     static agentengine::EffectContext const ctx = unmediated_ctx("docker", false);

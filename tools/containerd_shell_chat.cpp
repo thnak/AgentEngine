@@ -111,8 +111,12 @@ int main(int argc, char** argv) {
     // (ComposedContextProvider<Ms...>'s own descriptor factory type-erases each Ms once engaged, with
     // no accessor back to the concrete instance).
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
-    sandbox_provider.set_surface_factory([] {
-        return ContainerdExecutionSurface("docker.io/library/alpine:latest", ContainerdIsolation::conservative());
+    // ADR-244 §2.5: the host states which path the surface may bind read-write into the container: this demo's own
+    // ledger staging root, nothing wider.
+    sandbox_provider.set_surface_factory([ledger_staging_root] {
+        return ContainerdExecutionSurface(
+            "docker.io/library/alpine:latest", ContainerdIsolation::conservative(),
+            CapabilitySet::grant_root({Capability{cap::SandboxMount{ledger_staging_root.generic_string(), "/", true}}}));
     });
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
