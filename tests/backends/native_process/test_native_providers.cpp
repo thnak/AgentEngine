@@ -20,6 +20,7 @@
 #include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
 #include "backends/native_process/native_providers.hpp"
+#include "../../support/admitted_invoke.hpp"
 #include "../../support/run_task_sync.hpp"
 
 using namespace agentengine;
@@ -59,28 +60,7 @@ result<ContextContribution> on_context_of(NativeShellProvider& provider, Session
     return test_support::run_task_sync<result<ContextContribution>>(provider.on_context(sc, ctx));
 }
 
-// ADR-237 §9 D3 (#176): the provider's run tool declares a per-call requirement, so it runs only with what admission
-// produced -- the bound capability and the parsed arguments. This does what the pipeline does around `invoke`:
-// admission (bind + approve), the call, then the revoke. A tool closure called with no admission refuses
-// (`tool.requirement_unbound`), which the R-S6b check below pins.
-result<json::Value> invoke_admitted(ToolDescriptor const& tool, json::Value const& args, EffectContext& ctx) {
-    CapabilitySet const held = ctx.capabilities ? *ctx.capabilities : CapabilitySet{};
-    ToolTable const table = ToolTable::from_descriptors({tool});
-    ToolCallRequest const request{"c1", tool.name, args, false};
-    ApprovalDecider const approve = [](Principal const&, std::string_view, std::string const&) -> task<bool> {
-        co_return true;
-    };
-    auto admitted = test_support::run_task_sync<result<AdmittedCall>>(
-        admit_call(table, held, request, ctx.principal, approve, nullptr));
-    if (!admitted.has_value()) return std::unexpected(admitted.error());
-    ctx.bound_capabilities = &admitted->bound;
-    ctx.prepared_arguments = admitted->prepared ? admitted->prepared->arguments : nullptr;
-    auto reply = test_support::run_task_sync<result<json::Value>>(tool.invoke(args, ctx));
-    ctx.bound_capabilities = nullptr;
-    ctx.prepared_arguments.reset();
-    for (auto const& b : admitted->bound) b.revoke();
-    return reply;
-}
+using ae_test::invoke_admitted;
 
 }  // namespace
 

@@ -167,6 +167,16 @@ private:
         return usable_grant(ctx).has_value() && ctx.capabilities && ctx.capabilities->contains(requested);
     }
 
+    // Is the RUNNING shell still covered by `grant`, the capability this call was bound under (ADR-237 D3)? The same rule
+    // as `still_covered` (what the shell was opened under must still be within what is held), against the call's own
+    // bound grant instead of a fresh read of the held set. Unusable (missing a cap) counts as not covered.
+    [[nodiscard]] bool still_covered_by(std::optional<cap::NativeExec> const& grant) const {
+        if (!applied_.has_value() || !grant.has_value() || !trust::live_session_grant_usable(*grant)) return false;
+        cap::NativeExec requested = *applied_;
+        requested.program_pattern = shell_program_;
+        return capability_detail::subsumes_payload(*grant, requested);
+    }
+
     // A revoked or narrowed grant ends the shell, and the snapshot it left is not replayed into a later one.
     void end_if_revoked(EffectContext& ctx) {
         if (!timers_.is_open() || still_covered(ctx)) return;
@@ -193,13 +203,17 @@ private:
         return !used.has_value() || *used >= *applied_->cpu_ms_cap.limit();  // unreadable accounting fails closed
     }
 
-    [[nodiscard]] result<NativeShellSessionReply> exec(NativeShellSessionArgs args, EffectContext& ctx) {
+    // `bound` is the NativeExec capability admission bound for this call (ADR-237 D3), clamped to the held grant's own
+    // caps; empty when none was bound (the tool is only reachable through admission, so that is a refusal).
+    [[nodiscard]] result<NativeShellSessionReply> exec(NativeShellSessionArgs args,
+                                                       std::optional<cap::NativeExec> bound, EffectContext& ctx) {
         if (!configured_) {
             return std::unexpected(error{failure_class::contract, "the native shell provider is not configured",
                                          "native_shell_session.not_configured"});
         }
         check_lifetime(lifetime_event::shell_exec, std::nullopt);
-        auto grant = usable_grant(ctx);
+        std::optional<cap::NativeExec> grant = std::move(bound);
+        if (grant.has_value() && !trust::live_session_grant_usable(*grant)) grant.reset();  // C13: a live grant missing a cap
         std::string const who = principal_key(ctx.principal);
 
         if (timers_.is_open() && applied_.has_value()) {
@@ -210,8 +224,10 @@ private:
                                              "this native shell belongs to the identity that opened it",
                                              "native_shell_session.principal_mismatch"});
             }
-            // Per-command re-check (§9): the running session must still be covered by what is held NOW.
-            if (!still_covered(ctx)) {
+            // Per-command re-check (§9): the running session must still be covered by what is held NOW. A grant that is
+            // gone altogether never reaches here (admission refuses the call; `on_context`/`on_run_end` end the shell);
+            // a grant NARROWED below what the shell was opened under does.
+            if (!still_covered_by(grant)) {
                 terminate();
                 last_snapshot_.reset();
                 return std::unexpected(error{failure_class::policy,
@@ -325,16 +341,46 @@ private:
         d.approval = approval_;
         d.args_schema_json = schema::json_schema_of<NativeShellSessionArgs>();
         d.reply_schema_json = schema::json_schema_of<NativeShellSessionReply>();
-        // Capability ceiling left empty, as for the one-shot native providers (native_providers.hpp): the real
-        // authorization is per invocation, against the live EffectContext, inside exec().
+        // Capability ceiling left empty, as for the one-shot native providers (native_providers.hpp): the authority is a
+        // PER-CALL requirement (ADR-237 D3). The bound is one live-session NativeExec per owned pattern on this mount; the
+        // hook proposes the shell program itself, which admission checks against the bound and binds, clamped to the held
+        // grant's own caps (`enforces_granted_caps`, ADR-217). A grant that opts out of live sessions, or covers another
+        // mount, does not cover the requirement (live_session is monotone). The checks that need the SESSION (one
+        // principal per shell, narrowing below what the running shell was opened under, both caps present) stay in exec().
         d.captures_session_state = true;
-        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.enforces_granted_caps = true;
+        auto const live = [this](std::string pattern) {
+            return Capability{cap::NativeExec{std::move(pattern), worktree_mount_id_, cap::Limit::unbounded(),
+                                              cap::Limit::unbounded(), cap::Limit::unbounded(), true,
+                                              cap::Limit::unbounded(), cap::Limit::unbounded()}};
+        };
+        for (auto const& pattern : owned_patterns_) d.requirement_bounds.push_back(live(pattern));
+        d.prepare = [this, live, tool = d.name](json::Value const& args_value) -> result<PreparedCall> {
             auto args = schema::from_json<NativeShellSessionArgs>(args_value);
             if (!args) return std::unexpected(args.error());
-            auto reply = exec(std::move(*args), ctx);
-            if (!reply) return std::unexpected(reply.error());
-            return schema::to_json(*reply);
-        });
+            return prepared_call_of<NativeShellSessionArgs>(tool, std::move(*args),
+                                                            std::vector<Capability>{live(shell_program_)});
+        };
+        d.invoke = [this, tool = d.name](json::Value const&, EffectContext& ctx) -> task<result<json::Value>> {
+            auto args = take_prepared_arguments<NativeShellSessionArgs>(ctx, tool);
+            if (!args) co_return std::unexpected(requirement_unbound_error());
+            std::optional<cap::NativeExec> bound;
+            if (ctx.bound_capabilities != nullptr) {
+                for (auto const& handle : *ctx.bound_capabilities) {
+                    auto used = handle.use();
+                    if (!used) continue;
+                    if (auto const* ne = std::get_if<cap::NativeExec>(&*used)) {
+                        if (ne->program_pattern == shell_program_ && ne->worktree_mount_id == worktree_mount_id_) {
+                            bound = *ne;
+                            break;
+                        }
+                    }
+                }
+            }
+            auto reply = exec(*args, std::move(bound), ctx);
+            if (!reply) co_return std::unexpected(reply.error());
+            co_return schema::to_json(*reply);
+        };
         return d;
     }
 

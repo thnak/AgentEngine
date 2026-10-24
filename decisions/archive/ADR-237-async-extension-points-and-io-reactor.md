@@ -3139,6 +3139,36 @@ fails it).
   held grant covers it). Mutant: widening the declared bound to `*` fails R-S6c. These tests build only with
   `AGENTENGINE_WITH_NATIVE_PROCESS=ON` on Windows, which CI does not do; they were run locally.
 
+### Step 69 (2026-10-24): D3 slice 3 -- the held native shell declares a per-call requirement (#176, #175)
+
+- **What moved.** `NativeShellSessionProvider`'s tool (`native_shell_session_exec`) declares one live-session `NativeExec`
+  bound per owned pattern on its mount; `prepare` proposes the shell program itself; admission checks and binds it, clamped
+  to the held grant's own caps (`enforces_granted_caps`). `exec()` runs under that bound grant. What needs the SESSION stays
+  in `exec()`: one principal per shell, both live caps present (`live_session_grant_usable`, C13), and the per-command
+  narrowing check (`still_covered_by(grant)`: the running shell must still be within the bound grant). `on_context` and
+  `on_run_end` keep reading `ctx.capabilities` to end an idle shell on revocation and to decide whether to offer the tool;
+  they are lifecycle checks, not an authorization of an effect.
+- **A defect the move found.** `capability_detail::clamp_quantities(NativeExec)` clamped only cpu, wall and memory, so a call
+  bound under a capped live grant (a requirement states no caps) could never be covered: the live grant's
+  `session_wall_ms_cap` and `max_processes` stayed unbounded in the clamped request. It now clamps those two as well
+  (`test_native_exec_capability` N15, with a control that a grant without `live_session` still covers nothing live). Every
+  held-shell run in `test_native_shell_session_provider` depends on it.
+- **Behaviour that moved (recorded, not absorbed).** (1) A grant that is gone altogether is refused at admission
+  (`tool.capability_not_held`) before the provider's code runs, so the refused command no longer kills the shell itself; the
+  shell is ended at the next check point (`on_context` / `on_run_end`), as an idle shell already was (N9). A background
+  process of a revoked shell can therefore live until the end of the current turn, where it used to die at the next command
+  attempt. A grant NARROWED below what the shell was opened with still reaches `exec()` and is killed there (N4b).
+  (2) A grantless other identity is refused `tool.capability_not_held` (was `native_shell_session.principal_mismatch`);
+  another identity that holds a grant still reaches `exec()` and gets `principal_mismatch` (N10b). (3) With several held
+  grants for the same shell on the mount, the first covering grant governs a call (`bind_clamped`); the per-command check
+  used to accept any covering grant. (4) Tests drive the tool through admission (`tests/support/admitted_invoke.hpp`), and
+  N16 pins that the closure alone refuses.
+- **Tests.** `test_native_shell_session_provider` 36 checks, against a real `pwsh` in a real Job Object; the existing
+  per-command narrowing path was never reached by N4 (it is caught earlier, at `on_context`), so the first mutant (narrowing
+  never detected) survived until N4b drove a stale descriptor with a narrowed context; with N4b it is killed.
+- **Left for #175.** Only the WASM bridge (`wasm/wasm_tool_bridge.hpp`) still uses `make_sync_invoke`; it needs a
+  WASM-enabled build to verify.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are

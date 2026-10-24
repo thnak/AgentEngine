@@ -836,6 +836,10 @@ template <class T>
     requested.cpu_ms_cap       = cap_meet(parent.cpu_ms_cap, requested.cpu_ms_cap);
     requested.wall_ms_cap      = cap_meet(parent.wall_ms_cap, requested.wall_ms_cap);
     requested.memory_bytes_cap = cap_meet(parent.memory_bytes_cap, requested.memory_bytes_cap);
+    // ADR-237 D3 (#176): the held-shell grant's two live-session quantity caps are caps like the three above. Left
+    // unclamped, a call bound under a capped live grant (the requirement states no caps) could never be covered.
+    requested.session_wall_ms_cap = cap_meet(parent.session_wall_ms_cap, requested.session_wall_ms_cap);
+    requested.max_processes       = cap_meet(parent.max_processes, requested.max_processes);
     return requested;
 }
 
