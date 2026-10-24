@@ -1,12 +1,13 @@
 # ADR-243 — What is AgentEngine's public C++ API and layer structure, so that a developer builds a multi-user agent server in a few dozen lines, with every managed piece replaceable?
 
-**Status:** Proposed (2026-10-20), revision 2 (2026-10-24). Red-team round 1 (2026-10-20) and round 2
-(2026-10-24, a fresh reviewer: 2 FATAL, 8 MAJOR, §7) are folded in. The prove phase runs per migration
-slice (§5). Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)
+**Status:** Proposed (2026-10-20), revision 3 (2026-10-24). Red-team round 1 (2026-10-20), round 2
+(2026-10-24, a fresh reviewer: 2 FATAL, 8 MAJOR) and round 3 (0 FATAL, 7 MAJOR) are folded in (§7).
+The prove phase runs per migration slice (§5). Implements [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md)
 §6 step 2 (R5, R6, R8, §2's "least developer code" measure, §9's line-budget question), over what
 [ADR-244](ADR-244-required-choices-step-1b.md) (Judged) built, and consistent with
 [ADR-245](ADR-245-sandbox-backends-in-a-separate-repository.md) (Proposed), whose amendments to this
-ADR are folded in here (§2.1, §2.3, §4, §5).
+ADR are folded in here (§2.1, §2.3, §4, §5). Those clauses are **conditional on ADR-245 being Judged**;
+§5b says what they revert to if it is not.
 
 ## 1. The question, and the baseline
 
@@ -39,10 +40,10 @@ Structural facts (re-measured at main @ a6e6709f, 2026-10-24):
 
 | Layer | Directory (`include/agentengine/`) | Contents |
 |---|---|---|
-| V | `vocab/` | `result`/`error`, JSON/YAML value, content model, run events, `Tainted<T>`, the `FilesystemAdapter` interface, `ToolSignature` (name, description, JSON schema as a value: what code mode needs from a tool, without the validator) |
-| L0 | `runtime/` | `task`, channels, `Runtime`, lanes, stores, `pal/` (reactor, raw TLS stream) |
+| V | `vocab/` | `result`/`error`, JSON/YAML value, content model, run events, `Tainted<T>`, the `FilesystemAdapter` interface, `ToolSignature` (name, description, JSON schema as a value: what code mode needs from a tool, without the validator), the `StagingRoot` handle type (ADR-245 §2.3) |
+| L0 | `runtime/` | `task`, channels, `Runtime`, lanes, stores, `pal/` (reactor, raw TLS stream, ADR-245's non-following open primitives H2) |
 | L1a | `trust/` | capabilities, identity and authority, secrets, budgets and quotas |
-| L1b | `worktree/` | worktree, ledger, mounts, staging and harvest (ADR-245 §2.3) |
+| L1b | `worktree/` | worktree, ledger, mounts, the harvest logic (ADR-245 §2.3); it includes `trust/`, so `sandbox/backend_api/` never includes it (ADR-245 G-S2) |
 | L1c | `sandbox/` | the `SandboxBackend` contract and `sandbox/backend_api/` (ADR-245 §2.2), `AnySandboxBackend` and its decisions, registry, egress proxy, the outbound HTTP client, the `ToolDispatch` callback; `sandbox/backends/` holds only `wasm` and `NoSandboxBackend` |
 | L2 | `agent/` | `AgentSpec`, `Session`, tool pipeline, context providers and their runtime composer, the model plane (`ChatClient`, `AnyChatClient`), memory, YAML agent compiler, `agent_spawn_capability`, the `agent.*` code generation (it reads `ToolDescriptor`) |
 | L2 | `providers/` | outbound conformers: OpenAI, Anthropic, embedders, vector indexes |
@@ -81,11 +82,22 @@ Rules:
   only place a `Runtime` is created (ADR-242 R6; ADR-244 §6 hands it `RuntimeConfig` sizing).
 - **`AgentSpec`** (L2): what one agent is. `Agent<Derived,…>` sugar, the YAML compiler (I6), workflow
   nodes and protocol dispatchers all produce or consume the same `AgentSpec`.
-  **Per-session seams are factories.** The model, the context providers and the history provider
-  carry per-session state today (each session owns its client; the OpenAI client keeps a
-  `session_id_`, `openai/chat_client.hpp:471`; an `InteractiveChatClient` keeps pending interactions,
-  `core/chat_client.hpp:331`). `AgentSpec` therefore holds a *factory* for each, and every session gets
-  its own instance; sharing one across sessions or tenants is impossible through the API.
+  **Every seam has a stated scope**, because some carry per-session state (each session owns its
+  client today; the OpenAI client keeps a `session_id_`, `openai/chat_client.hpp:471`; an
+  `InteractiveChatClient` keeps pending interactions, `core/chat_client.hpp:331`), some hold tenant
+  data, and some must be shared on purpose:
+
+  | Scope | Seams | How `AgentSpec` holds it |
+  |---|---|---|
+  | Per session | chat client, context providers, history provider, `AnyState` | a factory `(SessionContext const&)`, called once per session |
+  | Per tenant | secret resolution, memory stores, RAG indexes holding tenant data, the recording sink, budgets | a factory `(TenantContext const&)`, called once per tenant; it must not serve another tenant's data |
+  | Engine-shared | the Runtime, the egress proxy (with its per-principal and global caps), failover and routing health, retry accounting, MCP client connections, tool and spawn-target registries, stateless embedders | one instance owned by `Engine` |
+
+  `SessionContext` carries the session id, the verified principal, the tenant and the Engine's
+  `Runtime&` (ADR-242 R6); `TenantContext` carries the tenant and the `Runtime&`. A developer's
+  factory can still return a wrapper around a captured object; the API makes the scope explicit and
+  G-A5 tests it, it cannot make sharing impossible. Secret references resolve per tenant under
+  `tenancy::per_*` (ADR-242 R7).
 - **`Session`** (L2): one conversation. It may run several agents (ADR-242 R8 rule 1), each in its own
   sandbox.
 - **`Server`** (L6), if linked.
@@ -94,7 +106,9 @@ All four are ordinary non-template classes.
 
 The reference application, which G-A1 measures (a sketch; names freeze in slice 1). Under ADR-245,
 backends come from `agentengine-sandboxes`; this program is the **external** variant, counted there.
-The in-repository variant names `backends::none()` and has no `providers::codeact()` (§4, G-A1).
+The in-repository variant names `backends::none()` and has neither `providers::codeact()` nor
+`providers::shell()` (a shell over `NoSandboxBackend` runs host processes as the engine's user, which a
+multi-tenant server must not do by default) (§4, G-A1).
 
 ```cpp
 #include <agentengine/agentengine.hpp>
@@ -103,9 +117,12 @@ The in-repository variant names `backends::none()` and has no `providers::codeac
 using namespace agentengine;
 
 task<result<RequestAuthority>> grants(VerifiedPrincipal const& who) {     // counted by G-A1
+    auto const until = Expiry::at(who.token_expiry());                    // ADR-244: expiry is stated
     if (who.claim("role") == "analyst")
-        return ready(RequestAuthority{who, tenant(who.claim("org")), caps::exec() | caps::net_out("api.example.com:443")});
-    return ready(RequestAuthority{who, tenant(who.claim("org")), caps::none()});
+        return ready(RequestAuthority{who.principal(),
+                                      caps::exec(at_most(32)) | caps::net_out("api.example.com:443", at_most(64_MiB)),
+                                      until});
+    return ready(RequestAuthority{who.principal(), caps::none(), until});
 }
 
 int main() {
@@ -123,7 +140,7 @@ int main() {
         .name      = "analyst",
         .model     = models::openai("gpt-5", secret("openai-api-key")),     // a factory: one client per session
         .sandbox   = "kata",
-        .ceiling   = caps::exec() | caps::net_out("api.example.com:443"),   // what any request may get, at most
+        .ceiling   = caps::exec(at_most(32)) | caps::net_out("api.example.com:443", at_most(64_MiB)),
         .limits    = presets::server_limits(),
         .policy    = presets::server_policy(),
         .providers = {providers::shell(), providers::codeact()},
@@ -136,7 +153,7 @@ int main() {
         .tls       = tls::files("cert.pem", "key.pem"),
         .verifier  = verifiers::bearer_jwt("https://idp.example/.well-known/jwks.json"),
         .authority = grants,                      // root of trust, ADR-242 R7
-        .tenancy   = tenancy::per_principal(),
+        .tenancy   = tenancy::per_claim("org"),   // the tenant comes from a verified claim, not from grants
         .admission = presets::server_admission(),
         .agents    = {*analyst},
         .protocols = {protocol::mcp, protocol::a2a, protocol::agui},
@@ -158,10 +175,15 @@ in the preset when chosen.
 - `AuthorityPolicy` is `task<result<RequestAuthority>>(VerifiedPrincipal const&)`. It is the
   developer's **root of trust**, host root authority (ADR-242 R7). It is not an ADR-070 Delegated
   Decision Seam.
-- `VerifiedPrincipal` is constructed only by a `PrincipalVerifier`: a bearer-JWT or mTLS verifier from
-  `server/`, or one the host writes for its own socket (the ADR-039/061 path stays). Every construction
-  is audited with the verifier's identity. Request bodies and model output never reach a verifier's
-  input. This is an audited guarantee, not a structural one: host code can write a verifier.
+- `VerifiedPrincipal` is constructed only by a `PrincipalVerifier` (a passkey constructor; G-A9 proves
+  nothing else compiles): a bearer-JWT or mTLS verifier from `server/`, or one the host writes for its
+  own socket (the ADR-039/061 path stays). The verifier validates the credential's signature, and the
+  principal's claims come only from a verified credential; model output never reaches a verifier.
+  Every construction is audited with the verifier's identity. That host code can write a verifier is
+  the developer's root of trust (R7), not a hole.
+- `RequestAuthority` is ADR-244's: `{principal, capabilities, expiry}`, with a stated `Expiry`
+  (`agent_session_core.hpp:93-104`) and every capability's limits stated (ADR-244 slice 5). The tenant
+  is not in it: `tenancy::*` derives it from the verified principal.
 - The engine compares the policy's result with the agent's `.ceiling`. A result wider than the ceiling
   is **refused** with `run.authority_exceeds_ceiling` (ADR-244 §2.3; `agent_session_core.cpp:995`;
   `mcp/server.hpp:116`), never narrowed.
@@ -181,7 +203,7 @@ Each seam has a **concept** and one **type-erased holder**.
 |---|---|---|---|
 | Model | `ChatClient` | a factory of `AnyChatClient` (new) | `models::openai`, `models::anthropic`, decorators (failover, recording, replay) |
 | Execution | `SandboxBackend` over `backend_api/` (ADR-245) | `AnySandboxBackend`, built by ADR-245's contract slice and adopted here | `backends::none()` (`NoSandboxBackend`), `wasm`; others from `agentengine-sandboxes` |
-| Context | `ContextProvider` | a factory of `AnyContextProvider` (new), composed at run time by `AnyComposedContextProvider`, which keeps ADR-066 attribution and ADR-116 `bind_owner` | `providers::shell`, `codeact`, RAG, memory |
+| Context | `ContextProvider` | a factory of the **existing** `ContextProviderDescriptor`, composed at run time by `assemble_context` (`core/context_assembly.hpp:118-186`), extended per §2.3's context facets below | `providers::shell`, `codeact`, RAG, memory |
 | Tool | none (data only) | `ToolDescriptor` (already erased) | `tools::*`, MCP-imported tools |
 | Secrets | `SecretStore` concept; `SecretSource` virtual base (`trust/secret.hpp:123`) | `SecretSource` (already erased) | `secrets::env`, `secrets::file` |
 | Stores | `SessionStore`, `AppendLogStore`, `WorktreeObjectStore` | `Any…Store` | `stores::file`, `stores::memory` |
@@ -208,8 +230,21 @@ run time with the same behaviour:
 - **clear**, which today resets state and history to fresh values (`agent_session.hpp:369-370`): an
   explicit `reset()` verb on every holder.
 
+**Context facets.** `ContextProviderDescriptor`'s closures share one `make_shared<ProviderT>`
+(`context_assembly.hpp:163-170`), so copying a descriptor aliases live provider state, the hazard
+ADR-116's `owner_` guard exists for (`composed_context_provider.hpp:124-198`). After this ADR:
+
+- `clone()` is a **deep** copy through a probed copy facet; fork of a session whose provider cannot be
+  copied is refused with a named error, never aliased;
+- moving a descriptor into a second session is refused (an owner binding, reachable only by
+  `Session` through a passkey, replaces the friend to `AgentSession`, `:299-308`);
+- the `HasContextProviderName` facet (required for ADR-066 stamping) and the per-contributor
+  `ContextBudget` (ADR-075, fail closed) are kept;
+- **behaviour change, stated:** a session with a single provider starts receiving ADR-066 attribution
+  stamps, which today's single-provider path does not apply (`agent_session.hpp:237-244`).
+
 G-A5 has one test per facet, including "an undeclared tool call through `AnyChatClient` is refused" on
-the buffered and on the drain path.
+the buffered and on the drain path, and "a context provider moved into another session is refused".
 
 `task<T>`, `stream<T>` and cancellation (through `EffectContext::cancellation`) pass through erasure
 unchanged. A task returned by a holder borrows the holder, and the holder must outlive it.
@@ -249,24 +284,24 @@ Each has a positive control (spec 022 §5).
 
 | Gate | Claim | Disproof / positive control |
 |---|---|---|
-| **G-A1** | Least developer code | A `.clang-format` (column limit 100) is committed in slice 1 and frozen; changing it needs an ADR amendment. CI formats the reference programs, then counts every non-blank, non-comment line the developer writes, helpers included. `grants` must map at least two claims to distinct tenants and capability sets (a body that returns one constant fails a check). The model is injected through the `models::` factory seam, so the measured program is the shipped one, run against a scripted model at no line cost. Budgets: hello agent ≤ 15; single-user shell chat ≤ 30; multi-user server ≤ 60. In this repository the server runs over `backends::none()` without CodeAct; the code-interpreter variant (ADR-242 G-R6) is counted in `agentengine-sandboxes` (ADR-245 §2.6). Control: padding a program past its budget fails; a `grants` returning one constant fails |
-| **G-A2** | Compile time does not regress | Clean `ninja` build on the build server (gcc and clang, all cores), total and top-20 TU times, before and after each slice, recorded in the PR. A total regression over 10 % **fails** the slice. Control: a planted heavy include in a hot header shows in the measurement and fails |
-| **G-A3** | Erasure is cheap where claimed | A bench of one seam crossing through each holder in the slice, against the direct call, in ns, allocation counted. A crossing over 250 ns or more than one allocation fails, unless it is off every 023 hot path and the PR shows that. Control: a planted slow holder (an extra allocation and a 1 µs spin) fails |
+| **G-A1** | Least developer code | A `.clang-format` scoped to the reference programs (column limit 100) is committed in slice 1 and frozen; changing it needs an ADR amendment. CI formats the reference programs, then counts every non-blank, non-comment line the developer writes, helpers included. `grants` is checked by calling it: two principals with different claims must get different capability sets (one constant fails). The scripted model replaces the `models::` factory through a test-only hook that no non-test target may link (a lint, as ADR-245 G-S12), so the measured source is the shipped one. Budgets: hello agent ≤ 15; single-user shell chat ≤ 30; multi-user server ≤ 60. In this repository the server runs over `backends::none()` without CodeAct; the code-interpreter variant (ADR-242 G-R6) is counted in `agentengine-sandboxes` (ADR-245 §2.6). Control: padding a program past its budget fails; a `grants` returning one constant fails |
+| **G-A2** | Compile time does not regress | Clean `ninja` build on the build server (gcc and clang, all cores, compiler cache off), three runs before and three after each slice, medians compared, total and top-20 TU times recorded in the PR. A median total regression over 10 % **fails** the slice. Control: a planted heavy include in a hot header shows in the measurement and fails |
+| **G-A3** | Erasure is cheap where claimed | A bench of one seam crossing through each holder in the slice, against the direct call, in ns, allocations counted. A crossing that adds more than 250 ns or more than one allocation **over the direct call** fails, for every seam in §2.3, with no waiver. Control: a planted slow holder (an extra allocation and a 1 µs spin) fails |
 | **G-A4** | Directories are layers | The layering lint runs with an empty `[files]` override table, an empty baseline and no inline allows; a directory-cycle check fails on any cycle; the `testing/` rule holds. Controls: a planted upward include, a planted same-layer cycle, a planted inline allow and a planted `testing/` include from a library target each fail |
-| **G-A5** | Every seam is replaceable, every facet kept | For each row of §2.3, a call-counting custom implementation passed through the public API where the engine's option goes is called. One test per facet in §2.3's list. Two tenants on one `AgentSpec` get distinct client instances, and one tenant's pending interaction is invisible to the other. Control: a facade that silently uses the engine's option, or shares one client, fails |
+| **G-A5** | Every seam is replaceable, every facet kept | For each row of §2.3, a call-counting custom implementation passed through the public API where the engine's option goes is called. One test per facet in §2.3's list. Two tenants on one `AgentSpec` get distinct client instances, one tenant's pending interaction is invisible to the other, and on one memory or RAG provider one tenant's recall never returns the other's items. Control: a facade that silently uses the engine's option, shares one client, or builds a per-tenant store once for all tenants, fails |
 | **G-A6** | Nothing implicit survives the API | ADR-242 G-R13's cases through `Engine::create`, `engine->agent`, `engine->session` and `server::http`; a missing choice is a named error listing the options; a preset prints every value it sets. Control: a test that starts with one choice unset must fail |
-| **G-A7** | I6: YAML and C++ are equivalent | The same agent built from YAML and from C++ yields equal `AgentSpec`s (a field-by-field comparison over every field). Control: a YAML field the compiler drops is caught |
-| **G-A8** | R6: one Runtime, no private threads | After building an `Engine` and 1,000 idle sessions across the seams of §2.3, the process thread count equals the Runtime's configured size (helper processes counted separately). Control: a provider client that builds a private Runtime fails |
-| **G-A9** | The server module keeps per-request authority (G-R5's slice-5 part) | A server dispatch without a `RequestAuthority` fails to compile (`try_compile` beside a compiling one); the HTTP parser and every verifier input are fuzzed to ADR-015's criteria; a resumed session under another principal is refused. Control: the compiling dispatch; a resume by the owning principal succeeds |
+| **G-A7** | I6: YAML and C++ are equivalent | The same agent built from YAML and from C++ yields an equal **canonical description**: the tool and provider descriptors produced, every option and preset value chosen, the ceiling and limits. Factories and holders compare by the option they were built from, never by function identity. Seams with no YAML spelling (custom C++ factories, ADR-244 slice 5's undocumented kinds) are listed and excluded by name. Control: a YAML field the compiler drops, and a preset value that differs, are each caught |
+| **G-A8** | R6: one Runtime, no private threads | On Linux, the thread count after `Engine::create` is the baseline; during 1,000 sessions that are mid-stream and running MCP background tasks (the known detached-thread paths, ADR-242 §3a), the count stays at the baseline (helper processes counted separately). Control: a provider client that builds a private Runtime, and a stream that detaches a thread, each fail |
+| **G-A9** | The server module keeps per-request authority (G-R5's slice-5 part) | `try_compile`: a server dispatch without a `RequestAuthority`, and a `VerifiedPrincipal` constructed outside a `PrincipalVerifier`, each fail to compile beside a compiling counterpart; the HTTP parser and every verifier input are fuzzed to ADR-015's criteria; a resumed session under another principal is refused. Control: the compiling counterparts; a resume by the owning principal succeeds |
 
 ## 5. Migration, in slices (each its own PR, each proves its gates)
 
 **Order** (this amends ADR-242 §6, whose "steps 2–4 … sequenced" is kept, in this order):
 
-1. ADR-244 (§6 step 1b): its items that need no live infrastructure. Its items that wait on Kata
-   hosts (Kata `create`'s remaining checks, `UnmediatedShell`, the time-limit row) stay ADR-244's, are
-   finished wherever Kata lives (here, or in `agentengine-sandboxes` after ADR-245), and do not block
-   this ADR.
+1. ADR-244 (§6 step 1b): its items that need no live infrastructure (the time-limit row is one, in
+   progress). Its items that wait on Kata hosts (Kata `create`'s remaining checks, `UnmediatedShell`)
+   stay ADR-244's and are finished wherever Kata lives; this ADR proposes (§5b) that they not block
+   its slices.
 2. ADR-245's contract slice (the contract half of ADR-242 §6 step 3): `backend_api/`,
    `AnySandboxBackend`, `NoSandboxBackend`, deletion of `execution_surface`, `persistent_shell` and
    the Docker/containerd surfaces.
@@ -275,8 +310,9 @@ Each has a positive control (spec 022 §5).
    1. **Facade over today's code.** `Engine`, `AgentSpec`, `Session` (wrapping the current types),
       presets, the authority and verifier types, `agentengine.hpp`; the `.clang-format`; G-A1, G-A6,
       G-A7 in CI; names freeze.
-   2. **Type erasure.** The factories, `AnyChatClient`, `AnyContextProvider` with
-      `AnyComposedContextProvider`, a non-template `Session`; G-A2, G-A3, G-A5 (facets), G-A8.
+   2. **Type erasure.** The scoped factories, `AnyChatClient`, the extended
+      `ContextProviderDescriptor`, a non-template `Session` that takes ADR-245's `AnySandboxBackend`;
+      G-A2, G-A3, G-A5 (facets), G-A8.
    3. **Directory moves, one layer per PR**, bottom up: `vocab`, `runtime`, `trust`, `worktree`,
       `sandbox` (with `ToolDispatch`), `agent`/`providers`, `orchestration`, `protocol`; G-A4.
    4. **Seams.** The remaining holders and G-A5's rows.
@@ -295,6 +331,22 @@ extraction: after it, a moved contract header is a contract change (ADR-245 §2.
 the live ADRs (ADR-242 §3a's G-R12 checks them). Archived ADRs stay unedited (decisions/README);
 `decisions/archive/PATHS.md` maps their old paths to new ones.
 
+## 5b. Amendments applied on Judged, and what changes if ADR-245 is not Judged
+
+| File | Change |
+|---|---|
+| ADR-242 §6 | Order of steps 2–4 per §5: 1b (non-infrastructure items), step 3's contract half (ADR-245), step 4 (ADR-237), step 2 (this ADR). "Sequenced, not parallel" is kept |
+| ADR-242 §3a, G-R6 | The code-interpreter server's line budget is counted in `agentengine-sandboxes`; this repository's G-A1 server has no interpreter (§4) |
+| ADR-244 header | "Precedes ADR-243's slice 1" becomes "its non-infrastructure items precede ADR-243's slice 1"; Kata-bound items do not block it |
+| `CONVENTIONS.md` | The reference programs' `.clang-format` and its frozen column limit |
+| `tools/layers.toml`, `tools/layering_baseline.txt` | Replaced by the directory map; both empty at the end of slice 3 |
+
+**If ADR-245 is not Judged**, these clauses revert: `sandbox/backends/` holds native-jail, native_process,
+Kata, `wasm` and `NoSandboxBackend` (§2.1); the Execution row's holder is today's
+`RegisteredSandboxBackend`, extended with ADR-242 R8's verbs and renamed `AnySandboxBackend`, built in
+slice 4 (§2.3); G-A1's server runs over Kata in this repository with `providers::codeact()` (§4);
+`StagingRoot` and the H2 primitives are not introduced (§2.1); §5's step 2 drops out.
+
 ## 6. Residuals
 
 - **A large, repo-wide churn.** Directory moves rewrite most include lines; `git blame` across moves
@@ -304,6 +356,9 @@ the live ADRs (ADR-242 §3a's G-R12 checks them). Archived ADRs stay unedited (d
   is frozen with them.
 - **Compile-time gain is a hypothesis** until G-A2 measures it.
 - **The verifier guarantee is audited, not structural** (§2.2): host code can write a verifier.
+- **Scopes are declared, not enforced against the developer** (§2.2): a factory can return a
+  wrapper around a captured object. G-A5 tests the engine's own options and the API's intent.
+- **Single-provider sessions gain ADR-066 attribution stamps** (§2.3), a visible behaviour change.
 - **The directory map is re-checked by script, not proved.** Round 2 re-mapped today's include graph
   onto §2.1; the remaining edges are named in §2.1. Slice 3's lint is the proof.
 - **The in-repository server has no code interpreter** until a backend with the interpreter facet is
@@ -311,34 +366,11 @@ the live ADRs (ADR-242 §3a's G-R12 checks them). Archived ADRs stay unedited (d
 
 ## 7. Red-team record
 
-Every cited location was re-checked before folding in.
+Every cited location was re-checked before folding in; the full log, with each finding and where it
+went, is `docs/planning/adr-243-red-team.md`.
 
-**Round 1** (2026-10-20): F1 layer order (`server/` below `engine/`, `AgentSpec` at the top) → `agent/`
-holds `AgentSpec`/`Session`, `engine/` L5, `server/` L6. M1 L1 cycles → L1 order, `FilesystemAdapter`
-to `vocab/`, `agent_spawn_capability` to `agent/`. M2 backends and code mode → `ToolDispatch`, backend
-sub-map. M3 erasure dropped facets → facet list and tests. M4 store-backed state → in-memory `AnyState`.
-M5 authority underspecified. M6 server sketch incomplete. M7 gate loopholes. Minor: seam table, wording,
-order, citation rewrite.
-
-**Round 2** (2026-10-24, fresh reviewer): not ready, 2 FATAL, 8 MAJOR.
-- **F1** "narrowed and audited" contradicted ADR-244 §2.3 and the code, which refuse; `require_authority`
-  is gone; `single_trusted_caller(caps)` did not match ADR-244's type → §2.2 restated on ADR-244.
-- **F2** `result<T&>` cannot compile; clear was unspecified → `reference_wrapper`, `reset()` (§2.3–§2.4).
-- **M1** one shared model client per agent mixes per-session state across tenants → factories (§2.2),
-  G-A5's two-tenant test, alternative C.
-- **M2** facet list incomplete; no runtime composer → five more facets, `AnyComposedContextProvider`.
-- **M3** G-A1 unfalsifiable (no `.clang-format`, trivial `grants`, scripted model, no in-repo backend)
-  → G-A1 rewritten.
-- **M4** G-A2 and G-A3 could not fail; cost mislabelled → thresholds, planted controls, frame
-  allocation stated.
-- **M5** missing I6, R6 and G-R5 gates; ADR-244 §6's delegations unanswered → G-A7–G-A9; presets
-  carry the narrowing defaults; the PDF tool's backend follows ADR-245.
-- **M6** "produced only by the bridge" unbuildable and killed the host-socket path; seam wording
-  contradicted R7 → `PrincipalVerifier`, audited guarantee, R7 wording.
-- **M7** ADR-243 and ADR-245 blocked each other → ADR-245's amendments folded in (§2.1, §2.3, G-A1,
-  §5).
-- **M8** order interleaved ADR-242 §6 without amending it; open-ended "1b first"; no concurrency
-  protocol; archive citations → §5's order, infrastructure-bound 1b items no longer block this ADR,
-  move map and rebase script, `PATHS.md`.
-- **Minor:** figures re-measured; the `testing/` rule kept as a lint; `detail/` placement; telemetry
-  per ADR-244; README status.
+| Round | Result | Turning findings |
+|---|---|---|
+| 1 (2026-10-20) | fixes folded in | layer order; L1 cycles; code-mode callback; erasure facets; in-memory state; authority |
+| 2 (2026-10-24, fresh reviewer) | not ready: 2 FATAL, 8 MAJOR | ceiling "narrowed" contradicted Judged ADR-244 (it refuses); `result<T&>` cannot compile; one model client shared across tenants; ADR-243/245 deadlock |
+| 3 (2026-10-24) | not ready: 0 FATAL, 7 MAJOR | seam scopes and factory signature; the context holder already exists and aliases; sketch broke ADR-244's types; G-A7/G-A8 unbuildable or vacuous; `StagingRoot` placement; no amendments section |
