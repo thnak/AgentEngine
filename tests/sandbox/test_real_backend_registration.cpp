@@ -17,6 +17,8 @@
 #include <cstdlib>
 #include <memory>
 
+#include "../support/kata_images.hpp"
+
 #if defined(_WIN32)
 #include "backends/native_jail/native_jail_backend.hpp"
 #elif defined(__linux__)
@@ -88,7 +90,7 @@ int main() {
 #ifdef AGENTENGINE_HAVE_KATA_BACKEND
     // ---- 3. kata: hardware isolation, named_only -- never a resolve_strict() candidate. --------
     {
-        check(registry.register_hardware_isolation_backend("kata", std::make_shared<kata::KataBackend>()).has_value(),
+        check(registry.register_hardware_isolation_backend("kata", std::make_shared<kata::KataBackend>(ae_test_kata::kRuntime, ae_test_kata::kBusybox)).has_value(),
               "the host registers kata");
         check(registry.resolve_named(HostSandboxSelection{"kata"}).has_value(), "resolve_named(kata) resolves");
         auto strict = registry.resolve_strict(current_platform());

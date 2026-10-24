@@ -425,9 +425,14 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `lint_no_default_sandbox_registry` fails if the identifier is used again (a violating fixture is its control).
      `EnvSecretSource` has no default prefix and `create("")` is `secret.empty_prefix`
      (`test_secret_store` A3b, `compile_fail` `env_secret_source_no_default`).
-   - **Not built, each needs live infrastructure to prove and is left rather than written unproven.**
-     `KataBackend::create(config)` with a digest-pinned image (`sandbox.image_not_pinned`; G-C9) needs a pulled image's
-     real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag. The Linux jail's cgroup
+   - **The Kata image pin (built, G-C9, Kata only).** `KataBackend` takes a stated runtime and image (no defaults) and
+     `create()` refuses an image that is not `<repository>@sha256:<64 lowercase hex>` with `sandbox.image_not_pinned`
+     (`KataBackend::check_image_pinned`), before any `ctr` call. Every Kata test names the digest of the index the test
+     host has pulled (`tests/support/kata_images.hpp`). Tests: `test_kata_image_pin` P1-P3 (host-free), and the live Kata
+     corpus run as root on thnak-remote with the pinned images. Not done: the Docker and containerd surfaces still take
+     a tag (`alpine:latest` by default, and the moving-tag identity tests depend on it), so G-C9's "and the surfaces" half
+     is open.
+   - **Not built.** The Linux jail's cgroup
      root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
      there, not duplicated here.
 

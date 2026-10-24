@@ -454,8 +454,12 @@ public:
     // `cni_network_name` must match the `name` field inside a CNI config file already present under
     // `cni_conf_dir`; `cni_plugin_dir` is where the named CNI plugin binaries themselves live (both
     // passed to `cnitool` as `NETCONFPATH`/`CNI_PATH` per this file's own header comment).
-    explicit KataBackend(std::string runtime_type = "io.containerd.kata-clh.v2",
-                          std::string image = "docker.io/library/busybox:latest",
+    //
+    // ADR-244 §2.5 (G-C9): `runtime_type` and `image` are stated, never defaulted, and `image` must be digest-pinned
+    // (`<repository>@sha256:<64 hex>`): a tag names different bytes on two hosts, or on one host a week apart, and this
+    // backend boots a VM from it. `create()` refuses anything else with `sandbox.image_not_pinned`
+    // (`check_image_pinned`); the constructor cannot fail, so the refusal is there, before any `ctr` call.
+    KataBackend(std::string runtime_type, std::string image,
                           std::string cni_network_name = "ae-kata-net",
                           std::string cni_plugin_dir = "/opt/cni/bin",
                           std::string cni_conf_dir = "/etc/cni/net.d")
@@ -465,6 +469,9 @@ public:
           cni_plugin_dir_(std::move(cni_plugin_dir)),
           cni_conf_dir_(std::move(cni_conf_dir)) {}
     ~KataBackend() = default;
+
+    // True iff `image` is `<repository>@sha256:<64 lowercase hex>`; otherwise `sandbox.image_not_pinned`.
+    [[nodiscard]] static agentengine::result<void> check_image_pinned(std::string_view image);
     KataBackend(KataBackend const&) = delete;
     KataBackend& operator=(KataBackend const&) = delete;
     KataBackend(KataBackend&&) = delete;

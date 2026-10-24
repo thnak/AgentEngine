@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "../../support/kata_images.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "agentengine/trust/capability.hpp"
@@ -47,7 +48,7 @@ int main() {
     //         cleanly -- SLICE 9's rewrite (ctr images mount + hand-authored OCI spec) is a drop-in
     //         replacement for the old convenience-flag path from the caller's own point of view. ----
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): --config-mode pipeline creates cleanly under deny_all");
@@ -67,7 +68,7 @@ int main() {
     //          closed via the SAME capability gate as case 5 below -- with zero grants, that check
     //          fires before this backend's own NetPolicy-shape validation ever runs. --------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.deny_all = false;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -86,7 +87,7 @@ int main() {
     //          check any more -- it is provably unreachable given 2a/2b's own two cases (see the
     //          comment at that removed check's old call site in kata_backend.cpp). -----------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.deny_all = false;
         spec.capabilities = CapabilitySet::grant_root(
@@ -106,7 +107,7 @@ int main() {
     //         does only string-coverage matching, not grammar validation, so a grant naming the same
     //         malformed string is legitimate here and does not weaken what's being proven. ----------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("not-a-valid-entry");
         spec.capabilities =
@@ -122,7 +123,7 @@ int main() {
     //         as case 3: the grant covers this exact entry so the request reaches KataBackend's own
     //         resolve-and-validate check, which is what's actually under test here. -----------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("127.0.0.1:80:http");
         spec.capabilities =
@@ -141,7 +142,7 @@ int main() {
     //         proves this backend no longer grants real network egress via SandboxSpec::net alone,
     //         with zero capability ever held (the exact I2 ambient-authority gap the red-team found).
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;  // deliberately NO spec.capabilities grant of any kind
         spec.net.allowlist.push_back("example.com:443:https");
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -158,7 +159,7 @@ int main() {
     //         default-deny nftables policy actually blocks traffic, not just accepts everything
     //         through an empty or misconfigured ruleset.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("example.com:443:https");
         spec.capabilities = CapabilitySet::grant_root(
@@ -200,7 +201,7 @@ int main() {
     //         against a live deployment this session (disclosed, matching every other resource-limit
     //         claim in this file). REQUIRES a real Kata/containerd deployment.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.pids = 16;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -215,7 +216,7 @@ int main() {
     //         guest kernel, the same class of guaranteed enforcement memory_bytes already gets from
     //         OOM. REQUIRES a real Kata/containerd deployment with losetup/mkfs.ext4 on the host.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.disk_bytes = 8ull * 1024 * 1024;  // 8 MiB -- small enough to fill quickly and
                                                         // stay within ext4's own minimum practical
@@ -267,7 +268,7 @@ int main() {
     //         REQUIRES a real Kata/containerd/cnitool/nft deployment AND real internet egress from
     //         the guest.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("example.com:443:https");
         spec.capabilities = CapabilitySet::grant_root(
@@ -299,7 +300,7 @@ int main() {
     //          the request could never have worked (no client in the image, no route) -- a test that
     //          cannot fail proves nothing.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("example.com:443:https");
         spec.capabilities = CapabilitySet::grant_root(

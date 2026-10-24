@@ -11,6 +11,7 @@
 #include <fstream>
 #include <string>
 
+#include "../../support/kata_images.hpp"
 #include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -46,7 +47,7 @@ int main() {
     // ---- 1. NetPolicy: default (deny_all=true) still creates cleanly -- the property Slice 1's
     //         own test already covers implicitly; re-asserted here as this Slice's own baseline. ---
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;  // NetPolicy default: deny_all=true, empty allowlist
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
         check(handle.has_value(), "create(): default NetPolicy (deny_all=true) still creates cleanly");
@@ -65,7 +66,7 @@ int main() {
     // kata_backend.cpp at all (grep-confirmed) -- this assertion was never actually exercised against
     // a live deployment before today, so the drift went undetected until this session's real run.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.deny_all = false;
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -75,7 +76,7 @@ int main() {
               "sandbox.net_not_authorized (ADR-244: authorize_spec() is unconditional), not silently ignored");
     }
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.net.allowlist.push_back("example.com:443:https");
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -87,7 +88,7 @@ int main() {
 
     // ---- 3. MountSpec: a BlobRef source fails closed. -----------------------------------------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -111,7 +112,7 @@ int main() {
     //          BlobRef/',' checks above), so -- unlike most of this file's cases -- this one does NOT
     //          require a live Kata/containerd deployment to prove for real. -----------------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;  // the mount below IS granted (grant_listed_mounts): the workdir check must still fire
         MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -126,7 +127,7 @@ int main() {
               "with kata_backend.workdir_mount_forbidden, even with a covering cap::SandboxMount grant");
     }
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -142,7 +143,7 @@ int main() {
               "exact-match on the root itself");
     }
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         MountSpec m{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -171,7 +172,7 @@ int main() {
         { std::error_code ec; std::filesystem::remove_all(host_dir, ec); std::filesystem::create_directories(host_dir, ec); }
         std::ofstream(std::string(host_dir) + "/probe.txt") << "kata_mount_probe_content";
 
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         MountSpec ro_mount{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -205,7 +206,7 @@ int main() {
 
         // Read-write grant: the guest CAN write, and the write is visible back on the HOST --
         // proving the mount is a real, live bind, not a copy-on-create snapshot.
-        KataBackend rw_backend;
+        KataBackend rw_backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec rw_spec;
         MountSpec rw_mount{.source = {}, .guest_path = {}, .read_write = false,
                        .quota_bytes = cap::Limit::unbounded()};
@@ -236,7 +237,7 @@ int main() {
 
     // ---- 5. ResourceLimits::memory_bytes is REAL VM memory sizing, not a cosmetic no-op. -----------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.memory_bytes = 256ull * 1024 * 1024;  // 256 MiB, well under the ~2GiB default
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
@@ -269,7 +270,7 @@ int main() {
     //         open-file-descriptor limit of THAT process, directly answering the question -- not
     //         guessed at, and not claimed either way ahead of a real run.
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.fds = 123;  // an unusual, specific number -- if it appears verbatim in the
                                  // exec'd process's own ulimit output, that's real evidence of
@@ -303,7 +304,7 @@ int main() {
 
     // ---- 7. ResourceLimits::wall_ms overrides run_ctr()'s own fixed default timeout, per instance. -
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.wall_ms = 3000;  // 3s -- much tighter than the 30s fixed default
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
