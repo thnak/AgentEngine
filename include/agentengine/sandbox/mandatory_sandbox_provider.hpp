@@ -558,7 +558,7 @@ private:
                 agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
             std::optional<agentengine::SurfaceRunOutcome> executed;
             auto outcome = agentengine::rt::block_on(runtime_->run(
-                *surface_, args.command, caller, *run_quota_, *storage_quota_, &executed));
+                *surface_, args.command, caller, *run_quota_, *storage_quota_, &executed, &ctx));
             if (!outcome.has_value()) {
                 return std::unexpected(with_executed_output(outcome.error(), executed));
             }
@@ -602,7 +602,7 @@ private:
             agentengine::IdentityHandle caller =
                 agentengine::IdentityAuthority::bootstrap().adopt(ctx.principal);
             auto outcome = agentengine::rt::block_on(
-                run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller));
+                run_in_task_branch(std::move(args.handle_id), std::move(args.command), caller, &ctx));
             if (!outcome.has_value()) return std::unexpected(outcome.error());
             return *outcome;
         })(std::move(request), context);
@@ -1029,7 +1029,8 @@ public:
     }
 
     [[nodiscard]] agentengine::rt::task<agentengine::result<TaskBranchRunReply>> run_in_task_branch(
-        std::string handle_id, std::string command, agentengine::IdentityHandle requested_by) {
+        std::string handle_id, std::string command, agentengine::IdentityHandle requested_by,
+        agentengine::EffectContext const* ctx = nullptr) {
         if (!runtime_.has_value() || merge_quota_ == nullptr) {
             co_return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
@@ -1045,7 +1046,7 @@ public:
         }
         std::optional<agentengine::SurfaceRunOutcome> executed;
         auto outcome = co_await it->second.run(*surface_, std::move(command), requested_by,
-                                                  *run_quota_, *storage_quota_, &executed);
+                                                  *run_quota_, *storage_quota_, &executed, ctx);
         if (!outcome.has_value()) co_return std::unexpected(with_executed_output(outcome.error(), executed));
         BoundImage img = bound_image();  // issue #80 -- after the run, for the reason run_command's own says
         co_return TaskBranchRunReply{outcome->exec.exit_code, outcome->exec.stdout_text,

@@ -161,7 +161,7 @@ struct RealCallContext {
     SessionContext session_ctx;
 
     RealCallContext(std::string label, Principal principal)
-        : real_principal(std::move(principal)), real_caps(CapabilitySet::grant_root({})),
+        : real_principal(std::move(principal)), real_caps(CapabilitySet::grant_root({Capability{cap::UnmediatedShell{"docker", false}}})),
           session_ctx(std::move(label), real_principal, empty_history) {
         ctx.principal = real_principal;
         ctx.capabilities = borrow_capabilities(real_caps);
@@ -294,7 +294,7 @@ int main() {
               "start_task_branch() consumes exactly 1 BranchCost unit");
 
         auto ran = drive(parent.history_provider().run_in_task_branch(
-            handle, "echo -n 'from a task branch' > from_child.txt", owner));
+            handle, "echo -n 'from a task branch' > from_child.txt", owner, &ae_test::docker_ctx()));
         check(ran.has_value(), "run_in_task_branch() succeeds");
 
         auto committed = drive(parent.history_provider().commit_task_branch(handle, owner));
@@ -326,9 +326,9 @@ int main() {
         if (!child_a.has_value() || !child_b.has_value()) return EXIT_FAILURE;
 
         auto ran_a = drive(parent.history_provider().run_in_task_branch(
-            child_a->handle_id, "echo -n 'A wins' > contested.txt", owner));
+            child_a->handle_id, "echo -n 'A wins' > contested.txt", owner, &ae_test::docker_ctx()));
         auto ran_b = drive(parent.history_provider().run_in_task_branch(
-            child_b->handle_id, "echo -n 'B loses' > contested.txt", owner));
+            child_b->handle_id, "echo -n 'B loses' > contested.txt", owner, &ae_test::docker_ctx()));
         check(ran_a.has_value() && ran_b.has_value(), "both children can run independently (isolated)");
 
         auto commit_a = drive(parent.history_provider().commit_task_branch(child_a->handle_id, owner));
@@ -341,7 +341,7 @@ int main() {
         // The SAME handle_id must still work -- reclaimed, not stranded (task_branch_sandbox.hpp's own
         // A10 finding 3, now proven through this real tool surface for the first time).
         auto retry_run = drive(parent.history_provider().run_in_task_branch(
-            child_b->handle_id, "echo -n 'still alive' > still_alive.txt", owner));
+            child_b->handle_id, "echo -n 'still alive' > still_alive.txt", owner, &ae_test::docker_ctx()));
         check(retry_run.has_value(),
               "the rejected handle_id is reclaimed and stays usable -- NOT unknown_handle");
 
@@ -368,7 +368,7 @@ int main() {
               "a successful discard refunds the BranchCost unit back to the pre-start value");
 
         auto after_discard = drive(
-            parent.history_provider().run_in_task_branch(started->handle_id, "echo hi", owner));
+            parent.history_provider().run_in_task_branch(started->handle_id, "echo hi", owner, &ae_test::docker_ctx()));
         check(!after_discard.has_value() &&
                   after_discard.error().code == "mandatory_sandbox_provider.task_branch_unknown_handle",
               "a discarded handle is genuinely gone -- run_in_task_branch on it fails unknown_handle");
@@ -377,7 +377,7 @@ int main() {
     // [5] every verb fails closed on a handle_id that was never issued.
     {
         auto bogus_run =
-            drive(parent.history_provider().run_in_task_branch("no-such-handle", "echo hi", owner));
+            drive(parent.history_provider().run_in_task_branch("no-such-handle", "echo hi", owner, &ae_test::docker_ctx()));
         check(!bogus_run.has_value() &&
                   bogus_run.error().code == "mandatory_sandbox_provider.task_branch_unknown_handle",
               "run_in_task_branch() on a never-issued handle fails unknown_handle");
@@ -438,9 +438,9 @@ int main() {
                 check(child_x.has_value() && child_y.has_value(), "both retry-check children start");
                 if (child_x.has_value() && child_y.has_value()) {
                     (void)drive(retry_session.history_provider().run_in_task_branch(
-                        child_x->handle_id, "echo -n 'X wins' > loop_target.txt", owner));
+                        child_x->handle_id, "echo -n 'X wins' > loop_target.txt", owner, &ae_test::docker_ctx()));
                     (void)drive(retry_session.history_provider().run_in_task_branch(
-                        child_y->handle_id, "echo -n 'Y loses' > loop_target.txt", owner));
+                        child_y->handle_id, "echo -n 'Y loses' > loop_target.txt", owner, &ae_test::docker_ctx()));
 
                     auto commit_x =
                         drive(retry_session.history_provider().commit_task_branch(child_x->handle_id, owner));
@@ -461,7 +461,7 @@ int main() {
                           "the 1st rejected retry still nets -1 MergeCost unit (the free-loop is closed)");
 
                     auto still_usable = drive(
-                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner));
+                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner, &ae_test::docker_ctx()));
                     check(still_usable.has_value(), "Y's handle is still usable after the 1st rejection");
 
                     auto commit_y_2 =
@@ -487,7 +487,7 @@ int main() {
                           "Y's BranchCost unit is refunded when it is force-discarded on quota exhaustion");
 
                     auto after_exhaustion = drive(
-                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner));
+                        retry_session.history_provider().run_in_task_branch(child_y->handle_id, "echo hi", owner, &ae_test::docker_ctx()));
                     check(!after_exhaustion.has_value() &&
                               after_exhaustion.error().code ==
                                   "mandatory_sandbox_provider.task_branch_unknown_handle",
@@ -590,7 +590,7 @@ int main() {
             // cap::TaskBranch, commit needs both. Granting both up front covers all three calls this
             // section drives.
             CapabilitySet const held =
-                CapabilitySet::grant_root({Capability{cap::TaskBranch{}}, Capability{cap::TaskBranchCommit{}}});
+                CapabilitySet::grant_root({Capability{cap::TaskBranch{}}, Capability{cap::TaskBranchCommit{}}, Capability{cap::UnmediatedShell{"docker", false}}});
             live.set_capabilities(&held);
 
             auto start_response = drive(live.start_run(agentengine::rt::StartRun{user_message("go")}));

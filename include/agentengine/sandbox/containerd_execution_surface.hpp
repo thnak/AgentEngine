@@ -918,6 +918,10 @@ public:
     // FIRST container was created, and is empty before the first `reset()` and whenever containerd could
     // not answer. See `ContainerdCliBackend::resolve_image_identity()` for the one way this is weaker than
     // the Docker surface's answer -- stated there, not hidden behind these accessors.
+    // ADR-244 §2.5: this surface is not host-mediated, so using it needs a granted `cap::UnmediatedShell` (checked in
+    // `SandboxRuntime`). The id scopes the grant; `network_enabled()` is what the grant must say about egress.
+    [[nodiscard]] static constexpr std::string_view surface_id() noexcept { return "containerd"; }
+    [[nodiscard]] bool network_enabled() const noexcept { return isolation_.host_network; }
     [[nodiscard]] std::string_view image() const noexcept { return image_; }
     [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
     // ADR-176 §9 -- what `image_digest()` digests, read off the same `ctr images ls` row as the digest

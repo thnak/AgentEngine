@@ -22,6 +22,7 @@
 // the #142 bug) fails L1's commit; forcing a re-open on every command fails L2; not clearing staging before the
 // drain fails L3; reusing the container on re-open fails L4.
 
+#include "../../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 #include "agentengine/sandbox/live_shell_sandbox_provider.hpp"
@@ -93,6 +94,7 @@ using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
 [[nodiscard]] EffectContext owner_ctx() {
     EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal.id = "live-owner";
+    ctx.capabilities = ae_test::unmediated_ctx("docker-persistent-shell", false).capabilities;
     return ctx;
 }
 
@@ -155,8 +157,8 @@ int main() {
         auto root = drive(ledger.create_root_branch(owner, "tier0"));
         SandboxRuntime runtime(ledger, std::move(*root), dir / "tier0");
         DockerExecutionSurface surface("alpine:latest", box());
-        (void)drive(runtime.run(surface, "export X=1", owner, run_q, storage_q));
-        auto r = drive(runtime.run(surface, "echo \"[$X]\"", owner, run_q, storage_q));
+        (void)drive(runtime.run(surface, "export X=1", owner, run_q, storage_q, nullptr, &ae_test::docker_ctx()));
+        auto r = drive(runtime.run(surface, "echo \"[$X]\"", owner, run_q, storage_q, nullptr, &ae_test::docker_ctx()));
         check(r.has_value() && r->exec.stdout_text.find("[]") != std::string::npos,
               "L0 (C1 control): Tier 0 does not carry an export to the next command");
     }

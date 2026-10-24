@@ -167,6 +167,7 @@ int main(int argc, char** argv) {
                                                           agentengine::Bound<std::uint64_t>::unbounded(),
                                                           agentengine::Bound<std::uint64_t>::at_most(25), agentengine::Bound<std::uint64_t>::unbounded()})
                      .grant(Capability{cap::RunCommand{}})
+                     .grant(Capability{cap::UnmediatedShell{"docker", false}})
                      .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
                      .providers(std::make_tuple(std::move(sandbox_provider)))
                      .build();

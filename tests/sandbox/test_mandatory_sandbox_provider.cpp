@@ -157,7 +157,7 @@ struct RealCallContext {
     SessionContext session_ctx;
 
     RealCallContext(std::string label, Principal principal)
-        : real_principal(std::move(principal)), real_caps(CapabilitySet::grant_root({})),
+        : real_principal(std::move(principal)), real_caps(CapabilitySet::grant_root({Capability{cap::UnmediatedShell{"docker", false}}})),
           session_ctx(std::move(label), real_principal, empty_history) {
         ctx.principal = real_principal;
         ctx.capabilities = borrow_capabilities(real_caps);
@@ -344,7 +344,7 @@ int main() {
             client.set_script({tool_call_message("call-1", "run_command", args_json)});
 
             // ADR-119: run_command now carries a real Capabilities<cap::decl::RunCommand> ceiling.
-            CapabilitySet const held = CapabilitySet::grant_root({Capability{cap::RunCommand{}}});
+            CapabilitySet const held = CapabilitySet::grant_root({Capability{cap::RunCommand{}}, Capability{cap::UnmediatedShell{"docker", false}}});
             live.set_capabilities(&held);
 
             auto response = drive(live.start_run(agentengine::rt::StartRun{user_message("go")}));

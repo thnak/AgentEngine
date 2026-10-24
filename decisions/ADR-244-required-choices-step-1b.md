@@ -392,6 +392,18 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      not limits. The image default (`alpine:latest`) is the pinned-image item, still open. Tests:
      `test_docker_isolation` I4/I4b, `test_containerd_isolation` C4/C6/C7 (live on `thnak-remote`),
      `compile_fail` `container_isolation_unstated`, `test_mandatory_sandbox_provider` [1b].
+   - **Unmediated surfaces (built, G-C10).** `cap::UnmediatedShell{surface, network}` (`capability_kind::unmediated_shell`,
+     declared as `cap::decl::UnmediatedShell<"surface", network>`) is a granted choice. A surface declares itself
+     not host-mediated by modelling `UnmediatedSurface` (`surface_id()`, `network_enabled()`); the Docker, containerd and
+     Docker persistent-shell surfaces do, with ids `docker`, `containerd` and `docker-persistent-shell`. The gate,
+     `authorize_unmediated_shell` (`sandbox/unmediated_shell_gate.hpp`), runs first in `SandboxRuntime::run` and `run_live`
+     (before the lock and any quota), takes the caller's `EffectContext`, and refuses with
+     `sandbox.unmediated_shell_not_granted` when there is no context, no capability set, another surface id, or a
+     `network = false` grant for a surface that keeps a network. Each check emits one `SandboxExec` audit row, admitted
+     or refused. `MandatorySandboxProvider` (run, task-branch run) and `LiveShellSandboxProvider` pass their context.
+     Tests: `test_unmediated_shell_gate` U1-U7 against a fake surface (no daemon), and every Docker and containerd
+     test that runs a command now carries the grant. Not built: a YAML spelling of the grant (`capabilities:`), and
+     the containerd host bind through `authorize_spec`.
    - **What a deadline is, and is not.** It is a boundary check: a call that starts past it is refused, a retry that
      cannot finish inside it is not started, and an egress wait ends at it. It does not preempt a tool body already
      running; ADR-242 §3a says so. The `idle_timeout` and `consumer_stall_timeout` 90 s defaults with their `0 = none`
@@ -411,8 +423,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
    - **Not built, each needs live infrastructure to prove and is left rather than written unproven.**
      `KataBackend::create(config)` with a digest-pinned image (`sandbox.image_not_pinned`; G-C9) needs a pulled image's
      real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag; the Docker and
-     containerd host bind through `authorize_spec` (§2.5) needs the Linux container hosts;
-     `cap::UnmediatedShell{surface, network}` (G-C10) rides on that; the Linux jail's cgroup
+     containerd host bind through `authorize_spec` (§2.5) needs the Linux container hosts; the Linux jail's cgroup
      root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
      there, not duplicated here.
 

@@ -143,6 +143,7 @@ int main(int argc, char** argv) {
                      .grant(Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}})
                      .grant(Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}})
                      .grant(Capability{cap::RunCommand{}})
+                     .grant(Capability{cap::UnmediatedShell{"containerd", false}})
                      .api_key_from_env("openai-api-key", "OPENAI_API_KEY")
                      .providers(std::make_tuple(std::move(shell_provider), std::move(sandbox_provider)))
                      .build();

@@ -63,6 +63,7 @@
 #include "agentengine/sandbox/execution_surface.hpp"
 #include "agentengine/sandbox/persistent_shell.hpp"
 #include "agentengine/sandbox/real_io_filesystem.hpp"
+#include "agentengine/sandbox/unmediated_shell_gate.hpp"
 #include "agentengine/trust/identity_authority.hpp"
 
 namespace agentengine {
@@ -154,7 +155,13 @@ public:
         Surface& surface, std::string command, agentengine::IdentityHandle author,
         agentengine::rt::AsyncQuota<RunCost>& run_quota,
         agentengine::rt::AsyncQuota<StorageBytes>& storage_quota,
-        std::optional<agentengine::SurfaceRunOutcome>* executed = nullptr) {
+        std::optional<agentengine::SurfaceRunOutcome>* executed = nullptr,
+        agentengine::EffectContext const* ctx = nullptr) {
+        // ADR-244 §2.5: a surface that is not host-mediated runs only under a granted `cap::UnmediatedShell`. Before the
+        // lock and before any quota is spent: a refused call costs nothing and touches nothing.
+        if (auto granted = agentengine::authorize_unmediated_shell(surface, ctx); !granted.has_value()) {
+            co_return std::unexpected(granted.error());
+        }
         agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
 
         // 0. Gate BEFORE the real command ever executes -- see RunCost's own comment above for why
@@ -248,7 +255,11 @@ public:
     [[nodiscard]] agentengine::rt::task<agentengine::result<LiveRunOutcome>> run_live(
         Surface& surface, std::string command, agentengine::IdentityHandle author,
         agentengine::rt::AsyncQuota<RunCost>& run_quota, agentengine::rt::AsyncQuota<StorageBytes>& storage_quota,
-        LiveShellSync& sync, OpenHook open_hook, std::chrono::milliseconds deadline) {
+        LiveShellSync& sync, OpenHook open_hook, std::chrono::milliseconds deadline,
+        agentengine::EffectContext const* ctx = nullptr) {
+        if (auto granted = agentengine::authorize_unmediated_shell(surface, ctx); !granted.has_value()) {
+            co_return std::unexpected(granted.error());  // ADR-244 §2.5, as in `run()`
+        }
         agentengine::rt::AsyncMutex::Guard guard = co_await exclusivity_->lock();
 
         auto run_consumed = co_await run_quota.try_consume(1, author);

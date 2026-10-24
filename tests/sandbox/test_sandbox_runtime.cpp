@@ -37,6 +37,7 @@
 //        file beside it is kept -- `DockerExecutionSurface::drain_to()` empties staging before its
 //        additive `docker cp`, instead of landing on top of the materialized head.
 
+#include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
 #include "agentengine/rt/block_on.hpp"
@@ -102,7 +103,7 @@ int main() {
 
     // [1]/[2] Turn 1: a real command runs inside a real, fresh container and writes a real file.
     auto r1 = drive(runtime.run(surface, "echo -n 'turn-1 content' > note.txt && cat note.txt", owner,
-                                  run_quota, storage_quota));
+                                  run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
     check(r1.has_value(), "turn 1 run() succeeds");
     if (r1.has_value()) {
         check(r1->exec.exit_code == 0, "turn 1 exit_code == 0");
@@ -134,7 +135,7 @@ int main() {
     // [3] Turn 2: a genuinely FRESH container (reset() destroys and recreates it) can still see turn
     // 1's file -- its only path there is Ledger.materialize() seeding the new container for real.
     auto r2 = drive(runtime.run(surface, "cat note.txt && echo -n ' + turn-2 addition' >> note.txt", owner,
-                                  run_quota, storage_quota));
+                                  run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
     check(r2.has_value(), "turn 2 run() succeeds");
     if (r2.has_value()) {
         check(r2->exec.exit_code == 0, "turn 2 exit_code == 0");
@@ -144,7 +145,7 @@ int main() {
     }
 
     // [4] A non-zero exit code is a normal result, not a result<>-level error -- the turn still commits.
-    auto r3 = drive(runtime.run(surface, "exit 7", owner, run_quota, storage_quota));
+    auto r3 = drive(runtime.run(surface, "exit 7", owner, run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
     check(r3.has_value(), "a command exiting non-zero is still a successful run()");
     if (r3.has_value()) {
         check(r3->exec.exit_code == 7, "non-zero exit_code passed through as a normal result");
@@ -161,7 +162,7 @@ int main() {
             check(exhausted_run_quota_r->remaining() == 0, "exhausted run_quota remaining() == 0");
             std::size_t const before = count_docker_containers();
             auto blocked = drive(runtime.run(surface, "echo SHOULD_NEVER_RUN", owner,
-                                                *exhausted_run_quota_r, storage_quota));
+                                                *exhausted_run_quota_r, storage_quota, nullptr, &ae_test::docker_ctx()));
             check(!blocked.has_value(), "run() with exhausted RunCost is rejected");
             if (!blocked.has_value()) {
                 check(blocked.error().code == "async_quota.exhausted",
@@ -184,7 +185,7 @@ int main() {
         std::string command_with_embedded_nul = "echo this command has an embedded NUL byte -> ";
         command_with_embedded_nul.push_back('\0');
         command_with_embedded_nul += "<- right there";
-        auto rejected = drive(runtime.run(surface, command_with_embedded_nul, owner, run_quota, storage_quota));
+        auto rejected = drive(runtime.run(surface, command_with_embedded_nul, owner, run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
         check(!rejected.has_value(), "a NUL-byte command fails run() before ever reaching docker");
         if (!rejected.has_value()) {
             check(rejected.error().code == "docker_cli_backend.unsafe_argv_value",
@@ -205,7 +206,7 @@ int main() {
             check(reset_r->turn_index == 4, "reset_to_turn(1) recorded as a NEW forward checkpoint (turn 4)");
         }
 
-        auto r4 = drive(runtime.run(surface, "cat note.txt", owner, run_quota, storage_quota));
+        auto r4 = drive(runtime.run(surface, "cat note.txt", owner, run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
         check(r4.has_value(), "post-rollback run() succeeds");
         if (r4.has_value()) {
             check(r4->exec.stdout_text == "turn-1 content",
@@ -257,9 +258,9 @@ int main() {
     // the deleted file was still in staging and the scan committed it again.
     {
         auto seeded = drive(runtime.run(surface, "echo -n doomed > doomed.txt && echo -n kept > kept.txt", owner,
-                                        run_quota, storage_quota));
+                                        run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
         check(seeded.has_value(), "[11] seeding doomed.txt and kept.txt succeeds");
-        auto deleted = drive(runtime.run(surface, "rm doomed.txt", owner, run_quota, storage_quota));
+        auto deleted = drive(runtime.run(surface, "rm doomed.txt", owner, run_quota, storage_quota, nullptr, &ae_test::docker_ctx()));
         check(deleted.has_value(), "[11] the rm turn succeeds");
         if (deleted.has_value()) {
             check(deleted->exec.exit_code == 0, "[11] rm exits 0 inside the container");
