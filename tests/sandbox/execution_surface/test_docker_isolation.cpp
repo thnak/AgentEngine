@@ -97,7 +97,7 @@ int main() {
 
     // ---- I1: the defaults are containment ------------------------------------------------------
     {
-        ContainerIsolation const iso{};
+        ContainerIsolation const iso = ContainerIsolation::conservative();
         std::vector<std::string> const argv = docker_isolation_argv(iso);
 
         check(flag_value_is(argv, "--network", "none"),
@@ -116,12 +116,12 @@ int main() {
 
     // ---- I2: opting in changes exactly what was opted into ---------------------------------------
     {
-        ContainerIsolation iso{};
+        ContainerIsolation iso = ContainerIsolation::conservative();
         iso.network_enabled = true;
         check(flag_value_is(docker_isolation_argv(iso), "--network", "bridge"),
               "I2: an explicit opt-in produces --network bridge");
 
-        ContainerIsolation loose{};
+        ContainerIsolation loose = ContainerIsolation::conservative();
         loose.drop_all_capabilities = false;
         loose.no_new_privileges      = false;
         std::vector<std::string> const argv = docker_isolation_argv(loose);
@@ -135,15 +135,15 @@ int main() {
 
     // ---- I3: --cpus formatting is byte-stable ----------------------------------------------------
     {
-        ContainerIsolation iso{};
-        iso.cpu_milli = 500;
+        ContainerIsolation iso = ContainerIsolation::conservative();
+        iso.cpu_milli = agentengine::Bound<std::uint64_t>::at_most(500);
         check(flag_value_is(docker_isolation_argv(iso), "--cpus", "0.500"),
               "I3: 500 milli-CPU formats as 0.500 -- built from an integer, so no locale can turn the "
               "decimal point into a comma and no float rounding can drift the value");
-        iso.cpu_milli = 2250;
+        iso.cpu_milli = agentengine::Bound<std::uint64_t>::at_most(2250);
         check(flag_value_is(docker_isolation_argv(iso), "--cpus", "2.250"),
               "I3: and a value above 1.0 with a non-zero fraction is correct too");
-        iso.cpu_milli = 2000;
+        iso.cpu_milli = agentengine::Bound<std::uint64_t>::at_most(2000);
         check(flag_value_is(docker_isolation_argv(iso), "--cpus", "2.000"),
               "I3: a whole number still carries its three-digit fraction, not a bare '2.'");
     }
@@ -151,35 +151,52 @@ int main() {
     // ---- I4: the 008 §2 vocabulary maps, and an UNSET limit fails closed --------------------------
     {
         ResourceLimits limits{};
-        limits.memory_bytes = 64ull * 1024 * 1024;
+        limits.memory_bytes = 64 * 1024 * 1024;
         limits.pids         = 16;
         NetPolicy net{};  // deny_all == true by default in the type itself
 
-        auto mapped = container_isolation_from(limits, net);
+        auto mapped = container_isolation_from(limits, net, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(mapped.has_value(), "I4: a deny-all NetPolicy with real limits maps cleanly");
         if (mapped.has_value()) {
             check(!mapped->network_enabled, "I4: deny_all becomes --network none");
-            check(mapped->memory_bytes == 64ull * 1024 * 1024 && mapped->pids == 16,
+            check(mapped->memory_bytes.limit() == 64ull * 1024 * 1024 && mapped->pids.limit() == 16u,
                   "I4: the real limits are carried through");
         }
 
         // The load-bearing half: a ZERO field means "unset", and must never become "unlimited".
         ResourceLimits unset{};
-        auto defaulted = container_isolation_from(unset, net);
-        check(defaulted.has_value(), "I4: an all-zero ResourceLimits still maps");
-        if (defaulted.has_value()) {
-            check(defaulted->memory_bytes == ContainerIsolation{}.memory_bytes &&
-                      defaulted->pids == ContainerIsolation{}.pids,
-                  "I4: an UNSET limit falls back to the conservative default, never to 'unlimited' -- "
-                  "the fail-closed direction, since 0 is exactly what an untouched SandboxSpec carries");
-        }
+        auto defaulted = container_isolation_from(unset, net, agentengine::Bound<std::uint64_t>::at_most(1000));
+        check(!defaulted.has_value() && defaulted.error().code == "choice.missing.isolation.memory_bytes",
+              "I4: an UNSET limit is refused as a missing choice (ADR-244 §2.5), never replaced by a default or by "
+              "'unlimited' -- 0 is exactly what an untouched SandboxSpec carries");
 
         NetPolicy open{};
         open.deny_all = false;
-        auto opened = container_isolation_from(limits, open);
+        auto opened = container_isolation_from(limits, open, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(opened.has_value() && opened->network_enabled,
               "I4: an explicitly non-deny_all policy with NO allowlist maps to bridge -- the caller "
               "asked for unfiltered egress and gets exactly that, visibly");
+    }
+
+    // ---- I4b: the limits are stated Bounds (ADR-244 §2.5) ---------------------------------------
+    {
+        ContainerIsolation unbounded = ContainerIsolation::conservative();
+        unbounded.memory_bytes       = agentengine::Bound<std::uint64_t>::unbounded();
+        unbounded.pids               = agentengine::Bound<std::uint64_t>::unbounded();
+        unbounded.cpu_milli          = agentengine::Bound<std::uint64_t>::unbounded();
+        auto const argv              = docker_isolation_argv(unbounded);
+        check(index_of(argv, "--memory") == std::string::npos && index_of(argv, "--pids-limit") == std::string::npos &&
+                  index_of(argv, "--cpus") == std::string::npos,
+              "I4b: unbounded() passes no memory, pids or cpu flag");
+        check(flag_value_is(docker_isolation_argv(ContainerIsolation::conservative()), "--memory", "536870912b"),
+              "I4b (positive control): the same type with stated limits does pass the flags");
+        ContainerIsolation zero = ContainerIsolation::conservative();
+        zero.pids               = agentengine::Bound<std::uint64_t>::at_most(0);
+        auto refused            = agentengine::check_container_isolation(zero);
+        check(!refused.has_value() && refused.error().code == "choice.zero_bound",
+              "I4b: at_most(0) is refused (choice.zero_bound)");
+        check(agentengine::check_container_isolation(ContainerIsolation::conservative()).has_value(),
+              "I4b (positive control): the conservative preset passes the check");
     }
 
     // ---- I5: an allowlist is REFUSED, never silently widened -------------------------------------
@@ -188,7 +205,7 @@ int main() {
         allowlisted.deny_all  = false;
         allowlisted.allowlist = {"api.example.com:443:https", "registry.example.com:443:https"};
 
-        auto mapped = container_isolation_from(ResourceLimits{}, allowlisted);
+        auto mapped = container_isolation_from(ResourceLimits{}, allowlisted, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(!mapped.has_value(),
               "I5: a NetPolicy carrying an allowlist is REFUSED -- `docker run --network bridge` "
               "grants unfiltered egress, which is not an allowlist by any reading, and silently "
@@ -211,7 +228,7 @@ int main() {
     // ---- L1/L3: defaults, verified from INSIDE the container -------------------------------------
     {
         DockerCliBackend backend;
-        auto inst = backend.create("alpine:latest");
+        auto inst = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
         check(inst.has_value(), "L1 setup: a default-isolation container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -244,7 +261,7 @@ int main() {
     // Without this, L1 could be passing because the probe is broken rather than because the container
     // is contained. CLAUDE.md: a test that cannot fail proves nothing.
     {
-        ContainerIsolation open{};
+        ContainerIsolation open = ContainerIsolation::conservative();
         open.network_enabled = true;
         DockerCliBackend backend;
         auto inst = backend.create("alpine:latest", open);
@@ -275,9 +292,9 @@ int main() {
             out << "seed";
         }
 
-        ContainerIsolation tight{};
-        tight.memory_bytes = 268435456;  // 256 MiB -- deliberately NOT the default, so a surface that
-        tight.pids         = 32;          // silently used the defaults would fail these checks.
+        ContainerIsolation tight = ContainerIsolation::conservative();
+        tight.memory_bytes = agentengine::Bound<std::uint64_t>::at_most(268435456);  // 256 MiB -- deliberately NOT the default, so a surface that
+        tight.pids         = agentengine::Bound<std::uint64_t>::at_most(32);         // silently used the defaults would fail these checks.
         DockerExecutionSurface surface("alpine:latest", tight);
 
         auto reset = agentengine::rt::block_on(surface.reset(scratch));

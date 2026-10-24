@@ -111,6 +111,9 @@ int main(int argc, char** argv) {
     // (ComposedContextProvider<Ms...>'s own descriptor factory type-erases each Ms once engaged, with
     // no accessor back to the concrete instance).
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
+    sandbox_provider.set_surface_factory([] {
+        return ContainerdExecutionSurface("docker.io/library/alpine:latest", ContainerdIsolation::conservative());
+    });
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
     // ADR-244 slice 4a: this demo's host choice -- neither shell tier asks a human (it installs no approval

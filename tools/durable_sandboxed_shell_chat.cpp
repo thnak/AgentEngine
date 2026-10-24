@@ -143,6 +143,7 @@ int main(int argc, char** argv) {
     // ---- leaves its root branch as a real orphan; this call reattaches to it automatically. ----------
     using SandboxProvider = MandatorySandboxProvider<DockerExecutionSurface, FileWorktreeObjectStore>;
     SandboxProvider sandbox_provider;
+    sandbox_provider.set_surface_factory([] { return DockerExecutionSurface("alpine:latest", ContainerIsolation::conservative()); });
     auto bound = sandbox_provider.bind_root_branch(cli_ledger, owner, staging_root, *branch_quota,
                                                      *run_quota, *storage_quota, session_id);
     sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a

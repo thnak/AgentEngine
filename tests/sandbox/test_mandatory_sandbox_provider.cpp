@@ -30,6 +30,7 @@
 //       cap::RunCommand grant gets run_command rejected as a role::tool error, spends no RunCost, and
 //       never touches the real filesystem.
 
+#include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -217,6 +218,20 @@ int main() {
         }
     }
 
+    // [1b] ADR-244 §2.5: a surface with no default isolation is never bound without a stated factory.
+    {
+        Session nofactory;
+        nofactory.initialize("nofactory-session", Principal{"nofactory-owner", ""}, ae_test::trusted_unbounded());
+        check(!nofactory.history_provider().has_surface_factory(), "a provider starts with no stated surface factory");
+        auto bound = nofactory.history_provider().bind_root_branch(ledger, owner, scratch_root / "nofactory", branch_quota,
+                                                                   run_quota, storage_quota, "nofactory");
+        check(!bound.has_value() && bound.error().code == "choice.missing.sandbox_surface",
+              "bind_root_branch() without a surface factory is refused (choice.missing.sandbox_surface)");
+        check(!nofactory.history_provider().is_bound(), "and the provider stays unbound");
+        nofactory.history_provider().set_surface_factory(ae_test::docker_surface);
+        check(nofactory.history_provider().has_surface_factory(), "[1b control] stating the factory is what the refusal asks for");
+    }
+
     // [2] bind_sandbox() establishes a real sandbox; a direct on_context()+invoke() genuinely executes.
     Session parent;
     parent.initialize("parent-session", Principal{"parent-owner", ""}, ae_test::trusted_unbounded());
@@ -224,6 +239,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"parent\") succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
+        parent.history_provider().set_surface_factory(ae_test::docker_surface);
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
         parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
@@ -315,6 +331,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "live"));
         check(root_r.has_value(), "create_root_branch(owner, \"live\") succeeds");
         if (root_r.has_value()) {
+            live.history_provider().set_surface_factory(ae_test::docker_surface);
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
             live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
@@ -414,6 +431,7 @@ int main() {
             auto new_root = drive(ledger.create_root_branch(owner, "child-reused"));
             check(new_root.has_value(), "create_root_branch(owner, \"child-reused\") succeeds");
             if (new_root.has_value()) {
+                child.history_provider().set_surface_factory(ae_test::docker_surface);
                 child.history_provider().bind_sandbox(ledger, std::move(*new_root), owner,
                                                           scratch_root / "child-reused", branch_quota,
                                                           run_quota, storage_quota);
@@ -435,6 +453,7 @@ int main() {
             auto temp_root = drive(ledger.create_root_branch(owner, "temp-parent-would-fork"));
             check(temp_root.has_value(), "create_root_branch(owner, \"temp-parent-would-fork\") succeeds");
             if (temp_root.has_value()) {
+                temp_parent.history_provider().set_surface_factory(ae_test::docker_surface);
                 temp_parent.history_provider().bind_sandbox(ledger, std::move(*temp_root), owner,
                                                                  scratch_root / "temp-parent",
                                                                  *tiny_branch_quota_r, run_quota,
@@ -471,6 +490,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"ungranted\") succeeds");
         if (root_r.has_value()) {
+            ungranted.history_provider().set_surface_factory(ae_test::docker_surface);
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota,
                                                         run_quota, storage_quota);

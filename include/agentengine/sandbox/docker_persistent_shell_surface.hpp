@@ -139,7 +139,7 @@ public:
     // Output returned to the caller per command; the rest is counted (`output_bytes`) and dropped.
     static constexpr std::size_t kDefaultOutputCapBytes = 64 * 1024;
 
-    explicit DockerPersistentShellSurface(std::string image = "alpine:latest", ContainerIsolation isolation = {},
+    DockerPersistentShellSurface(std::string image, ContainerIsolation isolation,
                                           std::size_t output_cap_bytes = kDefaultOutputCapBytes)
         : image_(std::move(image)), isolation_(isolation), output_cap_(output_cap_bytes) {}
     ~DockerPersistentShellSurface() { (void)close_blocking(); }
@@ -197,7 +197,7 @@ private:
     [[nodiscard]] bool only_init_alive();
 
     std::string image_;
-    ContainerIsolation isolation_{};
+    ContainerIsolation isolation_;
     std::size_t output_cap_ = kDefaultOutputCapBytes;
     DockerCliBackend docker_;
     std::optional<DockerCliBackend::Instance> instance_;

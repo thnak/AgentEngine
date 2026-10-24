@@ -89,6 +89,8 @@
 #include <vector>
 
 
+#include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/error.hpp"
 // ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with containerd_execution_surface.hpp.
@@ -424,14 +426,28 @@ struct ContainerIsolation {  // ae-naming-lint: allow ContainerIsolation — ADR
     // verified by reading `/sys/class/net` from inside, not merely by passing the flag (see
     // tests/sandbox/execution_surface/test_docker_isolation.cpp).
     bool          network_enabled = false;
-    std::uint64_t memory_bytes    = 512ull * 1024 * 1024;
-    std::uint32_t pids            = 128;
+    // ADR-244 §2.5: the three limits are STATED, never defaulted -- `at_most(n)` or the named `unbounded()`, which
+    // emits no flag (Docker's own "no limit"). `at_most(0)` is refused at `create()` (`choice.zero_bound`).
+    agentengine::Bound<std::uint64_t> memory_bytes;
+    agentengine::Bound<std::uint64_t> pids;
     // Thousandths of a CPU: 1000 == `--cpus 1.000`. An integer, not a double, so the argv this
     // produces is byte-stable and locale-independent -- `std::to_string(double)` is neither.
-    std::uint32_t cpu_milli       = 1000;
+    agentengine::Bound<std::uint64_t> cpu_milli;
     bool          drop_all_capabilities = true;  // --cap-drop ALL
     bool          no_new_privileges     = true;  // --security-opt no-new-privileges
+
+    // A NAMED preset, an explicit choice of everything it bundles (ADR-242 §2): no network, 512 MiB, 128 pids, one CPU,
+    // every capability dropped, no privilege escalation. These are ADR-171's former defaults.
+    [[nodiscard]] static ContainerIsolation conservative() {
+        return ContainerIsolation{.network_enabled = false,
+                                  .memory_bytes    = agentengine::Bound<std::uint64_t>::at_most(512ull * 1024 * 1024),
+                                  .pids            = agentengine::Bound<std::uint64_t>::at_most(128),
+                                  .cpu_milli       = agentengine::Bound<std::uint64_t>::at_most(1000)};
+    }
 };
+
+// Refuses a zero limit (`choice.zero_bound`); the argv builder below assumes this passed.
+[[nodiscard]] agentengine::result<void> check_container_isolation(ContainerIsolation const& iso);
 
 // The isolation flags, as argv elements, for splicing into a `docker run` line. A pure function of
 // its argument -- no daemon, no process, no I/O -- so the mapping is provable offline, which matters
@@ -458,10 +474,11 @@ struct ContainerIsolation {  // ae-naming-lint: allow ContainerIsolation — ADR
 //   - `fds`, `disk_bytes`, `net_bytes` have no `docker run` equivalent this function can honestly
 //     emit. Unmapped, and said so.
 //
-// An UNSET (zero) limit maps to this type's own conservative default, never to "unlimited" -- the
-// fail-closed direction. A caller that genuinely wants a bigger ceiling states it.
+// ADR-244 §2.5: an UNSET (zero) `memory_bytes` or `pids` is refused as `choice.missing.isolation.<field>`, never replaced
+// by a default; `cpu_milli` has no `ResourceLimits` field, so the caller states it.
 [[nodiscard]] agentengine::result<ContainerIsolation> container_isolation_from(
-    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net);
+    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net,
+    agentengine::Bound<std::uint64_t> cpu_milli);
 
 // A thin, real wrapper over the `docker` CLI -- create()/exec()/destroy() over `docker run`/
 // `docker exec`/`docker rm`, `copy_to_container()`/`copy_from_container()` over `docker cp`. Every
@@ -489,8 +506,8 @@ public:
     // ADR-209 §7: `init_script`, when non-empty, replaces the default `mkdir -p /workspace && sleep
     // infinity` as PID 1's `sh -c` script -- the live shell's non-forking pause-and-reap keeper. It is this
     // engine's own constant, never caller or model input.
-    [[nodiscard]] agentengine::result<Instance> create(std::string const& image = "alpine:latest",
-                                                          ContainerIsolation const& isolation = {},
+    [[nodiscard]] agentengine::result<Instance> create(std::string const& image,
+                                                          ContainerIsolation const& isolation,
                                                           std::string const& init_script = {});
 
     // Real `docker cp <host_path> <container>:<container_path>`.
@@ -664,7 +681,7 @@ public:
     // an existing `DockerExecutionSurface{}` / `DockerExecutionSurface{"alpine:latest"}` call site
     // keeps compiling and now runs contained. Use `container_isolation_from()` to derive this from an
     // engine `SandboxSpec`'s own `limits`/`net`.
-    explicit DockerExecutionSurface(std::string image = "alpine:latest", ContainerIsolation isolation = {})
+    DockerExecutionSurface(std::string image, ContainerIsolation isolation)
         : image_(std::move(image)), isolation_(isolation) {}
 
     ~DockerExecutionSurface() {
@@ -767,7 +784,7 @@ private:
     std::string kind_resolved_for_;
     // ADR-171 (issue #63). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
-    ContainerIsolation isolation_{};
+    ContainerIsolation isolation_;
     DockerCliBackend docker_;
     std::optional<DockerCliBackend::Instance> instance_;
 };

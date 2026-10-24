@@ -157,7 +157,7 @@ int main() {
     std::filesystem::remove_all(work, ec);
     std::filesystem::create_directories(work, ec);
 
-    agentengine::DockerExecutionSurface surface(kImage);
+    agentengine::DockerExecutionSurface surface(kImage, agentengine::ContainerIsolation::conservative());
     auto const first = surface.reset(work);
     if (!first.has_value()) {
         std::printf("cannot reach a Docker daemon (%s) -- nothing to measure\n",

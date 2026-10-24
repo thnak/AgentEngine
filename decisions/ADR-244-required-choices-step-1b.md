@@ -380,6 +380,18 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      child never outlives the call that spawned it; `RecordedChoices` does not carry it (a latency choice, not durable
      state). `rt::HttpOptions::total_timeout_ms` is a required `Bound` (`unbounded()` for no timer). The provider
      transports state `unbounded()` for the total and stay bounded by the idle and stall timeouts and the call stop.
+   - **Container isolation limits (built).** `ContainerIsolation` (Docker) and `ContainerdIsolation` memory, pids and cpu
+     are `Bound<uint64_t>` with no default; `unbounded()` passes no flag, `at_most(0)` is refused at `create()`
+     (`choice.zero_bound`), and the former defaults are the named presets `ContainerIsolation::conservative()` and
+     `ContainerdIsolation::conservative()`. The surfaces' constructors and `create()` take the isolation (and `create()`
+     the image) with no default, `container_isolation_from` and `containerd_isolation_from` refuse an unset (zero) limit as
+     `choice.missing.isolation.<field>` and take the cpu limit as a stated argument, and a containerd pids limit fails
+     `sandbox.limit_unsupported` (`ctr run` has no such flag). `MandatorySandboxProvider` takes the surface from a stated
+     `set_surface_factory()`; a surface with no default and no factory is never bound (`choice.missing.sandbox_surface`).
+     The booleans (network, capability drop, no-new-privileges) keep their deny-all values: they are named safe values,
+     not limits. The image default (`alpine:latest`) is the pinned-image item, still open. Tests:
+     `test_docker_isolation` I4/I4b, `test_containerd_isolation` C4/C6/C7 (live on `thnak-remote`),
+     `compile_fail` `container_isolation_unstated`, `test_mandatory_sandbox_provider` [1b].
    - **What a deadline is, and is not.** It is a boundary check: a call that starts past it is refused, a retry that
      cannot finish inside it is not started, and an egress wait ends at it. It does not preempt a tool body already
      running; ADR-242 §3a says so. The `idle_timeout` and `consumer_stall_timeout` 90 s defaults with their `0 = none`
@@ -399,8 +411,8 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
    - **Not built, each needs live infrastructure to prove and is left rather than written unproven.**
      `KataBackend::create(config)` with a digest-pinned image (`sandbox.image_not_pinned`; G-C9) needs a pulled image's
      real digest and a KVM host to run the Kata corpus, and every existing Kata test names a tag; the Docker and
-     containerd `isolation` as `Bound` limits and the containerd host bind through `authorize_spec` (§2.5) need the
-     Linux container hosts; `cap::UnmediatedShell{surface, network}` (G-C10) rides on those; the Linux jail's cgroup
+     containerd host bind through `authorize_spec` (§2.5) needs the Linux container hosts;
+     `cap::UnmediatedShell{surface, network}` (G-C10) rides on that; the Linux jail's cgroup
      root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
      there, not duplicated here.
 

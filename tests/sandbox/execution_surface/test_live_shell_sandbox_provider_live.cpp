@@ -76,9 +76,9 @@ template <class T>
 }
 
 [[nodiscard]] ContainerIsolation box() {
-    ContainerIsolation iso;
-    iso.pids = 128;
-    iso.memory_bytes = 512ull * 1024 * 1024;
+    ContainerIsolation iso = ContainerIsolation::conservative();
+    iso.pids = agentengine::Bound<std::uint64_t>::at_most(128);
+    iso.memory_bytes = agentengine::Bound<std::uint64_t>::at_most(512 * 1024 * 1024);
     return iso;
 }
 

@@ -53,17 +53,21 @@
 // `tool.capability_not_held` even though the identity/quota gate would have allowed it -- see ADR-119
 // for the full list of real callers updated in the same change.
 
+#include <concepts>
+#include <functional>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <array>
 #include <string_view>
 #include <utility>
 
 #include "agentengine/core/context_provider.hpp"
 #include "agentengine/core/effect_context.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/error.hpp"
 #include "agentengine/core/json_schema.hpp"
 #include "agentengine/core/ledger.hpp"
@@ -398,7 +402,21 @@ public:
     // real, unmodifiable `history_provider_ = HistoryProviderT{};` statement (agent_session.hpp) to
     // compile at all. Safe by construction: every accessor/`on_context()` checks `runtime_.has_value()`
     // first.
+    //
     MandatorySandboxProvider() = default;
+
+    // ADR-244 §2.5: a Docker or containerd surface has no default (its isolation limits are stated), so the host states
+    // the factory that builds the surface this provider binds, BEFORE `bind_sandbox()`/`bind_root_branch()`:
+    // `provider.set_surface_factory([] { return DockerExecutionSurface("alpine:latest", ContainerIsolation::conservative()); })`.
+    // A surface that can be default-constructed needs none. With neither, a bind leaves the provider unbound (every tool
+    // then reports "sandbox not bound") and `bind_root_branch()` returns `choice.missing.sandbox_surface`; nothing runs
+    // under a surface nobody stated.
+    using SurfaceFactory = std::function<Surface()>;
+    void set_surface_factory(SurfaceFactory make_surface) { make_surface_ = std::move(make_surface); }
+    [[nodiscard]] bool has_surface_factory() const noexcept {
+        if constexpr (std::default_initializable<Surface>) return true;
+        else return static_cast<bool>(make_surface_);
+    }
 
     // Issue #80. The bound surface's image identity, or two empty strings when `Surface` has none. A
     // `constexpr`-dispatched accessor rather than a widened `ExecutionSurface` concept: a surface with no
@@ -639,13 +657,18 @@ public:
         // below would refund into the WRONG (new) quota object instead. See the method's own comment
         // for why this matters at all.
         discard_all_active_task_branches_and_refund();
+        if (!has_surface_factory()) {  // nothing runs under a surface nobody stated
+            ledger_ = nullptr; owner_.reset(); branch_quota_ = nullptr; run_quota_ = nullptr; storage_quota_ = nullptr;
+            runtime_.reset(); surface_.reset(); merge_quota_ = nullptr;
+            return;
+        }
         ledger_ = &ledger;
         owner_.emplace(owner);
         branch_quota_ = &branch_quota;
         run_quota_ = &run_quota;
         storage_quota_ = &storage_quota;
         runtime_.emplace(ledger, std::move(branch), std::move(staging_root));
-        surface_.emplace();
+        make_surface();
         // Defensive reset, not load-bearing for a first-ever bind: a re-bind of an already-used
         // provider must not silently carry forward a PRIOR binding's task-branch state (a stale
         // merge_quota_ pointer describing the OLD runtime_) into the fresh one.
@@ -699,6 +722,10 @@ public:
             agentengine::rt::AsyncQuota<agentengine::RunCost>& run_quota,
             agentengine::rt::AsyncQuota<agentengine::StorageBytes>& storage_quota,
             std::string disambiguator = {}) {
+        if (!has_surface_factory()) {
+            static constexpr std::array<std::string_view, 1> kOptions{"set_surface_factory(...)"};
+            return std::unexpected(agentengine::choice_missing("sandbox_surface", kOptions));
+        }
         std::string root_name = "root-" + std::to_string(owner.id());
         if (!disambiguator.empty()) root_name += "-" + disambiguator;
         bool is_orphan = false;
@@ -849,6 +876,7 @@ public:
     MandatorySandboxProvider(MandatorySandboxProvider const& other) { *this = other; }
     MandatorySandboxProvider& operator=(MandatorySandboxProvider const& other) {
         if (this == &other) return *this;
+        make_surface_ = other.make_surface_;
         // MUST run BEFORE anything below is reassigned -- uses THIS object's OWN, OLD state (whatever
         // *this* was previously bound to, independent of `other`), refunding into the quota that
         // actually granted them. See that method's own comment.
@@ -889,7 +917,7 @@ public:
         run_quota_ = other.run_quota_;
         storage_quota_ = other.storage_quota_;
         runtime_.emplace(std::move(*child));
-        surface_.emplace();
+        make_surface();
         // `merge_quota_` is a SHARED resource reference, exactly like `branch_quota_`/`run_quota_`/
         // `storage_quota_` above -- carried forward so a forked child retains the same task-branch
         // capability its parent had. `task_branches_`/`task_branch_mutex_` are NOT carried forward:
@@ -1145,6 +1173,11 @@ private:
     agentengine::rt::AsyncQuota<agentengine::StorageBytes>* storage_quota_ = nullptr;
     std::optional<SandboxRuntime<Store>> runtime_;
     std::optional<Surface> surface_;
+    SurfaceFactory         make_surface_;  // stated by the host; builds the surface each bind (and each fork) gets
+    void make_surface() {
+        if (make_surface_) surface_.emplace(make_surface_());
+        else if constexpr (std::default_initializable<Surface>) surface_.emplace();
+    }
 
     // A10 promotion state (StartTaskBranchTool's own top comment). `merge_quota_` starts null --
     // `bind_task_branch_tools()` is the only thing that ever sets it, and every task-branch method
