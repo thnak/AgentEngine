@@ -2,9 +2,9 @@
 
 **Status:** Proposed (2026-10-24), revision 5. Design only; prove pending. Four red-team rounds:
 rounds 1 and 2 rejected revisions 1 and 2 (3 FATAL each); rounds 3 and 4 found no FATAL (6 and 10
-MAJOR). All findings are folded in; the log is `docs/planning/adr-245-red-team.md`. Depends on
-[ADR-243](ADR-243-layer-and-developer-api.md), itself Proposed: this ADR cannot be Judged before it,
-or its ADR-243 amendments lapse. Amends
+MAJOR). All findings are folded in; the log is `docs/planning/adr-245-red-team.md`. Its changes to
+[ADR-243](ADR-243-layer-and-developer-api.md) are folded into ADR-243 revision 2 (2026-10-24), so the
+two can be Judged in either order. Amends
 [ADR-242](ADR-242-direction-reset-developer-engine-linux-server-explicit-choice.md) (§2, R2, R3 rules
 1–2, 4, 6, R8, §3a, §5, §6). Evidence: `docs/planning/proofs/adr245/`. Per-backend matrix and
 comparison with existing systems: `docs/research/2026-10-24-sandbox-system-comparison.md`.
@@ -289,7 +289,7 @@ Each needs a positive control (spec 022 §5). Kit gates run per backend in both 
 | ADR-242 §2 | "The engine ships managed options for every resource": the execution backends are shipped by `agentengine-sandboxes`, still chosen explicitly; the engine ships the contract, `NoSandboxBackend` and `WasmBackend` |
 | ADR-242 R2, R3 rules 1, 2, 4, 6, R8, §3a, §5, §6 | Option list by repository; rebuild for every persistent facet; `quiesce()` carries the between-run pause and blackhole; `StagingRoot` and H1–H6; proxy-only egress; the wrapper decisions (superseding R8's "`create`/`exec` take `EffectContext&`" and rule 2's in-backend check); gate ownership; §6's order (1b, step 3's contract half, step 4, step 2); correct §3a's Docker row (ADR-171's isolation defaults exist; the authority gap remains) |
 | ADR-240 (Proposed) | Under Kata the bridge enforces "proxy or drop" only |
-| ADR-243 §2.1, §2.3, §4, §5 | `sandbox/backend_api/`; only `wasm` on the engine-resident path; `AnySandboxBackend` built in ADR-245's contract slice; G-A1's server program over a kit backend here, its Kata variant there; §5's "only consumer" ends at extraction |
+| ADR-243 §2.1, §2.3, §4, §5 | Already folded into ADR-243 revision 2: `sandbox/backend_api/`; only `wasm` and `NoSandboxBackend` in `sandbox/backends/`; `AnySandboxBackend` built in ADR-245's contract slice; G-A1's in-repository server over `backends::none()`, its code-interpreter variant counted in `agentengine-sandboxes`; §5's "only consumer" ends at extraction. Nothing to apply on Judged |
 | `rfcs/008` §2/§2a, §4 | `BackendSpec`, `ExecControl`, `StagingRoot`, `quiesce()`, the interpreter facet; no host handle in a guest; egress only through the engine's proxy |
 | `rfcs/010` §6 | One `agent.*` guest library and host loop, engine-owned |
 | `CONVENTIONS.md` | Tier 2 applies in `agentengine-sandboxes` |
