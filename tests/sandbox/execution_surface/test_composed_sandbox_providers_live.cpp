@@ -245,6 +245,7 @@ int main() {
         Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
         Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
         Capability{cap::RunCommand{}},
+        Capability{cap::UnmediatedShell{"docker", false}},
     });
     live.set_capabilities(&held);
 

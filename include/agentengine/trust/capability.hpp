@@ -94,6 +94,9 @@ enum class capability_kind {
                         // a dedicated tag, not reused from cap::Exec, which is a materially different
                         // mechanism — sandbox PROFILE selection for nested/managed execution, 008
                         // §4 — not this Ledger/Docker/containerd-backed execution surface).
+    unmediated_shell,   // ADR-244 §2.5 — may run commands on a surface that is NOT host-mediated (Docker, containerd:
+                        // the contained command runs with whatever authority the calling code holds). Scoped by
+                        // surface id, and carries whether the surface may keep a network. Checked in SandboxRuntime.
 };
 // `memory` (029) is deliberately NOT its own kind: it is FsRead/FsWrite scoped to a `/memory` mount
 // (trust/agent_library_manifest.hpp's own comment already said so). The parameterized FsRead/FsWrite
@@ -205,6 +208,12 @@ struct TaskBranch {};
 struct TaskBranchCommit {};
 // ADR-119 — fieldless marker, matching TaskBranch/TaskBranchCommit's own shape immediately above.
 struct RunCommand {};
+// ADR-244 §2.5: scoped by surface id; `network` says the surface may have egress (a surface whose isolation is not
+// deny-all needs it). Host-authored, never model-derived (I3).
+struct UnmediatedShell {
+    std::string surface;
+    bool        network = false;
+};
 struct NativeExec {
     // Host-authored, never model-derived (I3 — no constructor here takes a TaintedText). May end in
     // '*' for a prefix grant (e.g. "python*" covers "python3.11"); a REQUESTED NativeExec (the
@@ -276,7 +285,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                                  cap::EnvRead, cap::EnvWrite, cap::AgentCall, cap::Schedule,
                                  cap::Background, cap::Elicit, cap::NativeExec, cap::SandboxMount,
                                  cap::SandboxNetOut, cap::TaskBranch, cap::TaskBranchCommit,
-                                 cap::RunCommand>;
+                                 cap::RunCommand, cap::UnmediatedShell>;
 
 [[nodiscard]] inline capability_kind capability_kind_of(Capability const& c) {
     return std::visit(
@@ -303,6 +312,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
             else if constexpr (std::is_same_v<T, cap::TaskBranch>) return capability_kind::task_branch;
             else if constexpr (std::is_same_v<T, cap::TaskBranchCommit>) return capability_kind::task_branch_commit;
             else if constexpr (std::is_same_v<T, cap::RunCommand>) return capability_kind::run_command;
+            else if constexpr (std::is_same_v<T, cap::UnmediatedShell>) return capability_kind::unmediated_shell;
             else static_assert(sizeof(T) == 0, "unhandled Capability alternative in capability_kind_of");
         },
         c);
@@ -340,6 +350,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
         case capability_kind::task_branch:        return cap::TaskBranch{};
         case capability_kind::task_branch_commit: return cap::TaskBranchCommit{};
         case capability_kind::run_command:        return cap::RunCommand{};
+        case capability_kind::unmediated_shell:   return cap::UnmediatedShell{"", true};  // kind-only widest shape
     }
     return cap::Entropy{};  // unreachable (every enumerator handled above) — a defined fallback
                              // rather than UB if the enum is ever extended without updating this
@@ -397,6 +408,7 @@ using Capability = std::variant<cap::FsRead, cap::FsWrite, cap::NetOut, cap::Net
                                                                     // on a child branch) -- mutation
         case capability_kind::task_branch_commit: return false;  // mutates the session's main branch
         case capability_kind::run_command:        return false;  // runs an arbitrary shell command
+        case capability_kind::unmediated_shell:   return false;  // runs commands outside host mediation
     }
     return false;  // unreachable (every enumerator handled above) -- fails CLOSED if the enum is
                     // ever extended without updating this switch, the opposite direction from
@@ -490,6 +502,12 @@ struct TaskBranch {};
 struct TaskBranchCommit {};
 // ADR-119 — fieldless, matching TaskBranch/TaskBranchCommit's own shape immediately above.
 struct RunCommand {};
+// ADR-244 §2.5: the declared spelling of `cap::UnmediatedShell`, so a CRTP ceiling can name it (I6).
+template <agentengine::fixed_string Surface, bool Network>
+struct UnmediatedShell {
+    static constexpr std::string_view surface = std::string_view{Surface};
+    static constexpr bool             network = Network;
+};
 // ADR-209 §9: `LiveSession` and its two caps carry the held-shell opt-in into a declared ceiling, so a CRTP grant and
 // a declarative one (`parse_native_exec_grant`, trust/native_exec_grant.hpp) can express the same thing (I6).
 // ADR-244 slice 5: the three per-command caps are required; the two held-shell caps default to `unbounded()` because
@@ -583,6 +601,10 @@ template <std::uint32_t MaxConcurrent>
     return cap::TaskBranchCommit{};
 }
 [[nodiscard]] inline Capability to_capability(cap::decl::RunCommand const&) { return cap::RunCommand{}; }
+template <agentengine::fixed_string Surface, bool Network>
+[[nodiscard]] inline Capability to_capability(cap::decl::UnmediatedShell<Surface, Network> const&) {
+    return cap::UnmediatedShell{std::string(std::string_view{Surface}), Network};
+}
 template <agentengine::fixed_string ProgramPattern, agentengine::fixed_string WorktreeMount,
           agentengine::BoundValue<std::uint64_t> CpuMsCap, agentengine::BoundValue<std::uint64_t> WallMsCap,
           agentengine::BoundValue<std::uint64_t> MemoryBytesCap, bool LiveSession,
@@ -717,6 +739,10 @@ namespace capability_detail {
     return true;
 }
 [[nodiscard]] inline bool subsumes_payload(cap::RunCommand const&, cap::RunCommand const&) { return true; }
+// ADR-244 §2.5: the same surface only, and a grant without network never covers a request that needs it.
+[[nodiscard]] inline bool subsumes_payload(cap::UnmediatedShell const& parent, cap::UnmediatedShell const& requested) {
+    return parent.surface == requested.surface && (parent.network || !requested.network);
+}
 
 // decisions/archive/ADR-071-native-unsandboxed-process-execution-providers.md — the narrowing rule for
 // `cap::NativeExec::program_pattern`. `parent` is host-granted (may end in a single trailing '*'

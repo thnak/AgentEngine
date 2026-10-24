@@ -1741,7 +1741,10 @@ constexpr char const* kSessionId = "cli-chat-session";
         Capability{cap::Secret{secret_name, std::chrono::seconds{0}}},
         Capability{cap::FsRead{kWorkMount, "", cap::Limit::unbounded()}},
         Capability{cap::FsWrite{kWorkMount, "", cap::Limit::unbounded(), cap::Limit::unbounded()}}};
-    if (plan.mint_run_command_capability) grants.push_back(Capability{cap::RunCommand{}});
+    if (plan.mint_run_command_capability) {
+        grants.push_back(Capability{cap::RunCommand{}});
+        grants.push_back(Capability{cap::UnmediatedShell{"docker", false}});  // ADR-244 §2.5: the surface is not host-mediated
+    }
     for (auto const& [mount_id, host_dir] : materialized) {
         (void)host_dir;
         grants.push_back(Capability{cap::FsRead{mount_id, "", cap::Limit::unbounded()}});

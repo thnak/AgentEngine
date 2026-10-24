@@ -174,6 +174,10 @@ public:
     [[nodiscard]] bool has_container() const noexcept { return instance_.has_value(); }
 
     // Issue #80 provenance, as `DockerExecutionSurface` reports it: resolved per open.
+    // ADR-244 §2.5: this surface is not host-mediated, so using it needs a granted `cap::UnmediatedShell` (checked in
+    // `SandboxRuntime`). The id scopes the grant; `network_enabled()` is what the grant must say about egress.
+    [[nodiscard]] static constexpr std::string_view surface_id() noexcept { return "docker-persistent-shell"; }
+    [[nodiscard]] bool network_enabled() const noexcept { return isolation_.network_enabled; }
     [[nodiscard]] std::string_view image() const noexcept { return image_; }
     [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
     [[nodiscard]] agentengine::ImageDigestKind image_digest_kind() const noexcept { return resolved_kind_; }

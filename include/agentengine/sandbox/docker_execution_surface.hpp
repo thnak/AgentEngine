@@ -762,6 +762,10 @@ public:
     // that reference resolved to for the container currently in place, and is empty before the first
     // `reset()` and whenever the daemon could not answer. Both are reported deliberately: the configured
     // reference is what an operator recognizes, the digest is what a provenance record can be trusted on.
+    // ADR-244 §2.5: this surface is not host-mediated, so using it needs a granted `cap::UnmediatedShell` (checked in
+    // `SandboxRuntime`). The id scopes the grant; `network_enabled()` is what the grant must say about egress.
+    [[nodiscard]] static constexpr std::string_view surface_id() noexcept { return "docker"; }
+    [[nodiscard]] bool network_enabled() const noexcept { return isolation_.network_enabled; }
     [[nodiscard]] std::string_view image() const noexcept { return image_; }
     [[nodiscard]] std::string_view image_digest() const noexcept { return resolved_digest_; }
     // ADR-176 §9 -- what `image_digest()` digests, so a consumer can decide whether comparing it against

@@ -180,7 +180,7 @@ int main() {
                 std::thread t_run([&] {
                     run_result = agentengine::rt::block_on(provider.run_in_task_branch(
                         run_target->handle_id,
-                        "echo -n 'from concurrent run_in_task_branch' > concurrent_run.txt", owner));
+                        "echo -n 'from concurrent run_in_task_branch' > concurrent_run.txt", owner, &ae_test::docker_ctx()));
                 });
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 std::thread t_commit([&] {

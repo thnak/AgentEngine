@@ -301,7 +301,7 @@ private:
         auto hook = [this, caller](agentengine::Checkpoint const& head) { return open_hook(head, caller); };
         open_attempted_ = false;
         auto outcome = co_await runtime_->run_live(*surface_, std::move(args.command), caller, *run_quota_,
-                                                   *storage_quota_, sync_, hook, deadline_);
+                                                   *storage_quota_, sync_, hook, deadline_, &ctx);
         auto const now = clock_();
         // ADR-209 §15.5 M1: an environment this call opened is bookkept even when the command was then refused
         // (`run_live` returns that refusal as an error after the open). Otherwise no ceiling, policy or

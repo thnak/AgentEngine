@@ -131,6 +131,11 @@ set_tests_properties(test_sandbox_runtime PROPERTIES RESOURCE_LOCK docker_daemon
 agentengine_add_test(test_sandbox_runtime_deletions
   LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
 
+# ADR-244 §2.5 (G-C10): cap::UnmediatedShell and the gate in SandboxRuntime, against a fake `mediated = false` surface.
+# NO daemon -- not for ci.yml's exclusion lists.
+agentengine_add_test(test_unmediated_shell_gate
+  LIBS agentengine::worktree_store agentengine::sandbox_io agentengine_warnings)
+
 # ADR-209 step 2 (issue #146): Ledger::head_checkpoint() and SandboxRuntime::run_live() against an in-test
 # PersistentShellSurface. NO daemon -- not for ci.yml's exclusion lists.
 # ADR-209 (issue #146): the live shell's shared core offline -- snapshot diff/caps, sh and pwsh replay quoting,
