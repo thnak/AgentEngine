@@ -65,7 +65,7 @@ namespace {
 
 using clock_type = std::chrono::steady_clock;
 
-constexpr char const* kImage = "alpine:latest";
+constexpr char const* kImage = "docker.io/library/alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6";
 constexpr int kReps = 5;
 
 // The share ADR-176 originally asserted, retracted, and must never quietly reacquire. The verdict fails

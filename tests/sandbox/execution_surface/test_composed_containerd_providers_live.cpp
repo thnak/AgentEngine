@@ -19,6 +19,8 @@
 // unprivileged containerd-socket ACL -- matches tests/sandbox/execution_surface/test_containerd_execution_surface.cpp's own
 // disclosed precondition).
 
+#include "../../support/containerd_pull.hpp"
+#include "../../support/pinned_images.hpp"
 #include "../../support/surface_factories.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "../../support/session_choices.hpp"
@@ -166,6 +168,7 @@ std::optional<std::string> read_ledger_entry(Ledger<>& ledger, std::string const
 }  // namespace
 
 int main() {
+    ae_test::ensure_containerd_image(ae_test::kAlpine);
     namespace json = agentengine::json;
 
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
@@ -199,7 +202,7 @@ int main() {
 
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
     sandbox_provider.set_surface_factory([ledger_staging_root] {
-        return agentengine::ContainerdExecutionSurface("docker.io/library/alpine:latest",
+        return agentengine::ContainerdExecutionSurface(ae_test::kAlpine,
                                                        agentengine::ContainerdIsolation::conservative(),
                                                        ae_test::mount_grants(ledger_staging_root.generic_string()));
     });

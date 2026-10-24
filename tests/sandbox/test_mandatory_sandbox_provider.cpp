@@ -30,6 +30,7 @@
 //       cap::RunCommand grant gets run_command rejected as a role::tool error, spends no RunCost, and
 //       never touches the real filesystem.
 
+#include "../support/pinned_images.hpp"
 #include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "../support/session_choices.hpp"
@@ -276,11 +277,11 @@ int main() {
                 // resolved to, cross-checked against the SAME surface's own accessor rather than a
                 // literal -- a hardcoded expectation here would still pass if both were fabricated.
                 auto const img = parent.history_provider().bound_image();
-                check(img.reference == "alpine:latest",
+                check(img.reference == ae_test::kAlpine,
                       "issue #80: the bound provider reports the surface's configured image reference");
                 check(img.digest.size() == 7 + 64 && img.digest.rfind("sha256:", 0) == 0,
                       "issue #80: the bound provider reports a well-formed resolved image digest");
-                check(reply_json.find("\"image\":\"alpine:latest\"") != std::string::npos,
+                check(reply_json.find(std::string("\"image\":\"") + ae_test::kAlpine + "\"") != std::string::npos,
                       "issue #80: the direct reply's JSON carries the image reference");
                 check(reply_json.find("\"image_digest\":\"" + img.digest + "\"") != std::string::npos,
                       "issue #80: the direct reply's JSON carries the SAME resolved digest the surface "

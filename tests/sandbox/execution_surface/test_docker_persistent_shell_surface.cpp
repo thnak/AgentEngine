@@ -38,6 +38,7 @@
 // server's `-w` fails V10. A fork-bomb tail of `sleep 60` made V7 flaky (`sleep` itself can fail to fork); it is a
 // builtin busy loop now.
 
+#include "../../support/pinned_images.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
 
@@ -109,8 +110,8 @@ int main() {
         std::_Exit(3);
     }).detach();
 
-    if (docker_cli_detail::run_argv({"docker", "image", "inspect", "alpine:latest"}, 30).exit_code != 0) {
-        (void)docker_cli_detail::run_argv({"docker", "pull", "alpine:latest"}, 300);
+    if (docker_cli_detail::run_argv({"docker", "image", "inspect", ae_test::kAlpine}, 30).exit_code != 0) {
+        (void)docker_cli_detail::run_argv({"docker", "pull", ae_test::kAlpine}, 300);
     }
 
     fs::path const host = fs::temp_directory_path() / "ae_test_dps_host";
@@ -119,7 +120,7 @@ int main() {
     fs::create_directories(host, ec);
     std::ofstream(host / "seed.txt", std::ios::binary) << "seeded\n";
 
-    DockerPersistentShellSurface surface("alpine:latest", tight());
+    DockerPersistentShellSurface surface(ae_test::kAlpine, tight());
     auto x = [&](std::string const& cmd, std::chrono::milliseconds d = 20s) { return agentengine::rt::block_on(surface.exec(cmd, d)); };
 
     // ---- V1

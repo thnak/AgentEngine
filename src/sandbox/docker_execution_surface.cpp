@@ -5,6 +5,7 @@
 // helpers; the design and the rules each body implements are documented at its declaration there.
 
 #include "agentengine/sandbox/docker_execution_surface.hpp"
+#include "agentengine/sandbox/image_pin.hpp"
 
 #ifdef _WIN32
 #include <process.h>
@@ -617,6 +618,7 @@ agentengine::result<DockerCliBackend::Instance> DockerCliBackend::create(std::st
                                                       std::string const& init_script) {
     if (auto safe = docker_cli_reject_argv_value(image, "image"); !safe.has_value())
         return std::unexpected(safe.error());
+    if (auto pinned = check_image_pinned(image); !pinned.has_value()) return std::unexpected(pinned.error());
     if (auto stated = check_container_isolation(isolation); !stated.has_value()) return std::unexpected(stated.error());
     // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
     // below) -- exists purely so a later process can find and `reap_orphans()` this container if

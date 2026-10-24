@@ -118,6 +118,8 @@ set_tests_properties(test_docker_non_ascii_path PROPERTIES RESOURCE_LOCK docker_
 # KERNEL applied the limits, by reading the container's own /sys/class/net and cgroup files from
 # inside it -- with L2 as the positive control that the probe can report the opposite.
 # REQUIRES a running Docker daemon reachable via `docker` on PATH.
+# ADR-244 §2.5 (G-C9): Docker and containerd create() refuse a non-digest image; host-free, no daemon.
+agentengine_add_test(test_image_pin_surfaces LIBS agentengine::core agentengine_warnings)
 agentengine_add_test(test_docker_isolation LIBS agentengine::core agentengine_warnings)
 set_tests_properties(test_docker_isolation PROPERTIES RESOURCE_LOCK docker_daemon)
 

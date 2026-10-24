@@ -14,6 +14,7 @@
 // test_sandbox_runtime.cpp/test_docker_orphan_reap.cpp, not a special opt-in flag.
 #ifdef _WIN32
 
+#include "../../support/pinned_images.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 
 #include <chrono>
@@ -67,7 +68,7 @@ int main() {
     check(before >= 0, "CreateToolhelp32Snapshot() succeeds");
 
     agentengine::DockerCliBackend docker;
-    auto inst = docker.create("alpine:latest", agentengine::ContainerIsolation::conservative());
+    auto inst = docker.create(ae_test::kAlpine, agentengine::ContainerIsolation::conservative());
     check(inst.has_value(), "create() succeeds");
     if (!inst.has_value()) {
         std::printf("=== %d checks, %d failed ===\n", g_checks, g_failed);

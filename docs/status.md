@@ -56,7 +56,7 @@ backend applies them yet (ADR-242 §3a).
 |---|---|---|---|
 | `native-jail`, Windows | Works; the CodeAct interpreter is wired only in the dev CLI | Desktop and development | Can still read OS system paths outside your grants; set every limit |
 | `native-jail`, Linux | Backend works (namespaces, `pivot_root`, seccomp, cgroups v2) | Commands without Python, on hosts without KVM | Same kernel, not hardware; no interpreter yet |
-| `microvm`, Kata (Linux + KVM) | Backend works, live-verified 2026-10-20; not wired to the shell or CodeAct tools | The strongest boundary available, once you wire a shell provider | Engine process runs as root today; VMs are never reaped; `NetPolicy::allowlist` and `net_bytes` do not filter microVM traffic (issue #194); no digest-pinned image yet |
+| `microvm`, Kata (Linux + KVM) | Backend works, live-verified 2026-10-20; not wired to the shell or CodeAct tools | The strongest boundary available, once you wire a shell provider | Engine process runs as root today; VMs are never reaped; `NetPolicy::allowlist` and `net_bytes` do not filter microVM traffic (issue #194); Kata images must be digest-pinned |
 | `wasm` | Works for WASI components | Plugins and WASI tools | No shell or Python |
 | Docker and containerd shell surfaces | Work | Persistent shells | The command runs with whatever authority your code holds; no capability is checked |
 | ADR-071 native providers | Work, explicit opt-in | Trusted local automation | Code runs on the host as the engine's user |
@@ -96,7 +96,7 @@ Each item is a named gap, not a guess. The authoritative list is [ADR-242](../de
 
 | Order | Work | State |
 |---|---|---|
-| 1 | Finish ADR-244 (Docker and containerd isolation limits `cap::UnmediatedShell` and the containerd host bind are done): pinned images for the Docker and containerd surfaces (Kata is done) | In progress; the rest needs live Linux hosts to prove |
+| 1 | Finish ADR-244 (Docker and containerd isolation limits `cap::UnmediatedShell` and the containerd host bind are done): pinned images (done for Kata, Docker and containerd); the cgroup root and provider `rt::Runtime&` are ADR-237 | Nearly done; the rest is coordinated in ADR-237 |
 | 2 | Finish ADR-237: the runtime substrate and removal of the legacy synchronous machinery (issues #175-#187, #196) | Open; awaiting Judge sign-off (#186) |
 | 3 | Public API and layer redesign (ADR-243): the type-erased session and chat client, session and workflow out of `rt/`, the line budget | Proposed |
 | 4 | One execution seam (ADR-242 step 3): worktree verbs in `SandboxBackend`, Docker and containerd as conformers, `NoSandboxBackend`, the CodeAct tier over Kata, the pinned Kata guest image, recycling | Not started |

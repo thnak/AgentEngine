@@ -39,6 +39,7 @@
 // work -- containment is proven by READING the kernel's own limit values, which is both stronger
 // evidence and incapable of taking the machine with it.
 
+#include "../../support/pinned_images.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 
@@ -228,7 +229,7 @@ int main() {
     // ---- L1/L3: defaults, verified from INSIDE the container -------------------------------------
     {
         DockerCliBackend backend;
-        auto inst = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
+        auto inst = backend.create(ae_test::kAlpine, agentengine::ContainerIsolation::conservative());
         check(inst.has_value(), "L1 setup: a default-isolation container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -264,7 +265,7 @@ int main() {
         ContainerIsolation open = ContainerIsolation::conservative();
         open.network_enabled = true;
         DockerCliBackend backend;
-        auto inst = backend.create("alpine:latest", open);
+        auto inst = backend.create(ae_test::kAlpine, open);
         check(inst.has_value(), "L2 setup: a network-enabled container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -295,7 +296,7 @@ int main() {
         ContainerIsolation tight = ContainerIsolation::conservative();
         tight.memory_bytes = agentengine::Bound<std::uint64_t>::at_most(268435456);  // 256 MiB -- deliberately NOT the default, so a surface that
         tight.pids         = agentengine::Bound<std::uint64_t>::at_most(32);         // silently used the defaults would fail these checks.
-        DockerExecutionSurface surface("alpine:latest", tight);
+        DockerExecutionSurface surface(ae_test::kAlpine, tight);
 
         auto reset = agentengine::rt::block_on(surface.reset(scratch));
         check(reset.has_value(), "L4 setup: the surface materializes the directory into a container");
