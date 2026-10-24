@@ -17,6 +17,7 @@
 #include <string>
 
 #include "agentengine/core/context_provider.hpp"
+#include "agentengine/core/tool_pipeline.hpp"
 #include "agentengine/pal/env.hpp"
 #include "backends/native_process/native_providers.hpp"
 #include "../../support/run_task_sync.hpp"
@@ -56,6 +57,29 @@ std::string system_dir() {
 
 result<ContextContribution> on_context_of(NativeShellProvider& provider, SessionContext& sc, EffectContext& ctx) {
     return test_support::run_task_sync<result<ContextContribution>>(provider.on_context(sc, ctx));
+}
+
+// ADR-237 §9 D3 (#176): the provider's run tool declares a per-call requirement, so it runs only with what admission
+// produced -- the bound capability and the parsed arguments. This does what the pipeline does around `invoke`:
+// admission (bind + approve), the call, then the revoke. A tool closure called with no admission refuses
+// (`tool.requirement_unbound`), which the R-S6b check below pins.
+result<json::Value> invoke_admitted(ToolDescriptor const& tool, json::Value const& args, EffectContext& ctx) {
+    CapabilitySet const held = ctx.capabilities ? *ctx.capabilities : CapabilitySet{};
+    ToolTable const table = ToolTable::from_descriptors({tool});
+    ToolCallRequest const request{"c1", tool.name, args, false};
+    ApprovalDecider const approve = [](Principal const&, std::string_view, std::string const&) -> task<bool> {
+        co_return true;
+    };
+    auto admitted = test_support::run_task_sync<result<AdmittedCall>>(
+        admit_call(table, held, request, ctx.principal, approve, nullptr));
+    if (!admitted.has_value()) return std::unexpected(admitted.error());
+    ctx.bound_capabilities = &admitted->bound;
+    ctx.prepared_arguments = admitted->prepared ? admitted->prepared->arguments : nullptr;
+    auto reply = test_support::run_task_sync<result<json::Value>>(tool.invoke(args, ctx));
+    ctx.bound_capabilities = nullptr;
+    ctx.prepared_arguments.reset();
+    for (auto const& b : admitted->bound) b.revoke();
+    return reply;
 }
 
 }  // namespace
@@ -155,7 +179,7 @@ int main() {
                  {"args", json::Value::make_array(
                               {json::Value::make_string("/c"), json::Value::make_string("echo"),
                                json::Value::make_string("hello-native-provider")})}});
-            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ctx));
+            auto reply_json = invoke_admitted(contribution->tools[0], args_json, ctx);
             AE_CHECK(reply_json.has_value(), "S5: the tool's own closure spawns for real and succeeds");
             if (reply_json.has_value()) {
                 auto reply = schema::from_json<NativeProcessRunReply>(*reply_json);
@@ -184,10 +208,49 @@ int main() {
         auto args_json = json::Value::make_object(
             {{"program", json::Value::make_string("cmd")}, {"args", json::Value::make_array({})}});
         if (contribution.has_value() && contribution->tools.size() == 1) {
-            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ungranted_ctx));
+            auto reply_json = invoke_admitted(contribution->tools[0], args_json, ungranted_ctx);
             AE_CHECK(!reply_json.has_value(),
                       "R-S6: invoking with an EffectContext that holds no NativeExec grant at all is "
                       "denied, even using a ContextContribution built while a grant WAS held");
+        }
+    }
+
+    // ---- R-S6b: the tool closure called WITHOUT admission refuses, even with the grant held --------------------
+    // The positive control is S5 above: the same tool and grant, run through admission, spawns.
+    {
+        NativeShellProvider provider({"cmd"}, mount_root, "workdir");
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
+        ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
+            {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
+        SessionContext sc{"s6b", principal, empty_history};
+        auto contribution = on_context_of(provider, sc, ctx);
+        if (contribution.has_value() && contribution->tools.size() == 1) {
+            auto args_json = json::Value::make_object(
+                {{"program", json::Value::make_string("cmd")}, {"args", json::Value::make_array({})}});
+            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ctx));
+            AE_CHECK(!reply_json.has_value() && reply_json.error().code == "tool.requirement_unbound",
+                      "R-S6b: calling the tool's closure with no admission refuses (tool.requirement_unbound) "
+                      "although the grant is held");
+        }
+    }
+
+    // ---- R-S6c: a program outside the provider's OWNED patterns is refused at the declared bound ------------------
+    // The provider owns {"cmd"}; the host also holds a grant covering "powershell". The call is refused by the bound
+    // (the provider never owned that program), not by a missing grant -- the control is S5, where "cmd" runs.
+    {
+        NativeShellProvider provider({"cmd"}, mount_root, "workdir");
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
+        ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
+            {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}},
+             Capability{cap::NativeExec{"powershell", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
+        SessionContext sc{"s6c", principal, empty_history};
+        auto contribution = on_context_of(provider, sc, ctx);
+        if (contribution.has_value() && contribution->tools.size() == 1) {
+            auto args_json = json::Value::make_object(
+                {{"program", json::Value::make_string("powershell")}, {"args", json::Value::make_array({})}});
+            auto reply_json = invoke_admitted(contribution->tools[0], args_json, ctx);
+            AE_CHECK(!reply_json.has_value() && reply_json.error().code == "tool.requirement_out_of_bounds",
+                      "R-S6c: a program the provider does not own is refused at the bound although a held grant covers it");
         }
     }
 
@@ -206,7 +269,7 @@ int main() {
                  {"args", json::Value::make_array({json::Value::make_string("/c"),
                                                     json::Value::make_string("type"),
                                                     json::Value::make_string("../../escape.txt")})}});
-            auto reply_json = test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(args_json, ctx));
+            auto reply_json = invoke_admitted(contribution->tools[0], args_json, ctx);
             AE_CHECK(!reply_json.has_value(),
                       "R-S7: a '..'-escaping argv entry is rejected before ever reaching the spawned "
                       "child, end to end through the real tool closure");
@@ -241,10 +304,11 @@ int main() {
             auto run = [&](std::vector<std::string> const& argv) {
                 std::vector<json::Value> items;
                 for (auto const& a : argv) items.push_back(json::Value::make_string(a));
-                return test_support::run_task_sync<result<json::Value>>(contribution->tools[0].invoke(
+                return invoke_admitted(
+                    contribution->tools[0],
                     json::Value::make_object({{"program", json::Value::make_string("cmd")},
                                               {"args", json::Value::make_array(std::move(items))}}),
-                    ctx));
+                    ctx);
             };
             auto stdout_of = [](result<json::Value> const& r) -> std::string {
                 if (!r.has_value()) return {};
