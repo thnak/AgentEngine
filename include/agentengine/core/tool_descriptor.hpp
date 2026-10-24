@@ -23,6 +23,7 @@
 // from `tool_pipeline.hpp`'s admitted path.
 
 #include <array>
+#include <concepts>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -43,6 +44,15 @@
 #include "agentengine/trust/capability.hpp"
 
 namespace agentengine {
+
+// ADR-237 §9 D3: what a tool with a per-call requirement hands the pipeline after parsing its arguments ONCE. `required`
+// is what must be bound for this call (steps 4/7); `arguments` is the parse itself, which the pipeline puts in
+// `EffectContext::prepared_arguments` for the one `invoke` it makes, so the requirement and the effect cannot see
+// different arguments.
+struct PreparedCall {  // ae-naming-lint: allow PreparedCall — ADR-237 D3; 027 has not been updated to list it
+    std::vector<Capability> required;
+    std::shared_ptr<PreparedArguments const> arguments;
+};
 
 // One entry in the immutable per-run tool table (006 §6: "resolved at run start into an immutable
 // per-run tool table"). Type-erased: `invoke` closes over ToolT's real Args/Reply types so the
@@ -154,6 +164,16 @@ struct ToolDescriptor {
     // double) -- the same rule ADR-212 §3.5 gives `deterministic`.
     // Appended last, this struct's own established convention.
     bool enforces_granted_caps = false;
+
+    // ADR-237 §9 D3 (#176): a tool that declared `PerCallRequirement<...>`. `requirement_bounds` is the declared bound
+    // (kind and mount); `prepare` parses the arguments once and returns the requirement plus the run over those same
+    // arguments. When `prepare` is set, `invoke` above runs only with the parse in `EffectContext::prepared_arguments`
+    // and refuses (`tool.requirement_unbound`) without it: a caller that reaches for `invoke` instead of admission would
+    // skip binding the requirement, so that path fails closed. The pipeline still calls `invoke` (never around it), so a
+    // wrapper that replaces `invoke` stays in the path. Empty/unset for every tool that did not declare one.
+    std::vector<Capability> requirement_bounds;
+    using PrepareFn = std::function<result<PreparedCall>(json::Value const&)>;
+    PrepareFn prepare;
 };
 
 // ADR-217: the one admission rule for a tool's ceiling entry, shared by the synchronous pipeline, the
@@ -202,8 +222,47 @@ struct ToolDescriptor {
 // the former `make_tool_descriptor_with_invoke` call sites become real `Tool<>` conformers.
 // Registration is `ToolTable::from(ToolT{...}, ...)`. This is the §5.2 shape and, since #175, the only one:
 // the zero-argument static-invoke `make_tool_descriptor<ToolT>()` that preceded it is deleted.
+// ADR-237 §9 D3: a tool with this member proposes its per-call requirement from the parsed arguments.
+template <class ToolT>
+concept HasRequiredCapabilities = requires(ToolT const& t, typename ToolT::Args const& a) {  // ae-naming-lint: allow HasRequiredCapabilities — ADR-237 D3; 027 has not been updated to list it
+    { t.required_capabilities(a) } -> std::convertible_to<std::vector<Capability>>;
+};
+
+namespace tool_descriptor_detail {
+// A named coroutine taking its state BY VALUE, so the frame owns the tool and the parsed arguments (a coroutine lambda
+// would reference its closure, which the caller may destroy first).
+template <class ToolT>
+[[nodiscard]] task<result<json::Value>> run_prepared(std::shared_ptr<ToolT const> owned,
+                                                     std::shared_ptr<typename ToolT::Args const> args,
+                                                     EffectContext& ctx) {
+    auto reply = co_await owned->invoke(*args, ctx);
+    if (!reply) co_return std::unexpected(reply.error());
+    co_return schema::to_json(*reply);
+}
+[[nodiscard]] inline error requirement_unbound_error() {
+    return error{failure_class::contract,
+                 "this tool declares a per-call requirement; it can only run with the arguments admission parsed",
+                 "tool.requirement_unbound"};
+}
+// Takes the parse out of the context (single use) and returns it only if it is this tool's, for this `Args` type.
+template <class ToolT>
+[[nodiscard]] std::shared_ptr<typename ToolT::Args const> take_prepared_arguments(EffectContext& ctx) {
+    std::shared_ptr<PreparedArguments const> const prepared = std::move(ctx.prepared_arguments);
+    ctx.prepared_arguments.reset();
+    if (!prepared || prepared->tool_name != ToolT::name || prepared->type == nullptr ||
+        *prepared->type != typeid(typename ToolT::Args)) {
+        return nullptr;
+    }
+    return std::static_pointer_cast<typename ToolT::Args const>(
+        std::const_pointer_cast<void>(prepared->arguments));
+}
+}  // namespace tool_descriptor_detail
+
 template <class ToolT>
 [[nodiscard]] ToolDescriptor make_tool_descriptor(ToolT tool) {
+    static_assert(ToolT::kHasPerCallRequirement == HasRequiredCapabilities<ToolT>,
+                  "ADR-237 D3: PerCallRequirement<...> and required_capabilities(Args const&) const go together -- "
+                  "declare both or neither");
     ToolDescriptor d;
     d.name = std::string(ToolT::name);
     d.description = std::string(ToolT::description);
@@ -225,13 +284,33 @@ template <class ToolT>
         d.args_schema_value_cached = true;
     }
     auto owned = std::make_shared<ToolT>(std::move(tool));
-    d.invoke = [owned](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
-        auto args = schema::from_json<typename ToolT::Args>(args_value);
-        if (!args) co_return std::unexpected(args.error());
-        auto reply = co_await owned->invoke(*args, ctx);
-        if (!reply) co_return std::unexpected(reply.error());
-        co_return schema::to_json(*reply);
-    };
+    if constexpr (ToolT::kHasPerCallRequirement) {
+        d.requirement_bounds = ToolT::declared_requirement_bounds();
+        d.prepare = [owned](json::Value const& args_value) -> result<PreparedCall> {
+            auto parsed = schema::from_json<typename ToolT::Args>(args_value);
+            if (!parsed) return std::unexpected(parsed.error());
+            auto args = std::make_shared<typename ToolT::Args const>(std::move(*parsed));
+            PreparedCall call;
+            call.required  = owned->required_capabilities(*args);
+            call.arguments = std::make_shared<PreparedArguments const>(PreparedArguments{
+                std::string(ToolT::name), &typeid(typename ToolT::Args), std::move(args)});
+            return call;
+        };
+        // The arguments are NOT re-parsed from `args_value`: the requirement was computed from the parse in the context.
+        d.invoke = [owned](json::Value const&, EffectContext& ctx) -> task<result<json::Value>> {
+            auto args = tool_descriptor_detail::take_prepared_arguments<ToolT>(ctx);
+            if (!args) co_return std::unexpected(tool_descriptor_detail::requirement_unbound_error());
+            co_return co_await tool_descriptor_detail::run_prepared<ToolT>(owned, std::move(args), ctx);
+        };
+    } else {
+        d.invoke = [owned](json::Value const& args_value, EffectContext& ctx) -> task<result<json::Value>> {
+            auto args = schema::from_json<typename ToolT::Args>(args_value);
+            if (!args) co_return std::unexpected(args.error());
+            auto reply = co_await owned->invoke(*args, ctx);
+            if (!reply) co_return std::unexpected(reply.error());
+            co_return schema::to_json(*reply);
+        };
+    }
     return d;
 }
 

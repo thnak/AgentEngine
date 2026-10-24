@@ -12,6 +12,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <typeinfo>
 #include <vector>
 
 #include "agentengine/core/authority_terms.hpp"
@@ -50,6 +51,14 @@ struct SessionNonce {
     friend constexpr bool operator==(SessionNonce, SessionNonce) noexcept = default;
 };
 
+// ADR-237 §9 D3 (#176): the already-parsed arguments of one call, stamped with the tool and the `Args` type they were
+// parsed for, so a tool's `invoke` can refuse state that is not its own.
+struct PreparedArguments {  // ae-naming-lint: allow PreparedArguments — ADR-237 D3; 027 has not been updated to list it
+    std::string                tool_name;
+    std::type_info const*      type = nullptr;
+    std::shared_ptr<void const> arguments;
+};
+
 struct EffectContext {
     Principal                             principal{};
     SessionNonce                          session_nonce{};
@@ -73,6 +82,13 @@ struct EffectContext {
     // loses it the moment the call ends -- the shared-ticket revocation the handle carries doesn't
     // care how many copies exist. Borrowed; never owned here.
     std::vector<BoundCapability> const*   bound_capabilities = nullptr;
+    // ADR-237 §9 D3 (#176): the arguments of a call whose tool declared a per-call requirement, already parsed by
+    // admission (`ToolDescriptor::prepare`) and handed to the tool's `invoke` through here. The pipeline sets it for
+    // exactly the one `invoke` it makes and clears it after; the tool's `invoke` TAKES it on entry (single use) and
+    // refuses (`tool.requirement_unbound`) when it is absent or names another tool or type. Going through the context,
+    // not around `invoke`, is what keeps a wrapper that replaces `invoke` (a recording or replay double, a stub) in the
+    // path. Call-scoped, never owned by the caller.
+    std::shared_ptr<PreparedArguments const> prepared_arguments{};
     // ADR-244 slice 5 (time limits): stated, not defaulted. `Deadline::at(t)` or the named `Deadline::none()`; a session
     // sets it per call from `SessionChoices::call_timeout_ms`. It is a boundary check (a tool call that starts past it is
     // refused, a retry that cannot finish inside it is not started, an egress wait ends at it), NOT preemption of a body

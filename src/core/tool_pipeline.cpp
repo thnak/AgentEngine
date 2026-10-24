@@ -155,6 +155,49 @@ task<approval_outcome> resolve_approval_outcome(ToolDescriptor const& tool,
                                                             : approval_outcome::proceed;
 }
 
+namespace {
+
+// ADR-237 §9 D3 rule 5: what the approver sees for a requirement, as one line per capability. Payload for the kinds a
+// per-call requirement realistically names; any other kind is shown by its number, never omitted.
+[[nodiscard]] std::string describe_requirement(Capability const& c) {
+    return std::visit(
+        [&c](auto const& v) -> std::string {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, cap::NativeExec>) {
+                return "native_exec program=" + v.program_pattern + " mount=" + v.worktree_mount_id;
+            } else if constexpr (std::is_same_v<T, cap::FsRead>) {
+                return "fs_read mount=" + v.mount_id + " path=" + v.path_prefix;
+            } else if constexpr (std::is_same_v<T, cap::FsWrite>) {
+                return "fs_write mount=" + v.mount_id + " path=" + v.path_prefix;
+            } else if constexpr (std::is_same_v<T, cap::Secret>) {
+                return "secret name=" + v.name;
+            } else if constexpr (std::is_same_v<T, cap::ToolCall>) {
+                return "tool_call name=" + v.tool_name;
+            } else if constexpr (std::is_same_v<T, cap::NetOut>) {
+                std::string hosts;
+                for (auto const& h : v.host_allowlist) hosts += (hosts.empty() ? "" : ",") + h;
+                return "net_out hosts=" + hosts;
+            } else {
+                return "capability kind#" + std::to_string(static_cast<int>(capability_kind_of(c)));
+            }
+        },
+        c);
+}
+
+// The approval text for a call with a per-call requirement: the arguments AND what will be bound for them, so the human
+// approves exactly the authority the call will use.
+[[nodiscard]] std::string canonical_approval_text(json::Value const& arguments,
+                                                  std::vector<Capability> const& required) {
+    std::string out = "{\"arguments\":" + json::dump(arguments) + ",\"requires\":[";
+    for (std::size_t i = 0; i < required.size(); ++i) {
+        if (i != 0) out += ",";
+        out += json::dump(json::Value::make_string(describe_requirement(required[i])));
+    }
+    return out + "]}";
+}
+
+}  // namespace
+
 task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet const& held,
                                       ToolCallRequest const& request,
                                       Principal const& caller,
@@ -196,6 +239,50 @@ task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet cons
         bound.push_back(std::move(*handle));
     }
 
+    // -- step 2/4/7 for a per-call requirement (ADR-237 §9 D3) --------------------------------------
+    // The arguments are parsed ONCE here; the requirement and the effect both come from that parse. The requirement is
+    // checked to be non-empty and inside the declared bound (kind AND mount) before anything is bound, then bound like
+    // a ceiling entry. A requirement no held grant covers is denied exactly as a ceiling entry is. Nothing in the
+    // refusal names what is held.
+    std::shared_ptr<PreparedCall> prepared;
+    if (tool->prepare) {
+        auto revoke_all = [&bound] {
+            for (auto const& b : bound) b.revoke();
+        };
+        auto proposed = tool->prepare(request.arguments);
+        if (!proposed) {
+            revoke_all();
+            co_return std::unexpected(proposed.error());
+        }
+        if (proposed->required.empty()) {
+            revoke_all();
+            co_return std::unexpected(error{failure_class::contract,
+                                            "tool '" + tool->name + "' proposed an empty per-call requirement",
+                                            "tool.requirement_empty"});
+        }
+        for (Capability const& requirement : proposed->required) {
+            bool const inside = std::any_of(tool->requirement_bounds.begin(), tool->requirement_bounds.end(),
+                                            [&](Capability const& bound_kind) { return subsumes(bound_kind, requirement); });
+            if (!inside) {
+                revoke_all();
+                co_return std::unexpected(error{failure_class::contract,
+                                                "tool '" + tool->name +
+                                                    "' proposed a requirement outside its declared bound",
+                                                "tool.requirement_out_of_bounds"});
+            }
+        }
+        for (Capability const& requirement : proposed->required) {
+            auto handle = bind_ceiling_entry(held, *tool, requirement);  // ADR-217
+            if (!handle) {
+                revoke_all();
+                co_return std::unexpected(
+                    error{failure_class::policy, "required capability not held", "tool.capability_not_held"});
+            }
+            bound.push_back(std::move(*handle));
+        }
+        prepared = std::make_shared<PreparedCall>(std::move(*proposed));
+    }
+
     // -- step 5: approve ---------------------------------------------------------------------------
     // ADR-023 §6 point 4 / 007 §4 amendment: a tool's `approval_mode::never_require` was authored by
     // its declarer for VENDOR-STRUCTURED calls (a real, trusted wire-format field). A call
@@ -220,7 +307,8 @@ task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet cons
         co_return std::unexpected(e);
     }
     if (outcome == approval_outcome::needs_decider) {
-        std::string canonical_args = json::dump(request.arguments);
+        std::string canonical_args = prepared ? canonical_approval_text(request.arguments, prepared->required)
+                                              : json::dump(request.arguments);
         // ADR-237 §5.1 (Phase G): the approval `co_await`s a now-`task` decider; an unset decider is
         // still the fail-closed default (deny), exactly as the old `approve && approve(...)` was.
         bool approved = false;
@@ -234,11 +322,12 @@ task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet cons
 
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
-    co_return AdmittedCall{tool, std::move(bound)};
+    co_return AdmittedCall{tool, std::move(bound), std::move(prepared)};
 }
 
 task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
-                                            EffectContext& ctx, std::vector<BoundCapability>& bound) {
+                                            EffectContext& ctx, std::vector<BoundCapability>& bound,
+                                            std::shared_ptr<PreparedCall> prepared) {
     using namespace tool_pipeline_detail;
     // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
     if (ctx.deadline.expired(std::chrono::steady_clock::now())) {
@@ -251,7 +340,12 @@ task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCall
     // ADR-237 §5.2: `invoke` is async -- await it directly (no synchronous trampoline). The task is
     // a leaf for every shipped tool; a genuinely async tool (step B's point) parks here and its
     // caller's own await chain carries the suspension.
+    // ADR-237 D3: a tool with a per-call requirement gets the arguments its requirement was computed from through the
+    // context, for this one invoke; the pipeline still calls `tool.invoke` (a wrapper around it stays in the path), and
+    // that invoke refuses when the parse is absent, so an admission that did not produce one cannot run the tool.
+    if (prepared) ctx.prepared_arguments = prepared->arguments;
     result<json::Value> invoke_result = co_await tool.invoke(request.arguments, ctx);
+    ctx.prepared_arguments.reset();
     ctx.bound_capabilities = nullptr;
 
     // -- step 10: account (revoke unconditionally, success or failure) ----------------------------
@@ -339,7 +433,7 @@ task<ToolResult> invoke_tool(ToolTable const& table, CapabilitySet const& held,
     // -- step 6: admit -- deferred (Quark 022 not in M2 scope; documented no-op, see file top) ----
 
     // -- steps 8, 9, 10 (invoke, normalize, account): `run_admitted_call()` above, ADR-160 §5 -------
-    AdmittedCallOutcome outcome = co_await run_admitted_call(*tool, request, ctx, bound);
+    AdmittedCallOutcome outcome = co_await run_admitted_call(*tool, request, ctx, bound, std::move(admission->prepared));
     co_return finish(std::move(outcome.result), outcome.failure ? &*outcome.failure : nullptr, outcome.bytes);
 }
 
@@ -407,6 +501,14 @@ task<result<void>> background_task(ToolTable const& table, CapabilitySet const& 
     if (!tool->backgroundable) {
         co_return std::unexpected(error{failure_class::policy, "tool is not declared Backgroundable",
                                          "tool.not_backgroundable"});
+    }
+    // ADR-237 D3: a tool with a per-call requirement runs only through `admit_call()`, which binds the requirement.
+    // The background worker calls `tool->invoke` directly, which such a tool refuses; refuse it here, at submission,
+    // so the caller learns now and not when the worker starts. Wiring it is slice 2 of D3.
+    if (tool->prepare) {
+        co_return std::unexpected(error{failure_class::policy,
+                                         "a tool with a per-call requirement cannot be run in the background yet",
+                                         "tool.requirement_not_backgroundable"});
     }
 
     // ADR-028: a state-capturing descriptor's `invoke` closure holds a reference into its owning

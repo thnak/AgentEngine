@@ -315,6 +315,9 @@ inline void enforce_hook_rewritten_tool_call_provenance(ToolCallRequest& req,
 struct AdmittedCall {
     ToolDescriptor const* tool = nullptr;
     std::vector<BoundCapability> bound;
+    // ADR-237 §9 D3: set exactly when the tool declared a per-call requirement. Its `run` is the invoke over the
+    // arguments the requirement was computed from; `run_admitted_call` uses it instead of `tool.invoke`.
+    std::shared_ptr<PreparedCall> prepared;
 };
 
 [[nodiscard]] task<result<AdmittedCall>> admit_call(ToolTable const& table, CapabilitySet const& held,
@@ -341,7 +344,10 @@ struct AdmittedCallOutcome {
 // genuinely-sync caller (a detached background worker, a host edge) drives this with
 // `rt::block_on`; the two callers inside this file drive it with `co_await`.
 [[nodiscard]] task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCallRequest const& request,
-                                                          EffectContext& ctx, std::vector<BoundCapability>& bound);
+                                                          EffectContext& ctx, std::vector<BoundCapability>& bound,
+                                                          // ADR-237 D3: `AdmittedCall::prepared`; null for a tool without
+                                                          // a per-call requirement.
+                                                          std::shared_ptr<PreparedCall> prepared = {});
 
 // ADR-160 §5: a small, shared audit-record builder for the parallel-batch fan-out path only --
 // `invoke_tool()`'s own inline `finish()` closure and `background_task()`'s own closure each keep

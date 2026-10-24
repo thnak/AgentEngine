@@ -42,6 +42,8 @@ agentengine_add_test(test_tool_pipeline LIBS agentengine::core agentengine_warni
 
 # ADR-244 §2.2 (slice 4a): a tool's approval mode is a stated choice; an unset descriptor is refused everywhere.
 agentengine_add_test(test_tool_approval_choice LIBS agentengine::core agentengine_warnings)
+# ADR-237 §9 D3 (#176): a per-call capability requirement, parsed once, bounded, bound, fail closed.
+agentengine_add_test(test_tool_per_call_requirement LIBS agentengine::core agentengine_warnings)
 
 # ---- ADR-158: tool concurrency-exclusivity policy (declared tag only, no pipeline logic yet, ----
 # matching Parallelizable's own existing state -- 006 §8 G4 is still deferred). Header-only.

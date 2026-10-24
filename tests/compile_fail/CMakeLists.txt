@@ -329,6 +329,16 @@ agentengine_compile_fail_test(tool_rejects_two_approvals
   EXPECT "exactly one approval choice"
   LIBS agentengine::core)
 
+# ADR-237 §9 D3 (#176): PerCallRequirement<...> and required_capabilities(Args const&) go together.
+agentengine_compile_fail_control(compile_fail_tool_requirement_positive_control
+  SOURCE tool_requirement_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(tool_requirement_without_hook
+  SOURCE tool_requirement_without_hook.cpp
+  CONTROL compile_fail_tool_requirement_positive_control
+  EXPECT "PerCallRequirement<...> and required_capabilities"
+  LIBS agentengine::core)
+
 # ADR-244 §2.1/§2.2 (slice 4b): an Agent states its turn cap and budget as `BoundValue`s and declares all five
 # choices 002 §3 used to default. A missing tag, a bare integer and `at_most(0)` do not compile.
 agentengine_compile_fail_control(compile_fail_agent_choices_positive_control

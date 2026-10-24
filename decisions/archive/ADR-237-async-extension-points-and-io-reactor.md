@@ -3087,6 +3087,34 @@ fails it).
   home. Nothing observable distinguishes the two, so no discriminating test exists. The binding rule stays as the
   header states it: a timer's stop callbacks are signal-or-post only.
 
+### Step 67 (2026-10-24): D3 slice 1 -- a per-call capability requirement, static form (#176)
+
+- **Declaration.** A tool declares `PerCallRequirement<Cs...>` (the bound: kind and mount) and provides
+  `std::vector<Capability> required_capabilities(Args const&) const`. Declaring one without the other does not compile
+  (`make_tool_descriptor`'s static_assert; `compile_fail_tool_requirement_without_hook` with a positive control), and two
+  tags are refused in `Tool<>`.
+- **Admission (`admit_call`).** The descriptor's `prepare` parses `Args` once and returns the requirement plus the parse.
+  The pipeline refuses an empty requirement (`tool.requirement_empty`) and one outside the bound
+  (`tool.requirement_out_of_bounds`, by `subsumes` against each declared kind) as `contract` errors, before anything is
+  bound; then binds each entry like a ceiling entry (`bind_ceiling_entry`, so ADR-217's clamped rule applies), and a
+  requirement no held grant covers is `tool.capability_not_held`. The approver is shown `{"arguments":..., "requires":[...]}`
+  (rule 5), so the human approves what will be bound.
+- **Parse once, and no way around `invoke`.** The parse rides in `EffectContext::prepared_arguments` for the one `invoke`
+  the pipeline makes. The tool's `invoke` takes it on entry (single use), checks it is stamped for this tool and `Args`
+  type, and refuses `tool.requirement_unbound` otherwise. The first draft ran the parse through a second descriptor
+  function the pipeline called INSTEAD of `invoke`; the review of the sites that replace `invoke` (a stub, a forwarding
+  wrapper) showed that a replay double would have been bypassed and the real effect run. The pipeline now always calls
+  `invoke`.
+- **Not yet wired (fail closed).** `background_task` and `BackgroundJobRunner::submit` refuse such a tool
+  (`tool.requirement_not_backgroundable`). `check_capability_ceiling` requires the agent's ceiling to hold some grant of
+  each declared kind (a per-call requirement is decided per call, so registration cannot check more).
+  `policy_reachability` does not yet analyse a requirement's bound. The dynamic form (`ctx.authorize(cap)`), the
+  recompute-on-resume check, and moving the two native-process providers onto the hook (which unblocks deleting their
+  `make_sync_invoke`) are the next slices.
+- **Tests.** `test_tool_per_call_requirement` R0-R9 (covered call, parsed once and bound; not held; outside the bound
+  although held; empty; plain `invoke`; single-use and foreign parse; forwarding wrapper and stub; background; approval
+  text; registration). Mutants killed: no empty check (R4), no bound check (R3), no bind (R1).
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are

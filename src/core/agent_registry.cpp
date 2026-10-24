@@ -77,6 +77,16 @@ result<void> check_capability_ceiling(CapabilitySet const& ceiling,
                     "agent.capability_ceiling_exceeded"});
             }
         }
+        // ADR-237 D3: a per-call requirement is decided per call, so registration can only check that the ceiling holds
+        // SOME grant of each declared kind; whether it covers a given call's argument is decided at admission.
+        for (Capability const& bound_kind : tool.requirement_bounds) {
+            if (!ceiling.contains_kind(capability_kind_of(bound_kind))) {
+                return std::unexpected(error{
+                    failure_class::policy,
+                    "tool '" + tool.name + "' declares a per-call requirement the agent's ceiling holds no grant for",
+                    "agent.capability_ceiling_exceeded"});
+            }
+        }
     }
     return {};
 }

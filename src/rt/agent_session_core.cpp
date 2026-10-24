@@ -1107,6 +1107,7 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
                                                           // until the fan-out below has joined.
         std::vector<EffectContext> ctxs;
         std::vector<std::vector<BoundCapability>> bounds;
+        std::vector<std::shared_ptr<PreparedCall>> prepared;  // ADR-237 D3; null for a tool with no per-call requirement
         std::vector<DispatchedCall*> slots;             // pointers into `out` -- see above.
     };
     std::vector<ParallelJob> jobs;
@@ -1175,6 +1176,7 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
             job.requests.push_back(&req);
             job.ctxs.push_back(std::move(ctx));
             job.bounds.push_back(std::move(admission->bound));
+            job.prepared.push_back(std::move(admission->prepared));
             job.slots.push_back(&out[i]);
         }
         if (!job.call_indices.empty()) jobs.push_back(std::move(job));
@@ -1206,7 +1208,7 @@ task<std::vector<AgentSessionCore::DispatchedCall>> AgentSessionCore::dispatch_t
                 // ADR-237 §5.2: on this worker thread the async invoke is a genuinely-sync edge, so
                 // drive it with `rt::block_on` (never on a lane; these are ThreadPool workers).
                 AdmittedCallOutcome outcome =
-                    agentengine::rt::block_on(run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k]));
+                    agentengine::rt::block_on(run_admitted_call(*job.tools[k], req, job.ctxs[k], job.bounds[k], job.prepared[k]));
                 ToolInvocationAudit audit = make_call_audit(req, job.ctxs[k], started, outcome);
                 emit_run_event_for(job.ctxs[k].run_id, run_event_kind::tool_call_finished,
                                      run_event_payload::ToolCallFinished{audit.call_id, outcome.result});
