@@ -34,6 +34,7 @@
 #include <string>
 #include <thread>
 
+#include "../../support/kata_images.hpp"
 #include "../../support/sandbox_grants.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
@@ -82,7 +83,7 @@ int main() {
     // ---- Case 1: infinite loop / wall_ms timeout -- contained AND proven actually stopped, not
     //         just that the host-side `ctr` CLI call returned (SLICE 4's own fix). --------------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec short_spec;
         short_spec.mounts.push_back(
             MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
@@ -135,7 +136,7 @@ int main() {
         // Positive control: a materially longer wall_ms budget on the identical spin -- still
         // eventually times out, just measurably later, proving the short kill above is real
         // enforcement and not this workload happening to finish quickly on its own (it never does).
-        KataBackend long_backend;
+        KataBackend long_backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec long_spec = short_spec;
         long_spec.limits.wall_ms = 3000;
         auto long_handle = agentengine::rt::block_on(long_backend.create(long_spec, ctx));
@@ -181,7 +182,7 @@ int main() {
     //         a quick `policy_violation` return (if `ctr` does die fast) is NOT ambiguous with having
     //         simply hit the same deadline the timeout path would anyway (Slice-5 red-team finding #4).
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec contained_spec;
         contained_spec.mounts.push_back(
             MountSpec{.source = std::string(host_dir), .guest_path = "/work", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
@@ -246,7 +247,7 @@ int main() {
         // Positive control: same probe, a materially looser cap -- materially more gets through,
         // proving the tight cap above is real containment, not the flood incidentally producing
         // little output.
-        KataBackend positive_backend;
+        KataBackend positive_backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec positive_spec = contained_spec;
         positive_spec.limits.output_bytes = 2ull * 1024 * 1024;
         auto positive_handle = agentengine::rt::block_on(positive_backend.create(positive_spec, ctx));
@@ -280,7 +281,7 @@ int main() {
     //         resource-capped" machine-safety rule -- there is genuinely nothing in this backend to
     //         stop an actually-unbounded one once launched. ------------------------------------------
     {
-        KataBackend backend;
+        KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxSpec spec;
         spec.limits.wall_ms = 1500;
 

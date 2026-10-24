@@ -133,7 +133,27 @@ void release_egress(egress::HostEgress& host, std::string const& tag, std::strin
 
 }  // namespace
 
+agentengine::result<void> KataBackend::check_image_pinned(std::string_view image) {
+    constexpr std::string_view kMarker = "@sha256:";
+    auto const at = image.rfind(kMarker);
+    bool pinned   = at != std::string_view::npos && at > 0;
+    if (pinned) {
+        std::string_view const hex = image.substr(at + kMarker.size());
+        pinned = hex.size() == 64 && std::all_of(hex.begin(), hex.end(), [](char c) {
+                     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+                 });
+    }
+    if (pinned) return {};
+    return std::unexpected(agentengine::error{
+        agentengine::failure_class::policy,
+        "KataBackend image '" + std::string(image) +
+            "' is not digest-pinned: state it as <repository>@sha256:<64 hex>. A tag names different bytes on two hosts "
+            "(ADR-244 section 2.5)",
+        "sandbox.image_not_pinned"});
+}
+
 result<SandboxHandle> KataBackend::create_blocking(SandboxSpec const& spec, EffectContext& /*ctx*/) {
+    if (auto pinned = check_image_pinned(image_); !pinned.has_value()) return std::unexpected(pinned.error());
     // Slice 3 (docs/planning/sandbox-spec-capability-enforcement-design-draft.md): capabilities are
     // the real authority behind mounts/net, checked FIRST, before any of this backend's own
     // mount/net logic below runs. Unconditional (ADR-244 §2.4): a mount or network request with no

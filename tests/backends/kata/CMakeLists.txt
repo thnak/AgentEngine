@@ -15,6 +15,9 @@ if(NOT WIN32 AND AGENTENGINE_BUILD_KATA_BACKEND)
   # runner (ADR-240). Needs no VM, root or nft, so it is not behind the sandbox gate.
   agentengine_add_test(test_kata_egress_policy_render
     LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
+  # ADR-244 §2.5 (G-C9): the image must be digest-pinned; refused before any ctr call, so host-free.
+  agentengine_add_test(test_kata_image_pin
+    LIBS agentengine::core agentengine::kata_backend agentengine_warnings)
   if(AGENTENGINE_KATA_SANDBOX_TESTS)
     agentengine_add_test(test_kata_backend_linux
       LIBS agentengine::core agentengine::kata_backend agentengine_warnings)

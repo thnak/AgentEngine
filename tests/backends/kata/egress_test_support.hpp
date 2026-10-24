@@ -200,7 +200,9 @@ inline std::string parse_probe(std::string const& output, std::string const& lab
 // ---- hand-wired control sandbox: the pre-change world (no policy, nothing on the port) ---------------------
 
 inline constexpr char kRuntime[] = "io.containerd.kata-clh.v2";
-inline constexpr char kPythonImage[] = "docker.io/library/python:3.12-alpine";
+// ADR-244 §2.5 (G-C9): digest-pinned, as KataBackend requires.
+inline constexpr char kPythonImage[] =
+    "docker.io/library/python@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4";
 inline constexpr char kCniEnv[] = "CNI_PATH=/opt/cni/bin NETCONFPATH=/etc/cni/net.d";
 
 inline std::atomic<unsigned> g_exec_seq{0};

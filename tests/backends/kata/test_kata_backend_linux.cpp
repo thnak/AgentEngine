@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <string>
 
+#include "../../support/kata_images.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/core/effect_context.hpp"
 #include "backends/kata/kata_backend.hpp"
@@ -47,7 +48,7 @@ EffectContext make_ctx() {
 }  // namespace
 
 int main() {
-    KataBackend backend;
+    KataBackend backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
     EffectContext ctx = make_ctx();
     SandboxSpec spec;
 
@@ -103,7 +104,7 @@ int main() {
 
     // ---- 5. exec() on an unknown handle fails closed. ----------------------------------------------
     {
-        KataBackend fresh_backend;
+        KataBackend fresh_backend(ae_test_kata::kRuntime, ae_test_kata::kBusybox);
         SandboxHandle bogus{"never-created"};
         ExecRequest req;
         req.source = "echo unreachable";
