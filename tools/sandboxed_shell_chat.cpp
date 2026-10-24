@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
     // Ms into a shared_ptr<Ms> once engaged, with no accessor back to the concrete instance (see
     // tests/sandbox/execution_surface/test_composed_sandbox_providers_live.cpp's own file-top comment for the full reasoning).
     MandatorySandboxProvider<DockerExecutionSurface> sandbox_provider;
+    sandbox_provider.set_surface_factory([] { return DockerExecutionSurface("alpine:latest", ContainerIsolation::conservative()); });
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,
                                     *branch_quota, *run_quota, *storage_quota);
     // ADR-244 slice 4a: this demo's host choice -- neither shell tier asks a human (it installs no approval

@@ -39,6 +39,7 @@
 //       real host filesystem -- the functional half of the coexistence claim: two providers with
 //       genuinely different resource shapes do not interfere with each other when composed together.
 
+#include "../../support/surface_factories.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "../../support/session_choices.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
@@ -226,6 +227,7 @@ int main() {
     std::string const branch_name = root_r->name();
 
     MandatorySandboxProvider<DockerExecutionSurface> sandbox_provider;
+    sandbox_provider.set_surface_factory(ae_test::docker_surface);
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);
     sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a

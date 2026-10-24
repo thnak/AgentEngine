@@ -1502,6 +1502,9 @@ template <class Inner>
     // Issue #47: only in the container tier. Unbound, the provider contributes no `run_command` at all
     // (its own documented "no sandbox bound" state), and main() minted no `cap::RunCommand` either.
     if (plan.offer_run_command) {
+        actor.history_provider().run_command_provider().set_surface_factory([] {
+            return agentengine::DockerExecutionSurface("alpine:latest", agentengine::ContainerIsolation::conservative());
+        });
         actor.history_provider().run_command_provider().bind_sandbox(
             cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,
             *storage_quota);

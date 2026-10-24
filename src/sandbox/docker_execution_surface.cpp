@@ -554,16 +554,23 @@ std::vector<std::string> docker_isolation_argv(ContainerIsolation const& iso) {
     argv.emplace_back(iso.network_enabled ? "bridge" : "none");
     // Docker's own `b` suffix -- explicit bytes, never a bare number whose unit the daemon has to
     // guess (it defaults to bytes today, but stating it costs nothing and cannot drift).
-    argv.emplace_back("--memory");
-    argv.emplace_back(std::to_string(iso.memory_bytes) + "b");
-    argv.emplace_back("--pids-limit");
-    argv.emplace_back(std::to_string(iso.pids));
-    argv.emplace_back("--cpus");
-    argv.emplace_back(std::to_string(iso.cpu_milli / 1000) + "." +
-                       [&] {
-                           std::string frac = std::to_string(iso.cpu_milli % 1000);
-                           return std::string(3 - frac.size(), '0') + frac;
-                       }());
+    // `unbounded()` emits no flag: Docker's own "no limit".
+    if (auto const m = iso.memory_bytes.limit()) {
+        argv.emplace_back("--memory");
+        argv.emplace_back(std::to_string(*m) + "b");
+    }
+    if (auto const p = iso.pids.limit()) {
+        argv.emplace_back("--pids-limit");
+        argv.emplace_back(std::to_string(*p));
+    }
+    if (auto const c = iso.cpu_milli.limit()) {
+        argv.emplace_back("--cpus");
+        argv.emplace_back(std::to_string(*c / 1000) + "." +
+                           [&] {
+                               std::string frac = std::to_string(*c % 1000);
+                               return std::string(3 - frac.size(), '0') + frac;
+                           }());
+    }
     if (iso.drop_all_capabilities) {
         argv.emplace_back("--cap-drop");
         argv.emplace_back("ALL");
@@ -575,8 +582,15 @@ std::vector<std::string> docker_isolation_argv(ContainerIsolation const& iso) {
     return argv;
 }
 
+agentengine::result<void> check_container_isolation(ContainerIsolation const& iso) {
+    if (auto r = agentengine::check_bound("isolation.memory_bytes", iso.memory_bytes); !r) return r;
+    if (auto r = agentengine::check_bound("isolation.pids", iso.pids); !r) return r;
+    return agentengine::check_bound("isolation.cpu_milli", iso.cpu_milli);
+}
+
 agentengine::result<ContainerIsolation> container_isolation_from(
-    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net) {
+    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net,
+    agentengine::Bound<std::uint64_t> cpu_milli) {
     if (!net.allowlist.empty()) {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
@@ -585,11 +599,13 @@ agentengine::result<ContainerIsolation> container_isolation_from(
             "route egress through sandbox/net_egress_proxy.hpp.",
             "docker_execution_surface.netpolicy_allowlist_unsupported"});
     }
-    ContainerIsolation iso;
-    iso.network_enabled = !net.deny_all;
-    if (limits.memory_bytes != 0) iso.memory_bytes = limits.memory_bytes;
-    if (limits.pids != 0) iso.pids = limits.pids;
-    return iso;
+    static constexpr std::array<std::string_view, 2> kOptions{"ResourceLimits::memory_bytes = n", "set the field"};
+    if (limits.memory_bytes == 0) return std::unexpected(agentengine::choice_missing("isolation.memory_bytes", kOptions));
+    if (limits.pids == 0) return std::unexpected(agentengine::choice_missing("isolation.pids", kOptions));
+    return ContainerIsolation{.network_enabled = !net.deny_all,
+                              .memory_bytes    = agentengine::Bound<std::uint64_t>::at_most(limits.memory_bytes),
+                              .pids            = agentengine::Bound<std::uint64_t>::at_most(limits.pids),
+                              .cpu_milli       = cpu_milli};
 }
 
 }  // namespace agentengine
@@ -601,6 +617,7 @@ agentengine::result<DockerCliBackend::Instance> DockerCliBackend::create(std::st
                                                       std::string const& init_script) {
     if (auto safe = docker_cli_reject_argv_value(image, "image"); !safe.has_value())
         return std::unexpected(safe.error());
+    if (auto stated = check_container_isolation(isolation); !stated.has_value()) return std::unexpected(stated.error());
     // A discoverable NAME (distinct from the docker-assigned `container_id` this method returns
     // below) -- exists purely so a later process can find and `reap_orphans()` this container if
     // THIS process dies before its own destructor runs (see that method's own comment). Carries

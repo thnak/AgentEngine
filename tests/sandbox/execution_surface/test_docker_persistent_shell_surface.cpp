@@ -84,9 +84,9 @@ void check(bool cond, std::string const& what) {
 }
 
 [[nodiscard]] ContainerIsolation tight() {
-    ContainerIsolation iso;
-    iso.pids = 64;
-    iso.memory_bytes = 256ull * 1024 * 1024;
+    ContainerIsolation iso = ContainerIsolation::conservative();
+    iso.pids = agentengine::Bound<std::uint64_t>::at_most(64);
+    iso.memory_bytes = agentengine::Bound<std::uint64_t>::at_most(256 * 1024 * 1024);
     return iso;
 }
 

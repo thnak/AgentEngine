@@ -427,6 +427,17 @@ agentengine_compile_fail_test(effect_context_deadline_unstated
   EXPECT "deleted|no matching|no appropriate default|Deadline"
   LIBS agentengine::core)
 
+# ADR-244 §2.5: a Docker `ContainerIsolation` states its limits; `ContainerIsolation{}` (defaults nobody chose) does not compile.
+agentengine_compile_fail_control(compile_fail_container_isolation_positive_control
+  SOURCE container_isolation_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(container_isolation_unstated
+  SOURCE container_isolation_unstated.cpp
+  CONTROL compile_fail_container_isolation_positive_control
+  # cl: C2280 / C2512; gcc and clang: "deleted" / "no matching".
+  EXPECT "deleted|no matching|no appropriate default|Bound"
+  LIBS agentengine::core)
+
 # ADR-244 slice 5: a `cap::Clock` states its resolution; `cap::Clock{}` (a 0 meaning "exact") does not compile.
 agentengine_compile_fail_control(compile_fail_clock_positive_control
   SOURCE clock_positive_control.cpp

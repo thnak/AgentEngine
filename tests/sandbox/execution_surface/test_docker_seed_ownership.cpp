@@ -99,7 +99,7 @@ int main() {
 
     // ---- S1-S4: the new, root-owned seeding path -------------------------------------------------
     {
-        auto inst = docker.create();
+        auto inst = docker.create("alpine:latest", agentengine::ContainerIsolation::conservative());
         if (!inst.has_value()) {
             std::printf("[FAIL] setup: cannot create a container (%s)\n", inst.error().message.c_str());
             std::printf("\n%d checks, %d failed\n", g_checks + 1, g_failed + 1);
@@ -160,7 +160,7 @@ int main() {
         // platform by the 120-character basename.
         bool const deep_exists = std::filesystem::exists(odd_dir / deep);
 
-        auto inst = docker.create();
+        auto inst = docker.create("alpine:latest", agentengine::ContainerIsolation::conservative());
         check(inst.has_value(), inst.has_value()
                                     ? "S7 setup: a container is created"
                                     : ("S7 setup FAILED: " + inst.error().message));
@@ -197,7 +197,7 @@ int main() {
 
     // ---- S5: negative control -- the OLD path is unchanged and still delivers host ownership -----
     {
-        auto inst = docker.create();
+        auto inst = docker.create("alpine:latest", agentengine::ContainerIsolation::conservative());
         check(inst.has_value(), inst.has_value()
                                     ? "S5 setup: a container is created"
                                     : ("S5 setup FAILED: " + inst.error().message));
@@ -229,7 +229,7 @@ int main() {
 
     // ---- S6: the real production entry point ----------------------------------------------------
     {
-        agentengine::DockerExecutionSurface surface;
+        agentengine::DockerExecutionSurface surface("alpine:latest", agentengine::ContainerIsolation::conservative());
         auto reset = agentengine::rt::block_on(surface.reset(host_dir));
         check(reset.has_value(), reset.has_value()
                                      ? "setup: DockerExecutionSurface::reset() succeeds"

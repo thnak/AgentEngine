@@ -48,6 +48,7 @@
 //       gone and the NEW handle's entry present, never a state that reflects only one side of the pair
 //       (the direct symptom a torn insert/erase interleaving under a broken mutex would produce).
 
+#include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
 
@@ -125,6 +126,7 @@ int main() {
         if (!root_r.has_value()) continue;
 
         Provider provider;
+        provider.set_surface_factory(ae_test::docker_surface);
         provider.bind_sandbox(ledger, std::move(*root_r), owner,
                                 scratch_root / ("start-round-" + std::to_string(round)), branch_quota,
                                 run_quota, storage_quota);
@@ -161,6 +163,7 @@ int main() {
         check(root_r.has_value(), "[2] create_root_branch() succeeds");
         if (root_r.has_value()) {
             Provider provider;
+            provider.set_surface_factory(ae_test::docker_surface);
             provider.bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "verbs-round",
                                     branch_quota, run_quota, storage_quota);
             provider.bind_task_branch_tools(merge_quota);
@@ -233,6 +236,7 @@ int main() {
         if (!root_r.has_value()) continue;
 
         Provider provider;
+        provider.set_surface_factory(ae_test::docker_surface);
         provider.bind_sandbox(ledger, std::move(*root_r), owner,
                                 scratch_root / ("discard-start-round-" + std::to_string(round)),
                                 branch_quota, run_quota, storage_quota);

@@ -289,7 +289,7 @@ int main() {
     }
 
     {
-        agentengine::DockerExecutionSurface surface(kImage);
+        agentengine::DockerExecutionSurface surface(kImage, agentengine::ContainerIsolation::conservative());
 
         // [N2] / [N3] -- before anything has been created.
         check(surface.image() == kImage, "N2: image() is the configured reference, verbatim");
@@ -459,7 +459,7 @@ int main() {
             std::filesystem::create_directories(dir, n14_ec);
         }
         {
-            agentengine::DockerExecutionSurface committed(kCommittedImage);
+            agentengine::DockerExecutionSurface committed(kCommittedImage, agentengine::ContainerIsolation::conservative());
             auto const started = agentengine::rt::block_on(committed.reset(n14_work));
             check(started.has_value(), "N14: a surface over the committed image starts");
             if (started.has_value()) {
@@ -472,7 +472,7 @@ int main() {
                       "N14: and the digest beside it is well-formed -- a kind without a digest would be "
                       "a claim about nothing");
                 // THE DISCRIMINATION. Two images, one daemon, one code path, two different answers.
-                agentengine::DockerExecutionSurface indexed(kImage);
+                agentengine::DockerExecutionSurface indexed(kImage, agentengine::ContainerIsolation::conservative());
                 // A SIBLING directory, not `n14_work / "indexed"`: the committed surface's worktree is a
                 // live bind mount, and nesting a second container's worktree inside it would have two
                 // containers sharing overlapping host state for no reason.
@@ -522,7 +522,7 @@ int main() {
             std::filesystem::remove_all(n16_work, n16_ec);
             std::filesystem::create_directories(n16_work, n16_ec);
             {
-                agentengine::DockerExecutionSurface surface(kMovingTag);
+                agentengine::DockerExecutionSurface surface(kMovingTag, agentengine::ContainerIsolation::conservative());
                 auto const first = agentengine::rt::block_on(surface.reset(n16_work));
                 check(first.has_value(), "N16: a surface over a tag this test owns starts");
                 if (first.has_value()) {

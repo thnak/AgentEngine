@@ -53,6 +53,7 @@
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -160,7 +161,7 @@ int main() {
 
     // ---- C1: the defaults ------------------------------------------------------------------------
     {
-        std::vector<std::string> const argv = containerd_isolation_argv(ContainerdIsolation{});
+        std::vector<std::string> const argv = containerd_isolation_argv(ContainerdIsolation::conservative());
 
         check(index_of(argv, "--net-host") == std::string::npos,
               "C1: the default emits NO network flag -- containerd already gives the container its "
@@ -190,13 +191,13 @@ int main() {
 
     // ---- C2: opting in changes exactly what was opted into ---------------------------------------
     {
-        ContainerdIsolation host_net{};
+        ContainerdIsolation host_net = ContainerdIsolation::conservative();
         host_net.host_network = true;
         check(index_of(containerd_isolation_argv(host_net), "--net-host") != std::string::npos,
               "C2: the network opt-in emits --net-host -- which is the HOST's own namespace, broader "
               "than Docker's bridge, not narrower");
 
-        ContainerdIsolation keep_caps{};
+        ContainerdIsolation keep_caps = ContainerdIsolation::conservative();
         keep_caps.drop_default_capabilities = false;
         std::vector<std::string> const argv = containerd_isolation_argv(keep_caps);
         check(count_of(argv, "--cap-drop") == 0,
@@ -209,12 +210,12 @@ int main() {
 
     // ---- C3: --cpus formatting is byte-stable ----------------------------------------------------
     {
-        ContainerdIsolation iso{};
-        iso.cpu_milli = 500;
+        ContainerdIsolation iso = ContainerdIsolation::conservative();
+        iso.cpu_milli = agentengine::Bound<std::uint64_t>::at_most(500);
         check(flag_value_is(containerd_isolation_argv(iso), "--cpus", "0.500"),
               "C3: 500 milli-CPU formats as 0.500 -- integer-derived, so no locale turns the decimal "
               "point into a comma and no float rounding drifts the value");
-        iso.cpu_milli = 2250;
+        iso.cpu_milli = agentengine::Bound<std::uint64_t>::at_most(2250);
         check(flag_value_is(containerd_isolation_argv(iso), "--cpus", "2.250"),
               "C3: and a value above 1.0 with a non-zero fraction is correct too");
     }
@@ -225,22 +226,21 @@ int main() {
         limits.memory_bytes = 268435456;
         NetPolicy net{};  // deny_all == true by default in the type itself
 
-        auto mapped = containerd_isolation_from(limits, net);
+        auto mapped = containerd_isolation_from(limits, net, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(mapped.has_value(), "C4: a deny-all NetPolicy with a real memory limit maps cleanly");
         if (mapped.has_value()) {
             check(!mapped->host_network, "C4: deny_all means no host networking");
-            check(mapped->memory_bytes == 268435456, "C4: the real limit is carried through");
+            check(mapped->memory_bytes.limit() == 268435456u, "C4: the real limit is carried through");
         }
 
-        auto defaulted = containerd_isolation_from(ResourceLimits{}, net);
-        check(defaulted.has_value() &&
-                  defaulted->memory_bytes == ContainerdIsolation{}.memory_bytes,
-              "C4: an UNSET (zero) limit falls back to the conservative default, never to "
+        auto defaulted = containerd_isolation_from(ResourceLimits{}, net, agentengine::Bound<std::uint64_t>::at_most(1000));
+        check(!defaulted.has_value() && defaulted.error().code == "choice.missing.isolation.memory_bytes",
+              "C4: an UNSET (zero) limit is refused as a missing choice (ADR-244 §2.5), never replaced by a default or by "
               "'unlimited' -- zero is exactly what an untouched SandboxSpec carries");
 
         NetPolicy open{};
         open.deny_all = false;
-        auto opened = containerd_isolation_from(limits, open);
+        auto opened = containerd_isolation_from(limits, open, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(opened.has_value() && opened->host_network,
               "C4: an explicitly non-deny_all policy with NO allowlist maps to host networking -- the "
               "caller asked to leave the netns and gets exactly that, visibly");
@@ -251,7 +251,7 @@ int main() {
         NetPolicy allowlisted{};
         allowlisted.deny_all  = false;
         allowlisted.allowlist = {"api.example.com:443:https"};
-        auto mapped = containerd_isolation_from(ResourceLimits{}, allowlisted);
+        auto mapped = containerd_isolation_from(ResourceLimits{}, allowlisted, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(!mapped.has_value(),
               "C5: a NetPolicy allowlist is REFUSED -- and the stakes are higher here than on the "
               "Docker side: the only opt-in `ctr run` offers is --net-host, so silently honoring an "
@@ -270,14 +270,14 @@ int main() {
     {
         ResourceLimits limits{};
         limits.pids = 64;
-        auto mapped = containerd_isolation_from(limits, NetPolicy{});
+        auto mapped = containerd_isolation_from(limits, NetPolicy{}, agentengine::Bound<std::uint64_t>::at_most(1000));
         check(!mapped.has_value(),
               "C6: a non-zero pids limit is REFUSED. `ctr run` has no --pids-limit and this backend "
               "never uses --config/OCI-spec mode, so accepting one and emitting nothing would leave a "
               "caller believing a fork bomb has a ceiling it does not have -- strictly worse than "
               "saying no");
         if (!mapped.has_value()) {
-            check(mapped.error().code == "containerd_execution_surface.pids_limit_unsupported",
+            check(mapped.error().code == "sandbox.limit_unsupported",
                   "C6: with its own stable code, distinct from the allowlist refusal");
             check(contains(mapped.error().message, "Docker surface"),
                   "C6: and the message points at a surface that CAN enforce it, so the refusal is "
@@ -287,13 +287,34 @@ int main() {
         // because the mapping refuses everything.
         ResourceLimits no_pids{};
         no_pids.memory_bytes = 268435456;
-        check(containerd_isolation_from(no_pids, NetPolicy{}).has_value(),
+        check(containerd_isolation_from(no_pids, NetPolicy{}, agentengine::Bound<std::uint64_t>::at_most(1000)).has_value(),
               "C6 (positive control): the same call without a pids limit maps fine -- the refusal is "
               "specific, not a blanket failure");
     }
 
-    // ================= LIVE: what the kernel actually applied ====================================
+    // ---- C7: the limits are stated Bounds (ADR-244 §2.5) -------------------------------------------
+    {
+        ContainerdIsolation unbounded = ContainerdIsolation::conservative();
+        unbounded.memory_bytes        = agentengine::Bound<std::uint64_t>::unbounded();
+        unbounded.cpu_milli           = agentengine::Bound<std::uint64_t>::unbounded();
+        auto const argv               = containerd_isolation_argv(unbounded);
+        check(std::find(argv.begin(), argv.end(), "--memory-limit") == argv.end() &&
+                  std::find(argv.begin(), argv.end(), "--cpus") == argv.end(),
+              "C7: unbounded() passes no memory or cpu flag");
+        check(std::find(containerd_isolation_argv(ContainerdIsolation::conservative()).begin(),
+                        containerd_isolation_argv(ContainerdIsolation::conservative()).end(), "--memory-limit") !=
+                  containerd_isolation_argv(ContainerdIsolation::conservative()).end(),
+              "C7 (positive control): the same type with a stated limit does pass the flag");
+        ContainerdIsolation zero = ContainerdIsolation::conservative();
+        zero.memory_bytes        = agentengine::Bound<std::uint64_t>::at_most(0);
+        auto refused             = agentengine::check_containerd_isolation(zero);
+        check(!refused.has_value() && refused.error().code == "choice.zero_bound",
+              "C7: at_most(0) is refused (choice.zero_bound)");
+        check(agentengine::check_containerd_isolation(ContainerdIsolation::conservative()).has_value(),
+              "C7 (positive control): the conservative preset passes the check");
+    }
 
+    // ================= LIVE: what the kernel actually applied ====================================
     // ---- L1/L3/L4: the defaults, verified from inside AND from the host cgroup --------------------
     {
         std::filesystem::path const work = "/tmp/ae_containerd_isolation_default";
@@ -302,7 +323,7 @@ int main() {
 
         std::string const id = unique_id("def");
         ContainerdCliBackend backend;
-        auto inst = backend.create(id, work);
+        auto inst = backend.create(id, work, "docker.io/library/alpine:latest", ContainerdIsolation::conservative());
         check(inst.has_value(), "L1 setup: a default-isolation container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -339,7 +360,7 @@ int main() {
         std::filesystem::remove_all(work);
         std::filesystem::create_directories(work);
 
-        ContainerdIsolation host_net{};
+        ContainerdIsolation host_net = ContainerdIsolation::conservative();
         host_net.host_network = true;
         std::string const id = unique_id("net");
         ContainerdCliBackend backend;
@@ -369,7 +390,7 @@ int main() {
 
         // Default surface: contained, and its real job still works.
         {
-            ContainerdExecutionSurface surface;
+            ContainerdExecutionSurface surface("docker.io/library/alpine:latest", ContainerdIsolation::conservative());
             auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: the default surface bind-mounts the directory");
             if (reset.has_value()) {
@@ -390,7 +411,7 @@ int main() {
         // host_network specifically because it is observable from INSIDE the container, needing no
         // access to the id the surface generates privately.
         {
-            ContainerdIsolation host_net{};
+            ContainerdIsolation host_net = ContainerdIsolation::conservative();
             host_net.host_network = true;
             ContainerdExecutionSurface surface("docker.io/library/alpine:latest", host_net);
             auto reset = agentengine::rt::block_on(surface.reset(work));

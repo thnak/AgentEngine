@@ -33,6 +33,7 @@
 //       NO cap::TaskBranch grant, gets start_task_branch rejected by invoke_tool()'s own step 4/7 --
 //       proving the capability ceiling is load-bearing through the real pipeline, not merely declared.
 
+#include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "../support/session_choices.hpp"
 #include "agentengine/sandbox/mandatory_sandbox_provider.hpp"
@@ -224,6 +225,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-parent"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-parent\") succeeds");
         if (!root_r.has_value()) return EXIT_FAILURE;
+        parent.history_provider().set_surface_factory(ae_test::docker_surface);
         parent.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "parent",
                                                   branch_quota, run_quota, storage_quota);
         parent.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
@@ -396,6 +398,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-unenabled"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-unenabled\") succeeds");
         if (root_r.has_value()) {
+            unenabled.history_provider().set_surface_factory(ae_test::docker_surface);
             unenabled.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                           scratch_root / "unenabled", branch_quota,
                                                           run_quota, storage_quota);
@@ -423,6 +426,7 @@ int main() {
             auto root_r = drive(ledger.create_root_branch(owner, "tb-retry"));
             check(root_r.has_value(), "create_root_branch(owner, \"tb-retry\") succeeds");
             if (root_r.has_value()) {
+                retry_session.history_provider().set_surface_factory(ae_test::docker_surface);
                 retry_session.history_provider().bind_sandbox(
                     ledger, std::move(*root_r), owner, scratch_root / "retry", branch_quota, run_quota,
                     storage_quota);
@@ -503,6 +507,7 @@ int main() {
         auto root1 = drive(ledger.create_root_branch(owner, "tb-rebind-1"));
         check(root1.has_value(), "create_root_branch(owner, \"tb-rebind-1\") succeeds");
         if (root1.has_value()) {
+            rebind_leak.history_provider().set_surface_factory(ae_test::docker_surface);
             rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root1), owner,
                                                             scratch_root / "rebind1", branch_quota,
                                                             run_quota, storage_quota);
@@ -518,6 +523,7 @@ int main() {
             check(root2.has_value(), "create_root_branch(owner, \"tb-rebind-2\") succeeds");
             if (root2.has_value()) {
                 // Re-bind WHILE the task branch from root1 is still active and un-discarded.
+                rebind_leak.history_provider().set_surface_factory(ae_test::docker_surface);
                 rebind_leak.history_provider().bind_sandbox(ledger, std::move(*root2), owner,
                                                                 scratch_root / "rebind2", branch_quota,
                                                                 run_quota, storage_quota);
@@ -538,6 +544,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-fork-leak"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-fork-leak\") succeeds");
         if (root_r.has_value()) {
+            fork_leak_target.history_provider().set_surface_factory(ae_test::docker_surface);
             fork_leak_target.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                                   scratch_root / "fork-leak", branch_quota,
                                                                   run_quota, storage_quota);
@@ -568,6 +575,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-live"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-live\") succeeds");
         if (root_r.has_value()) {
+            live.history_provider().set_surface_factory(ae_test::docker_surface);
             live.history_provider().bind_sandbox(ledger, std::move(*root_r), owner, scratch_root / "live",
                                                      branch_quota, run_quota, storage_quota);
             live.history_provider().set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
@@ -637,6 +645,7 @@ int main() {
         auto root_r = drive(ledger.create_root_branch(owner, "tb-ungranted"));
         check(root_r.has_value(), "create_root_branch(owner, \"tb-ungranted\") succeeds");
         if (root_r.has_value()) {
+            ungranted.history_provider().set_surface_factory(ae_test::docker_surface);
             ungranted.history_provider().bind_sandbox(ledger, std::move(*root_r), owner,
                                                         scratch_root / "ungranted", branch_quota, run_quota,
                                                         storage_quota);

@@ -112,7 +112,7 @@ int main() {
 
     // (a) A container this test creates via the real DockerCliBackend::create() -- its embedded
     // pid/start-key are both THIS process's own, real ones -- must survive reap_orphans() untouched.
-    auto alive_created = backend.create();
+    auto alive_created = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
     check(alive_created.has_value(), "reap setup: create() a container (embeds THIS process's own "
                                       "pid + start-key)");
 
@@ -121,7 +121,7 @@ int main() {
     // that reused a dead process's pid. `process_is_alive(my_pid)` alone would say "alive" (it's
     // literally this test's own pid) -- proving reap_orphans() must still reap it via the start-key
     // mismatch, not the plain liveness check, is the whole point of this scenario.
-    auto wrong_key_created = backend.create();
+    auto wrong_key_created = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
     std::string wrong_key_name;
     if (wrong_key_created.has_value()) {
         wrong_key_name = std::string(agentengine::docker_cli_detail::kOrphanNamePrefix) +
@@ -138,7 +138,7 @@ int main() {
     // "gone", short-circuiting before any start-key comparison.
     long const dead_pid = make_confirmed_dead_pid();
     check(dead_pid > 0, "reap setup: make_confirmed_dead_pid() produced a real, now-exited pid");
-    auto dead_created = backend.create();
+    auto dead_created = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
     std::string dead_name;
     if (dead_created.has_value() && dead_pid > 0) {
         dead_name = std::string(agentengine::docker_cli_detail::kOrphanNamePrefix) +
@@ -151,7 +151,7 @@ int main() {
     // reap_orphans() must never touch it regardless of any pid it might coincidentally look like it
     // embeds. Name includes this process's own pid -- a fixed literal here would collide with a
     // leftover from a prior interrupted run (found by ADR-108's own red-team round).
-    auto foreign_created = backend.create();
+    auto foreign_created = backend.create("alpine:latest", agentengine::ContainerIsolation::conservative());
     std::string const foreign_name = "not-our-prefix-reaptest-" + std::to_string(my_pid);
     bool foreign_renamed_ok = false;
     if (foreign_created.has_value()) {

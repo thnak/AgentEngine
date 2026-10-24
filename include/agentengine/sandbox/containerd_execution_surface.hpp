@@ -76,6 +76,8 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
+#include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/error.hpp"
 // ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with docker_execution_surface.hpp.
@@ -359,12 +361,27 @@ struct ContainerdIsolation {  // ae-naming-lint: allow ContainerdIsolation — A
     // netns with only loopback. `true` emits `--net-host` -- see this type's own comment above: that
     // is HOST networking, not a bridge, and is the most dangerous single field on this struct.
     bool          host_network  = false;
-    std::uint64_t memory_bytes  = 512ull * 1024 * 1024;
+    // ADR-244 §2.5: STATED, never defaulted -- `at_most(n)` or `unbounded()` (no flag). `at_most(0)` is refused at
+    // `create()` (`choice.zero_bound`). There is no pids field: `ctr run` cannot enforce one (`sandbox.limit_unsupported`).
+    agentengine::Bound<std::uint64_t> memory_bytes;
     // Thousandths of a CPU, matching `ContainerIsolation::cpu_milli`'s own rationale (an integer, so
     // the argv is byte-stable and locale-independent -- `std::to_string(double)` is neither).
-    std::uint32_t cpu_milli     = 1000;
+    agentengine::Bound<std::uint64_t> cpu_milli;
     bool          drop_default_capabilities = true;
+
+    // A NAMED preset (an explicit choice of everything it bundles): no host network, 512 MiB, one CPU, capabilities
+    // dropped. These are ADR-172's former defaults.
+    [[nodiscard]] static ContainerdIsolation conservative() {
+        return ContainerdIsolation{.host_network = false,
+                                   .memory_bytes = agentengine::Bound<std::uint64_t>::at_most(512ull * 1024 * 1024),
+                                   .cpu_milli    = agentengine::Bound<std::uint64_t>::at_most(1000)};
+    }
 };
+
+[[nodiscard]] inline agentengine::result<void> check_containerd_isolation(ContainerdIsolation const& iso) {
+    if (auto r = agentengine::check_bound("isolation.memory_bytes", iso.memory_bytes); !r) return r;
+    return agentengine::check_bound("isolation.cpu_milli", iso.cpu_milli);
+}
 
 // containerd's own OCI default capability bounding set -- the 14 that make up the `CapBnd`
 // `00000000a80425fb` a flagless `ctr run` produces. Dropping exactly these yields `CapBnd:
@@ -386,14 +403,18 @@ inline constexpr std::array<char const*, 14> kDefaultDroppedCapabilities = {
     // Emitted ONLY on opt-in: the absence of a network flag is what keeps containerd's own isolated
     // default, so a `--net-none`-style flag would be both nonexistent and unnecessary.
     if (iso.host_network) argv.emplace_back("--net-host");
-    argv.emplace_back("--memory-limit");
-    argv.emplace_back(std::to_string(iso.memory_bytes));
-    argv.emplace_back("--cpus");
-    argv.emplace_back(std::to_string(iso.cpu_milli / 1000) + "." +
-                       [&] {
-                           std::string frac = std::to_string(iso.cpu_milli % 1000);
-                           return std::string(3 - frac.size(), '0') + frac;
-                       }());
+    if (auto const m = iso.memory_bytes.limit()) {  // `unbounded()` emits no flag
+        argv.emplace_back("--memory-limit");
+        argv.emplace_back(std::to_string(*m));
+    }
+    if (auto const c = iso.cpu_milli.limit()) {
+        argv.emplace_back("--cpus");
+        argv.emplace_back(std::to_string(*c / 1000) + "." +
+                           [&] {
+                               std::string frac = std::to_string(*c % 1000);
+                               return std::string(3 - frac.size(), '0') + frac;
+                           }());
+    }
     if (iso.drop_default_capabilities) {
         for (char const* cap : kDefaultDroppedCapabilities) {
             argv.emplace_back("--cap-drop");
@@ -425,7 +446,8 @@ inline constexpr std::array<char const*, 14> kDefaultDroppedCapabilities = {
 //
 // An UNSET (zero) limit maps to this type's own conservative default, never to "unlimited".
 [[nodiscard]] inline agentengine::result<ContainerdIsolation> containerd_isolation_from(
-    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net) {
+    agentengine::ResourceLimits const& limits, agentengine::NetPolicy const& net,
+    agentengine::Bound<std::uint64_t> cpu_milli) {
     if (!net.allowlist.empty()) {
         return std::unexpected(agentengine::error{
             agentengine::failure_class::policy,
@@ -442,12 +464,15 @@ inline constexpr std::array<char const*, 14> kDefaultDroppedCapabilities = {
             "and this backend never uses --config/OCI-spec mode. Refused rather than silently "
             "ignored -- a caller must not believe a fork bomb has a ceiling it does not have. Use the "
             "Docker surface, or a real SandboxBackend.",
-            "containerd_execution_surface.pids_limit_unsupported"});
+            "sandbox.limit_unsupported"});
     }
-    ContainerdIsolation iso;
-    iso.host_network = !net.deny_all;
-    if (limits.memory_bytes != 0) iso.memory_bytes = limits.memory_bytes;
-    return iso;
+    if (limits.memory_bytes == 0) {
+        static constexpr std::array<std::string_view, 2> kOptions{"ResourceLimits::memory_bytes = n", "set the field"};
+        return std::unexpected(agentengine::choice_missing("isolation.memory_bytes", kOptions));
+    }
+    return ContainerdIsolation{.host_network = !net.deny_all,
+                               .memory_bytes = agentengine::Bound<std::uint64_t>::at_most(limits.memory_bytes),
+                               .cpu_milli    = cpu_milli};
 }
 
 // A thin, real wrapper over the `ctr` CLI (containerd's own client) -- create()/exec()/destroy() over
@@ -484,12 +509,12 @@ public:
     // did not have before; loosening any axis is an explicit field assignment a reader can see.
     [[nodiscard]] agentengine::result<Instance> create(
             std::string const& id, std::filesystem::path const& host_dir,
-            std::string const& image = "docker.io/library/alpine:latest",
-            ContainerdIsolation const& isolation = {}) {
+            std::string const& image, ContainerdIsolation const& isolation) {
         if (auto ok = ctr_cli_detail::reject_unsafe_token(id, "id"); !ok.has_value())
             return std::unexpected(ok.error());
         if (auto ok = ctr_cli_detail::reject_unsafe_token(image, "image"); !ok.has_value())
             return std::unexpected(ok.error());
+        if (auto stated = check_containerd_isolation(isolation); !stated.has_value()) return std::unexpected(stated.error());
         std::string const host_dir_str = host_dir.generic_string();
         if (auto ok = ctr_cli_detail::reject_embedded_nul(host_dir_str, "host_dir"); !ok.has_value())
             return std::unexpected(ok.error());
@@ -751,8 +776,7 @@ public:
     // an existing `ContainerdExecutionSurface{}` / `{"docker.io/library/alpine:latest"}` call site
     // keeps compiling and now runs contained. Use `containerd_isolation_from()` to derive this from an
     // engine `SandboxSpec`'s own `limits`/`net`.
-    explicit ContainerdExecutionSurface(std::string image = "docker.io/library/alpine:latest",
-                                          ContainerdIsolation isolation = {})
+    ContainerdExecutionSurface(std::string image, ContainerdIsolation isolation)
         : image_(std::move(image)), isolation_(isolation),
           seq_(static_cast<std::uint64_t>(std::chrono::system_clock::now().time_since_epoch().count())) {}
 
@@ -944,7 +968,7 @@ private:
     agentengine::ImageDigestKind resolved_kind_{agentengine::ImageDigestKind::unknown};
     // ADR-172 (issue #66). Held by value and applied on every `reset()`, so a re-materialized surface
     // is contained identically to its first container -- not only the first one.
-    ContainerdIsolation isolation_{};
+    ContainerdIsolation isolation_;
     ContainerdCliBackend ctr_;
     std::optional<ContainerdCliBackend::Instance> instance_;
     std::filesystem::path mounted_at_;

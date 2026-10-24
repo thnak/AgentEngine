@@ -98,7 +98,7 @@ int main() {
     std::filesystem::remove_all(staging, ec);
 
     SandboxRuntime runtime(ledger, std::move(*root_r), staging);
-    DockerExecutionSurface surface;
+    DockerExecutionSurface surface("alpine:latest", agentengine::ContainerIsolation::conservative());
 
     // [1]/[2] Turn 1: a real command runs inside a real, fresh container and writes a real file.
     auto r1 = drive(runtime.run(surface, "echo -n 'turn-1 content' > note.txt && cat note.txt", owner,

@@ -197,6 +197,10 @@ int main() {
     std::string const branch_name = root_r->name();
 
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
+    sandbox_provider.set_surface_factory([] {
+        return agentengine::ContainerdExecutionSurface("docker.io/library/alpine:latest",
+                                                       agentengine::ContainerdIsolation::conservative());
+    });
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);
     sandbox_provider.set_tool_approval(agentengine::approval_mode::never_require);  // ADR-244 slice 4a
