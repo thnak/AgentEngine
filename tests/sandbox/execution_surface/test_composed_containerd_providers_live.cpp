@@ -19,6 +19,7 @@
 // unprivileged containerd-socket ACL -- matches tests/sandbox/execution_surface/test_containerd_execution_surface.cpp's own
 // disclosed precondition).
 
+#include "../../support/surface_factories.hpp"
 #include "agentengine/core/composed_context_provider.hpp"
 #include "../../support/session_choices.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
@@ -197,9 +198,10 @@ int main() {
     std::string const branch_name = root_r->name();
 
     MandatorySandboxProvider<ContainerdExecutionSurface> sandbox_provider;
-    sandbox_provider.set_surface_factory([] {
+    sandbox_provider.set_surface_factory([ledger_staging_root] {
         return agentengine::ContainerdExecutionSurface("docker.io/library/alpine:latest",
-                                                       agentengine::ContainerdIsolation::conservative());
+                                                       agentengine::ContainerdIsolation::conservative(),
+                                                       ae_test::mount_grants(ledger_staging_root.generic_string()));
     });
     sandbox_provider.bind_sandbox(ledger, std::move(*root_r), owner, ledger_staging_root, branch_quota,
                                     run_quota, storage_quota);

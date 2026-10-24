@@ -17,6 +17,7 @@
 // (subsequent checks are skipped, matching this design's own probes' "fail loud, don't keep going and
 // pretend" posture) but always attempts best-effort cleanup first.
 
+#include "../../support/surface_factories.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
 
@@ -107,7 +108,7 @@ int main() {
     std::printf("=== ContainerdExecutionSurface production test (ADR-145) ===\n");
 
     {
-        agentengine::ContainerdExecutionSurface surface("docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative());
+        agentengine::ContainerdExecutionSurface surface("docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
 
         // --- Issue #80: which image did this actually run in? Before anything is created the answer is
         //     "the configured reference, and no digest" -- an absent digest means "not known" and must
@@ -299,7 +300,7 @@ int main() {
         // untouched.
         std::string const alive_id = "ae_ces_" + std::to_string(my_pid) + "_" +
                                       std::to_string(my_start_key) + "_reaptest_alive";
-        auto alive_created = backend.create(alive_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative());
+        auto alive_created = backend.create(alive_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(alive_created.has_value(),
               "reap setup: create() a container with THIS process's own pid + start-key");
 
@@ -310,7 +311,7 @@ int main() {
         // start-key mismatch is the whole point of this scenario.
         std::string const wrong_key_id = "ae_ces_" + std::to_string(my_pid) + "_" +
                                           std::to_string(my_start_key + 1) + "_reaptest_wrongkey";
-        auto wrong_key_created = backend.create(wrong_key_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative());
+        auto wrong_key_created = backend.create(wrong_key_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(wrong_key_created.has_value(),
               "reap setup: create() a container with THIS process's pid but a WRONG start-key");
 
@@ -320,7 +321,7 @@ int main() {
         // start-key comparison.
         long const dead_pid = make_confirmed_dead_pid();
         std::string const dead_id = "ae_ces_" + std::to_string(dead_pid) + "_1_reaptest_dead";
-        auto dead_created = backend.create(dead_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative());
+        auto dead_created = backend.create(dead_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(dead_created.has_value(), "reap setup: create() a container with a confirmed-dead pid");
 
         // (d) A container that does NOT carry the ae_ces_ prefix at all -- reap_orphans() must never
@@ -328,7 +329,7 @@ int main() {
         // this process's own pid -- a fixed literal here would collide with a leftover from a prior
         // interrupted run (found by ADR-108's own red-team round).
         std::string const foreign_id = "not-our-prefix-reaptest-" + std::to_string(my_pid);
-        auto foreign_created = backend.create(foreign_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative());
+        auto foreign_created = backend.create(foreign_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(foreign_created.has_value(), "reap setup: create() a non-ae_ces_-prefixed container");
 
         if (alive_created.has_value() && wrong_key_created.has_value() && dead_created.has_value() &&
