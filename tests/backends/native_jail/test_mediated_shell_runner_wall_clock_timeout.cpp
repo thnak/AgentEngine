@@ -83,7 +83,7 @@ int main() {
         MediatedShellRunner shell(*adapter, registry, "work");
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "for x in a b c do echo item done"}, state, ctx));
@@ -101,7 +101,7 @@ int main() {
                                    std::chrono::milliseconds{20});
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto const started = std::chrono::steady_clock::now();
@@ -133,7 +133,7 @@ int main() {
                                    std::chrono::milliseconds{50});
         ExecState state{};
         CapabilitySet caps = full_caps();
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(caps);
 
         auto const started = std::chrono::steady_clock::now();

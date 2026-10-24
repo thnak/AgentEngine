@@ -91,7 +91,7 @@ int main() {
     check(init.has_value(), "setup: MediatedPythonRunner with a real materialized skill mount initializes");
 
     ExecState state{};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.session_nonce = ae_test::kTestSessionNonce;
     ctx.principal = ae_test::kTestPrincipal;
     auto granted = CapabilitySet::grant_root(

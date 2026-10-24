@@ -48,7 +48,7 @@ int main() {
         Capability{cap::FsRead{"work", "", cap::Limit::unbounded()}},
         Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
     });
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.capabilities = agentengine::borrow_capabilities(caps);
     ExecState state{};
     auto run = [&](std::string const& src) { return agentengine::rt::block_on(shell.run(ExecRequest{"shell", src}, state, ctx)); };

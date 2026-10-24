@@ -26,7 +26,7 @@ struct NoClient {
 int main() {
     using B = agentengine::Bound<std::uint64_t>;
     agentengine::SessionChoices const choices{agentengine::AuthoritySource::single_trusted_caller(), B::unbounded(),
-                                              B::at_most(8)};
+                                              B::at_most(8), B::unbounded()};
     agentengine::rt::AgentSession<NoClient> session;
     session.initialize("s", agentengine::Principal{"p", ""}, choices);
 

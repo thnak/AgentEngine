@@ -258,7 +258,7 @@ static_assert(agentengine::ChatClient<FlakyChatClient>);
 int main() {
     // S1: spawn() fails closed when the caller's EffectContext has no live capabilities.
     {
-        EffectContext ctx;  // default-constructed -- capabilities is a null shared_ptr
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // default-constructed -- capabilities is a null shared_ptr
         SessionFactory<CannedChatClient, agentengine::rt::NoSessionState,
                        agentengine::HistoryProvider<agentengine::UnboundedWindow>>
             factory = [](Principal const& p) {
@@ -291,7 +291,7 @@ int main() {
             };
 
         CapabilitySet const parent_caps = CapabilitySet::grant_root({agentengine::cap::Entropy{}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(parent_caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
@@ -310,7 +310,7 @@ int main() {
 
         // S3: asking for MORE than the caller's own live grant fails closed.
         CapabilitySet const empty_caller_caps = CapabilitySet::grant_root({});
-        EffectContext ctx_empty;
+        EffectContext ctx_empty{.deadline = agentengine::Deadline::none()};
         ctx_empty.capabilities = agentengine::borrow_capabilities(empty_caller_caps);
         ctx_empty.principal     = Principal{"caller", "tenant-a"};
         ctx_empty.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c
@@ -348,7 +348,7 @@ int main() {
 
     // S6: a factory returning nullptr is refused, not dereferenced.
     {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};
@@ -567,7 +567,7 @@ int main() {
     {
         using ChildSession = AgentSession<FlakyChatClient, agentengine::rt::NoSessionState,
                                            agentengine::HistoryProvider<agentengine::UnboundedWindow>>;
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         CapabilitySet const caps = CapabilitySet::grant_root({});
         ctx.capabilities = agentengine::borrow_capabilities(caps);
         ctx.principal     = Principal{"caller", "tenant-a"};

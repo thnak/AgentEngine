@@ -580,7 +580,7 @@ struct Workflow {
 // (`sub_workflow_kind_nodes_are_bound()`) is what actually refuses an UNBOUND `sub_workflow` node.
 [[nodiscard]] inline result<void> check_workflow_executable(
         Workflow const& wf, std::vector<agentengine::EffectContext> const& contexts) {
-    static agentengine::EffectContext const kEmptyContext{};
+    static agentengine::EffectContext const kEmptyContext{.deadline = agentengine::Deadline::none()};
     for (std::size_t i = 0; i < wf.executors.size(); ++i) {
         Executor const& e = wf.executors[i];
         if (e.kind != executor_kind::agent) continue;

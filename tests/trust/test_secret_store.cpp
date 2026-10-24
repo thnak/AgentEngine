@@ -36,7 +36,7 @@ int g_failures = 0;
     } while (0)
 
 EffectContext make_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"test-principal", ""};
     return ctx;
 }

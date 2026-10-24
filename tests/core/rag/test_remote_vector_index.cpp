@@ -235,7 +235,7 @@ int main() {
         SuspendingEmbedder embedder{parker};
         embedder.vectors["dark mode"] = {1.0f, 0.0f};
 
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         AE_CHECK(run(index.add_batch({*digest}, {{1.0f, 0.0f}}, ctx)).has_value(), "setup: index seeded");
 
@@ -286,7 +286,7 @@ int main() {
 
         SuspendingEmbedder embedder{parker};
         embedder.vectors["dark mode"] = {1.0f, 0.0f};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         AE_CHECK(run(dense.add_batch({*digest}, {{1.0f, 0.0f}}, ctx)).has_value(), "setup: dense leg seeded");
         AE_CHECK(run(sparse.add_batch({*digest}, {text}, ctx)).has_value(), "setup: sparse leg seeded");
@@ -320,7 +320,7 @@ int main() {
         ae::Mount const mount = ae::rag_corpus_mount(ae::corpus_scope::per_principal, principal, "docs");
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
         ae::DiskCorpusSource source{root};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
 
         {

@@ -92,7 +92,7 @@ int main() {
         cfg.extra_sys_path.push_back(outside.string());
         CapabilitySet const partial = grant_without(cfg, outside.string());
         MediatedPythonRunner runner(std::move(cfg), backend);
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto init = runner.initialize(partial, ctx);
@@ -119,19 +119,19 @@ int main() {
                  "B setup: the runner is created for session 0xB0001");
         ExecState state{};
 
-        EffectContext none;
+        EffectContext none{.deadline = agentengine::Deadline::none()};
         AE_CHECK(refusal(runner, state, none) == "codeact.no_session", "B: a run carrying no session nonce is refused");
 
-        EffectContext first;
+        EffectContext first{.deadline = agentengine::Deadline::none()};
         first.session_nonce = SessionNonce{0xB0001, 1};
         AE_CHECK(ran_ok(runner, state, first), "B (positive control): the bound session's run runs");
 
-        EffectContext other;
+        EffectContext other{.deadline = agentengine::Deadline::none()};
         other.session_nonce = SessionNonce{0xB0002, 1};
         AE_CHECK(refusal(runner, state, other) == "codeact.runner_bound_to_other_session",
                  "B: a second session's nonce is refused");
 
-        EffectContext moved;
+        EffectContext moved{.deadline = agentengine::Deadline::none()};
         moved.session_nonce = SessionNonce{0xB0001, 2};
         AE_CHECK(refusal(runner, state, moved) == "codeact.runner_session_moved",
                  "B: a later epoch of the bound session (clear/restore/fork) is refused");
@@ -153,7 +153,7 @@ int main() {
         SandboxSpec spec;
         spec.mounts.push_back(MountSpec{.source = home, .guest_path = "/home", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{home, "/home", true}}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto h = rt::block_on(backend.create(spec, ctx));
         AE_CHECK(!h.has_value() && h.error().code == "sandbox.deployment_path_writable",
                  "F: a plain sandbox's read-write mount over a registered deployment path is refused");

@@ -455,7 +455,7 @@ AE_JSON_SCHEMA(ExecuteCodeReply, ok, stdout_text, stderr_text, result_repr)
         for (auto const& m : native_jail::MediatedPythonRunner::required_mounts(runner.config())) {
             grants.push_back(m);
         }
-        agentengine::EffectContext init_ctx;
+        agentengine::EffectContext init_ctx{.deadline = agentengine::Deadline::none()};
         init_ctx.session_nonce = session_nonce;  // the runner is created for the session that first reaches it
         auto r = runner.initialize(agentengine::CapabilitySet::grant_root(std::move(grants)), init_ctx);
         if (!r) {
@@ -1359,7 +1359,7 @@ template <class Inner>
     // count is capped.
     actor.initialize(session_id, Principal{"cli-user", ""},
                      SessionChoices{AuthoritySource::single_trusted_caller(), Bound<std::uint64_t>::unbounded(),
-                                    Bound<std::uint64_t>::unbounded()});
+                                    Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     actor.set_capabilities(&held);
     // ADR-034: real token-by-token streaming, traded for failover/circuit-breaker-feedback not
     // applying on this path -- see set_stream_model_calls()'s own comment in agent_session.hpp. A

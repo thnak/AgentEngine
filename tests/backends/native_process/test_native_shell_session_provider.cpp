@@ -119,7 +119,7 @@ constexpr std::string_view kShell = "powershell";
 
 struct Ctx {
     CapabilitySet caps;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     std::vector<run_event_payload::SandboxExec> events;
     explicit Ctx(std::vector<Capability> held, std::string who = "native-owner")
         : caps(CapabilitySet::grant_root(std::move(held))) {

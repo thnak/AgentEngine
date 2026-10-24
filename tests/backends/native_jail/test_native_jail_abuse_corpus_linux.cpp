@@ -75,7 +75,7 @@ int main() {
     std::filesystem::create_directories(work_dir, ec);
     AE_CHECK(!ec, "setup: scratch work_dir exists");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // ---- Case 1: fork bomb (008 SS7) -- contained by ResourceLimits::pids (cgroups v2 pids.max) --
     {

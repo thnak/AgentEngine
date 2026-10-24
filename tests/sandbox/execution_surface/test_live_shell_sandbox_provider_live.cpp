@@ -91,7 +91,7 @@ void ensure_image(std::string const& image) {
 using Provider = LiveShellSandboxProvider<DockerPersistentShellSurface>;
 
 [[nodiscard]] EffectContext owner_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal.id = "live-owner";
     return ctx;
 }

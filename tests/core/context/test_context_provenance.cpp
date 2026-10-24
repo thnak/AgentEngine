@@ -93,7 +93,7 @@ static_assert(HasContextProviderName<HistoryProvider<Window<4>>>);
 
 int main() {
     Principal principal{"p-provenance", ""};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     std::vector<Message> history{
         make_msg(role::user, content_origin::user, "real user turn", "h-1"),

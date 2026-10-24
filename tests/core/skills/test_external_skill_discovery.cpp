@@ -237,7 +237,7 @@ int main() {
         SkillsProvider<> provider(std::move(sources));
         Principal principal{"p-external-skills", ""};
         std::vector<Message> const history;
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         SessionContext session_ctx{"s-external-skills-1", principal, history};
 

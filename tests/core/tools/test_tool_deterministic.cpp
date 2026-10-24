@@ -70,7 +70,7 @@ struct BareTool : ae::Tool<BareTool, ae::Approval<ae::approval_mode::never_requi
 };
 
 ae::EffectContext make_ctx() {
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = ae::Principal{"test-principal", ""};
     ctx.run_id = "adr-212:run:1";
     return ctx;

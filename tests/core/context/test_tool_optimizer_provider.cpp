@@ -227,7 +227,7 @@ int main() {
     Principal const principal{"p-tool-optimizer", ""};
     std::vector<Message> const empty_history;
     SessionContext session_ctx{"s-tool-optimizer", principal, empty_history};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     CapabilitySet const held = CapabilitySet::grant_root({});
     ctx.capabilities = borrow_capabilities(held);
 

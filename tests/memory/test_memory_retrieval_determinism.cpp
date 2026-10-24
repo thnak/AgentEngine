@@ -153,7 +153,7 @@ int main() {
 
     // A FIXED turn -- the same query, asked repeatedly.
     std::vector<ae::Message> const history{make_msg(ae::role::user, "what tea does the user like?", "m-1")};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
     ae::SessionContext session_ctx{"s-h3", principal, history};
 
@@ -209,7 +209,7 @@ int main() {
     AE_CHECK(args.has_value(), "setup: recall args parse");
     std::vector<ae::json::Value> recall_replies;
     for (int i = 0; i < kRepeats; ++i) {
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
             runs[0].tools.front().invoke(*args, tool_ctx));
         AE_CHECK(reply.has_value(), "H3 setup: recall(\"CMake\") repeat " + std::to_string(i) + " succeeds");

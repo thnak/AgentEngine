@@ -38,7 +38,7 @@ void check(bool cond, char const* what) {
 }
 
 EffectContext make_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.trace_id = "kata-backend-linux-test";
     ctx.span_id = "span-1";
     return ctx;

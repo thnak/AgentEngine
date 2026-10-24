@@ -23,7 +23,7 @@ namespace ae_test {
         .principal  = agentengine::Principal{"p-agent", ""},
         .choices    = agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                   meta.token_budget.value_or(B::unbounded()),
-                                                  meta.max_turns.value_or(B::at_most(1))},
+                                                  meta.max_turns.value_or(B::at_most(1)), agentengine::Bound<std::uint64_t>::unbounded()},
         .grants             = std::move(grants),
         .chat_client_grants = {},
         .approve_tools      = std::nullopt,

@@ -47,7 +47,7 @@ void check(bool cond, char const* what) {
 }
 
 [[nodiscard]] EffectContext make_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.run_id = "run-mw-1";
     ctx.turn_index = 0;
     return ctx;

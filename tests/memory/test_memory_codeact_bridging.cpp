@@ -96,7 +96,7 @@ int main() {
         req.call_id    = "c1";
         req.arguments  = json::Value::make_object({{"query", json::Value::make_string("timezone")}});
         // ADR-244 §2.4: the bridge reaches at most what the caller holds, so the caller holds the read grant.
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ctx.capabilities = std::make_shared<CapabilitySet const>(CapabilitySet::grant_root({Capability{read_cap}}));
 

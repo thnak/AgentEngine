@@ -344,8 +344,7 @@ inline void run_worker(std::shared_ptr<agentengine::rt::WorkflowSupervisor> inne
     // correctly cancels the inner run at the first opportunity. cancel()'s own body takes no lock.
     std::stop_callback bridge(ctx.cancellation, [inner] { inner->cancel(); });
 
-    if (ctx.deadline != std::chrono::steady_clock::time_point{} &&
-        std::chrono::steady_clock::now() >= ctx.deadline) {
+    if (ctx.deadline.expired(std::chrono::steady_clock::now())) {
         producer.fail(agentengine::error{
             agentengine::failure_class::resource,
             "workflow chat call's deadline had already passed before the call could start",

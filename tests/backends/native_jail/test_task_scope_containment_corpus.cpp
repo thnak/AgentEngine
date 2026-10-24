@@ -89,7 +89,7 @@ int main() {
         Capability{cap::FsWrite{"work", "", cap::Limit::unbounded(), cap::Limit::unbounded()}},
     });
     ExecState state{};
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.capabilities = agentengine::borrow_capabilities(caps);
 
     for (std::size_t i = 0; i < kTaskScopeCorpusSize; ++i) {

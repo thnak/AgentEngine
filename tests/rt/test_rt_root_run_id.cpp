@@ -271,6 +271,7 @@ int main() {
         req.root_run_id  = "ROOT:run:3";
         req.token_budget = agentengine::Bound<std::uint64_t>::unbounded();
         req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+        req.call_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded();
         req.authority_source = agentengine::authority_mode::single_trusted_caller;
         std::shared_ptr<RecordingClient::State> child_state;
         auto reply = drive(rt::run_child_agent_session<RecordingClient>(
@@ -332,7 +333,7 @@ int main() {
         wf2.start     = "a";
         wf2.output_selection.push_back("a");
         wf2.bound.max_rounds = 2;
-        EffectContext stamped;
+        EffectContext stamped{.deadline = agentengine::Deadline::none()};
         stamped.root_run_id = "OUTER:run:1";
         rt::WorkflowSupervisor sup2;
         sup2.initialize(wf2, {rt::agent_session_as_executor_body(a3)}, {stamped});

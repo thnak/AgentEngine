@@ -1076,7 +1076,7 @@ private:
     // One chunk waiting for submission at the end of the round that built it (§3.3 step 7).
     struct BatchChunk {
         agentengine::BatchBackend*                 backend = nullptr;
-        agentengine::EffectContext                 ctx;
+        agentengine::EffectContext                 ctx{.deadline = agentengine::Deadline::none()};
         std::vector<Delivery>                      deliveries;
         std::vector<agentengine::ChatRequest>      requests;
     };

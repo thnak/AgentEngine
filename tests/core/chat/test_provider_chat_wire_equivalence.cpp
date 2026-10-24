@@ -356,7 +356,7 @@ int main() {
     InMemorySecretStore store;
     store.set("provider-key", "sk-loopback-server-ignores-this");
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"provider-key", std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"test-principal", ""};
     ctx.capabilities = borrow_capabilities(held);
     auto const loopback = [](std::string_view, std::uint16_t port) -> result<sandbox::VerifiedEndpoint> {

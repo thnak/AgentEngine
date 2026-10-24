@@ -404,7 +404,7 @@ int main() {
     InMemorySecretStore store;
     store.set("openai-api-key", kCanary);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"openai-api-key", std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 

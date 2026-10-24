@@ -114,7 +114,7 @@ int main() {
     session.initialize("s-multi-turn", Principal{"p-demo", ""},
                        agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                    agentengine::Bound<std::uint64_t>::unbounded(),
-                                                   agentengine::Bound<std::uint64_t>::unbounded()});
+                                                   agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
 
     // Turn 1, on the session.

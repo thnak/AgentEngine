@@ -105,7 +105,7 @@ int main() {
         AE_CHECK(init.has_value(), "G1-setup: a MediatedPythonRunner with a tool bridge initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
@@ -200,7 +200,7 @@ int main() {
         AE_CHECK(init.has_value(), "G1-N1: setup -- a second interpreter initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
@@ -232,7 +232,7 @@ int main() {
         AE_CHECK(init.has_value(), "G1-N2: setup -- a third interpreter (no tool bridge) initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.
@@ -266,7 +266,7 @@ int main() {
         AE_CHECK(init.has_value(), "G2-R1: setup -- a fourth interpreter (no initial bridge) initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         // ADR-244 §2.4: the caller holds what the bridged tools need; the bridge never reaches more.

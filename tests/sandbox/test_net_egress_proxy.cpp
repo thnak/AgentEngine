@@ -475,7 +475,7 @@ void gate_g2() {
         hr.method  = row.req.method;
         hr.target  = row.req.path;
         hr.headers = row.req.headers;
-        auto b = agentengine::rt::block_on(agentengine::rt::http_request(agentengine::rt::HttpContext{}, std::move(hr)));
+        auto b = agentengine::rt::block_on(agentengine::rt::http_request(agentengine::rt::HttpContext{.options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}}, std::move(hr)));
         check_s(!b.ok() && b.error == agentengine::rt::http_error::invalid_request,
                 std::string("G2(b) rt::http_request refuses (invalid_request): ") + row.row);
         if (!a.has_value()) {

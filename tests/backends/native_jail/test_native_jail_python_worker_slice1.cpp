@@ -75,7 +75,7 @@ int main() {
         AE_CHECK(init.has_value(), "G-Q1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
 
@@ -137,7 +137,7 @@ int main() {
         auto init = ae_test::initialize_runner(runner);
         AE_CHECK(init.has_value(), "G-Q1b setup: runner initializes a real jailed worker process");
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "while True:\n    pass\n"};
@@ -173,7 +173,7 @@ int main() {
         AE_CHECK(init.has_value(), "G-Q2 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
 

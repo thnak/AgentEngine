@@ -98,7 +98,7 @@ int main() {
     };
     // Total = 10 tokens. Budget = 5: exceeded -> assemble_context() itself must fail (2026-08-23,
     // Finding E / ADR-075), not silently trim h-1/h-2/h-3 and succeed.
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     auto build_contributors = [&]() {
         std::vector<ae::ContextProviderDescriptor> contributors;

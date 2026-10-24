@@ -62,7 +62,7 @@ int main() {
     std::filesystem::create_directories(work_dir, ec);
     AE_CHECK(!ec, "setup: scratch work_dir exists");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     for (std::size_t i = 0; i < kAbuseCorpusSize; ++i) {
         auto const& c = kAbuseCorpus[i];

@@ -116,7 +116,7 @@ struct CountingMiddleware {
 }  // namespace
 
 int main() {
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // --- §3 claim: a turn middleware using only ToolSurfaceView's public API cannot cause a ------
     // surviving tool's actually-dispatched invoke() to differ from what fan-out produced.

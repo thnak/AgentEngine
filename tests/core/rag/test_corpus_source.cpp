@@ -131,7 +131,7 @@ int main() {
         ae::cap::FsRead const read_cap{mount.mount_id, "", ae::cap::Limit::unbounded()};
 
         ae::DiskCorpusSource source{root};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
 
         std::unordered_map<std::string, std::string> const empty_prior_hashes;
@@ -361,7 +361,7 @@ int main() {
         ae::cap::FsWrite const write_cap{mount.mount_id, "", ae::cap::Limit::unbounded(), ae::cap::Limit::unbounded()};
 
         ae::DiskCorpusSource source{root};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
 
         auto first = ae::test_support::run_task_sync<
@@ -467,7 +467,7 @@ int main() {
         ae::InMemoryWorktreeObjectStore object_store;
         ae::rt::InMemoryAppendLogStore ref_store;
         ae::DiskCorpusSource source{root};
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
 
         auto result = ae::test_support::run_task_sync<

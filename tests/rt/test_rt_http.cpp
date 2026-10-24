@@ -305,8 +305,8 @@ private:
 
 bool allow_loopback(pal::IpAddress const& a) { return a == pal::IpAddress::loopback_v4(); }
 
-HttpContext context(pal::Reactor* reactor, OffloadPool* dns, HttpOptions options = {}) {
-    HttpContext c;
+HttpContext context(pal::Reactor* reactor, OffloadPool* dns, HttpOptions options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}) {
+    HttpContext c{.options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}};
     c.reactor  = reactor;
     c.dns_pool = dns;
     c.policy   = allow_loopback;
@@ -771,7 +771,7 @@ int main() {
 
         // H3 ---------------------------------------------------------------------------------------------------
         {
-            HttpOptions o;
+            HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             o.limits.max_body_bytes = 1000;
             ScriptServer declared({say("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n"), hold(2000)});
             Timed        d = bounded_request(context(reactor.get(), &dns, o), get(declared.port()));
@@ -791,13 +791,13 @@ int main() {
             Timed        c = bounded_request(context(reactor.get(), &dns, o), get(ch.port()));
             check(c.r.error == http_error::body_too_large, "H3: a chunked body over the cap is body_too_large");
 
-            HttpOptions hdr;
+            HttpOptions hdr{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             hdr.limits.max_header_bytes = 256;
             ScriptServer longhead({say("HTTP/1.1 200 OK\r\nX-Pad: " + std::string(4000, 'h') + "\r\n\r\n"), hold(2000)});
             Timed        h = bounded_request(context(reactor.get(), &dns, hdr), get(longhead.port()));
             check(h.r.error == http_error::header_too_large, "H3: a head over max_header_bytes is header_too_large");
 
-            HttpOptions big;
+            HttpOptions big{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             big.limits.max_body_bytes = std::uint64_t{1} << 40;
             check(big.limits.effective_body_cap() == HttpLimits::kHardBodyCeilingBytes,
                   "H3: max_body_bytes can only narrow the 16 MiB hard ceiling, never widen it");
@@ -824,7 +824,7 @@ int main() {
             // R2: interim heads + final head together over the head budget fail; each alone is under it.
             std::string const interim = "HTTP/1.1 102 Processing\r\nX-Pad: " + std::string(60, 'p') + "\r\n\r\n";
             std::string const fin     = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-P: " + std::string(60, 'q') + "\r\n\r\n";
-            HttpOptions       tight;
+            HttpOptions       tight{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             tight.limits.max_header_bytes = 300;
             ScriptServer r2({say(interim + interim + interim + fin), hold(2000)});
             Timed        t2 = bounded_request(context(reactor.get(), &dns, tight), get(r2.port()));
@@ -839,21 +839,21 @@ int main() {
             // counts only the body phase, passes this flood.
             std::string const flood_head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Pad: " + std::string(800, 'h') + "\r\n\r\n";
             std::string const flood_rest = chunked({std::string(900, 'b')}, "X-T: " + std::string(600, 't') + "\r\n");
-            HttpOptions small;
+            HttpOptions small{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             small.limits.max_response_bytes = 2000;
             ScriptServer r3({say(flood_head), wait_ms(100), say(flood_rest), hold(2000)});
             Timed        t3 = bounded_request(context(reactor.get(), &dns, small), get(r3.port()));
             check(t3.r.error == http_error::response_too_large && t3.r.code == "net.response_too_large" &&
                       is_resource_error(t3.r.error) && t3.r.message.find("2000") != std::string::npos,
                   "H18 R3: head + body + trailers over an explicit total fail (counted on the client)");
-            HttpOptions roomy;
+            HttpOptions roomy{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             roomy.limits.max_response_bytes = 100000;
             ScriptServer r3ok({say(flood_head), wait_ms(100), say(flood_rest), hold(2000)});
             check(bounded_request(context(reactor.get(), &dns, roomy), get(r3ok.port())).r.ok(),
                   "H18 R3 control: the same flood under a roomy total succeeds");
 
             // R4: a raw UINT64_MAX body cap must not wrap the derived total.
-            HttpOptions huge;
+            HttpOptions huge{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             huge.limits.max_body_bytes = std::numeric_limits<std::uint64_t>::max();
             check(huge.limits.effective_response_cap() ==
                       HttpLimits::kHardBodyCeilingBytes + 2u * huge.limits.max_header_bytes,
@@ -863,7 +863,7 @@ int main() {
             check(t4.r.ok() && t4.r.body == "hello", "H18 R4: a normal response succeeds under max_body_bytes = UINT64_MAX");
 
             // R5: 0 means 0.
-            HttpOptions zero;
+            HttpOptions zero{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             zero.limits.max_response_bytes = 0;
             ScriptServer r5({say("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), hold(2000)});
             Timed        t5 = bounded_request(context(reactor.get(), &dns, zero), get(r5.port()));
@@ -973,7 +973,7 @@ int main() {
 
         // H10 ----------------------------------------------------------------------------------------------------
         {
-            HttpOptions o;
+            HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             o.idle_timeout = 200ms;
             ScriptServer stall({say("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc"), hold(5000)});
             Timed        t = bounded_request(context(reactor.get(), &dns, o), get(stall.port()));
@@ -983,8 +983,8 @@ int main() {
                       std::to_string(t.took.count()) + " ms)");
             check(wait_until([&] { return stall.saw_close() == 1; }, 3s), "H10: ... and the connection is closed");
 
-            HttpOptions total;
-            total.total_timeout = 300ms;
+            HttpOptions total{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
+            total.total_timeout_ms = agentengine::Bound<std::uint64_t>::at_most(300);
             total.idle_timeout  = 2s;
             std::vector<Step> trickle{say("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")};
             for (int i = 0; i < 60; ++i) {
@@ -1000,8 +1000,8 @@ int main() {
 
         // H11 ----------------------------------------------------------------------------------------------------
         {
-            HttpOptions o;
-            o.total_timeout = 3s;  // the safety answer a broken stop would get instead
+            HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
+            o.total_timeout_ms = agentengine::Bound<std::uint64_t>::at_most(3000);  // the safety answer a broken stop would get instead
             ScriptServer srv({say("HTTP/1.1 200 OK\r\n\r\npartial"), hold(5000)});
             std::stop_source src;
             std::thread      stopper([&] {
@@ -1028,7 +1028,7 @@ int main() {
 
         // H12 ----------------------------------------------------------------------------------------------------
         {
-            HttpOptions o;
+            HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             o.consumer_stall_timeout = 150ms;
             ScriptServer srv({say("HTTP/1.1 200 OK\r\n\r\nfirst"), hold(5000)});
             HttpStreamResponse h = block_on(open_of(context(reactor.get(), &dns, o), get(srv.port())));
@@ -1041,7 +1041,7 @@ int main() {
             HttpBodyChunk again = block_on(next_of(&h.body));
             check(again.error == http_error::consumer_stalled, "H12: consumer_stalled is sticky");
 
-            HttpOptions active;
+            HttpOptions active{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             active.consumer_stall_timeout = 250ms;
             std::vector<Step> steady{say("HTTP/1.1 200 OK\r\n\r\n")};
             for (int i = 0; i < 10; ++i) {
@@ -1060,7 +1060,7 @@ int main() {
             check(r.events.size() == 6 && r.last.status == sse_status::end,
                   "H12: an SSE consumer draining queued events 100 ms apart (600 ms total) is not stalled");
 
-            HttpOptions  quick;
+            HttpOptions  quick{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
             quick.consumer_stall_timeout = 150ms;
             ScriptServer s4({say("HTTP/1.1 200 OK\r\n\r\n" + many), hold(5000)});
             SseFirstThenWait w = block_on(sse_first_then(context(reactor.get(), &dns, quick), get(s4.port()), 400));

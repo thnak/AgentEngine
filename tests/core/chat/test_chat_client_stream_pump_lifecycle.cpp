@@ -262,7 +262,7 @@ int main() {
     InMemorySecretStore store;
     store.set("provider-key", "sk-loopback-server-ignores-this");
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"provider-key", std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = Principal{"pump-lifecycle", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 
@@ -348,7 +348,7 @@ int main() {
         if (server.ok()) {
             auto             client = make_client(server, store);
             std::stop_source src;
-            EffectContext    cctx;
+            EffectContext    cctx{.deadline = agentengine::Deadline::none()};
             cctx.principal    = ctx.principal;
             cctx.capabilities = agentengine::borrow_capabilities(held);
             cctx.cancellation = src.get_token();

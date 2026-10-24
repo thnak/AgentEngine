@@ -146,7 +146,7 @@ int main() {
         NeverResolveStore store;
         QdrantVectorIndex<NeverResolveStore> index("127.0.0.1", 1, "test-collection",
                                                      ae::SecretRef{"unused"}, store);
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         float const q[2] = {1.0f, 0.0f};
         auto result = ae::test_support::run_task_sync<ae::result<std::vector<ae::ScoredId>>>(
             index.search(std::span<float const>(q, 2), /*k=*/0, ctx));

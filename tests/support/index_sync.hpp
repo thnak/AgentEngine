@@ -24,25 +24,25 @@ namespace agentengine::test_support {
 template <VectorIndex Idx>
 result<void> sync_add_batch(Idx& idx, std::vector<std::string> const& ids,
                             std::vector<std::vector<float>> const& vectors) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     return rt::block_on(idx.add_batch(ids, vectors, ctx));
 }
 
 template <SparseIndex Idx>
 result<void> sync_add_batch(Idx& idx, std::vector<std::string> const& ids, std::vector<std::string> const& texts) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     return rt::block_on(idx.add_batch(ids, texts, ctx));
 }
 
 template <VectorIndex Idx>
 result<std::vector<ScoredId>> sync_search(Idx& idx, std::span<float const> query, std::size_t k) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     return rt::block_on(idx.search(query, k, ctx));
 }
 
 template <SparseIndex Idx>
 result<std::vector<ScoredId>> sync_search(Idx& idx, std::string const& query, std::size_t k) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     return rt::block_on(idx.search(query, k, ctx));
 }
 
@@ -50,7 +50,7 @@ result<std::vector<ScoredId>> sync_search(Idx& idx, std::string const& query, st
 template <class Idx>
     requires VectorIndex<Idx> || SparseIndex<Idx>
 bool sync_contains(Idx& idx, std::string const& id) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     auto r = rt::block_on(idx.contains(id, ctx));
     return r.has_value() && *r;
 }

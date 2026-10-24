@@ -167,7 +167,7 @@ agentengine::EffectContext WorkflowSupervisor::batch_context(std::size_t executo
     // A COPY, with this run's cancellation wired on, exactly as synchronous dispatch hands a body its context
     // (§5 finding 10) -- a callback can never mutate the stored context.
     agentengine::EffectContext ctx =
-        executor_index < contexts_.size() ? contexts_[executor_index] : agentengine::EffectContext{};
+        executor_index < contexts_.size() ? contexts_[executor_index] : agentengine::EffectContext{.deadline = agentengine::Deadline::none()};
     ctx.cancellation = cancellation_token();
     if (ctx.root_run_id.empty()) ctx.root_run_id = run_id_;  // ADR-241 §8.4: same stamp as synchronous dispatch
     return ctx;
@@ -191,7 +191,7 @@ void WorkflowSupervisor::gather_batch_candidates(std::vector<Delivery>& exec_del
         std::string                       principal_id;
         std::string                       tenant_id;
         agentengine::CapabilitySet const* caps = nullptr;
-        agentengine::EffectContext        ctx;
+        agentengine::EffectContext        ctx{.deadline = agentengine::Deadline::none()};
         std::vector<Candidate>            items;
     };
 

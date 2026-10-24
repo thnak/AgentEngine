@@ -595,6 +595,8 @@ template <agentengine::rt::AppendLogStore StoreT>
     }
     child_request.token_budget = budget;
     child_request.max_turns    = *target->metadata.max_turns;
+    // ADR-244 §2.2: the child never outlives this call -- its per-call timeout is what is left of the caller's deadline.
+    child_request.call_timeout_ms = ctx.deadline.as_timeout_ms(std::chrono::steady_clock::now());
     // ADR-244 §2.3 (slice 3c): the child runs under the caller's source; under `per_request` its one run is admitted
     // against the caller's expiry. Both are engine-set on `ctx` by the caller's session (I3), never by a tool.
     child_request.authority_source     = ctx.authority_source;

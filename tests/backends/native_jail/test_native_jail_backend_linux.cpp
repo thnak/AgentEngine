@@ -65,7 +65,7 @@ int main() {
     spec.limits.output_bytes = 1024 * 1024;
 
     LinuxNativeJailBackend backend;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     auto handle = agentengine::rt::block_on(backend.create(spec, ctx));
     AE_CHECK(handle.has_value(), "C2-Linux: create() succeeds given a real mount and ResourceLimits");

@@ -200,6 +200,7 @@ art::ChildSpawnRequest child_request(ae::CapabilitySet caps, std::optional<ae::a
     req.principal            = kCaller;
     req.token_budget         = BoundU::at_most(1000);
     req.max_turns            = BoundU::at_most(4);
+    req.call_timeout_ms      = BoundU::unbounded();
     req.authority_source     = source;
     req.authority_expires_at = expires_at;
     return req;
@@ -253,7 +254,7 @@ struct DirectSpawn {
     }
     ae::result<art::AgentSpawnReply> spawn(std::optional<ae::authority_mode> source, std::optional<ae::Expiry> expiry,
                                            std::optional<u64> remaining) {
-        ae::EffectContext ctx;
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities           = std::shared_ptr<ae::CapabilitySet const>(&held, [](ae::CapabilitySet const*) {});
         ctx.principal              = kCaller;
         ctx.authority_source       = source;
@@ -324,6 +325,12 @@ int main() {
         art::ChildSpawnRequest nt = child_request(minted, ae::authority_mode::single_trusted_caller, std::nullopt);
         nt.max_turns.reset();
         check(code_of(run_child(std::move(nt), state)) == "choice.missing.spawn.max_turns", "A3: no turn cap is refused");
+        // ADR-244 §2.2: the child's per-call timeout is stated too; the positive control is every other check here
+        // passing with it set.
+        art::ChildSpawnRequest nc = child_request(minted, ae::authority_mode::single_trusted_caller, std::nullopt);
+        nc.call_timeout_ms.reset();
+        check(code_of(run_child(std::move(nc), state)) == "choice.missing.spawn.call_timeout_ms",
+              "A3: no per-call timeout is refused");
         auto no_expiry = run_child(child_request(minted, ae::authority_mode::per_request, std::nullopt), state);
         check(code_of(no_expiry) == "choice.missing.spawn.authority_expires_at",
               "A3: per_request without the caller's expiry is refused");
@@ -431,7 +438,7 @@ int main() {
         ae::Usage charged{};
         auto make_ctx = [&](std::optional<ae::authority_mode> source, std::optional<ae::Expiry> expiry,
                             std::optional<u64> remaining) {
-            ae::EffectContext ctx;
+            ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.capabilities = ae::borrow_capabilities(parent_caps);
             ctx.principal    = kCaller;
             ctx.authority_source       = source;

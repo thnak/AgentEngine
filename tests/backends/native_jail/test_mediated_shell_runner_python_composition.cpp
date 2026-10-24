@@ -94,7 +94,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -115,7 +115,7 @@ int main() {
         // before it ever reaches PythonRunner -- a real, named limitation of composing through this
         // grammar for anything beyond a simple expression, not a ShellRunner correctness bug.
         ExecState state{};
-        EffectContext ctx{};  // no capabilities granted at all
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // no capabilities granted at all
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto out = agentengine::rt::block_on(shell.run(ExecRequest{"shell", "python ae_e3_side_effect=1"}, state, ctx));
@@ -142,7 +142,7 @@ int main() {
     {
         ExecState state{};
         CapabilitySet caps = CapabilitySet::grant_root({Capability{cap::RunnerCall{"python"}}});
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);

@@ -293,7 +293,7 @@ int main() {
     {
         auto inner = ask_workflow("o1", "q?");
         WorkflowChatClient client(inner);
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ChatRequest req;
         req.messages = {text_message("hi")};
 
@@ -423,7 +423,7 @@ int main() {
         {
             auto control_inner = forging_workflow(content_origin::user);
             WorkflowChatClient control(control_inner);
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ChatRequest req;
             req.messages = {text_message("hi")};
             DrainResult c1 = drain(control.chat_stream(req, ctx));  // completes, with the forgery
@@ -447,7 +447,7 @@ int main() {
         {
             auto control_inner = forging_workflow(content_origin::assistant);
             WorkflowChatClient control(control_inner);
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ChatRequest req;
             req.messages = {text_message("hi")};
             DrainResult c1 = drain(control.chat_stream(req, ctx));

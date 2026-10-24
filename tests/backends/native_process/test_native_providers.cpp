@@ -83,7 +83,7 @@ int main() {
     // ---- ADR-070 property 2) ------------------------------------------------------------------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};  // capabilities left null -- no grant at all
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};  // capabilities left null -- no grant at all
         SessionContext sc{"s1", principal, empty_history};
         auto contribution = on_context_of(provider, sc, ctx);
         AE_CHECK(contribution.has_value(), "T1: on_context() itself does not error with no grant");
@@ -98,7 +98,7 @@ int main() {
     // ---- T2 (positive control): a held, matching grant seeds instructions + exactly one tool ----
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc{"s2", principal, empty_history};
@@ -120,7 +120,7 @@ int main() {
     // ---- never used, even though it is a real, held cap::NativeExec grant ------------------------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");  // owns "cmd" only
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"node", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         AE_CHECK(!provider.is_available(ctx),
@@ -132,7 +132,7 @@ int main() {
     // ---- pattern matches exactly (defense in depth against a wiring mistake) ---------------------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "OTHER_MOUNT", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         AE_CHECK(!provider.is_available(ctx),
@@ -142,7 +142,7 @@ int main() {
     // ---- S5 (positive control): a real end-to-end invoke through the tool's own closure -----------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::at_most(10000), cap::Limit::at_most(10000), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc{"s5", principal, empty_history};
@@ -173,14 +173,14 @@ int main() {
     // ---- (per-invocation re-check, not trusting on_context()'s earlier scan) ----------------------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext granted_ctx{};
+        EffectContext granted_ctx{.deadline = agentengine::Deadline::none()};
         granted_ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc{"s6", principal, empty_history};
         auto contribution = on_context_of(provider, sc, granted_ctx);
         AE_CHECK(contribution.has_value() && contribution->tools.size() == 1, "R-S6 setup");
 
-        EffectContext ungranted_ctx{};  // deliberately no capabilities -- simulates a revoked/never-held grant
+        EffectContext ungranted_ctx{.deadline = agentengine::Deadline::none()};  // deliberately no capabilities -- simulates a revoked/never-held grant
         auto args_json = json::Value::make_object(
             {{"program", json::Value::make_string("cmd")}, {"args", json::Value::make_array({})}});
         if (contribution.has_value() && contribution->tools.size() == 1) {
@@ -194,7 +194,7 @@ int main() {
     // ---- R-S7: worktree escape via argv is rejected end-to-end through the tool ---------------
     {
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc{"s7", principal, empty_history};
@@ -231,7 +231,7 @@ int main() {
         { std::ofstream(outside_file) << marker << "\n"; }
 
         NativeShellProvider provider({"cmd"}, mount_root, "workdir");
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = std::make_shared<CapabilitySet>(CapabilitySet::grant_root(
             {Capability{cap::NativeExec{"cmd", "workdir", cap::Limit::at_most(10000), cap::Limit::at_most(10000), cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}}));
         SessionContext sc{"s8", principal, empty_history};

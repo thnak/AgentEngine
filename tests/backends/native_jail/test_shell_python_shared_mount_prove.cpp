@@ -109,7 +109,7 @@ int main() {
     // === 1. Shell writes a real file; Python (invoked THROUGH shell, same ctx) reads it back =======
     {
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -159,7 +159,7 @@ int main() {
     // === 2. Python writes a real file; shell reads it back ==========================================
     {
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.capabilities = agentengine::borrow_capabilities(caps);
@@ -228,7 +228,7 @@ int main() {
     // sharing AUTHORITY, and this test confirms the two stay independent. ============================
     {
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         CapabilitySet read_only_caps =

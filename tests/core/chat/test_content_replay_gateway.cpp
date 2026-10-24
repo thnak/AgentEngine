@@ -97,7 +97,7 @@ ContentReplayTrigger make_bad_text_trigger(std::shared_ptr<int> trigger_calls) {
 }  // namespace
 
 int main() {
-    EffectContext ctx{};
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // --- Baseline: a non-triggering response passes through untouched, exactly one inner call. -----
     {

@@ -30,7 +30,7 @@ inline agentengine::Principal const kTestPrincipal{"ae-test-host", ""};
 // Creates the runner for the session `nonce` names (the runner binds it at creation).
 [[nodiscard]] inline agentengine::result<void> initialize_runner(agentengine::native_jail::MediatedPythonRunner& runner,
                                                                  agentengine::SessionNonce nonce = kTestSessionNonce) {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.session_nonce = nonce;
     ctx.principal = kTestPrincipal;
     return runner.initialize(python_runner_host_grant(runner.config()), ctx);

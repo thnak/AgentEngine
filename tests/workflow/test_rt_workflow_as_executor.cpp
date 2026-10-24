@@ -149,7 +149,7 @@ struct ChargeLog {
     int charges = 0;
     agentengine::Usage total{};
     [[nodiscard]] agentengine::EffectContext context() {
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.charge_delegated_usage = [this](agentengine::Usage const& u, std::uint64_t) {
             ++charges;
             total.input_tokens += u.input_tokens;
@@ -180,7 +180,7 @@ int main() {
         result<ExecutorBody> wrapped = workflow_as_executor_body(sup);
         check(wrapped.has_value(), "W1: construction succeeds for a request_port-free graph");
         if (wrapped) {
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(out.has_value(), "W1: the wrapped call succeeds");
             if (out) {
@@ -200,7 +200,7 @@ int main() {
         result<ExecutorBody> wrapped = workflow_as_executor_body(sup);
         check(wrapped.has_value(), "W2 setup: construction succeeds");
         if (wrapped) {
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             result<ExecutorOutcome> first  = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
             result<ExecutorOutcome> second = agentengine::rt::block_on((*wrapped)(text_message("call"), ctx));
             check(first.has_value() && second.has_value(), "W2: both calls succeed");
@@ -268,7 +268,7 @@ int main() {
         result<ExecutorBody> wrapped = workflow_as_executor_body(sup);
         check(wrapped.has_value(), "W4 setup: construction succeeds (no request_port here)");
         if (wrapped) {
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("in"), ctx));
             check(!out.has_value(), "W4: a routing_failed inner run fails closed, not a default value");
             if (!out) {
@@ -358,7 +358,7 @@ int main() {
         result<ExecutorBody> wrapped = make_wrapped_body();
         check(wrapped.has_value(), "W6: the factory returns successfully");
         if (wrapped) {
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             result<ExecutorOutcome> out = agentengine::rt::block_on((*wrapped)(text_message("factory"), ctx));
             check(out.has_value() && text_of(out->payload) == "factory>greet>shout",
                   "W6: the body still works correctly after its local WorkflowSupervisor's own "

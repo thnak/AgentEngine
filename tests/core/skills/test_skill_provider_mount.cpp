@@ -71,7 +71,7 @@ int main() {
             "origin-b", {make_skill("csv-tools", "Parse CSV files.", "Also use execute_code.\n")})));
 
         SkillsProvider<> provider(std::move(sources));
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         SessionContext session_ctx{"s-skills-1", principal, history};
 
@@ -134,7 +134,7 @@ int main() {
             "origin-b", {make_skill("shared-name", "The second one.", "Body B.\n")})));
 
         SkillsProvider<> provider(std::move(sources));
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         SessionContext session_ctx{"s-skills-2", principal, history};
 
@@ -159,7 +159,7 @@ int main() {
             "origin-a", {make_skill("stable-skill", "Should only be mounted once.", "Body.\n")})));
 
         SkillsProvider<> provider(std::move(sources));
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         SessionContext session_ctx{"s-skills-3", principal, history};
 
@@ -187,7 +187,7 @@ int main() {
                                         "execute_code read_file", "Body B.\n")})));
 
         SkillsProvider<> provider(std::move(sources));
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         SessionContext session_ctx{"s-skills-4", principal, history};
 

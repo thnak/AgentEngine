@@ -213,7 +213,7 @@ int main() {
                   "U5: an MCP-sourced descriptor is gated behind cap::ToolCall for its own exact "
                   "name -- connecting the client grants no ambient authority to call it (I2)");
 
-            ae::EffectContext ctx{};
+            ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             if (echo_descriptor) {
                 auto called = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(echo_descriptor->invoke(
                     json::Value::make_object({{"text", json::Value::make_string("hello")}}), ctx));

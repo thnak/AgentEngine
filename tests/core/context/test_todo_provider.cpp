@@ -39,7 +39,7 @@ int main() {
     namespace json = ae::json;
     ae::Principal const principal{"p-todo", ""};
     std::vector<ae::Message> history{make_msg(ae::role::user, "plan the release", "m-1")};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
     ae::SessionContext session_ctx{"s-todo", principal, history};
 
@@ -251,7 +251,7 @@ int main() {
 
         std::vector<ae::Message> combined_history{make_msg(ae::role::user, "ship it", "m-2")};
         ae::SessionContext combined_ctx{"s-todo", principal, combined_history};
-        ae::EffectContext combined_effect_ctx{};
+        ae::EffectContext combined_effect_ctx{.deadline = agentengine::Deadline::none()};
         combined_effect_ctx.principal = principal;
 
         auto assembled_result = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(

@@ -79,7 +79,7 @@ int main() {
     InMemorySecretStore store;
     store.set("key", "sk-loopback");
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"key", std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = Principal{"p", ""};
     ctx.capabilities = borrow_capabilities(held);
 

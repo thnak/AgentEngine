@@ -164,7 +164,7 @@ int main() {
     session.initialize("s-approval", Principal{"p-demo", ""},
                        agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                    agentengine::Bound<std::uint64_t>::unbounded(),
-                                                   agentengine::Bound<std::uint64_t>::unbounded()});
+                                                   agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     CapabilitySet const held = CapabilitySet::grant_root({});
     session.set_capabilities(&held);

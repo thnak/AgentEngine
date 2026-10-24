@@ -100,7 +100,7 @@ int main() {
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a 'work' mount initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
@@ -146,7 +146,7 @@ int main() {
         // -- quota_bytes axis: a 10-byte cap on the 'quota' mount. --------------------------------
         {
             ExecState state{};
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.session_nonce = ae_test::kTestSessionNonce;
             ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
@@ -185,7 +185,7 @@ int main() {
         // -- file_count_cap axis: a 1-file cap on the 'count' mount. -------------------------------
         {
             ExecState state{};
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.session_nonce = ae_test::kTestSessionNonce;
             ctx.principal = ae_test::kTestPrincipal;
             auto caps = CapabilitySet::grant_root({
@@ -233,7 +233,7 @@ int main() {
         AE_CHECK(init.has_value(), "G4-setup: a MediatedPythonRunner with a blocked-net tool bridge initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         // No cap::NetOut granted at all. ADR-244 §2.4: the caller does hold what the bridged tool itself needs

@@ -110,6 +110,7 @@
 #include <utility>
 #include <vector>
 
+#include "agentengine/core/bound.hpp"
 #include "agentengine/pal/reactor.hpp"
 #include "agentengine/pal/reactor_tcp.hpp"
 #include "agentengine/rt/dns.hpp"
@@ -268,7 +269,9 @@ struct HttpRequest {
 
 // ae-naming-lint: allow HttpOptions — ADR-237 §6.3: new reactor vocabulary, 027 §4 row added when the ADR is Judged
 struct HttpOptions {
-    std::chrono::milliseconds total_timeout{0};               // whole exchange, incl. a streamed body; 0 = none
+    // ADR-244 §2.2: STATED, no default -- `at_most(ms)` or the named `unbounded()` (no timer), never a `0` that means none.
+    // Whole exchange, incl. a streamed body.
+    agentengine::Bound<std::uint64_t> total_timeout_ms;
     std::chrono::milliseconds idle_timeout{90'000};           // per connect/handshake/write/read; 0 = none
     std::chrono::milliseconds consumer_stall_timeout{90'000};  // streams only; 0 = none
     std::size_t               read_chunk_bytes = 16u * 1024u;  // one read's buffer (op-owned)
@@ -282,8 +285,8 @@ struct HttpOptions {
 struct HttpContext {
     pal::Reactor*    reactor  = nullptr;
     OffloadPool*     dns_pool = nullptr;  // the DEDICATED DNS pool (§4.6), e.g. Runtime's
-    AddressPolicy    policy;              // required; host code, never model output (I3). Empty: `no_policy`
-    HttpTlsConnector tls;                 // required for https (rt/http_tls.hpp); empty: `tls_unavailable`
+    AddressPolicy    policy{};            // required; host code, never model output (I3). Empty: `no_policy`
+    HttpTlsConnector tls{};               // required for https (rt/http_tls.hpp); empty: `tls_unavailable`
     HttpOptions      options;
 };
 
@@ -448,7 +451,7 @@ struct BodyState {
     http_wire::BodyDecoder             decoder;
     http_wire::WireBudget              budget;    // ADR-241 S1: carried from the head read
     std::string                        leftover;  // wire bytes that arrived with the head
-    HttpOptions                        options;
+    HttpOptions                        options{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};  // set at open
     std::atomic<bool>                  busy{false};
     bool                               finished = false;  // end or a sticky error reached
     HttpBodyChunk                      terminal;          // what every next() returns once finished
@@ -722,9 +725,9 @@ inline task<HttpStreamResponse> open_stream(HttpContext ctx, HttpRequest req, st
     // 2. The overall deadline.
     auto ex     = std::make_shared<Exchange>();
     ex->reactor = ctx.reactor;
-    if (ctx.options.total_timeout.count() > 0) {
+    if (auto const total = ctx.options.total_timeout_ms.limit()) {
         ex->overall = std::make_shared<StopTimer>();
-        ctx.reactor->start_timer(ex->overall, pal::Reactor::clock::now() + ctx.options.total_timeout);
+        ctx.reactor->start_timer(ex->overall, pal::Reactor::clock::now() + std::chrono::milliseconds(*total));
     }
 
     // 3. Resolve once, filter through the policy, connect to a verified address (ADR-011, rt/dns.hpp).

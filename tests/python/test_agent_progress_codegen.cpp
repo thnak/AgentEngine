@@ -56,7 +56,7 @@ int main() {
         AE_CHECK(init.has_value(), "R1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.progress.report('x')\n"};
@@ -86,7 +86,7 @@ int main() {
 
         std::vector<std::string> reported;
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ctx.report_progress = [&reported](ContentItem item) {

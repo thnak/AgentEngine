@@ -76,7 +76,7 @@ int main() {
     std::filesystem::create_directories(ro_dir, ec);
     AE_CHECK(!ec, "setup: ro_dir exists");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // ---- Case A: fs-escape -- an ungranted host path is unreadable from inside the jail ----------
     {

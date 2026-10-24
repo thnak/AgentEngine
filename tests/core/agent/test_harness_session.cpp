@@ -753,7 +753,7 @@ int main() {
         std::vector<ae::Message> history;
         ae::Principal p{"p", ""};
         ae::SessionContext sc{"s", p, history};
-        ae::EffectContext ec;
+        ae::EffectContext ec{.deadline = agentengine::Deadline::none()};
         auto contribution = ae::rt::block_on(plain.on_context(sc, ec));
         check(contribution.has_value() && contribution->messages.empty(),
               "H9 control: assemble_context() alone silently drops the failing piece -- the wrapper is the mechanism");

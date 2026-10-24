@@ -111,7 +111,7 @@ static_assert(ChatClient<StreamingJokerChatClient>);
 
 int main() {
     StreamingJokerChatClient client;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"p-demo", ""};
     ChatRequest req;  // this fake client ignores the request and always streams the same reply
 

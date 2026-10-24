@@ -416,6 +416,17 @@ agentengine_compile_fail_test(window_zero_rejected
   EXPECT "Window<0> is not a window"
   LIBS agentengine::core)
 
+# ADR-244 slice 5: an `EffectContext` states its deadline; `EffectContext{}` (a zero time_point meaning "none") does not compile.
+agentengine_compile_fail_control(compile_fail_effect_context_deadline_positive_control
+  SOURCE effect_context_deadline_positive_control.cpp
+  LIBS agentengine::core)
+agentengine_compile_fail_test(effect_context_deadline_unstated
+  SOURCE effect_context_deadline_unstated.cpp
+  CONTROL compile_fail_effect_context_deadline_positive_control
+  # cl: C2280 / C2512; gcc and clang: "deleted" / "no matching".
+  EXPECT "deleted|no matching|no appropriate default|Deadline"
+  LIBS agentengine::core)
+
 # ADR-244 slice 5: a `cap::Clock` states its resolution; `cap::Clock{}` (a 0 meaning "exact") does not compile.
 agentengine_compile_fail_control(compile_fail_clock_positive_control
   SOURCE clock_positive_control.cpp

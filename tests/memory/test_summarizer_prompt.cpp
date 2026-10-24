@@ -377,7 +377,7 @@ int main() {
             auto items = agentengine::rt::block_on(ae::list_memory_items(object_store, ref_store, mount, read_cap));
             return items.has_value() ? items->size() : std::size_t{9999};
         };
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = principal;
         ctx.run_id = "run-1";
 
@@ -432,7 +432,7 @@ int main() {
                                              text_msg(ae::role::user, "three")};
             ae::Principal const principal{"p", ""};
             ae::SessionContext session{"s", principal, history};
-            ae::EffectContext ctx{};
+            ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             return ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(provider.on_context(session, ctx));
         };
         auto empty = run("");

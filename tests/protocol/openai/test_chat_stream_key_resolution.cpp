@@ -102,7 +102,7 @@ void denied_then_granted(char const* vendor, Make make, std::string const& key_h
         ScriptedHttpServer server({{401, kUnauthorized}});
         auto               client = make(server.port(), store);
         CapabilitySet      none   = CapabilitySet::grant_root({});
-        EffectContext      ctx;
+        EffectContext      ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal    = Principal{"p", ""};
         ctx.capabilities = borrow_capabilities(none);
         auto drained     = drain_chat_stream(client.chat_stream(one_message(), ctx));
@@ -117,7 +117,7 @@ void denied_then_granted(char const* vendor, Make make, std::string const& key_h
         ScriptedHttpServer server({{401, kUnauthorized}});
         auto               client = make(server.port(), store);
         CapabilitySet      held   = CapabilitySet::grant_root({cap::Secret{"key", std::chrono::seconds{0}}});
-        EffectContext      ctx;
+        EffectContext      ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal    = Principal{"p", ""};
         ctx.capabilities = borrow_capabilities(held);
         auto drained     = drain_chat_stream(client.chat_stream(one_message(), ctx));
@@ -141,7 +141,7 @@ void on_lane_with_suspending_store(char const* vendor, Make make, std::string co
     opts.runtime = &host_rt;
     auto          client = make(server.port(), store, std::move(opts));
     CapabilitySet held   = CapabilitySet::grant_root({cap::Secret{"key", std::chrono::seconds{0}}});
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = Principal{"p", ""};
     ctx.capabilities = borrow_capabilities(held);
 

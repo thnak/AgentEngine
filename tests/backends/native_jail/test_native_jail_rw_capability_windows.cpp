@@ -61,7 +61,7 @@ SandboxSpec rw_spec(fs::path const& dir) {
 bool sandbox_writes(NativeJailBackend& backend, SandboxHandle& h, fs::path const& target) {
     std::error_code ec;
     fs::remove(target, ec);
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ExecRequest req{.language = "native",
                     .source = "C:\\Windows\\System32\\cmd.exe /c echo x > \"" + target.string() + "\""};
     (void)rt::block_on(backend.exec(h, req, ctx));
@@ -78,7 +78,7 @@ std::string worker_outcome(NativeJailBackend& backend, fs::path const& worker_di
         Capability{cap::SandboxMount{worker_dir.string(), worker_dir.string(), false}},
         Capability{cap::SandboxMount{deployment.string(), deployment.string(), false}},
     });
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     auto h = backend.create_python_worker(spec, std::move(session), ctx);
     if (h.has_value()) {
         rt::block_on(backend.destroy(*h));
@@ -90,7 +90,7 @@ std::string worker_outcome(NativeJailBackend& backend, fs::path const& worker_di
 // Child mode: asks for a read-write mount over argv[2]. Exit 0 = refused as a deployment path, 2 = created.
 int child_main(char const* path) {
     NativeJailBackend backend;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     auto h = rt::block_on(backend.create(rw_spec(path), ctx));
     if (h.has_value()) {
         rt::block_on(backend.destroy(*h));
@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     {
         fs::path const dir_a = fresh_dir("a");
         fs::path const dir_b = fresh_dir("b");
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto a = rt::block_on(backend.create(rw_spec(dir_a), ctx));
         auto b = rt::block_on(backend.create(rw_spec(dir_b), ctx));
         check(a.has_value() && b.has_value(), "W setup: two sandboxes with read-write mounts create");
@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
         SandboxSpec spec;
         spec.mounts.push_back(MountSpec{.source = verbatim, .guest_path = "/rw", .read_write = true, .quota_bytes = cap::Limit::unbounded()});
         spec.capabilities = CapabilitySet::grant_root({Capability{cap::SandboxMount{verbatim, "/rw", true}}});
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto h = rt::block_on(backend.create(spec, ctx));
         check(!h.has_value() && h.error().code == "sandbox.deployment_path_writable",
               "L1: a read-write mount spelled \\\\?\\... over a recorded deployment path is refused");

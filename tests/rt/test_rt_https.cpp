@@ -101,8 +101,8 @@ HostResolver localhost_is_loopback() {
     };
 }
 
-HttpContext context(pal::Reactor* reactor, OffloadPool* dns, std::string const& root_pem, HttpOptions options = {}) {
-    HttpContext c;
+HttpContext context(pal::Reactor* reactor, OffloadPool* dns, std::string const& root_pem, HttpOptions options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}) {
+    HttpContext c{.options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}};
     c.reactor                  = reactor;
     c.dns_pool                 = dns;
     c.policy                   = [](pal::IpAddress const& a) { return a == pal::IpAddress::loopback_v4(); };
@@ -383,8 +383,8 @@ int main() {
 
     // S4 ------------------------------------------------------------------------------------------------------
     {
-        HttpOptions o;
-        o.total_timeout = 4s;  // the safety answer a broken stop would get instead
+        HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
+        o.total_timeout_ms = agentengine::Bound<std::uint64_t>::at_most(4000);  // the safety answer a broken stop would get instead
         HttpsServer      srv(leaf, Script{{"HTTP/1.1 200 OK\r\n\r\n", "partial"}, true, true, false});
         std::stop_source src;
         std::thread      stopper([&] {
@@ -404,9 +404,9 @@ int main() {
 
     // S5 ------------------------------------------------------------------------------------------------------
     {
-        HttpOptions o;
+        HttpOptions o{.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()};
         o.idle_timeout  = 250ms;
-        o.total_timeout = 4s;
+        o.total_timeout_ms = agentengine::Bound<std::uint64_t>::at_most(4000);
         HttpsServer srv(leaf, Script{{}, true, false, true});
         Timed       t = bounded_request(context(reactor.get(), &dns, root.cert_pem, o), get(srv.port()), 6s);
         check(t.r.error == http_error::idle_timeout && t.took < 2s,

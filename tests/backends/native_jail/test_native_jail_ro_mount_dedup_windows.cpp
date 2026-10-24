@@ -69,7 +69,7 @@ namespace {
 }
 
 [[nodiscard]] bool create_and_destroy(NativeJailBackend& backend, SandboxSpec const& spec) {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     auto h = rt::block_on(backend.create(spec, ctx));
     if (!h.has_value()) {
         std::cerr << "create() error: " << agentengine::test_support::describe(h.error()) << "\n";
@@ -107,7 +107,7 @@ int main() {
     AE_CHECK(dacl_entry_count(scratch_w) == after_first, "and the DACL entry count is unchanged");
 
     {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto refused = rt::block_on(backend.create(ro_spec(scratch, false), ctx));
         AE_CHECK(!refused.has_value() && refused.error().code == "sandbox.mount_not_authorized",
                  "a read-only mount no grant covers is refused (sandbox.mount_not_authorized)");

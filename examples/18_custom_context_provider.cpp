@@ -153,7 +153,7 @@ int main() {
     session.initialize("s-custom-provider", Principal{"p-demo", ""},
                        agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                    agentengine::Bound<std::uint64_t>::unbounded(),
-                                                   agentengine::Bound<std::uint64_t>::unbounded()});
+                                                   agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     // ComposedContextProvider always starts unengaged, even when every Ms (as here) happens to be
     // default-constructible -- see core/composed_context_provider.hpp's own comment for why an
     // earlier "auto-engage when possible" design was tried and rejected (it silently broke a real

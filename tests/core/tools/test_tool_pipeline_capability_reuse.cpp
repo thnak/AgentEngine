@@ -77,7 +77,7 @@ int main() {
 
     // -- call n ------------------------------------------------------------------------------------
     {
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ToolCallRequest req{"call-n", "stashing_tool", *json::parse(R"({"noop":true})"), false};
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n succeeds");
@@ -92,7 +92,7 @@ int main() {
 
     // -- call n+1: a second, later call ------------------------------------------------------------
     {
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ToolCallRequest req{"call-n+1", "stashing_tool", *json::parse(R"({"noop":true})"), false};
         auto result = agentengine::test_support::run_task_sync<agentengine::ToolResult>(invoke_tool(table, held, req, ctx, nullptr));
         check(!result.is_error, "call n+1 succeeds");

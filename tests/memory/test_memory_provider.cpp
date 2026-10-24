@@ -126,7 +126,7 @@ int main() {
 
     // --- G4: on_context() ranks and injects tainted, provenance-preserving memory ---------------
     std::vector<ae::Message> history{make_msg(ae::role::user, "please turn on dark mode again", "m-1")};
-    ae::EffectContext ctx{};
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = principal;
 
     ae::SessionContext session_ctx{"s-memory", principal, history};
@@ -149,7 +149,7 @@ int main() {
     {
         auto args = ae::json::parse(R"({"query":"CMake"})");
         AE_CHECK(args.has_value(), "setup: recall args parse");
-        ae::EffectContext tool_ctx{};
+        ae::EffectContext tool_ctx{.deadline = agentengine::Deadline::none()};
         auto reply_json = ae::test_support::run_task_sync<ae::result<ae::json::Value>>(
             out1->tools.front().invoke(*args, tool_ctx));
         AE_CHECK(reply_json.has_value(), "G4-R5: invoking the contributed recall tool succeeds");
@@ -179,7 +179,7 @@ int main() {
 
     ae::Message turn_arr[2] = {make_msg(ae::role::user, "remember I like tea", "m-2"),
                                 make_msg(ae::role::assistant, "noted", "m-3")};
-    ae::EffectContext turn_ctx{};
+    ae::EffectContext turn_ctx{.deadline = agentengine::Deadline::none()};
     turn_ctx.principal   = principal;
     turn_ctx.run_id      = "s-memory:run:1";
     turn_ctx.turn_index  = 0;
@@ -269,7 +269,7 @@ int main() {
 
         std::vector<ae::Message> combined_history{make_msg(ae::role::user, "dark mode please", "m-4")};
         ae::SessionContext combined_ctx{"s-memory", principal, combined_history};
-        ae::EffectContext combined_effect_ctx{};
+        ae::EffectContext combined_effect_ctx{.deadline = agentengine::Deadline::none()};
         combined_effect_ctx.principal = principal;
 
         auto assembled_result = ae::test_support::run_task_sync<ae::result<ae::ContextAssemblyResult>>(

@@ -51,7 +51,7 @@ int main() {
         AE_CHECK(init.has_value(), "R1 setup: runner initializes a real jailed worker process");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\nagent.output.set({'x': 1})\n"};
@@ -83,7 +83,7 @@ int main() {
         AE_CHECK(init.has_value(), "R2 setup: runner initializes with agent.output exposed");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python", "import agent\n"

@@ -150,7 +150,7 @@ int main() {
     InMemorySecretStore store;
     store.set("openrouter", *key);
     CapabilitySet held = CapabilitySet::grant_root({cap::Secret{"openrouter", std::chrono::seconds{0}}});
-    EffectContext node_ctx;
+    EffectContext node_ctx{.deadline = agentengine::Deadline::none()};
     node_ctx.principal    = Principal{"batch-live", ""};
     node_ctx.capabilities = borrow_capabilities(held);
 

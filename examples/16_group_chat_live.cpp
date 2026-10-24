@@ -155,7 +155,7 @@ int main() {
     RealClient client(host, /*port=*/443, model, SecretRef{kSecretName}, caps, store, "/api/v1");
     static_assert(ChatClient<RealClient>, "OpenAIChatClient must satisfy the ChatClient concept");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal     = agentengine::Principal{"example-16-principal", ""};
     ctx.capabilities  = agentengine::borrow_capabilities(held);
 

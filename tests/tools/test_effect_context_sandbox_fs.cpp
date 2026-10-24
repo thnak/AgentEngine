@@ -34,7 +34,7 @@ void check(bool cond, char const* what) {
 using agentengine::tools::ReadSandboxFile;
 
 agentengine::EffectContext make_ctx(agentengine::CapabilitySet const& held) {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = agentengine::Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
     return ctx;

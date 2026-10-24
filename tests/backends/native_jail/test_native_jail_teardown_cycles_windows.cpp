@@ -233,7 +233,7 @@ int main() {
     spec.limits.output_bytes = 1024 * 1024;
 
     NativeJailBackend backend;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     auto run_cycle = [&](int cycle_index) {
         auto handle = agentengine::rt::block_on(backend.create(spec, ctx));

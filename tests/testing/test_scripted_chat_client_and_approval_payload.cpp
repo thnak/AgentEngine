@@ -123,7 +123,7 @@ std::vector<agentengine::run_event_payload::ApprovalRequested> approval_events(
 }  // namespace
 
 int main() {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
 
     // ---- SC1 ---------------------------------------------------------------------------------------
     {

@@ -88,7 +88,7 @@ std::vector<std::uint8_t> read_fixture() {
 }
 
 EffectContext make_ctx() {
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.trace_id = "test-trace";
     ctx.span_id = "test-span";
     return ctx;

@@ -93,7 +93,7 @@ struct PlainProbe
 };
 
 ae::EffectContext make_ctx(CapabilitySet const& held) {
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal    = ae::Principal{"test-principal", ""};
     ctx.capabilities = ae::borrow_capabilities(held);
     return ctx;

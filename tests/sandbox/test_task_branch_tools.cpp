@@ -155,7 +155,7 @@ using Session = agentengine::rt::AgentSession<ScriptedChatClient, agentengine::r
 struct RealCallContext {
     Principal real_principal;
     CapabilitySet real_caps;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     std::vector<Message> empty_history;
     SessionContext session_ctx;
 

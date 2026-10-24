@@ -103,7 +103,7 @@ int main() {
     static_assert(ChatClient<CredentialedTestChatClient<InMemorySecretStore>>,
                   "CredentialedTestChatClient must satisfy the real ChatClient concept (004 §1)");
 
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = Principal{"test-principal", ""};
     ctx.capabilities = agentengine::borrow_capabilities(held);
 

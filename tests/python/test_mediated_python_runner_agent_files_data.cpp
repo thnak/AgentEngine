@@ -115,7 +115,7 @@ int main() {
         AE_CHECK(init.has_value(), "G2-setup: a MediatedPythonRunner with mount_roots initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({
@@ -261,7 +261,7 @@ int main() {
         // capability raises PermissionError through the real per-call check -- agent.files.list is
         // never a bypass around the SAME mediation open()/listdir() already enforce.
         {
-            EffectContext narrow_ctx{};
+            EffectContext narrow_ctx{.deadline = agentengine::Deadline::none()};
             narrow_ctx.session_nonce = ae_test::kTestSessionNonce;
             narrow_ctx.principal = ae_test::kTestPrincipal;
             auto narrow_caps = CapabilitySet::grant_root({});  // nothing granted at all
@@ -302,7 +302,7 @@ int main() {
                                     "mount_roots initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         auto caps = CapabilitySet::grant_root({Capability{cap::FsRead{"input", "", cap::Limit::unbounded()}}});
@@ -364,7 +364,7 @@ int main() {
                                     "expose_agent_files_data opt-in initializes cleanly");
 
         ExecState state{};
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.session_nonce = ae_test::kTestSessionNonce;
         ctx.principal = ae_test::kTestPrincipal;
         ExecRequest req{"python",

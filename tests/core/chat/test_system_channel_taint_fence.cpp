@@ -383,7 +383,7 @@ int main() {
             history_msg("one", "h-1"), history_msg("two", "h-2"), history_msg("three", "h-3"),
             history_msg("four", "h-4"), history_msg("five", "h-5"),
         };
-        ae::EffectContext ctx{};
+        ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         Provider provider;
         ae::SessionContext session_ctx{"s-fence", principal, history};
         auto out = ae::test_support::run_task_sync<ae::result<ae::ContextContribution>>(

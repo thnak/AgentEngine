@@ -241,8 +241,7 @@ task<AdmittedCallOutcome> run_admitted_call(ToolDescriptor const& tool, ToolCall
                                             EffectContext& ctx, std::vector<BoundCapability>& bound) {
     using namespace tool_pipeline_detail;
     // -- step 8: invoke (deadline checked at the call boundary, not preemptible mid-call) ---------
-    if (ctx.deadline.time_since_epoch().count() != 0 &&
-        std::chrono::steady_clock::now() > ctx.deadline) {
+    if (ctx.deadline.expired(std::chrono::steady_clock::now())) {
         for (auto const& b : bound) b.revoke();
         error e{failure_class::resource, "deadline already exceeded", "tool.deadline_exceeded"};
         co_return AdmittedCallOutcome{make_error_result(request.call_id, e), e, 0};

@@ -148,7 +148,7 @@ int main() {
 
     // -- 1. positive: end-to-end, through the real pipeline, with a covering caller ------------------
     {
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.principal = agentengine::Principal{"test-principal", ""};
         ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
         ToolCallRequest req{"call-1", "echo", *json::parse(R"({"message":"hi"})"), false};
@@ -174,7 +174,7 @@ int main() {
     //    covering caller attached -- proves this failure comes from the REAL pipeline (tool.
     //    unknown_name), not from the attenuation gate rejecting the caller first ---------------------
     {
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
         ToolCallRequest req{"call-2", "does_not_exist", json::Value::make_object({}), false};
         agentengine::ToolInvocationAudit audit;
@@ -189,7 +189,7 @@ int main() {
     //    rejected before the pipeline ever runs -- the security property this ADR exists for --------
     {
         agentengine::CapabilitySet const empty_caps = agentengine::CapabilitySet::grant_root({});
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(empty_caps);
         ToolCallRequest req{"call-3", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
@@ -206,7 +206,7 @@ int main() {
     {
         agentengine::CapabilitySet const generous_caps = agentengine::CapabilitySet::grant_root(
             {agentengine::cap::Entropy{}, agentengine::cap::NetOut{{"unrelated.example:443:https"}, agentengine::cap::Limit::unbounded(), {}}});
-        agentengine::EffectContext ctx;
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.capabilities = agentengine::borrow_capabilities(generous_caps);
         ToolCallRequest req{"call-4", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
@@ -229,7 +229,7 @@ int main() {
     // -- 5. negative (ADR-059 R4): ctx.capabilities == nullptr fails closed, never silently read as
     //    "the caller holds everything" -----------------------------------------------------------
     {
-        agentengine::EffectContext ctx;  // ctx.capabilities defaults to nullptr
+        agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};  // ctx.capabilities defaults to nullptr
         ToolCallRequest req{"call-5", "echo", *json::parse(R"({"message":"hi"})"), false};
         agentengine::ToolInvocationAudit audit;
         auto result = invoke_agent_tool(*meta, req, ctx, {}, &audit);
@@ -257,7 +257,7 @@ int main() {
         // 6a. non-delegated (top-level) caller -- require_approval, no ApprovalDecider configured ->
         //     denied. Proves this reference policy does NOT blanket-approve everyone.
         {
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal    = agentengine::Principal{"top-level-user", ""};  // on_behalf_of empty
             ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
             ToolCallRequest req{"call-6a", "policy_gated", *json::parse(R"({"message":"hi"})"),
@@ -284,7 +284,7 @@ int main() {
             auto delegated = agentengine::derive_on_behalf_of(top_level, "child-agent-1");
             check(delegated.has_value(), "6b setup: derive_on_behalf_of() succeeds");
 
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal            = *delegated;
             ctx.capabilities         = agentengine::borrow_capabilities(covering_caps);
             approval_decider_called = false;
@@ -314,7 +314,7 @@ int main() {
                                               : agentengine::result<agentengine::Principal>{};
             check(depth2.has_value() && depth2->delegation_depth == 2, "6c setup: depth is really 2");
 
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal    = *depth2;
             ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
             ToolCallRequest req{"call-6c", "policy_gated", *json::parse(R"({"message":"hi"})"), true};
@@ -336,7 +336,7 @@ int main() {
                                               : agentengine::result<agentengine::Principal>{};
             check(depth2.has_value() && depth2->delegation_depth == 2, "6d setup: depth is really 2");
 
-            agentengine::EffectContext ctx;
+            agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal    = *depth2;
             ctx.capabilities = agentengine::borrow_capabilities(covering_caps);
             ToolCallRequest req{"call-6d", "policy_gated", *json::parse(R"({"message":"hi"})"), true};

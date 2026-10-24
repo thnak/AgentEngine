@@ -724,7 +724,7 @@ spec:
         auto body = rt::workflow_as_executor_body(enabled);
         check(body.has_value(), "C18 setup: the adapter itself constructs");
         if (body) {
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             auto out = drive((*body)(text_message("x"), ctx));
             check(!out.has_value(), "C18: workflow_as_executor_body refuses a batch-enabled inner");
         }
@@ -735,7 +735,7 @@ spec:
     {
         FanGraph g(true);
         WorkflowSupervisor sup;
-        std::vector<EffectContext> ctxs(5);
+        std::vector<EffectContext> ctxs(5, agentengine::EffectContext{.deadline = agentengine::Deadline::none()});
         ctxs[1].principal = Principal{"alice", "t1"};
         ctxs[2].principal = Principal{"bob", "t2"};
         ctxs[3].principal = Principal{"alice", "t1"};

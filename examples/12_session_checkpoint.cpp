@@ -111,7 +111,7 @@ int main() {
     session.initialize("s-checkpoint", Principal{"p-demo", "tenant-9"},
                        agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                    agentengine::Bound<std::uint64_t>::unbounded(),
-                                                   agentengine::Bound<std::uint64_t>::unbounded()});
+                                                   agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     auto turn = drive(session.start_run(StartRun{user_message("hi")}));
     check(turn.has_value(), "the run succeeds before checkpointing");
@@ -132,7 +132,7 @@ int main() {
         fresh_session.initialize("s-new-instance", Principal{"p-new-instance", ""},
                                  agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                              agentengine::Bound<std::uint64_t>::unbounded(),
-                                                             agentengine::Bound<std::uint64_t>::unbounded()});
+                                                             agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
         fresh_session.emplace_chat_client();
 
         check(fresh_session.restore_from_record(**loaded).has_value(), "the record restores into the fresh instance");

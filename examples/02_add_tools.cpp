@@ -172,7 +172,7 @@ int main() {
     session.initialize("s-weather", Principal{"p-demo", ""},
                        agentengine::SessionChoices{agentengine::AuthoritySource::single_trusted_caller(),
                                                    agentengine::Bound<std::uint64_t>::unbounded(),
-                                                   agentengine::Bound<std::uint64_t>::unbounded()});
+                                                   agentengine::Bound<std::uint64_t>::unbounded(), agentengine::Bound<std::uint64_t>::unbounded()});
     session.emplace_chat_client();
     // Even an all-empty-Capabilities<> tool must be authorized against a real, explicitly granted
     // CapabilitySet (I2: no ambient authority) -- there is no "no capabilities needed" bypass.

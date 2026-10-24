@@ -85,3 +85,5 @@ endif()
 
 # ---- ADR-244 §2.1: Bound<T>, check_bound(), choice_missing() -- header-only, core-tier ----------
 agentengine_add_test(test_bound LIBS agentengine::core agentengine_warnings)
+# ADR-244 §2.2: Deadline, the stated per-call time limit
+agentengine_add_test(test_deadline LIBS agentengine::core agentengine_warnings)

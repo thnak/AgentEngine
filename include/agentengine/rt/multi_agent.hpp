@@ -261,7 +261,9 @@ template <class ChatClientT, class StateT, class HistoryProviderT>
                       agentengine::SessionChoices{
                           per_request ? agentengine::AuthoritySource::per_request(*narrowed)
                                       : agentengine::AuthoritySource::single_trusted_caller(),
-                          budget, max_turns});
+                          budget, max_turns,
+                          // ADR-244 §2.2: a delegated child never outlives the call that delegated it.
+                          parent_call_ctx.deadline.as_timeout_ms(std::chrono::steady_clock::now())});
     // Lifetime: `narrowed` (a local) outlives `child` (declared after it) within this coroutine frame,
     // and this function co_awaits `child->start_run()` to completion before EITHER goes out of scope --
     // matching `EffectContext::capabilities`' own documented "caller must outlive every use" contract

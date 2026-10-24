@@ -734,7 +734,7 @@ struct DirectSpawn {
         (void)registry.register_target("X", std::move(d));
     }
     result<rt::AgentSpawnReply> spawn(Principal p, std::optional<std::uint64_t> remaining, std::uint64_t quota) {
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
         ctx.principal = std::move(p);
@@ -758,7 +758,7 @@ struct DropSpawn {
     CapabilitySet held = CapabilitySet::grant_root({cap::AgentCall{"X", trust::SpawnBudget::mint_root(5)}});
     std::string last_child_id;
     bool fail_child = false;
-    EffectContext ctx;
+    EffectContext ctx{.deadline = agentengine::Deadline::none()};
     rt::AgentSpawnArgs args{"X", "task"};
     SpawnQuota quota{1};
     Ref caller_ref{"session:drop", ""};
@@ -1057,7 +1057,7 @@ int main() {
         node.initialize("node-B", Principal{"p-wf", ""}, ae_test::trusted_unbounded());
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
@@ -1155,7 +1155,7 @@ int main() {
         node.initialize("node-merge", Principal{"p-wf", ""}, ae_test::trusted_unbounded());
         node.emplace_chat_client().seen = &seen;
         auto body = rt::agent_session_as_executor_body(node);
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         CapabilitySet const held = CapabilitySet::grant_root({});
         ctx.capabilities = std::shared_ptr<CapabilitySet const>(&held, [](CapabilitySet const*) {});
@@ -1452,6 +1452,7 @@ int main() {
             charged.output_tokens += u.output_tokens;
         };
         req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+        req.call_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded();
         req.authority_source = agentengine::authority_mode::single_trusted_caller;
         bool threw = false;
         try {
@@ -1479,6 +1480,7 @@ int main() {
                 charged.output_tokens += u.output_tokens;
             };
             req.max_turns    = agentengine::Bound<std::uint64_t>::at_most(25);
+            req.call_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded();
             req.authority_source = agentengine::authority_mode::single_trusted_caller;
             return req;
         };
@@ -1516,7 +1518,7 @@ int main() {
             AgentSession<ParkClient> node;
             node.initialize("r4-park-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
             ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
                 ++charges;
@@ -1543,7 +1545,7 @@ int main() {
             AgentSession<ParkClient> node;
             node.initialize("r4-ok-node", Principal{"p-r4", ""}, ae_test::trusted(std::optional<std::uint64_t>{1'000'000}));
             rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
-            EffectContext ctx;
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
             ctx.charge_delegated_usage = [&charges](Usage const&, std::uint64_t) { ++charges; };
             auto const out = rt::block_on(body(r3_user("go"), ctx));
@@ -1695,7 +1697,7 @@ int main() {
         CapabilitySet const held = CapabilitySet::grant_root({});
         node.set_capabilities(&held);
         rt::ExecutorBody body = rt::agent_session_as_executor_body(node);
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.charge_delegated_usage = [&](Usage const& u, std::uint64_t d) {
             ++charges;
@@ -1799,7 +1801,7 @@ int main() {
         int sink_events = 0;
         Usage charged{};
         int charges = 0;
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.agent_turn_sink = [&sink_events](RunEvent const&) { ++sink_events; };
         ctx.charge_delegated_usage = [&charged, &charges](Usage const& u, std::uint64_t) {
@@ -1913,7 +1915,7 @@ int main() {
                           {rt::agent_session_as_executor_body(node)});
         rt::WorkflowChatClient client(inner);
         auto const charged = std::make_shared<std::atomic<std::uint64_t>>(0);
-        EffectContext ctx;
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         ctx.authority_source = agentengine::authority_mode::single_trusted_caller;  // ADR-244 slice 3c: a trusted session's tool context
         ctx.charge_delegated_usage = [charged](Usage const& u, std::uint64_t) {
             *charged += u.input_tokens + u.output_tokens;

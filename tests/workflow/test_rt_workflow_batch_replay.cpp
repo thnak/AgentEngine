@@ -467,7 +467,7 @@ int main() {
             (void)story_a(*rig, std::make_shared<std::int64_t>(0), "x");
             check(replayer->diverged() && replayer->divergence().find("ended") != std::string::npos,
                   "R6: a call past the end of the recording diverges: " + replayer->divergence());
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             auto again = rt::block_on(rig->backend->poll("job1", ctx));
             check(!again && again.error().code == "batch_replay.diverged", "R6: every later call fails too");
         }
@@ -599,7 +599,7 @@ int main() {
                 items.push_back(BatchItemRequest{"i" + std::to_string(i), std::move(req)});
             }
             check(admitted, "R11: the three admits replay");
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             ctx.principal = Principal{"batch-infer", ""};  // the principal tools/batch_infer.cpp runs under
             auto job = rt::block_on((*backend)->submit(items, ctx));
             check(job.has_value() && job->rfind("batch-", 0) == 0, "R11: the submit replays the vendor's job id");
@@ -676,7 +676,7 @@ int main() {
         auto wrapped = recorder.wrap(scripted);
         ChatRequest req;
         req.messages.push_back(text_message("q"));
-        EffectContext alice{};
+        EffectContext alice{.deadline = agentengine::Deadline::none()};
         alice.principal = Principal{"alice", "t1"};
         (void)rt::block_on(wrapped->submit({BatchItemRequest{"i0", req}}, alice));
         check(records.size() == 2 && records[1].principal_id == "alice" && records[1].tenant_id == "t1",
@@ -686,7 +686,7 @@ int main() {
                                                  std::tuple{"alice", "t2", "another tenant diverges"}}) {
             auto replayer = replayer_of(records);
             if (auto rig = replay_rig(replayer, "R13")) {
-                EffectContext ctx{};
+                EffectContext ctx{.deadline = agentengine::Deadline::none()};
                 ctx.principal = Principal{who, tenant};
                 bool const served = rt::block_on(rig->backend->submit({BatchItemRequest{"i0", req}}, ctx)).has_value();
                 bool const should = std::string(label).rfind("control", 0) == 0;
@@ -704,7 +704,7 @@ int main() {
         auto wrapped = recorder.wrap(scripted);
         ChatRequest req;
         req.messages.push_back(text_message("q"));
-        EffectContext ctx{};
+        EffectContext ctx{.deadline = agentengine::Deadline::none()};
         auto job = rt::block_on(wrapped->submit({BatchItemRequest{"i0", req}}, ctx));
         check(job.has_value() && *job == "job1", "R14: a submit the vendor accepted still returns its job id");
         check(scripted->submitted().size() == 1, "R14: and the vendor saw exactly one submit");
@@ -784,7 +784,7 @@ int main() {
         auto back = batch_call_record_from_json(batch_call_record_to_json(poll));
         auto replayer = replayer_of({header, back ? *back : poll});
         if (auto rig = replay_rig(replayer, "R17")) {
-            EffectContext ctx{};
+            EffectContext ctx{.deadline = agentengine::Deadline::none()};
             bool non_standard = false;
             try {
                 (void)rt::block_on(rig->backend->poll("job1", ctx));

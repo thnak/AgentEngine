@@ -98,7 +98,7 @@ ae::ToolCallRequest note_call(std::string id = "c1") {
 ae::Principal const kCaller{"p-caller", "tenant-a"};
 
 ae::EffectContext make_ctx() {
-    ae::EffectContext ctx;
+    ae::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal = kCaller;
     return ctx;
 }

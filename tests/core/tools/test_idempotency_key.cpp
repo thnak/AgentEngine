@@ -47,7 +47,7 @@ struct EchoTool : agentengine::Tool<EchoTool, agentengine::Approval<agentengine:
 };
 
 agentengine::EffectContext make_ctx(std::string run_id, std::uint64_t turn_index) {
-    agentengine::EffectContext ctx;
+    agentengine::EffectContext ctx{.deadline = agentengine::Deadline::none()};
     ctx.principal   = agentengine::Principal{"test-principal", ""};
     ctx.run_id      = std::move(run_id);
     ctx.turn_index  = turn_index;

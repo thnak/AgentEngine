@@ -43,7 +43,8 @@ namespace sse_pump_detail {
 // does not leak into every consumer of the provider client headers.
 [[nodiscard]] inline rt::HttpContext make_http_context(ProviderReactorOptions const& o,
                                                        std::string const& ca_bundle_pem_override, bool https) {
-    rt::HttpContext ctx;
+    // ADR-244 §2.2: a stated unbounded total; a stream is bounded by the idle/stall timeouts and the call stop.
+    rt::HttpContext ctx{.options = {.total_timeout_ms = agentengine::Bound<std::uint64_t>::unbounded()}};
     ctx.reactor  = o.runtime != nullptr ? &o.runtime->reactor() : nullptr;
     ctx.dns_pool = o.runtime != nullptr ? &o.runtime->dns_pool() : nullptr;
     ctx.policy   = o.policy ? o.policy : sse_pump_detail::accept_all();
