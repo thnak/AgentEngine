@@ -370,6 +370,11 @@ public:
             return std::unexpected(error{failure_class::contract, "background job tool has no invoke function",
                                           "background_job.no_invoke"});
         }
+        if (tool.prepare) {  // ADR-237 D3: see `background_task()`; the worker would call the refusing `invoke`.
+            return std::unexpected(error{failure_class::policy,
+                                          "a tool with a per-call requirement cannot be run in the background yet",
+                                          "tool.requirement_not_backgroundable"});
+        }
         if (tool.name != spec.request.tool_name) {
             return std::unexpected(error{failure_class::contract,
                                           "background job request names a different tool than its descriptor",

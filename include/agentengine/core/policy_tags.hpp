@@ -14,4 +14,12 @@ namespace agentengine {
 template <class... Cs>
 struct Capabilities {};  // ae-naming-lint: allow Capabilities — pre-existing M0 scaffolding, reconcile at owning milestone
 
+// decisions/archive/ADR-237-async-extension-points-and-io-reactor.md §9 D3: the static BOUND of a per-call requirement.
+// A tool that declares `PerCallRequirement<Cs...>` also provides `std::vector<Capability> required_capabilities(Args
+// const&) const`; whatever that returns must be covered (`subsumes`) by one of `Cs...`, so the argument only ever selects
+// WHICH already-held grant must cover the call, inside the kind and mount the declaration names. It binds nothing by
+// itself and is not a ceiling: the AND-of-all `Capabilities<...>` ceiling cannot express "this mount, this program".
+template <class... Cs>
+struct PerCallRequirement {};  // ae-naming-lint: allow PerCallRequirement — ADR-237 D3 policy tag; 027 has not been updated to list it
+
 }  // namespace agentengine

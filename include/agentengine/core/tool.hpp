@@ -121,6 +121,18 @@ struct policy_capabilities<Capabilities<Cs...>> {
     static std::vector<Capability> get() { return {to_capability(Cs{})...}; }
 };
 
+// ADR-237 §9 D3. `declared` distinguishes "no per-call requirement" from "a requirement with an empty bound".
+template <class Policy>
+struct policy_requirement_bounds {
+    static constexpr bool declared = false;
+    static std::vector<Capability> get() { return {}; }
+};
+template <class... Cs>
+struct policy_requirement_bounds<PerCallRequirement<Cs...>> {
+    static constexpr bool declared = true;
+    static std::vector<Capability> get() { return {to_capability(Cs{})...}; }
+};
+
 template <class Policy>
 struct policy_approval {
     static std::optional<approval_mode> get() { return std::nullopt; }
@@ -317,6 +329,19 @@ struct Tool {
                   "ADR-212: a Deterministic tool must declare EffectClass<effect_class::pure> -- see "
                   "decisions/archive/ADR-212-deterministic-tool-output-declaration.md §3.3");
 
+    // ADR-237 §9 D3: whether the tool declared `PerCallRequirement<...>`. More than one is a compile error: two bounds
+    // would have to be OR-ed or AND-ed and neither reading is obviously the author's.
+    static constexpr int kPerCallRequirementCount = [] {
+        int count = 0;
+        ([&count] {
+            if (tool_detail::policy_requirement_bounds<Policies>::declared) ++count;
+        }(), ...);
+        return count;
+    }();
+    static_assert(kPerCallRequirementCount <= 1,
+                  "ADR-237 D3: a tool declares at most one PerCallRequirement<...> (list every kind in the one tag)");
+    static constexpr bool kHasPerCallRequirement = kPerCallRequirementCount == 1;
+
     [[nodiscard]] static std::string args_schema() {
         return schema::json_schema_of<typename Derived::Args>();
     }
@@ -331,6 +356,16 @@ struct Tool {
         std::vector<Capability> result;
         ([&result] {
             auto caps = tool_detail::policy_capabilities<Policies>::get();
+            result.insert(result.end(), caps.begin(), caps.end());
+        }(), ...);
+        return result;
+    }
+
+    // ADR-237 D3: the declared bound of the per-call requirement; empty unless `kHasPerCallRequirement`.
+    [[nodiscard]] static std::vector<Capability> declared_requirement_bounds() {
+        std::vector<Capability> result;
+        ([&result] {
+            auto caps = tool_detail::policy_requirement_bounds<Policies>::get();
             result.insert(result.end(), caps.begin(), caps.end());
         }(), ...);
         return result;
