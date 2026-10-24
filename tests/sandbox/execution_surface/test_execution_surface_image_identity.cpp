@@ -92,6 +92,7 @@
 #include <vector>
 #include <string_view>
 
+#include "../../support/pinned_images.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
@@ -155,7 +156,7 @@ static_assert(agentengine::ImageIdentifiedSurface<agentengine::DockerExecutionSu
     return id;
 }
 
-constexpr char const* kImage = "alpine:latest";
+constexpr char const* kImage = ae_test::kAlpine;
 
 [[nodiscard]] std::string trailing_line(std::string text) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) {
@@ -178,6 +179,16 @@ constexpr char const* kImage = "alpine:latest";
         {"docker", "image", "inspect", "--format", "{{.Descriptor.mediaType}}", image});
     if (r.exit_code != 0) return {};
     return trailing_line(r.stdout_text);
+}
+
+// ADR-244 §2.5 (G-C9): a surface takes only a digest reference, so a locally built image is named
+// `<repository>@<its descriptor digest>`. Empty when the daemon exposes no descriptor.
+[[nodiscard]] std::string pinned_reference(std::string const& repository, std::string const& image) {
+    auto r = agentengine::docker_cli_detail::run_argv(
+        {"docker", "image", "inspect", "--format", "{{.Descriptor.digest}}", image});
+    if (r.exit_code != 0) return {};
+    std::string const digest = trailing_line(r.stdout_text);
+    return digest.empty() ? std::string{} : repository + "@" + digest;
 }
 
 // [N14] Names the daemon in the log when it cannot answer the kind question. ADR-176 §13 claims a
@@ -459,7 +470,8 @@ int main() {
             std::filesystem::create_directories(dir, n14_ec);
         }
         {
-            agentengine::DockerExecutionSurface committed(kCommittedImage, agentengine::ContainerIsolation::conservative());
+            agentengine::DockerExecutionSurface committed(pinned_reference("ae_esii_manifest_probe", kCommittedImage),
+                                                          agentengine::ContainerIsolation::conservative());
             auto const started = agentengine::rt::block_on(committed.reset(n14_work));
             check(started.has_value(), "N14: a surface over the committed image starts");
             if (started.has_value()) {
@@ -495,71 +507,55 @@ int main() {
         remove_committed_image();
     }
 
-    // [N16] -- THE STALENESS CASE, executed. ADR-176 §16.
+    // [N16] -- THE STALENESS CASE, now closed by construction. ADR-176 §16, ADR-244 §2.5 (G-C9).
     //
-    // Until §16 this design resolved the digest ONCE per surface and documented the consequence as an
-    // accepted residual: if something outside the process moves the tag mid-session, every later container
-    // runs a different image while the record still names the first one. That is not "stale but real" for
-    // the command that ran in the later container -- under I4 it is WRONG for that effect, and the ">50%
-    // regression" figure that bought it was measured false (~9%, ADR-176 §3e/§10).
-    //
-    // This moves a tag between two `reset()` calls and requires the reported identity to move with it.
-    // Before the fix the surface reported the FIRST image forever, so this is also the mutant detector for
-    // any future re-introduction of that cache. The DIGEST half runs on any daemon; the KIND half needs a
-    // daemon that exposes a descriptor media type and is guarded accordingly.
+    // ADR-176 §16 resolved the digest on every `reset()` so that a tag moved outside the process was reported
+    // truthfully. A surface no longer takes a tag at all, so there is nothing to move: it takes
+    // `<repository>@<digest>`, and the digest names the same bytes whatever any tag later points at. This moves a
+    // tag this test owns between two `reset()` calls on a surface pinned to the alpine digest,
+    // and requires the reported identity NOT to move. (The control is the tag itself: it does move, and the
+    // committed image it now names has a different descriptor digest.)
     {
         std::string n16_why_not;
         if (!build_committed_image(n16_why_not)) {
-            std::printf("[note] N16 skipped: %s (%s)\n", n16_why_not.c_str(),
-                        daemon_shape().c_str());
+            std::printf("[note] N16 skipped: %s (%s)\n", n16_why_not.c_str(), daemon_shape().c_str());
         } else if (!point_tag_at(kImage)) {
-            std::printf("[note] N16 skipped: `docker tag` failed on this daemon (%s)\n",
-                        daemon_shape().c_str());
+            std::printf("[note] N16 skipped: `docker tag` failed on this daemon (%s)\n", daemon_shape().c_str());
         } else {
-            std::error_code n16_ec;
-            std::filesystem::path const n16_work =
-                std::filesystem::temp_directory_path(n16_ec) / "ae_image_identity_moving_tag_probe";
-            std::filesystem::remove_all(n16_work, n16_ec);
-            std::filesystem::create_directories(n16_work, n16_ec);
-            {
-                agentengine::DockerExecutionSurface surface(kMovingTag, agentengine::ContainerIsolation::conservative());
-                auto const first = agentengine::rt::block_on(surface.reset(n16_work));
-                check(first.has_value(), "N16: a surface over a tag this test owns starts");
-                if (first.has_value()) {
-                    std::string const digest_before(surface.image_digest());
-                    auto const kind_before = surface.image_digest_kind();
-                    check(well_formed_digest(digest_before),
-                          "N16 SETUP: the first container resolves a well-formed digest");
+            std::string const tag_digest_before = pinned_reference("ae_esii_moving_tag", kMovingTag);
+            if (tag_digest_before.empty()) {
+                std::printf("[note] N16 skipped: this daemon exposes no descriptor digest (%s)\n",
+                            daemon_shape().c_str());
+            } else {
+                std::error_code n16_ec;
+                std::filesystem::path const n16_work =
+                    std::filesystem::temp_directory_path(n16_ec) / "ae_image_identity_moving_tag_probe";
+                std::filesystem::remove_all(n16_work, n16_ec);
+                std::filesystem::create_directories(n16_work, n16_ec);
+                {
+                    agentengine::DockerExecutionSurface surface(ae_test::kAlpine, agentengine::ContainerIsolation::conservative());
+                    auto const first = agentengine::rt::block_on(surface.reset(n16_work));
+                    check(first.has_value(), "N16: a surface over the pinned image starts, while a tag this test owns is about to move");
+                    if (first.has_value()) {
+                        std::string const digest_before(surface.image_digest());
+                        check(well_formed_digest(digest_before),
+                              "N16 SETUP: the first container resolves a well-formed digest");
+                        check(point_tag_at(kCommittedImage),
+                              "N16 SETUP: the tag is moved to a different image between the two resets");
+                        check(pinned_reference("ae_esii_moving_tag", kMovingTag) != tag_digest_before,
+                              "N16 CONTROL: the tag now names an image with a different descriptor digest, so a "
+                              "surface that followed the tag would report a different identity");
 
-                    // The re-pull, simulated exactly: the SAME reference now names a different image.
-                    // `docker tag` does to the local tag what an external `docker pull` would, without
-                    // needing a registry or a network.
-                    check(point_tag_at(kCommittedImage),
-                          "N16 SETUP: the tag is moved to a different image between the two resets");
-
-                    auto const second = agentengine::rt::block_on(surface.reset(n16_work));
-                    check(second.has_value(), "N16: the surface resets again onto the moved tag");
-                    if (second.has_value()) {
-                        std::string const digest_after(surface.image_digest());
-                        check(well_formed_digest(digest_after),
-                              "N16: the second container resolves a well-formed digest too");
-                        check(digest_after != digest_before,
-                              "N16: the reported digest MOVED with the tag -- the container this command "
-                              "would run in is the one the record names, which is the whole of I4's claim "
-                              "here. A surface that resolved once per lifetime reports the FIRST image "
-                              "forever and fails exactly this check");
-                        if (!independent_media_type(kImage).empty()) {
-                            check(kind_before == agentengine::ImageDigestKind::index &&
-                                      surface.image_digest_kind() ==
-                                          agentengine::ImageDigestKind::manifest,
-                                  "N16: and the KIND moved with it, index -> manifest -- so the kind "
-                                  "cache, keyed by digest, re-resolves rather than describing the image "
-                                  "the surface no longer runs");
+                        auto const second = agentengine::rt::block_on(surface.reset(n16_work));
+                        check(second.has_value(), "N16: the surface resets again after the tag moved");
+                        if (second.has_value()) {
+                            check(std::string(surface.image_digest()) == digest_before,
+                                  "N16: the reported digest did NOT move with the tag -- the pin names the bytes");
                         }
                     }
                 }
+                std::filesystem::remove_all(n16_work, n16_ec);
             }
-            std::filesystem::remove_all(n16_work, n16_ec);
             remove_moving_tag();
             remove_committed_image();
         }

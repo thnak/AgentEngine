@@ -9,6 +9,7 @@
 // REQUIRES a running Docker daemon reachable via `docker` on PATH, same posture as
 // test_sandbox_runtime.cpp/test_docker_orphan_reap.cpp.
 
+#include "../../support/pinned_images.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 
 #include <cstdio>
@@ -54,7 +55,7 @@ int main() {
     }
 
     agentengine::DockerCliBackend docker;
-    auto inst = docker.create("alpine:latest", agentengine::ContainerIsolation::conservative());
+    auto inst = docker.create(ae_test::kAlpine, agentengine::ContainerIsolation::conservative());
     check(inst.has_value(), "create() succeeds");
     if (!inst.has_value()) {
         std::printf("=== %d checks, %d failed ===\n", g_checks, g_failed);

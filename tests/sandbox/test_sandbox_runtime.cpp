@@ -37,6 +37,7 @@
 //        file beside it is kept -- `DockerExecutionSurface::drain_to()` empties staging before its
 //        additive `docker cp`, instead of landing on top of the materialized head.
 
+#include "../support/pinned_images.hpp"
 #include "../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/sandbox_runtime.hpp"
@@ -99,7 +100,7 @@ int main() {
     std::filesystem::remove_all(staging, ec);
 
     SandboxRuntime runtime(ledger, std::move(*root_r), staging);
-    DockerExecutionSurface surface("alpine:latest", agentengine::ContainerIsolation::conservative());
+    DockerExecutionSurface surface(ae_test::kAlpine, agentengine::ContainerIsolation::conservative());
 
     // [1]/[2] Turn 1: a real command runs inside a real, fresh container and writes a real file.
     auto r1 = drive(runtime.run(surface, "echo -n 'turn-1 content' > note.txt && cat note.txt", owner,

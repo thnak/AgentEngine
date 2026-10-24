@@ -425,13 +425,15 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `lint_no_default_sandbox_registry` fails if the identifier is used again (a violating fixture is its control).
      `EnvSecretSource` has no default prefix and `create("")` is `secret.empty_prefix`
      (`test_secret_store` A3b, `compile_fail` `env_secret_source_no_default`).
-   - **The Kata image pin (built, G-C9, Kata only).** `KataBackend` takes a stated runtime and image (no defaults) and
-     `create()` refuses an image that is not `<repository>@sha256:<64 lowercase hex>` with `sandbox.image_not_pinned`
-     (`KataBackend::check_image_pinned`), before any `ctr` call. Every Kata test names the digest of the index the test
-     host has pulled (`tests/support/kata_images.hpp`). Tests: `test_kata_image_pin` P1-P3 (host-free), and the live Kata
-     corpus run as root on thnak-remote with the pinned images. Not done: the Docker and containerd surfaces still take
-     a tag (`alpine:latest` by default, and the moving-tag identity tests depend on it), so G-C9's "and the surfaces" half
-     is open.
+   - **The image pin (built, G-C9).** `agentengine::check_image_pinned` (`sandbox/image_pin.hpp`) accepts only
+     `<repository>@sha256:<64 lowercase hex>`; otherwise `sandbox.image_not_pinned`. `KataBackend` takes a stated runtime
+     and image (no defaults) and `DockerCliBackend::create()` and `ContainerdCliBackend::create()` (so the Docker,
+     containerd and Docker persistent-shell surfaces) call the check before any CLI runs; constructors stay infallible.
+     Every test names the digest of the index thnak-remote has pulled by digest (`tests/support/pinned_images.hpp`,
+     `kata_images.hpp`); containerd finds an image only by the exact reference it was pulled with. Tests:
+     `test_kata_image_pin` P1-P3 and `test_image_pin_surfaces` P1-P4 (host-free, with a positive control), and the live
+     Docker, containerd and Kata suites on thnak-remote with the pinned images. The identity tests (#80) now compare a
+     digest reference, so they no longer exercise a moving tag.
    - **Not built.** The Linux jail's cgroup
      root and the provider clients' `rt::Runtime&` constructor parameter are ADR-237's #180/#182 and are coordinated
      there, not duplicated here.

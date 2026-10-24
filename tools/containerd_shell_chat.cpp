@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     // ledger staging root, nothing wider.
     sandbox_provider.set_surface_factory([ledger_staging_root] {
         return ContainerdExecutionSurface(
-            "docker.io/library/alpine:latest", ContainerdIsolation::conservative(),
+            "docker.io/library/alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6", ContainerdIsolation::conservative(),
             CapabilitySet::grant_root({Capability{cap::SandboxMount{ledger_staging_root.generic_string(), "/", true}}}));
     });
     sandbox_provider.bind_sandbox(cli_ledger, std::move(*root_branch), owner, ledger_staging_root,

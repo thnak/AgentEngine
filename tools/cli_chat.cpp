@@ -1503,7 +1503,7 @@ template <class Inner>
     // (its own documented "no sandbox bound" state), and main() minted no `cap::RunCommand` either.
     if (plan.offer_run_command) {
         actor.history_provider().run_command_provider().set_surface_factory([] {
-            return agentengine::DockerExecutionSurface("alpine:latest", agentengine::ContainerIsolation::conservative());
+            return agentengine::DockerExecutionSurface("docker.io/library/alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6", agentengine::ContainerIsolation::conservative());
         });
         actor.history_provider().run_command_provider().bind_sandbox(
             cli_ledger, std::move(*root_branch), owner, sandbox_staging_root, *branch_quota, *run_quota,

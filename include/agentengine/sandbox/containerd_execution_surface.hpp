@@ -80,6 +80,7 @@
 #include "agentengine/core/choice_error.hpp"
 #include "agentengine/core/engine_floor.hpp"
 #include "agentengine/core/error.hpp"
+#include "agentengine/sandbox/image_pin.hpp"
 // ADR-203 (#120 S8): the orphan-reaping process-identity check, shared with docker_execution_surface.hpp.
 #include "agentengine/sandbox/detail/process_identity.hpp"
 #include "agentengine/sandbox/execution_surface.hpp"
@@ -515,6 +516,7 @@ public:
             return std::unexpected(ok.error());
         if (auto ok = ctr_cli_detail::reject_unsafe_token(image, "image"); !ok.has_value())
             return std::unexpected(ok.error());
+        if (auto pinned = agentengine::check_image_pinned(image); !pinned.has_value()) return std::unexpected(pinned.error());
         if (auto stated = check_containerd_isolation(isolation); !stated.has_value()) return std::unexpected(stated.error());
         std::string const host_dir_str = host_dir.generic_string();
         if (auto ok = ctr_cli_detail::reject_embedded_nul(host_dir_str, "host_dir"); !ok.has_value())

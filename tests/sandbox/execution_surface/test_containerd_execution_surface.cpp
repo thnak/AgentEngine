@@ -17,6 +17,8 @@
 // (subsequent checks are skipped, matching this design's own probes' "fail loud, don't keep going and
 // pretend" posture) but always attempts best-effort cleanup first.
 
+#include "../../support/containerd_pull.hpp"
+#include "../../support/pinned_images.hpp"
 #include "../../support/surface_factories.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
@@ -88,6 +90,7 @@ void write_file(std::filesystem::path const& p, std::string const& content) {
 }  // namespace
 
 int main() {
+    ae_test::ensure_containerd_image(ae_test::kAlpine);
     // REGRESSION CHECK for a REAL, independent-red-team-found finding (ADR-108 §5): a decimal run
     // that fits in `long` (64-bit on LP64) but exceeds what `pid_t` (32-bit) can hold used to silently
     // TRUNCATE on the cast inside process_is_alive(), letting a foreign container carrying such a
@@ -108,12 +111,12 @@ int main() {
     std::printf("=== ContainerdExecutionSurface production test (ADR-145) ===\n");
 
     {
-        agentengine::ContainerdExecutionSurface surface("docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        agentengine::ContainerdExecutionSurface surface(ae_test::kAlpine, agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
 
         // --- Issue #80: which image did this actually run in? Before anything is created the answer is
         //     "the configured reference, and no digest" -- an absent digest means "not known" and must
         //     never be backfilled from the reference, because a tag is exactly what a digest replaces.
-        check(surface.image() == "docker.io/library/alpine:latest",
+        check(surface.image() == ae_test::kAlpine,
               "issue #80: image() reports the configured reference before reset()");
         check(surface.image_digest().empty(),
               "issue #80: image_digest() is empty before reset() -- not known, never backfilled");
@@ -147,7 +150,7 @@ int main() {
             check(well_formed, "issue #80: image_digest() is a well-formed sha256:<64 hex> after reset() ('" +
                                    resolved + "')");
             agentengine::ContainerdCliBackend backend;
-            std::string const independent = backend.resolve_image_digest("docker.io/library/alpine:latest");
+            std::string const independent = backend.resolve_image_digest(ae_test::kAlpine);
             check(!independent.empty() && independent == resolved,
                   "issue #80 CONTROL: the digest matches an INDEPENDENT `ctr images ls` lookup of the same "
                   "reference ('" + independent + "')");
@@ -161,7 +164,7 @@ int main() {
             //     type, so this is read off the daemon, never inferred. `docker.io/library/alpine:latest`
             //     is multi-platform, so the expected kind is `index`; a single-platform reference would
             //     be `manifest`, and the two are deliberately NOT the same kind (ADR-176 §9).
-            auto const identity = backend.resolve_image_identity("docker.io/library/alpine:latest");
+            auto const identity = backend.resolve_image_identity(ae_test::kAlpine);
             check(identity.digest == resolved,
                   "ADR-176 §9: resolve_image_identity() reports the same digest the surface does");
             // `ctr images ls` always prints a TYPE, so unlike the Docker surface this one does NOT have
@@ -300,7 +303,7 @@ int main() {
         // untouched.
         std::string const alive_id = "ae_ces_" + std::to_string(my_pid) + "_" +
                                       std::to_string(my_start_key) + "_reaptest_alive";
-        auto alive_created = backend.create(alive_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        auto alive_created = backend.create(alive_id, reap_host_dir, ae_test::kAlpine, agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(alive_created.has_value(),
               "reap setup: create() a container with THIS process's own pid + start-key");
 
@@ -311,7 +314,7 @@ int main() {
         // start-key mismatch is the whole point of this scenario.
         std::string const wrong_key_id = "ae_ces_" + std::to_string(my_pid) + "_" +
                                           std::to_string(my_start_key + 1) + "_reaptest_wrongkey";
-        auto wrong_key_created = backend.create(wrong_key_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        auto wrong_key_created = backend.create(wrong_key_id, reap_host_dir, ae_test::kAlpine, agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(wrong_key_created.has_value(),
               "reap setup: create() a container with THIS process's pid but a WRONG start-key");
 
@@ -321,7 +324,7 @@ int main() {
         // start-key comparison.
         long const dead_pid = make_confirmed_dead_pid();
         std::string const dead_id = "ae_ces_" + std::to_string(dead_pid) + "_1_reaptest_dead";
-        auto dead_created = backend.create(dead_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        auto dead_created = backend.create(dead_id, reap_host_dir, ae_test::kAlpine, agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(dead_created.has_value(), "reap setup: create() a container with a confirmed-dead pid");
 
         // (d) A container that does NOT carry the ae_ces_ prefix at all -- reap_orphans() must never
@@ -329,7 +332,7 @@ int main() {
         // this process's own pid -- a fixed literal here would collide with a leftover from a prior
         // interrupted run (found by ADR-108's own red-team round).
         std::string const foreign_id = "not-our-prefix-reaptest-" + std::to_string(my_pid);
-        auto foreign_created = backend.create(foreign_id, reap_host_dir, "docker.io/library/alpine:latest", agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        auto foreign_created = backend.create(foreign_id, reap_host_dir, ae_test::kAlpine, agentengine::ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(foreign_created.has_value(), "reap setup: create() a non-ae_ces_-prefixed container");
 
         if (alive_created.has_value() && wrong_key_created.has_value() && dead_created.has_value() &&

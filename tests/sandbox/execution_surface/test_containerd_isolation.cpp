@@ -50,6 +50,8 @@
 // and destroyed explicitly. Containment is proven by READING the kernel's own limit records rather
 // than by trying to breach them.
 
+#include "../../support/containerd_pull.hpp"
+#include "../../support/pinned_images.hpp"
 #include "../../support/surface_factories.hpp"
 #include "agentengine/rt/block_on.hpp"
 #include "agentengine/sandbox/containerd_execution_surface.hpp"
@@ -149,6 +151,7 @@ void check(bool cond, std::string const& what) {
 }  // namespace
 
 int main() {
+    ae_test::ensure_containerd_image(ae_test::kAlpine);
     using agentengine::ContainerdCliBackend;
     using agentengine::ContainerdExecutionSurface;
     using agentengine::ContainerdIsolation;
@@ -319,15 +322,15 @@ int main() {
     {
         ContainerdCliBackend backend;
         auto const none = agentengine::CapabilitySet::grant_root({});
-        auto refused    = backend.create("ae_bind_none", "/tmp/ae_bind_none", "docker.io/library/alpine:latest",
+        auto refused    = backend.create("ae_bind_none", "/tmp/ae_bind_none", ae_test::kAlpine,
                                          ContainerdIsolation::conservative(), none);
         check(!refused.has_value() && refused.error().code == "sandbox.mount_not_authorized",
               "C8: a bind with no granted cap::SandboxMount is refused before any ctr call");
-        auto other = backend.create("ae_bind_other", "/tmp/ae_bind_other", "docker.io/library/alpine:latest",
+        auto other = backend.create("ae_bind_other", "/tmp/ae_bind_other", ae_test::kAlpine,
                                     ContainerdIsolation::conservative(), ae_test::mount_grants("/var/lib/elsewhere"));
         check(!other.has_value() && other.error().code == "sandbox.mount_not_authorized",
               "C8: a grant for another host path does not cover it");
-        auto ro = backend.create("ae_bind_ro", "/tmp/ae_bind_ro", "docker.io/library/alpine:latest",
+        auto ro = backend.create("ae_bind_ro", "/tmp/ae_bind_ro", ae_test::kAlpine,
                                  ContainerdIsolation::conservative(),
                                  agentengine::CapabilitySet::grant_root({agentengine::Capability{
                                      agentengine::cap::SandboxMount{"/tmp", "/", false}}}));
@@ -345,7 +348,7 @@ int main() {
 
         std::string const id = unique_id("def");
         ContainerdCliBackend backend;
-        auto inst = backend.create(id, work, "docker.io/library/alpine:latest", ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+        auto inst = backend.create(id, work, ae_test::kAlpine, ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
         check(inst.has_value(), "L1 setup: a default-isolation container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -386,7 +389,7 @@ int main() {
         host_net.host_network = true;
         std::string const id = unique_id("net");
         ContainerdCliBackend backend;
-        auto inst = backend.create(id, work, "docker.io/library/alpine:latest", host_net, ae_test::mount_grants("/tmp"));
+        auto inst = backend.create(id, work, ae_test::kAlpine, host_net, ae_test::mount_grants("/tmp"));
         check(inst.has_value(), "L2 setup: a host-networked container is created");
         if (inst.has_value()) {
             auto net = backend.exec(*inst, "ls /sys/class/net");
@@ -412,7 +415,7 @@ int main() {
 
         // Default surface: contained, and its real job still works.
         {
-            ContainerdExecutionSurface surface("docker.io/library/alpine:latest", ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
+            ContainerdExecutionSurface surface(ae_test::kAlpine, ContainerdIsolation::conservative(), ae_test::mount_grants("/tmp"));
             auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: the default surface bind-mounts the directory");
             if (reset.has_value()) {
@@ -435,7 +438,7 @@ int main() {
         {
             ContainerdIsolation host_net = ContainerdIsolation::conservative();
             host_net.host_network = true;
-            ContainerdExecutionSurface surface("docker.io/library/alpine:latest", host_net, ae_test::mount_grants("/tmp"));
+            ContainerdExecutionSurface surface(ae_test::kAlpine, host_net, ae_test::mount_grants("/tmp"));
             auto reset = agentengine::rt::block_on(surface.reset(work));
             check(reset.has_value(), "L5 setup: a host-networked surface resets");
             if (reset.has_value()) {

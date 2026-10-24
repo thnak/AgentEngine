@@ -22,6 +22,7 @@
 // the #142 bug) fails L1's commit; forcing a re-open on every command fails L2; not clearing staging before the
 // drain fails L3; reusing the container on re-open fails L4.
 
+#include "../../support/pinned_images.hpp"
 #include "../../support/surface_factories.hpp"
 #include "agentengine/sandbox/docker_execution_surface.hpp"
 #include "agentengine/sandbox/docker_persistent_shell_surface.hpp"
@@ -136,8 +137,8 @@ int main() {
         std::fflush(stdout);
         std::_Exit(3);
     }).detach();
-    ensure_image("alpine:latest");
-    ensure_image("python:3.12-alpine");
+    ensure_image(ae_test::kAlpine);
+    ensure_image(ae_test::kPythonAlpine);
 
     IdentityAuthority& authority = IdentityAuthority::bootstrap();
     IdentityHandle owner = authority.adopt(Principal{.id = "live-owner", .tenant_id = ""});
@@ -156,7 +157,7 @@ int main() {
     {
         auto root = drive(ledger.create_root_branch(owner, "tier0"));
         SandboxRuntime runtime(ledger, std::move(*root), dir / "tier0");
-        DockerExecutionSurface surface("alpine:latest", box());
+        DockerExecutionSurface surface(ae_test::kAlpine, box());
         (void)drive(runtime.run(surface, "export X=1", owner, run_q, storage_q, nullptr, &ae_test::docker_ctx()));
         auto r = drive(runtime.run(surface, "echo \"[$X]\"", owner, run_q, storage_q, nullptr, &ae_test::docker_ctx()));
         check(r.has_value() && r->exec.stdout_text.find("[]") != std::string::npos,
@@ -180,7 +181,7 @@ int main() {
     // ---- L1, L2, L3, L4, L5
     {
         Provider p;
-        check(bind(p, "main", "python:3.12-alpine", 120s).has_value(), "setup: bind the live provider");
+        check(bind(p, "main", ae_test::kPythonAlpine, 120s).has_value(), "setup: bind the live provider");
         auto venv = shell(p, "mkdir -p sub && python -m venv .venv && . .venv/bin/activate && cd sub && export MARK=kept");
         check(venv.has_value() && venv->ok && !venv->skipped_symlinks.empty(),
               "L1: the venv command commits, its links skipped and listed (" +
@@ -224,7 +225,7 @@ int main() {
         std::string held;
         {
             Provider p;
-            check(bind(p, "timeout", "alpine:latest", 3s).has_value(), "setup: bind with a 3 s deadline");
+            check(bind(p, "timeout", ae_test::kAlpine, 3s).has_value(), "setup: bind with a 3 s deadline");
             // A file inside `deep`: the Ledger keeps regular files only, so an EMPTY directory would not exist in the
             // re-opened container and the replayed `cd` would (correctly) fall back to /workspace (ADR-209 §12 item 8).
             (void)shell(p, "mkdir -p deep && echo x > deep/f && cd deep");
