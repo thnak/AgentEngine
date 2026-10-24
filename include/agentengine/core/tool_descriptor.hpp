@@ -228,6 +228,34 @@ concept HasRequiredCapabilities = requires(ToolT const& t, typename ToolT::Args 
     { t.required_capabilities(a) } -> std::convertible_to<std::vector<Capability>>;
 };
 
+// ADR-237 §9 D3: the two halves of the per-call-requirement protocol for a HAND-BUILT descriptor (a provider's tool),
+// which does not go through `Tool<>`. `prepared_call_of` is what its `prepare` returns: the requirement plus the parse,
+// stamped with the tool name and the `Args` type. `take_prepared_arguments` is the first line of its `invoke`: it takes the
+// parse out of the context (single use) and returns it only when it is this tool's, for this `Args` type; otherwise null,
+// and the `invoke` refuses with `requirement_unbound_error()`.
+template <class Args>
+[[nodiscard]] PreparedCall prepared_call_of(std::string_view tool_name, Args args, std::vector<Capability> required) {
+    PreparedCall call;
+    call.required  = std::move(required);
+    call.arguments = std::make_shared<PreparedArguments const>(PreparedArguments{
+        std::string(tool_name), &typeid(Args), std::make_shared<Args const>(std::move(args))});
+    return call;
+}
+[[nodiscard]] inline error requirement_unbound_error() {
+    return error{failure_class::contract,
+                 "this tool declares a per-call requirement; it can only run with the arguments admission parsed",
+                 "tool.requirement_unbound"};
+}
+template <class Args>
+[[nodiscard]] std::shared_ptr<Args const> take_prepared_arguments(EffectContext& ctx, std::string_view tool_name) {
+    std::shared_ptr<PreparedArguments const> const prepared = std::move(ctx.prepared_arguments);
+    ctx.prepared_arguments.reset();
+    if (!prepared || prepared->tool_name != tool_name || prepared->type == nullptr || *prepared->type != typeid(Args)) {
+        return nullptr;
+    }
+    return std::static_pointer_cast<Args const>(prepared->arguments);
+}
+
 namespace tool_descriptor_detail {
 // A named coroutine taking its state BY VALUE, so the frame owns the tool and the parsed arguments (a coroutine lambda
 // would reference its closure, which the caller may destroy first).
@@ -238,23 +266,6 @@ template <class ToolT>
     auto reply = co_await owned->invoke(*args, ctx);
     if (!reply) co_return std::unexpected(reply.error());
     co_return schema::to_json(*reply);
-}
-[[nodiscard]] inline error requirement_unbound_error() {
-    return error{failure_class::contract,
-                 "this tool declares a per-call requirement; it can only run with the arguments admission parsed",
-                 "tool.requirement_unbound"};
-}
-// Takes the parse out of the context (single use) and returns it only if it is this tool's, for this `Args` type.
-template <class ToolT>
-[[nodiscard]] std::shared_ptr<typename ToolT::Args const> take_prepared_arguments(EffectContext& ctx) {
-    std::shared_ptr<PreparedArguments const> const prepared = std::move(ctx.prepared_arguments);
-    ctx.prepared_arguments.reset();
-    if (!prepared || prepared->tool_name != ToolT::name || prepared->type == nullptr ||
-        *prepared->type != typeid(typename ToolT::Args)) {
-        return nullptr;
-    }
-    return std::static_pointer_cast<typename ToolT::Args const>(
-        std::const_pointer_cast<void>(prepared->arguments));
 }
 }  // namespace tool_descriptor_detail
 
@@ -289,17 +300,13 @@ template <class ToolT>
         d.prepare = [owned](json::Value const& args_value) -> result<PreparedCall> {
             auto parsed = schema::from_json<typename ToolT::Args>(args_value);
             if (!parsed) return std::unexpected(parsed.error());
-            auto args = std::make_shared<typename ToolT::Args const>(std::move(*parsed));
-            PreparedCall call;
-            call.required  = owned->required_capabilities(*args);
-            call.arguments = std::make_shared<PreparedArguments const>(PreparedArguments{
-                std::string(ToolT::name), &typeid(typename ToolT::Args), std::move(args)});
-            return call;
+            std::vector<Capability> required = owned->required_capabilities(*parsed);
+            return prepared_call_of<typename ToolT::Args>(ToolT::name, std::move(*parsed), std::move(required));
         };
         // The arguments are NOT re-parsed from `args_value`: the requirement was computed from the parse in the context.
         d.invoke = [owned](json::Value const&, EffectContext& ctx) -> task<result<json::Value>> {
-            auto args = tool_descriptor_detail::take_prepared_arguments<ToolT>(ctx);
-            if (!args) co_return std::unexpected(tool_descriptor_detail::requirement_unbound_error());
+            auto args = take_prepared_arguments<typename ToolT::Args>(ctx, ToolT::name);
+            if (!args) co_return std::unexpected(requirement_unbound_error());
             co_return co_await tool_descriptor_detail::run_prepared<ToolT>(owned, std::move(args), ctx);
         };
     } else {

@@ -3115,6 +3115,30 @@ fails it).
   although held; empty; plain `invoke`; single-use and foreign parse; forwarding wrapper and stub; background; approval
   text; registration). Mutants killed: no empty check (R4), no bound check (R3), no bind (R1).
 
+### Step 68 (2026-10-24): D3 slice 2 -- the one-shot native-process providers declare a per-call requirement (#176, #175)
+
+- **What moved.** `NativeProcessProvider`'s run tool (the shell, bash, python and node families, `native_providers.hpp`) no
+  longer declares an empty ceiling and matches grants inside its own body. It declares one `NativeExec` bound per pattern
+  the provider owns, on the provider's mount; its `prepare` proposes the concrete program the call asked for; admission
+  checks it against the bound and binds it. The tool sets `enforces_granted_caps` (ADR-217), so the bound capability carries
+  the held grant's own cpu, wall and memory caps, which `invoke` spawns under. `invoke` takes the admission's parse and the
+  bound capability, and refuses `tool.requirement_unbound` without them. Two public helpers, `prepared_call_of` and
+  `take_prepared_arguments` (`tool_descriptor.hpp`), carry the protocol for a hand-built descriptor.
+- **Behaviour that moved (recorded, not absorbed).** (1) The audit record now shows the bound `NativeExec` for the call; it
+  showed none before. (2) A program the provider does not own is refused `tool.requirement_out_of_bounds` (contract) where it
+  was `native_process_provider.not_granted` (policy); a covered program with no held grant is `tool.capability_not_held`.
+  (3) A held grant whose pattern the provider does not own can now authorize a program the provider does own (the old rule
+  required the grant's pattern to be in the provider's list); the bound is the provider's list, the grant only has to cover
+  the program. (4) Tests that called the tool's closure directly now go through admission (`invoke_admitted`), since the
+  closure alone refuses; R-S6b pins that refusal.
+- **Not changed.** Discovery (`scan`, `held_patterns`) still reads `ctx.capabilities` to decide what to announce; it
+  authorizes nothing. The held native shell (`native_shell_session_provider.hpp`) and the WASM bridge still use
+  `make_sync_invoke`; the held shell needs the live-session grant fields and its per-command re-check and is the next slice.
+- **Tests.** `test_native_providers` (all existing checks pass unchanged apart from the driver), R-S6b (closure without
+  admission refuses though the grant is held), R-S6c (a program the provider does not own is refused at the bound although a
+  held grant covers it). Mutant: widening the declared bound to `*` fails R-S6c. These tests build only with
+  `AGENTENGINE_WITH_NATIVE_PROCESS=ON` on Windows, which CI does not do; they were run locally.
+
 ### §14.1 What is left, and the phases to follow
 
 **Exact count (2026-10-16, #174 triage, §14.2):** §5.1 names **31** seams. **25 are `task`-shaped**, **5 are

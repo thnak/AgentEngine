@@ -155,35 +155,16 @@ private:
         return out;
     }
 
+    // The grant this call runs under is `matched`: the per-call requirement admission bound for THIS program on THIS
+    // provider's mount (ADR-237 D3). `enforces_granted_caps` makes it the held grant's own caps, never wider. The
+    // authorization is no longer re-derived here from the held set: the pipeline bound it, audited it, and showed it to
+    // the approver, and the handle is revoked when the call ends.
     [[nodiscard]] result<NativeExecOutcome> real_run(NativeProcessRunArgs const& args,
-                                                       EffectContext& ctx) const {
-        // Step 1: a FRESH, per-invocation authorization check against the LIVE EffectContext --
-        // never trusting that a prior on_context()'s scan() result is still valid authority (ADR-070
-        // property 3, made concrete: the grant is re-verified now, not assumed from a cached turn).
-        std::optional<cap::NativeExec> matched;
-        if (ctx.capabilities) {
-            for (auto const& grant : ctx.capabilities->native_exec_grants()) {
-                if (grant.worktree_mount_id != worktree_mount_id_) continue;
-                if (std::ranges::find(owned_patterns_, grant.program_pattern) == owned_patterns_.end()) {
-                    continue;
-                }
-                if (capability_detail::native_exec_pattern_covers(grant.program_pattern, args.program)) {
-                    matched = grant;
-                    break;
-                }
-            }
-        }
-        if (!matched.has_value()) {
-            return std::unexpected(error{
-                failure_class::policy,
-                "no held cap::NativeExec grant covers program '" + args.program + "'",
-                "native_process_provider.not_granted"});
-        }
-
+                                                       cap::NativeExec const& matched) const {
         // Step 2: resolve the program's real, absolute path via a fresh PATH scan -- this function
         // never resolves a bare name itself; it only ever accepts what scan_path() (already
         // filtered to the matched grant's own pattern) reports right now.
-        auto discovered = scan_path({matched->program_pattern});
+        auto discovered = scan_path({matched.program_pattern});
         auto it = std::ranges::find_if(
             discovered, [&](DiscoveredExecutable const& d) { return d.short_name == args.program; });
         if (it == discovered.end()) {
@@ -205,9 +186,9 @@ private:
         NativeExecRequest req{.program_path = {},
                               .argv = {},
                               .cwd = {},
-                              .cpu_ms_cap = matched->cpu_ms_cap,
-                              .wall_ms_cap = matched->wall_ms_cap,
-                              .memory_bytes_cap = matched->memory_bytes_cap};
+                              .cpu_ms_cap = matched.cpu_ms_cap,
+                              .wall_ms_cap = matched.wall_ms_cap,
+                              .memory_bytes_cap = matched.memory_bytes_cap};
         req.program_path = it->resolved_path;
         req.argv.push_back(it->resolved_path);
         req.argv.insert(req.argv.end(), args.args.begin(), args.args.end());
@@ -222,18 +203,52 @@ private:
         d.approval = approval_;
         d.args_schema_json = schema::json_schema_of<NativeProcessRunArgs>();
         d.reply_schema_json = schema::json_schema_of<NativeProcessRunReply>();
-        // Capability ceiling deliberately left empty, matching MemoryProvider::make_recall_tool_
-        // descriptor()'s own established precedent: the REAL per-invocation authorization happens
-        // inside invoke() itself (real_run(), step 1 above) against the LIVE EffectContext, because
-        // it must match exactly ONE of possibly-several held NativeExec grants covering the
-        // SPECIFIC requested program -- ToolDescriptor::capability_ceiling is an AND-of-all list
-        // (006 §3), which cannot express "one of these N alternatives" declaratively.
+        // Capability ceiling left empty: the authority is a PER-CALL requirement (ADR-237 §9 D3), because the grant that
+        // covers a call depends on its `program` argument and `capability_ceiling` is an AND-of-all list (006 §3), which
+        // cannot express "one of these N alternatives". The declared bound is one NativeExec per pattern this provider
+        // owns, on this provider's mount; the hook proposes the concrete program the call asked for, which admission
+        // checks against the bound and binds against the held grants. `enforces_granted_caps` binds it with the held
+        // grant's own cpu/wall/memory caps (ADR-217), which `invoke` then spawns under.
         d.captures_session_state = true;  // captures `this` -> this provider's own construction-time state
-        d.invoke = make_sync_invoke([this](json::Value const& args_value, EffectContext& ctx) -> result<json::Value> {
+        d.enforces_granted_caps = true;
+        for (auto const& pattern : owned_patterns_) {
+            d.requirement_bounds.push_back(Capability{cap::NativeExec{
+                pattern, worktree_mount_id_, cap::Limit::unbounded(), cap::Limit::unbounded(), cap::Limit::unbounded(),
+                false, cap::Limit::unbounded(), cap::Limit::unbounded()}});
+        }
+        d.prepare = [this, tool = d.name](json::Value const& args_value) -> result<PreparedCall> {
             auto args = schema::from_json<NativeProcessRunArgs>(args_value);
             if (!args) return std::unexpected(args.error());
-            auto outcome = real_run(*args, ctx);
-            if (!outcome) return std::unexpected(outcome.error());
+            std::vector<Capability> required{Capability{cap::NativeExec{
+                args->program, worktree_mount_id_, cap::Limit::unbounded(), cap::Limit::unbounded(),
+                cap::Limit::unbounded(), false, cap::Limit::unbounded(), cap::Limit::unbounded()}}};
+            return prepared_call_of<NativeProcessRunArgs>(tool, std::move(*args), std::move(required));
+        };
+        d.invoke = [this, tool = d.name](json::Value const&, EffectContext& ctx) -> task<result<json::Value>> {
+            auto args = take_prepared_arguments<NativeProcessRunArgs>(ctx, tool);
+            if (!args) co_return std::unexpected(requirement_unbound_error());
+            // The bound capability for this call: the one NativeExec admission bound for `args->program`.
+            std::optional<cap::NativeExec> matched;
+            if (ctx.bound_capabilities != nullptr) {
+                for (auto const& handle : *ctx.bound_capabilities) {
+                    auto used = handle.use();
+                    if (!used) continue;
+                    if (auto const* ne = std::get_if<cap::NativeExec>(&*used)) {
+                        if (ne->program_pattern == args->program && ne->worktree_mount_id == worktree_mount_id_) {
+                            matched = *ne;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!matched.has_value()) {
+                co_return std::unexpected(error{
+                    failure_class::policy,
+                    "no bound cap::NativeExec covers program '" + args->program + "'",
+                    "native_process_provider.not_granted"});
+            }
+            auto outcome = real_run(*args, *matched);
+            if (!outcome) co_return std::unexpected(outcome.error());
             auto capped_out = native_jail::cap_output(outcome->stdout_text, native_jail::kDefaultOutputCapBytes);
             auto capped_err = native_jail::cap_output(outcome->stderr_text, native_jail::kDefaultOutputCapBytes);
             NativeProcessRunReply reply;
@@ -243,8 +258,8 @@ private:
             reply.stdout_truncated = capped_out.truncated || outcome->stdout_truncated;
             reply.stderr_truncated = capped_err.truncated || outcome->stderr_truncated;
             reply.timed_out = outcome->klass == native_exec_outcome_class::timeout;
-            return schema::to_json(reply);
-        });
+            co_return schema::to_json(reply);
+        };
         return d;
     }
 
