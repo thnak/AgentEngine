@@ -13,6 +13,8 @@
 //       - { hosts: ["api.example.com:443:https"], byte_cap: 1048576, methods: [GET] }   # methods: any | [..]
 //     native_exec:
 //       - { program: node, worktree_mount: work, cpu_ms_cap: 30000, wall_ms_cap: 30000, memory_bytes_cap: unbounded }
+//     unmediated_shell:                  # ADR-244 §2.5: a surface that is not host-mediated (docker, containerd, ...)
+//       - { surface: docker, network: false }
 //
 // Every kind holds a sequence of entries (a document can grant more than one mount or host set). Nothing is
 // defaulted: each limit is a positive integer or the word `unbounded` (trust/grant_limit.hpp), a path prefix is a
@@ -136,6 +138,26 @@ namespace capability_yaml_detail {
     return out;
 }
 
+// ADR-244 §2.5: `surface` is the surface id the grant is scoped to and `network` is stated, true or false -- never
+// defaulted, so a grant cannot silently allow egress by leaving the key out.
+[[nodiscard]] inline agentengine::result<cap::UnmediatedShell> parse_unmediated_shell(json::Value const& e,
+                                                                                    std::string const& where) {
+    if (auto k = unknown_key(e, {"surface", "network"}); !k.empty()) {
+        return std::unexpected(invalid(where, "unknown key '" + k + "'"));
+    }
+    auto surface = required_string(e, "surface", where);
+    if (!surface) return std::unexpected(surface.error());
+    auto const* network = e.find("network");
+    if (network == nullptr) {
+        return std::unexpected(agentengine::error{
+            agentengine::failure_class::contract,
+            "capabilities." + where + ": 'network' is required: true if the surface may keep a network, false if not",
+            "choice.missing.grant.network"});
+    }
+    if (!network->is_bool()) return std::unexpected(invalid(where, "'network' must be true or false"));
+    return cap::UnmediatedShell{std::move(*surface), network->as_bool()};
+}
+
 }  // namespace capability_yaml_detail
 
 // `capabilities` is the value of a document's `spec.capabilities` key.
@@ -146,11 +168,12 @@ namespace capability_yaml_detail {
     }
     std::vector<Capability> out;
     for (auto const& [kind, entries] : caps.as_object()) {
-        if (kind != "fs_read" && kind != "fs_write" && kind != "net_out" && kind != "native_exec") {
+        if (kind != "fs_read" && kind != "fs_write" && kind != "net_out" && kind != "native_exec" &&
+            kind != "unmediated_shell") {
             return std::unexpected(agentengine::error{
                 agentengine::failure_class::contract,
                 "capabilities." + kind + ": not a capability a document can declare; choose from: fs_read, fs_write, "
-                "net_out, native_exec",
+                "net_out, native_exec, unmediated_shell",
                 "capabilities.unsupported_kind"});
         }
         if (!entries.is_array() || entries.as_array().empty()) {
@@ -170,6 +193,10 @@ namespace capability_yaml_detail {
                 out.push_back(Capability{std::move(*g)});
             } else if (kind == "net_out") {
                 auto g = d::parse_net_out(entry, where);
+                if (!g) return std::unexpected(g.error());
+                out.push_back(Capability{std::move(*g)});
+            } else if (kind == "unmediated_shell") {
+                auto g = d::parse_unmediated_shell(entry, where);
                 if (!g) return std::unexpected(g.error());
                 out.push_back(Capability{std::move(*g)});
             } else {

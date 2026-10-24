@@ -402,7 +402,7 @@ G-R13 ("refuses to start ... with any one of them unset") is G-C1 + G-C3 + G-C8 
      `network = false` grant for a surface that keeps a network. Each check emits one `SandboxExec` audit row, admitted
      or refused. `MandatorySandboxProvider` (run, task-branch run) and `LiveShellSandboxProvider` pass their context.
      Tests: `test_unmediated_shell_gate` U1-U7 against a fake surface (no daemon), and every Docker and containerd
-     test that runs a command now carries the grant. Not built: a YAML spelling of the grant (`capabilities:`).
+     test that runs a command now carries the grant. The YAML spelling is `capabilities: unmediated_shell: [{surface: docker, network: false}]` (`network` required and boolean; `test_capability_yaml` Y1b, same answers as the C++ grant, I6).
    - **The containerd host bind (built, G-C4).** `ContainerdCliBackend::create` builds a `SandboxSpec` for its read-write
      bind of the host directory onto `/workspace` and runs `authorize_spec` before any `ctr` call: it needs a granted
      `cap::SandboxMount` naming that host path, read-write (`sandbox.mount_not_authorized` otherwise, with no `ctr`
