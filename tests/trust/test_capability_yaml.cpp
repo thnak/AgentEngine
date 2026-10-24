@@ -77,6 +77,35 @@ int main() {
                  "Y1: native_exec goes through the existing grant parser");
     }
 
+    // ---- Y1b: unmediated_shell (ADR-244 §2.5) ----------------------------------------------------
+    {
+        auto ok = parse_caps(R"({"unmediated_shell": [{"surface": "docker", "network": false}]})");
+        AE_CHECK(ok.has_value() && ok->size() == 1, "Y1b: unmediated_shell parses");
+        if (ok && ok->size() == 1) {
+            auto const* u = std::get_if<cap::UnmediatedShell>(&(*ok)[0]);
+            AE_CHECK(u && u->surface == "docker" && !u->network, "Y1b: surface and a stated network = false");
+            CapabilitySet const set = CapabilitySet::grant_root(*ok);
+            CapabilitySet const cpp = CapabilitySet::grant_root({Capability{cap::UnmediatedShell{"docker", false}}});
+            for (auto const& req : {Capability{cap::UnmediatedShell{"docker", false}},
+                                    Capability{cap::UnmediatedShell{"docker", true}},
+                                    Capability{cap::UnmediatedShell{"containerd", false}}}) {
+                AE_CHECK(set.contains(req) == cpp.contains(req), "Y1b: the YAML and C++ grants answer alike (I6)");
+            }
+            AE_CHECK(!set.contains(Capability{cap::UnmediatedShell{"docker", true}}),
+                     "Y1b: a network = false grant does not cover a networked surface");
+        }
+        auto nonet = parse_caps(R"({"unmediated_shell": [{"surface": "docker"}]})");
+        AE_CHECK(code_of(nonet) == "choice.missing.grant.network", "Y1b: a missing network is a named error");
+        AE_CHECK(code_of(parse_caps(R"({"unmediated_shell": [{"surface": "docker", "network": "no"}]})")) ==
+                     "capabilities.invalid",
+                 "Y1b: a non-boolean network is refused");
+        AE_CHECK(code_of(parse_caps(R"({"unmediated_shell": [{"network": true}]})")) == "capabilities.invalid",
+                 "Y1b: a missing surface is refused");
+        AE_CHECK(code_of(parse_caps(R"({"unmediated_shell": [{"surface": "docker", "network": true, "x": 1}]})")) ==
+                     "capabilities.invalid",
+                 "Y1b: an unknown key is refused");
+    }
+
     // ---- Y2 ------------------------------------------------------------------------------------
     if (full) {
         CapabilitySet const from_yaml = CapabilitySet::grant_root(*full);
